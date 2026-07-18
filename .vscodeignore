@@ -1,17 +1,24 @@
-.vscode/**
-.vscode-test/**
+# Source & config
 src/**
-out/**
-node_modules/**
-.gitignore
-.gitattributes
-*.map
-*.ts
-!dist/**
-tsconfig.json
 webpack.config.js
-eslint.config.mjs
-.vscode-test.mjs
-vsc-extension-quickstart.md
-CHANGELOG.md
-resources/icon-ext.svg
+tsconfig.json
+package-lock.json
+
+# Build artifacts not needed at runtime
+dist/**/*.map
+dist/**/*.d.ts
+dist/config/**
+dist/core/**
+dist/handlers/**
+dist/test/**
+dist/ui/**
+dist/utils/**
+
+# Dev & repo meta
+node_modules/**
+out/**
+.vscode-test/**
+.DS_Store
+.github/**
+.codex/**
+*.vsix

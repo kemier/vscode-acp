@@ -13,7 +13,6 @@ import type {
  * This gives us access to unsaved editor buffers automatically.
  */
 export class FileSystemHandler {
-
   /**
    * Read a text file. Uses VS Code API to include unsaved editor content.
    */
@@ -24,9 +23,7 @@ export class FileSystemHandler {
       const uri = vscode.Uri.file(params.path);
 
       // Check if the file is open in an editor with unsaved changes
-      const openDoc = vscode.workspace.textDocuments.find(
-        doc => doc.uri.fsPath === uri.fsPath
-      );
+      const openDoc = vscode.workspace.textDocuments.find((doc) => doc.uri.fsPath === uri.fsPath);
 
       let content: string;
       if (openDoc) {
@@ -37,13 +34,13 @@ export class FileSystemHandler {
       }
 
       // Handle line/limit parameters
-      if (params.line !== undefined && params.line !== null
-        || params.limit !== undefined && params.limit !== null) {
+      if (
+        (params.line !== undefined && params.line !== null) ||
+        (params.limit !== undefined && params.limit !== null)
+      ) {
         const lines = content.split('\n');
         const startLine = (params.line ?? 1) - 1; // 1-based → 0-based
-        const endLine = params.limit
-          ? startLine + params.limit
-          : lines.length;
+        const endLine = params.limit ? startLine + params.limit : lines.length;
         content = lines.slice(startLine, endLine).join('\n');
       }
 

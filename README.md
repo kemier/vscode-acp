@@ -64,6 +64,7 @@ You can add custom agent configurations in settings.
 | `acp.autoApprovePermissions` | `ask` | How agent permission requests are handled: `ask` or `allowAll`. |
 | `acp.defaultWorkingDirectory` | `""` | Default working directory for agent sessions. Empty uses current workspace. |
 | `acp.logTraffic` | `true` | Log all ACP protocol traffic to the ACP Traffic output channel. |
+| `acp.logTrafficMaxEntries` | `1000` | Maximum entries kept in the ACP Traffic output channel before it is cleared. Bounds memory in long sessions. |
 
 ## Commands
 
@@ -148,7 +149,7 @@ Communication with agents uses the ACP protocol (JSON-RPC 2.0 over stdio).
 
 - Agents must be available via the system PATH or `npx`
 - Some agents may require additional authentication setup
-- File attachment feature is not yet functional
+- Image attachment is only shown when the current model supports image input. For Codex CLI, this is determined from `~/.codex/model_catalog.json` (written by ericai-proxy `start.sh`). For Kiro CLI, Claude models are assumed to support images; all others (minimax, qwen, glm, kimi) are text-only. Clipboard paste of images is also gated by this check.
 
 ## Links
 

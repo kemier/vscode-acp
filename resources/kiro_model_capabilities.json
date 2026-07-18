@@ -1,0 +1,13 @@
+{
+  "models": [
+    { "slug": "claude-opus-4.6", "input_modalities": ["text", "image"] },
+    { "slug": "claude-sonnet-4.6", "input_modalities": ["text", "image"] },
+    { "slug": "claude-haiku-4.5", "input_modalities": ["text", "image"] },
+    { "slug": "claude-opus-4.8", "input_modalities": ["text", "image"] },
+    { "slug": "minimax-m2.1", "input_modalities": ["text"] },
+    { "slug": "Qwen3", "input_modalities": ["text"] },
+    { "slug": "glm-5.2", "input_modalities": ["text"] },
+    { "slug": "kimi-k2.6", "input_modalities": ["text"] },
+    { "slug": "qwen2.5-14b-1m", "input_modalities": ["text"] }
+  ]
+}

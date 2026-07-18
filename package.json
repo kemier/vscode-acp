@@ -2,7 +2,7 @@
   "name": "acp-client",
   "displayName": "ACP Client",
   "description": "Agent Client Protocol client for VS Code — connect to GitHub Copilot, Claude Code, Gemini CLI, Qwen Code, Codex CLI, OpenCode, OpenClaw, Kiro CLI, Hermes Agent, and any ACP-compatible AI coding agent",
-  "version": "0.2.0",
+  "version": "0.3.5",
   "publisher": "formulahendry",
   "license": "MIT",
   "icon": "resources/icon.png",
@@ -29,8 +29,13 @@
     "coding agent",
     "copilot"
   ],
-  "activationEvents": [],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
   "main": "./dist/extension.js",
+  "extensionKind": [
+    "workspace"
+  ],
   "contributes": {
     "viewsContainers": {
       "activitybar": [
@@ -59,10 +64,6 @@
       {
         "view": "acp-sessions",
         "contents": "No agents configured.\n[Add Agent](command:acp.addAgent)\nConfigure agents in settings or browse the [Agent Registry](command:acp.browseRegistry)."
-      },
-      {
-        "view": "acp-chat",
-        "contents": "Start chatting with an AI coding agent.\n[Connect to Agent](command:acp.connectAgent)\nSelect an agent from the list above to begin."
       }
     ],
     "commands": [
@@ -84,6 +85,11 @@
         "command": "acp.cancelTurn",
         "title": "ACP: Cancel Current Turn",
         "icon": "$(debug-stop)"
+      },
+      {
+        "command": "acp.toggleFollowAgent",
+        "title": "ACP: Toggle Follow Agent",
+        "icon": "$(target)"
       },
       {
         "command": "acp.disconnectAgent",
@@ -110,6 +116,10 @@
       {
         "command": "acp.showTraffic",
         "title": "ACP: Show Protocol Traffic"
+      },
+      {
+        "command": "acp.exportTraffic",
+        "title": "ACP: Export Protocol Traffic"
       },
       {
         "command": "acp.browseRegistry",
@@ -154,6 +164,18 @@
         "title": "Forget Session"
       },
       {
+        "command": "acp.deleteSession",
+        "title": "Delete Session (Agent)"
+      },
+      {
+        "command": "acp.logout",
+        "title": "ACP: Logout Agent"
+      },
+      {
+        "command": "acp.forkSession",
+        "title": "ACP: Fork Session"
+      },
+      {
         "command": "acp.restartAgent",
         "title": "ACP: Restart Agent",
         "icon": "$(debug-restart)"
@@ -175,6 +197,10 @@
         },
         {
           "command": "acp.forgetSession",
+          "when": "false"
+        },
+        {
+          "command": "acp.deleteSession",
           "when": "false"
         }
       ],
@@ -246,6 +272,10 @@
           "when": "view == acp-sessions && viewItem == agent-connected"
         },
         {
+          "command": "acp.logout",
+          "when": "view == acp-sessions && viewItem == agent-connected"
+        },
+        {
           "command": "acp.refreshSessions",
           "when": "view == acp-sessions && viewItem =~ /^agent/",
           "group": "session@1"
@@ -259,6 +289,16 @@
           "command": "acp.forgetSession",
           "when": "view == acp-sessions && viewItem == session-local",
           "group": "session@2"
+        },
+        {
+          "command": "acp.deleteSession",
+          "when": "view == acp-sessions && viewItem == session",
+          "group": "session@2"
+        },
+        {
+          "command": "acp.forkSession",
+          "when": "view == acp-sessions && viewItem == session",
+          "group": "session@3"
         }
       ]
     },
@@ -281,90 +321,19 @@
           "type": "object",
           "description": "Agent configurations. Each key is the agent name, value has command, args, and env.",
           "default": {
-            "GitHub Copilot": {
-              "command": "npx",
-              "args": [
-                "@github/copilot-language-server@latest",
-                "--acp"
-              ],
-              "env": {}
-            },
-            "Claude Code": {
-              "command": "npx",
-              "args": [
-                "@agentclientprotocol/claude-agent-acp@latest"
-              ],
-              "env": {}
-            },
-            "Gemini CLI": {
-              "command": "npx",
-              "args": [
-                "@google/gemini-cli@latest",
-                "--experimental-acp"
-              ],
-              "env": {}
-            },
-            "Qwen Code": {
-              "command": "npx",
-              "args": [
-                "@qwen-code/qwen-code@latest",
-                "--acp",
-                "--experimental-skills"
-              ],
-              "env": {}
-            },
-            "Auggie CLI": {
-              "command": "npx",
-              "args": [
-                "@augmentcode/auggie@latest",
-                "--acp"
-              ],
-              "env": {
-                "AUGMENT_DISABLE_AUTO_UPDATE": "1"
-              }
-            },
-            "Qoder CLI": {
-              "command": "npx",
-              "args": [
-                "@qoder-ai/qodercli@latest",
-                "--acp"
-              ],
-              "env": {}
-            },
             "Codex CLI": {
-              "command": "npx",
-              "args": [
-                "@zed-industries/codex-acp@latest"
-              ],
-              "env": {}
-            },
-            "OpenCode": {
-              "command": "npx",
-              "args": [
-                "opencode-ai@latest",
-                "acp"
-              ],
-              "env": {}
-            },
-            "OpenClaw": {
-              "command": "npx",
-              "args": [
-                "openclaw",
-                "acp"
-              ],
-              "env": {}
+              "command": "codex-acp",
+              "args": [],
+              "env": {
+                "CODEX_PATH": "/home/ezennin/.npm-global/lib/node_modules/@openai/codex/bin/codex.js"
+              }
             },
             "Kiro CLI": {
               "command": "kiro-cli",
               "args": [
-                "acp"
-              ],
-              "env": {}
-            },
-            "Hermes Agent": {
-              "command": "hermes",
-              "args": [
-                "acp"
+                "acp",
+                "--effort",
+                "high"
               ],
               "env": {}
             }
@@ -374,10 +343,27 @@
           "type": "string",
           "enum": [
             "ask",
-            "allowAll"
+            "allowAll",
+            "remember"
           ],
-          "default": "ask",
-          "description": "Automatically approve agent permission requests. 'ask' always prompts, 'allowAll' approves everything."
+          "default": "remember",
+          "description": "Automatically approve agent permission requests. 'ask' always prompts, 'allowAll' approves everything, 'remember' auto-approves commands you have approved before (persisted across sessions)."
+        },
+        "acp.approvedCommands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "List of normalized commands that have been approved by the user and will be auto-approved in 'remember' mode."
+        },
+        "acp.deniedCommands": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "List of command prefixes that are always denied (auto-rejected). Merged with built-in denylist (rm -rf, sudo, etc.)."
         },
         "acp.defaultWorkingDirectory": {
           "type": "string",
@@ -388,6 +374,12 @@
           "type": "boolean",
           "default": true,
           "description": "Log all ACP protocol traffic to the output channel."
+        },
+        "acp.logTrafficMaxEntries": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 50,
+          "description": "Maximum number of entries kept in the ACP Traffic output channel before it is cleared. Prevents unbounded memory growth in long sessions."
         }
       }
     }
@@ -401,12 +393,18 @@
     "watch-tests": "tsc -p . -w --outDir out",
     "lint": "eslint src --max-warnings 0",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
-    "test": "vscode-test"
+    "test": "vscode-test",
+    "deploy": "bash scripts/deploy-all.sh",
+    "deploy:fast": "bash scripts/deploy-all.sh --skip-tests --skip-lint",
+    "format": "prettier --write \"src/**/*.ts\"",
+    "format:check": "prettier --check \"src/**/*.ts\""
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^0.21.1",
+    "@agentclientprotocol/sdk": "^1.1.0",
     "@vscode/extension-telemetry": "^1.5.0",
-    "marked": "^15.0.0"
+    "marked": "^15.0.0",
+    "mermaid": "^11.16.0",
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@types/mocha": "^10.0.6",
@@ -418,8 +416,9 @@
     "@vscode/test-electron": "^2.4.1",
     "@vscode/vsce": "^3.7.1",
     "eslint": "^9.0.0",
+    "prettier": "^3.9.5",
     "ts-loader": "^9.5.0",
-    "typescript": "^5.5.0",
+    "typescript": "^6.0.3",
     "typescript-eslint": "^8.0.0",
     "webpack": "^5.95.0",
     "webpack-cli": "^5.1.0"

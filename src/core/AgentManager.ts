@@ -68,7 +68,20 @@ export interface AgentInstance {
 /**
  * Manages spawning and killing ACP agent child processes.
  */
+export interface AgentManagerEvents {
+  'agent-stderr': [evt: { agentId: string; line: string }];
+  'agent-error': [evt: { agentId: string; error: any }];
+  'agent-closed': [evt: { agentId: string; code: number | null; signal: string | null }];
+}
+
 export class AgentManager extends EventEmitter {
+  on<K extends keyof AgentManagerEvents>(event: K, listener: (...args: AgentManagerEvents[K]) => void): this {
+    return super.on(event, listener as any);
+  }
+  emit<K extends keyof AgentManagerEvents>(event: K, ...args: AgentManagerEvents[K]): boolean {
+    return super.emit(event, ...args);
+  }
+
   private agents: Map<string, AgentInstance> = new Map();
   private nextId = 1;
 
@@ -104,6 +117,12 @@ export class AgentManager extends EventEmitter {
         stdio: ['pipe', 'pipe', 'pipe'],
         env: { ...process.env, ...(config.env || {}) },
         cwd: cwd || undefined,
+        // Put the child in its own process group (POSIX setsid) so we can
+        // kill the entire tree (shell + npx + node + codex-acp) with a
+        // single signal to the process group (-pid). Without this, killing
+        // the shell leaves grandchild processes orphaned and reparented to
+        // PID 1.
+        detached: true,
       });
     })();
 
@@ -146,11 +165,26 @@ export class AgentManager extends EventEmitter {
     log(`Killing agent "${instance.name}" (${agentId})`);
 
     try {
-      instance.process.kill('SIGTERM');
-      // Force kill after 5s if still running
+      // Kill the entire process group. On Unix, when the child was spawned
+      // with detached:true, the child became its own process group leader.
+      // Sending a signal to -pid targets the whole group, which includes
+      // the shell and all its descendants (npx → node → codex-acp).
+      try {
+        process.kill(-instance.process.pid!, 'SIGTERM');
+      } catch {
+        // Fallback: if process-group kill fails (e.g. process already gone,
+        // or on Windows), fall back to killing just the direct child.
+        instance.process.kill('SIGTERM');
+      }
+
+      // Force-kill after 5s if still running
       setTimeout(() => {
-        if (instance.process.exitCode === null) {
-          instance.process.kill('SIGKILL');
+        try {
+          if (instance.process.exitCode === null) {
+            process.kill(-instance.process.pid!, 'SIGKILL');
+          }
+        } catch {
+          // Process or group already gone — nothing to do.
         }
       }, 5000);
     } catch (e) {
@@ -184,8 +218,29 @@ export class AgentManager extends EventEmitter {
     }
   }
 
+  /**
+   * Immediately SIGKILL all agent process groups. Used during extension
+   * deactivation where the Node event loop may be torn down before the
+   * 5-second SIGKILL timeout in killAgent() fires.
+   */
+  forceKillAll(): void {
+    for (const [, instance] of this.agents) {
+      try {
+        process.kill(-instance.process.pid!, 'SIGKILL');
+      } catch {
+        try {
+          instance.process.kill('SIGKILL');
+        } catch {
+          /* already gone */
+        }
+      }
+    }
+    this.agents.clear();
+  }
+
   dispose(): void {
     this.killAll();
+    this.forceKillAll();
     this.removeAllListeners();
   }
 }

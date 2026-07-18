@@ -6,34 +6,379 @@ import type { RequestPermissionRequest, RequestPermissionResponse } from '@agent
 
 /**
  * Handles ACP permission requests from agents.
- * Shows VS Code QuickPick for user to select from agent-provided options.
+ * Shows diff preview for edit operations, then QuickPick for approval.
+ *
+ * Permission strategy:
+ * - "ask": prompt for every command (default)
+ * - "allowAll": auto-approve every command (dangerous)
+ * - "remember": auto-approve commands matching the allowlist (persisted
+ *   across sessions). Uses longest-prefix-match: approving "gh" auto-approves
+ *   "gh issue view 3715", "gh pr list", etc. A denylist takes precedence
+ *   when its prefix is equally or more specific.
  */
+
+type CommandDecision = 'auto_approve' | 'auto_deny' | 'ask_user';
+
+/** Detect dangerous parameter substitutions that could execute commands. */
+function containsDangerousSubstitution(source: string): boolean {
+  // ${var@P} - prompt string expansion (interprets escape sequences)
+  if (/\$\{[^}]*@[PQEAa][^}]*\}/.test(source)) {
+    return true;
+  }
+  // ${var=value} with escape sequences (octal/hex/unicode → backtick injection)
+  if (/\$\{[^}]*[=+\-?][^}]*\\[0-7]{3}[^}]*\}/.test(source)) {
+    return true;
+  }
+  if (/\$\{[^}]*[=+\-?][^}]*\\x[0-9a-fA-F]{2}[^}]*\}/.test(source)) {
+    return true;
+  }
+  if (/\$\{[^}]*[=+\-?][^}]*\\u[0-9a-fA-F]{4}[^}]*\}/.test(source)) {
+    return true;
+  }
+  // ${!var} - indirect variable references
+  if (/\$\{![^}]+\}/.test(source)) {
+    return true;
+  }
+  // <<<$(...) or <<<`...` - here-strings with command substitution
+  if (/<<<\s*(\$\(|`)/.test(source)) {
+    return true;
+  }
+  // zsh process substitution =(...)
+  if (/(?:(?<=^)|(?<=[\s;|&(<]))=\([^)]+\)/.test(source)) {
+    return true;
+  }
+  // zsh glob qualifiers with code execution (e:...:)
+  if (/[*?+@!]\(e:[^:]+:\)/.test(source)) {
+    return true;
+  }
+  return false;
+}
+
+/** Split a command string into sub-commands by &&, ||, ;, | */
+function parseSubCommands(command: string): string[] {
+  // Split by &&, ||, ;, | but NOT inside single or double quoted strings.
+  const result: string[] = [];
+  let current = '';
+  let inSingle = false;
+  let inDouble = false;
+  for (let i = 0; i < command.length; i++) {
+    const ch = command[i];
+    if (ch === "'" && !inDouble) {
+      inSingle = !inSingle;
+      current += ch;
+      continue;
+    }
+    if (ch === '"' && !inSingle) {
+      inDouble = !inDouble;
+      current += ch;
+      continue;
+    }
+    if (!inSingle && !inDouble) {
+      const two = command.substring(i, i + 2);
+      if (two === '&&' || two === '||') {
+        if (current.trim()) {
+          result.push(current.trim());
+        }
+        current = '';
+        i++;
+        continue;
+      }
+      if (ch === ';' || ch === '|') {
+        if (current.trim()) {
+          result.push(current.trim());
+        }
+        current = '';
+        continue;
+      }
+    }
+    current += ch;
+  }
+  if (current.trim()) {
+    result.push(current.trim());
+  }
+  return result;
+}
+
+/** Strip simple shell redirections like 2>&1, 2>, >file, etc. */
+function stripRedirection(cmd: string): string {
+  return cmd
+    .replace(/\s*\d*>&\d*/g, '')
+    .replace(/\s*\d*>[^\s]*/g, '')
+    .replace(/\s*2>&1/g, '')
+    .trim();
+}
+
+/**
+ * Find the longest matching prefix from a list of prefixes.
+ * "*" matches any command (treated as length 1).
+ */
+function findLongestPrefixMatch(command: string, prefixes: string[]): string | null {
+  if (!command || !prefixes?.length) {
+    return null;
+  }
+  const lower = command.trim().toLowerCase();
+  let longest: string | null = null;
+  for (const prefix of prefixes) {
+    const lp = prefix.toLowerCase();
+    if (lp === '*' || lower.startsWith(lp)) {
+      if (!longest || lp.length > longest.length) {
+        longest = lp;
+      }
+    }
+  }
+  return longest;
+}
+
+/**
+ * Get decision for a single command using longest-prefix-match.
+ * Denylist wins when its prefix is equally or more specific.
+ */
+function getSingleCommandDecision(command: string, allowed: string[], denied: string[]): CommandDecision {
+  if (!command) {
+    return 'auto_approve';
+  }
+  // Try both the raw command and the unwrapped (inner) command.
+  // e.g. "/usr/bin/bash -lc 'gh issue view 1354 ...'" also checks "gh issue view 1354 ..."
+  const candidates = [command];
+  const bashMatch = command.match(/^(?:\/usr\/bin\/)?(?:bash|sh|zsh)\s+-l?c\s+['"]([^'"]+)['"]/);
+  if (bashMatch) {
+    candidates.push(bashMatch[1].trim());
+  }
+  let allowMatch: string | null = null;
+  let denyMatch: string | null = null;
+  for (const c of candidates) {
+    const a = findLongestPrefixMatch(c, allowed);
+    if (a && (!allowMatch || a.length > allowMatch.length)) {
+      allowMatch = a;
+    }
+    const d = findLongestPrefixMatch(c, denied);
+    if (d && (!denyMatch || d.length > denyMatch.length)) {
+      denyMatch = d;
+    }
+  }
+  if (allowMatch && !denyMatch) {
+    return 'auto_approve';
+  }
+  if (!allowMatch && denyMatch) {
+    return 'auto_deny';
+  }
+  if (allowMatch && denyMatch) {
+    return allowMatch.length > denyMatch.length ? 'auto_approve' : 'auto_deny';
+  }
+  return 'ask_user';
+}
+
+/**
+ * Get decision for a full command string (may contain sub-commands).
+ * Any denied sub-command → deny whole command.
+ * Dangerous patterns → always ask user.
+ */
+function getCommandDecision(command: string, allowed: string[], denied: string[]): CommandDecision {
+  if (!command?.trim()) {
+    return 'auto_approve';
+  }
+  if (containsDangerousSubstitution(command)) {
+    return 'ask_user';
+  }
+  const subCommands = parseSubCommands(command);
+  const decisions = subCommands.map((cmd) => {
+    const clean = stripRedirection(cmd);
+    return getSingleCommandDecision(clean, allowed, denied);
+  });
+  if (decisions.includes('auto_deny')) {
+    return 'auto_deny';
+  }
+  if (decisions.every((d) => d === 'auto_approve')) {
+    return 'auto_approve';
+  }
+  return 'ask_user';
+}
+
+/** Default dangerous commands to deny */
+const DEFAULT_DENIED_COMMANDS = [
+  'rm -rf',
+  'rm -r',
+  'rmdir',
+  'sudo',
+  'dd',
+  'mkfs',
+  'shutdown',
+  'reboot',
+  'chmod -R',
+  'chown -R',
+  'kill -9',
+  'curl | sh',
+  'wget | sh',
+  'git push --force',
+  'git push -f',
+  'git reset --hard',
+  ':(){:|:&};:',
+  '>/dev/sda',
+  '>/dev/null',
+];
+
 export class PermissionHandler {
+  private pendingPermissionQueue: Array<{
+    params: RequestPermissionRequest;
+    resolve: (response: RequestPermissionResponse) => void;
+  }> = [];
+  private isProcessingPermission = false;
+
+  /** Extract the command string from a tool call's rawInput. */
+  private extractCommand(toolCall: any): string | undefined {
+    const rawInput = toolCall?.rawInput;
+    if (!rawInput) {
+      return undefined;
+    }
+    // Command as string
+    if (typeof rawInput.command === 'string') {
+      return rawInput.command;
+    }
+    // Command as array (Codex format: ["gh", "issue", "view", "3715"])
+    if (Array.isArray(rawInput.command)) {
+      return rawInput.command.join(' ');
+    }
+    // Parsed command fallback (Codex also sends parsed_cmd)
+    if (Array.isArray(rawInput.parsed_cmd)) {
+      const cmds = rawInput.parsed_cmd
+        .map((p: any) => (typeof p === 'object' ? p.cmd || p.command || '' : String(p)))
+        .filter((s: string) => s.length > 0);
+      if (cmds.length > 0) {
+        return cmds.join(' && ');
+      }
+    }
+    return undefined;
+  }
+
+  /** Extract the command prefix (first N tokens) for saving to the allowlist. */
+  private extractPrefix(command: string): string {
+    // Unwrap common shell wrappers to extract the meaningful command.
+    // e.g. "/usr/bin/bash -lc 'cd /foo && gh issue view 1354 ...'"
+    //   → "gh issue view 1354 ..."  →  prefix "gh"
+    let cmd = command.trim();
+    const bashMatch = cmd.match(/^(?:\/usr\/bin\/)?(?:bash|sh|zsh)\s+-l?c\s+['"]([^'"]+)['"]/);
+    if (bashMatch) {
+      cmd = bashMatch[1].trim();
+    }
+    // Use the first token as the prefix by default
+    // e.g. "gh issue view 3715" → "gh"
+    //      "PATH=... ninja -j4" → "PATH=... ninja"
+    const parts = cmd.split(/\s+/);
+    // If first token looks like ENV=val, include the next token too
+    if (parts.length >= 2 && parts[0].includes('=')) {
+      return parts.slice(0, 2).join(' ');
+    }
+    return parts[0] || cmd;
+  }
+
+  private loadAllowedCommands(): string[] {
+    return vscode.workspace.getConfiguration('acp').get<string[]>('approvedCommands', []);
+  }
+
+  private loadDeniedCommands(): string[] {
+    const userDenied = vscode.workspace.getConfiguration('acp').get<string[]>('deniedCommands', []);
+    return [...new Set([...DEFAULT_DENIED_COMMANDS, ...userDenied])];
+  }
+
+  private saveAllowedCommand(prefix: string): void {
+    const config = vscode.workspace.getConfiguration('acp');
+    const approved = config.get<string[]>('approvedCommands', []);
+    if (!approved.includes(prefix)) {
+      approved.push(prefix);
+      if (approved.length > 500) {
+        approved.splice(0, approved.length - 500);
+      }
+      config
+        .update('approvedCommands', approved, vscode.ConfigurationTarget.Global)
+        .then(undefined, (e) => log(`Failed to save approved command: ${e}`));
+    }
+  }
+
   async requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
     const config = vscode.workspace.getConfiguration('acp');
-    const autoApprove = config.get<string>('autoApprovePermissions', 'none');
+    const autoApprove = config.get<string>('autoApprovePermissions', 'ask');
+    const rawCommand = this.extractCommand(params.toolCall);
+
+    // Fast path: allowAll auto-approves everything
+    if (autoApprove === 'allowAll') {
+      return this.handleAutoApproveAll(params);
+    }
+
+    // Fast path: remember mode — check prefix-based allowlist
+    if (autoApprove === 'remember' && rawCommand) {
+      const allowed = this.loadAllowedCommands();
+      const denied = this.loadDeniedCommands();
+      const decision = getCommandDecision(rawCommand, allowed, denied);
+      if (decision === 'auto_approve') {
+        log(`Auto-approving (prefix match): ${rawCommand.substring(0, 80)}...`);
+        return this.handleAutoApproveAll(params);
+      }
+      if (decision === 'auto_deny') {
+        log(`Auto-denying (denylist match): ${rawCommand.substring(0, 80)}...`);
+        return { outcome: { outcome: 'cancelled' } };
+      }
+      // decision === 'ask_user' — fall through to manual
+    }
+
+    // Slow path: needs user interaction — queue to prevent overlapping QuickPicks
+    return new Promise((resolve) => {
+      this.pendingPermissionQueue.push({ params, resolve });
+      this.processPermissionQueue();
+    });
+  }
+
+  private async processPermissionQueue(): Promise<void> {
+    if (this.isProcessingPermission || this.pendingPermissionQueue.length === 0) {
+      return;
+    }
+    this.isProcessingPermission = true;
+    const { params, resolve } = this.pendingPermissionQueue.shift()!;
+    try {
+      const response = await this.handleManualPermission(params);
+      resolve(response);
+    } catch (e) {
+      log(`Permission handler error: ${e}`);
+      resolve({ outcome: { outcome: 'cancelled' } });
+    } finally {
+      this.isProcessingPermission = false;
+      if (this.pendingPermissionQueue.length > 0) {
+        this.processPermissionQueue();
+      }
+    }
+  }
+
+  private async handleAutoApproveAll(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
+    const title = params.toolCall?.title || 'Permission Request';
+    const allowOption =
+      params.options.find((o) => o.kind === 'allow_always') || params.options.find((o) => o.kind === 'allow_once');
+    if (allowOption) {
+      sendEvent('permission/requested', { permissionType: title, autoApproved: 'true' });
+      return { outcome: { outcome: 'selected', optionId: allowOption.optionId } };
+    }
+    return { outcome: { outcome: 'cancelled' } };
+  }
+
+  private async handleManualPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
+    const config = vscode.workspace.getConfiguration('acp');
+    const autoApprove = config.get<string>('autoApprovePermissions', 'ask');
+    const rawCommand = this.extractCommand(params.toolCall);
 
     const title = params.toolCall?.title || 'Permission Request';
     log(`requestPermission: ${title} (autoApprove=${autoApprove})`);
 
-    // Auto-approve: pick first allow-type option
-    if (autoApprove === 'allowAll') {
-      const allowOption = params.options.find(o =>
-        o.kind === 'allow_once' || o.kind === 'allow_always'
-      );
-      if (allowOption) {
-        sendEvent('permission/requested', { permissionType: title, autoApproved: 'true' });
-        return {
-          outcome: {
-            outcome: 'selected',
-            optionId: allowOption.optionId,
-          },
-        };
+    // Show diff preview for edit operations
+    const content = (params.toolCall as any)?.content as
+      Array<{ type: string; path?: string; oldText?: string; newText?: string }> | undefined;
+    if (content && content.length > 0) {
+      for (const item of content) {
+        if (item.type === 'diff' && item.path) {
+          await this.showDiff(item.path, item.oldText || '', item.newText || '');
+        }
       }
     }
 
     // Build QuickPick items from agent-provided options
-    const items: (vscode.QuickPickItem & { optionId: string })[] = params.options.map(option => {
+    const items: (vscode.QuickPickItem & { optionId: string })[] = params.options.map((option) => {
       const icon = option.kind.startsWith('allow') ? '$(check)' : '$(x)';
       return {
         label: `${icon} ${option.name}`,
@@ -42,10 +387,27 @@ export class PermissionHandler {
       };
     });
 
+    // Add "Allow + remember prefix" option in remember mode
+    if (autoApprove === 'remember' && rawCommand) {
+      const prefix = this.extractPrefix(rawCommand);
+      // Check if prefix is already in the allowlist
+      const allowed = this.loadAllowedCommands();
+      if (!allowed.includes(prefix)) {
+        items.unshift({
+          label: `$(check) Allow + remember "${prefix}" prefix`,
+          description: 'allow_always',
+          optionId: '__remember_prefix__',
+        } as vscode.QuickPickItem & { optionId: string });
+      }
+    }
+
     sendEvent('permission/requested', { permissionType: title, autoApproved: 'false' });
 
+    const placeHolder =
+      autoApprove === 'remember' && rawCommand ? `${title} — command: ${rawCommand.substring(0, 100)}` : title;
+
     const selection = await vscode.window.showQuickPick(items, {
-      placeHolder: title,
+      placeHolder,
       title: 'ACP Agent Permission Request',
       ignoreFocusOut: true,
     });
@@ -53,12 +415,34 @@ export class PermissionHandler {
     if (!selection) {
       log('Permission cancelled by user');
       sendEvent('permission/responded', { permissionType: title, outcome: 'cancelled' });
-      return {
-        outcome: { outcome: 'cancelled' },
-      };
+      return { outcome: { outcome: 'cancelled' } };
     }
 
     log(`Permission selected: ${selection.optionId}`);
+
+    // If user chose "Allow + remember prefix", save the prefix and map to the first allow option
+    if (selection.optionId === '__remember_prefix__' && rawCommand) {
+      const prefix = this.extractPrefix(rawCommand);
+      this.saveAllowedCommand(prefix);
+      log(`Saved prefix "${prefix}" for future auto-approval`);
+      const allowOption =
+        params.options.find((o) => o.kind === 'allow_always') || params.options.find((o) => o.kind === 'allow_once');
+      if (allowOption) {
+        sendEvent('permission/responded', { permissionType: title, action: allowOption.optionId, outcome: 'selected' });
+        return { outcome: { outcome: 'selected', optionId: allowOption.optionId } };
+      }
+    }
+
+    // For regular allow options in remember mode, also save the prefix
+    if (autoApprove === 'remember' && rawCommand) {
+      const selectedOption = params.options.find((o) => o.optionId === selection.optionId);
+      if (selectedOption && selectedOption.kind.startsWith('allow')) {
+        const prefix = this.extractPrefix(rawCommand);
+        this.saveAllowedCommand(prefix);
+        log(`Saved prefix "${prefix}" for future auto-approval`);
+      }
+    }
+
     sendEvent('permission/responded', {
       permissionType: title,
       action: selection.optionId,
@@ -67,8 +451,37 @@ export class PermissionHandler {
     return {
       outcome: {
         outcome: 'selected',
-        optionId: selection.optionId,
+        optionId:
+          selection.optionId === '__remember_prefix__'
+            ? (
+                params.options.find((o) => o.kind === 'allow_always') ||
+                params.options.find((o) => o.kind === 'allow_once')
+              )?.optionId || selection.optionId
+            : selection.optionId,
       },
     };
+  }
+
+  private async showDiff(filePath: string, oldText: string, newText: string): Promise<void> {
+    const oldUri = vscode.Uri.parse(`acp-diff:${filePath}?version=old`);
+    const newUri = vscode.Uri.parse(`acp-diff:${filePath}?version=new`);
+
+    const disposables: vscode.Disposable[] = [];
+    const provider = new (class implements vscode.TextDocumentContentProvider {
+      provideTextDocumentContent(uri: vscode.Uri): string {
+        return uri.query.includes('old') ? oldText : newText;
+      }
+    })();
+
+    disposables.push(vscode.workspace.registerTextDocumentContentProvider('acp-diff', provider));
+
+    try {
+      const fileName = filePath.split(/[\\/]/).pop() || filePath;
+      await vscode.commands.executeCommand('vscode.diff', oldUri, newUri, `${fileName} (proposed changes)`);
+    } catch (e) {
+      log(`Failed to show diff: ${e}`);
+    } finally {
+      setTimeout(() => disposables.forEach((d) => d.dispose()), 5000);
+    }
   }
 }

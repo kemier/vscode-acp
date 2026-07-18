@@ -18,6 +18,14 @@ export interface PersistedSessionEntry {
   sessionId: string;
   /** Title supplied via `session_info_update`, if any. */
   title?: string;
+  /** True when the user explicitly renamed via /rename (not agent auto-title). */
+  userRenamed?: boolean;
+  /** Last-selected mode ID (e.g. "plan", "code", "full-access"). */
+  modeId?: string;
+  /** Last-selected model ID (e.g. "glm-5.2", "kimi-k2.6"). */
+  modelId?: string;
+  /** Last-selected reasoning effort (e.g. "low", "high"). */
+  reasoningEffort?: string;
   /** First user prompt of the session, used as a label fallback (truncated). */
   firstPrompt?: string;
   /** ISO timestamp when the session was first observed. */
@@ -57,6 +65,7 @@ export class SessionHistoryStore {
     const raw = this.workspaceState.get<PersistedShape>(STATE_KEY);
     if (raw && raw.version === 1 && Array.isArray(raw.entries)) {
       this.entries = raw.entries;
+    } else {
     }
   }
 
@@ -67,13 +76,24 @@ export class SessionHistoryStore {
    */
   list(agentName: string, cwd?: string): PersistedSessionEntry[] {
     return this.entries
-      .filter(e => e.agentName === agentName && (!cwd || e.cwd === cwd))
+      .filter((e) => e.agentName === agentName && (!cwd || e.cwd === cwd))
+      .sort((a, b) => (b.lastActiveAt || '').localeCompare(a.lastActiveAt || ''));
+  }
+
+  /**
+   * List all renamed sessions across ALL agents, sorted by
+   * `lastActiveAt` descending. Used for cross-agent /session autocomplete
+   * and summarization.
+   */
+  listAllRenamed(): PersistedSessionEntry[] {
+    return this.entries
+      .filter((e) => e.title && e.title.trim().length > 0)
       .sort((a, b) => (b.lastActiveAt || '').localeCompare(a.lastActiveAt || ''));
   }
 
   /** Look up a specific entry by agent + session id. */
   get(agentName: string, sessionId: string): PersistedSessionEntry | undefined {
-    return this.entries.find(e => e.agentName === agentName && e.sessionId === sessionId);
+    return this.entries.find((e) => e.agentName === agentName && e.sessionId === sessionId);
   }
 
   /**
@@ -100,40 +120,155 @@ export class SessionHistoryStore {
     this.persist();
   }
 
+  /** Persist the last-selected mode for a session. */
+  setModeId(agentName: string, sessionId: string, modeId: string | null | undefined): void {
+    if (modeId === undefined) {
+      return;
+    }
+    let entry = this.get(agentName, sessionId);
+    if (!entry) {
+      const now = new Date().toISOString();
+      entry = {
+        agentName,
+        cwd: '',
+        sessionId,
+        createdAt: now,
+        lastActiveAt: now,
+      };
+      this.entries.push(entry);
+    }
+    if (modeId === null) {
+      delete entry.modeId;
+    } else {
+      entry.modeId = modeId;
+    }
+    void this.workspaceState.update(STATE_KEY, { version: 1, entries: this.entries });
+  }
+
+  /** Persist the last-selected model for a session. */
+  setModelId(agentName: string, sessionId: string, modelId: string | null | undefined): void {
+    if (modelId === undefined) {
+      return;
+    }
+    let entry = this.get(agentName, sessionId);
+    if (!entry) {
+      const now = new Date().toISOString();
+      entry = {
+        agentName,
+        cwd: '',
+        sessionId,
+        createdAt: now,
+        lastActiveAt: now,
+      };
+      this.entries.push(entry);
+    }
+    if (modelId === null) {
+      delete entry.modelId;
+    } else {
+      entry.modelId = modelId;
+    }
+    void this.workspaceState.update(STATE_KEY, { version: 1, entries: this.entries });
+  }
+
+  /** Persist the last-selected reasoning effort for a session. */
+  setReasoningEffort(agentName: string, sessionId: string, effort: string | null | undefined): void {
+    if (effort === undefined) {
+      return;
+    }
+    let entry = this.get(agentName, sessionId);
+    if (!entry) {
+      const now = new Date().toISOString();
+      entry = {
+        agentName,
+        cwd: '',
+        sessionId,
+        createdAt: now,
+        lastActiveAt: now,
+      };
+      this.entries.push(entry);
+    }
+    if (effort === null) {
+      delete entry.reasoningEffort;
+    } else {
+      entry.reasoningEffort = effort;
+    }
+    void this.workspaceState.update(STATE_KEY, { version: 1, entries: this.entries });
+  }
+
   /** Update title from a `session_info_update` notification. */
   setTitle(agentName: string, sessionId: string, title: string | null | undefined): void {
-    const entry = this.get(agentName, sessionId);
-    if (!entry) { return; }
+    if (title === undefined) {
+      return;
+    }
+    let entry = this.get(agentName, sessionId);
+    if (!entry) {
+      // Entry may not exist yet for agent-sourced sessions that were
+      // never created locally. Create one so the title persists.
+      const now = new Date().toISOString();
+      entry = {
+        agentName,
+        cwd: '',
+        sessionId,
+        createdAt: now,
+        lastActiveAt: now,
+      };
+      this.entries.push(entry);
+    }
     if (title === null) {
       delete entry.title;
     } else if (typeof title === 'string') {
       entry.title = title;
+      // Bump lastActiveAt so renamed sessions float to the top.
+      entry.lastActiveAt = new Date().toISOString();
     }
+    this.persist();
+  }
+  /** User explicitly renamed a session via /rename. Sets userRenamed flag. */ userRename(
+    agentName: string,
+    sessionId: string,
+    title: string,
+  ): void {
+    let entry = this.get(agentName, sessionId);
+    if (!entry) {
+      const now = new Date().toISOString();
+      entry = { agentName, cwd: '', sessionId, createdAt: now, lastActiveAt: now };
+      this.entries.push(entry);
+    }
+    entry.title = title;
+    entry.userRenamed = true;
+    entry.lastActiveAt = new Date().toISOString();
     this.persist();
   }
 
   /** Record the first user prompt of a session for label fallback. */
   setFirstPromptIfMissing(agentName: string, sessionId: string, prompt: string): void {
     const entry = this.get(agentName, sessionId);
-    if (!entry || entry.firstPrompt) { return; }
+    if (!entry || entry.firstPrompt) {
+      return;
+    }
     entry.firstPrompt = prompt.slice(0, MAX_PROMPT_LEN);
-    this.persist();
+    // Persist silently — first prompt is just a fallback label, no need
+    // to trigger a tree refresh.
+    void this.workspaceState.update(STATE_KEY, { version: 1, entries: this.entries });
   }
 
   /** Bump `lastActiveAt` to now. Called on prompt end / session update. */
   touch(agentName: string, sessionId: string): void {
     const entry = this.get(agentName, sessionId);
-    if (!entry) { return; }
+    if (!entry) {
+      return;
+    }
     entry.lastActiveAt = new Date().toISOString();
-    this.persist();
+    // Persist silently — don't fire onDidChange to avoid triggering a
+    // tree refresh on every prompt. The tree doesn't need to re-render
+    // just because lastActiveAt bumped.
+    void this.workspaceState.update(STATE_KEY, { version: 1, entries: this.entries });
   }
 
   /** Remove a single entry (e.g. after a failed `session/load`). */
   forget(agentName: string, sessionId: string): boolean {
     const before = this.entries.length;
-    this.entries = this.entries.filter(
-      e => !(e.agentName === agentName && e.sessionId === sessionId),
-    );
+    this.entries = this.entries.filter((e) => !(e.agentName === agentName && e.sessionId === sessionId));
     if (this.entries.length !== before) {
       this.persist();
       return true;
@@ -144,9 +279,11 @@ export class SessionHistoryStore {
   /** Remove every entry for an agent. */
   forgetAgent(agentName: string): number {
     const before = this.entries.length;
-    this.entries = this.entries.filter(e => e.agentName !== agentName);
+    this.entries = this.entries.filter((e) => e.agentName !== agentName);
     const removed = before - this.entries.length;
-    if (removed > 0) { this.persist(); }
+    if (removed > 0) {
+      this.persist();
+    }
     return removed;
   }
 
@@ -157,23 +294,35 @@ export class SessionHistoryStore {
    */
   reconcileFromAgent(agentName: string, knownSessionIds: Set<string>): void {
     let changed = false;
-    this.entries = this.entries.filter(e => {
-      if (e.agentName !== agentName) { return true; }
-      if (knownSessionIds.has(e.sessionId)) { return true; }
+    this.entries = this.entries.filter((e) => {
+      if (e.agentName !== agentName) {
+        return true;
+      }
+      if (knownSessionIds.has(e.sessionId)) {
+        return true;
+      }
+      // Don't remove entries with user-set titles — they may be on a
+      // later page of the agent's paginated session/list. Removing them
+      // would lose the user's custom rename.
+      if (e.title) {
+        return true;
+      }
       changed = true;
       return false;
     });
-    if (changed) { this.persist(); }
+    if (changed) {
+      this.persist();
+    }
   }
 
   private enforceCap(agentName: string): void {
     const forAgent = this.list(agentName);
-    if (forAgent.length <= this.capPerAgent) { return; }
+    if (forAgent.length <= this.capPerAgent) {
+      return;
+    }
     const surplus = forAgent.slice(this.capPerAgent);
-    const stale = new Set(surplus.map(e => e.sessionId));
-    this.entries = this.entries.filter(
-      e => !(e.agentName === agentName && stale.has(e.sessionId)),
-    );
+    const stale = new Set(surplus.map((e) => e.sessionId));
+    this.entries = this.entries.filter((e) => !(e.agentName === agentName && stale.has(e.sessionId)));
   }
 
   private persist(): void {

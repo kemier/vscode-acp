@@ -8,10 +8,7 @@ export class StatusBarManager {
   private statusBarItem: vscode.StatusBarItem;
 
   constructor(private readonly sessionManager: SessionManager) {
-    this.statusBarItem = vscode.window.createStatusBarItem(
-      vscode.StatusBarAlignment.Left,
-      100,
-    );
+    this.statusBarItem = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 100);
     this.statusBarItem.command = 'acp.connectAgent';
     this.updateStatus();
 

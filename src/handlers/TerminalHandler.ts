@@ -107,7 +107,9 @@ export class TerminalHandler {
       open() {
         writeEmitter.fire(`$ ${params.command} ${(params.args || []).join(' ')}\r\n`);
       },
-      close() { /* no-op */ },
+      close() {
+        /* no-op */
+      },
     };
     const vsTerminal = vscode.window.createTerminal({
       name: `ACP: ${params.command}`,

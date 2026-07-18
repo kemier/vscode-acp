@@ -8,6 +8,7 @@ import { AcpClientImpl } from './AcpClientImpl';
 import { FileSystemHandler } from '../handlers/FileSystemHandler';
 import { TerminalHandler } from '../handlers/TerminalHandler';
 import { PermissionHandler } from '../handlers/PermissionHandler';
+import { ElicitationHandler } from '../handlers/ElicitationHandler';
 import { SessionUpdateHandler } from '../handlers/SessionUpdateHandler';
 import { log, logError, logTraffic } from '../utils/Logger';
 import { version as extensionVersion } from '../../package.json';
@@ -16,6 +17,8 @@ export interface ConnectionInfo {
   connection: ClientSideConnection;
   client: AcpClientImpl;
   initResponse: InitializeResponse;
+  onKiroMetadata?: (params: any) => void;
+  onKiroSubagentListUpdate?: (params: any) => void;
 }
 
 /**
@@ -25,9 +28,7 @@ export interface ConnectionInfo {
 export class ConnectionManager {
   private connections: Map<string, ConnectionInfo> = new Map();
 
-  constructor(
-    private readonly sessionUpdateHandler: SessionUpdateHandler,
-  ) {}
+  constructor(private readonly sessionUpdateHandler: SessionUpdateHandler) {}
 
   /**
    * Create an ACP connection from a child process.
@@ -47,12 +48,13 @@ export class ConnectionManager {
     const stream = ndJsonStream(writable, readable);
 
     // Wrap the stream to intercept and log all ACP traffic
-    const tappedStream = this.tapStream(stream);
+    const tappedStream = this.tapStream(stream, agentId);
 
     // Create handlers
     const fsHandler = new FileSystemHandler();
     const terminalHandler = new TerminalHandler();
     const permissionHandler = new PermissionHandler();
+    const elicitationHandler = new ElicitationHandler();
 
     // Create client implementation
     const client = new AcpClientImpl(
@@ -60,16 +62,14 @@ export class ConnectionManager {
       terminalHandler,
       permissionHandler,
       this.sessionUpdateHandler,
+      elicitationHandler,
     );
 
     // Create connection — toClient factory receives the Agent proxy
-    const connection = new ClientSideConnection(
-      (agent: Agent) => {
-        client.setAgent(agent);
-        return client;
-      },
-      tappedStream,
-    );
+    const connection = new ClientSideConnection((agent: Agent) => {
+      client.setAgent(agent);
+      return client;
+    }, tappedStream);
 
     // Initialize the connection
     log(`ConnectionManager: initializing connection to agent ${agentId}`);
@@ -85,10 +85,35 @@ export class ConnectionManager {
           writeTextFile: true,
         },
         terminal: true,
+        // Advertise plan support so agents send plan_update / plan_removed
+        // instead of only full plan replacements.
+        plan: {},
+        // Advertise auth.terminal so agents can offer terminal-based auth.
+        auth: {
+          terminal: true,
+        },
+        // Advertise elicitation support (form + url). Agents that need
+        // structured user input can then use createElicitation.
+        elicitation: {
+          form: {},
+          url: {},
+        },
+        // Advertise NES support (experimental). codex-acp does NOT support
+        // NES yet, so it will simply not send nes/suggest requests.
+        // Other agents (e.g. Zed's) can then use it.
+        nes: {},
+        // NOTE: do NOT set `_meta.terminal_output: true`. That would tell
+        // codex-acp's `resolveTerminalOutputMode` to send a FULL snapshot of
+        // the terminal buffer in every update meta — O(N²) bandwidth for
+        // long shell commands. We don't consume the meta payload anywhere,
+        // so the default `terminal_output_delta` (only the new bytes) is
+        // strictly better.
       },
     });
 
-    log(`ConnectionManager: initialized. Agent: ${initResponse.agentInfo?.name || 'unknown'} v${initResponse.agentInfo?.version || '?'}`);
+    log(
+      `ConnectionManager: initialized. Agent: ${initResponse.agentInfo?.name || 'unknown'} v${initResponse.agentInfo?.version || '?'}`,
+    );
 
     const info: ConnectionInfo = { connection, client, initResponse };
     this.connections.set(agentId, info);
@@ -105,13 +130,16 @@ export class ConnectionManager {
   }
 
   dispose(): void {
+    // Connections close when the agent process is killed (stdin/stdout
+    // pipes close → stream ends → connection aborts). No explicit close
+    // needed here — just clear the map.
     this.connections.clear();
   }
 
   /**
    * Wrap a Stream to intercept and log all messages in both directions.
    */
-  private tapStream(stream: Stream): Stream {
+  private tapStream(stream: Stream, agentId: string): Stream {
     // Tap outgoing messages (client → agent)
     const sendTap = new TransformStream({
       transform(chunk: unknown, controller: TransformStreamDefaultController) {
@@ -122,16 +150,36 @@ export class ConnectionManager {
 
     // Tap incoming messages (agent → client)
     const recvTap = new TransformStream({
-      transform(chunk: unknown, controller: TransformStreamDefaultController) {
+      transform: (chunk: unknown, controller: TransformStreamDefaultController) => {
         logTraffic('recv', chunk);
+        // Intercept _kiro.dev/metadata notifications (Kiro CLI specific)
+        if (chunk && typeof chunk === 'object' && (chunk as any).method === '_kiro.dev/metadata') {
+          const params = (chunk as any).params;
+          if (params) {
+            const info = this.connections.get(agentId);
+            if (info?.onKiroMetadata) {
+              info.onKiroMetadata(params);
+            }
+          }
+        }
+        // Intercept _kiro.dev/subagent/list_update notifications (Kiro CLI specific)
+        if (chunk && typeof chunk === 'object' && (chunk as any).method === '_kiro.dev/subagent/list_update') {
+          const params = (chunk as any).params;
+          if (params) {
+            const info = this.connections.get(agentId);
+            if (info?.onKiroSubagentListUpdate) {
+              info.onKiroSubagentListUpdate(params);
+            }
+          }
+        }
         controller.enqueue(chunk);
       },
     });
 
     // Pipe: sendTap.readable → original writable, original readable → recvTap.writable
     // These run in the background — no need to await
-    void sendTap.readable.pipeTo(stream.writable).catch(e => logError('Traffic tap send pipe error', e));
-    void stream.readable.pipeTo(recvTap.writable).catch(e => logError('Traffic tap recv pipe error', e));
+    void sendTap.readable.pipeTo(stream.writable).catch((e) => logError('Traffic tap send pipe error', e));
+    void stream.readable.pipeTo(recvTap.writable).catch((e) => logError('Traffic tap recv pipe error', e));
 
     return {
       writable: sendTap.writable,

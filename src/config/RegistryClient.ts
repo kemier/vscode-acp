@@ -24,7 +24,7 @@ const CACHE_TTL = 5 * 60 * 1000; // 5 minutes
  */
 export async function fetchRegistry(): Promise<RegistryAgent[]> {
   const now = Date.now();
-  if (cachedRegistry && (now - cacheTime) < CACHE_TTL) {
+  if (cachedRegistry && now - cacheTime < CACHE_TTL) {
     return cachedRegistry.agents;
   }
 
