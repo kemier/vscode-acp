@@ -23,6 +23,11 @@ import { cleanSessionTitle } from '../utils/TitleCleaner';
 
 const execFileAsync = promisify(execFile);
 
+// Set to true to enable verbose [DEBUG-WV] / [DEBUG-MD] / [DEBUG-SUBAGENT] logs
+// in the ACP Client output channel. Keep false in normal use — the per-chunk
+// logging floods the channel during streaming.
+const DEBUG = false;
+
 /**
  * WebviewViewProvider for the ACP chat sidebar.
  * Renders chat messages, tool calls, plans, and handles user input.
@@ -2023,24 +2028,30 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         case 'renderMarkdown': {
           // Webview requests markdown rendering for history items
           const items: Array<{ index: number; text: string; gen?: number; hgen?: number }> = message.items || [];
-          log(
-            `[DEBUG-MD] renderMarkdown request: ${items.length} items, indices=[${items.map((i) => i.index).join(',')}]`,
-          );
+          if (DEBUG) {
+            log(
+              `[DEBUG-MD] renderMarkdown request: ${items.length} items, indices=[${items.map((i) => i.index).join(',')}]`,
+            );
+          }
           const rendered = items.map((item: { index: number; text: string; gen?: number; hgen?: number }) => ({
             index: item.index,
             html: this.renderMarkdown(item.text),
             gen: item.gen,
             hgen: item.hgen,
           }));
-          log(
-            `[DEBUG-MD] renderMarkdown response: ${rendered.length} items rendered, html lengths=[${rendered.map((i) => i.html.length).join(',')}]`,
-          );
+          if (DEBUG) {
+            log(
+              `[DEBUG-MD] renderMarkdown response: ${rendered.length} items rendered, html lengths=[${rendered.map((i) => i.html.length).join(',')}]`,
+            );
+          }
           this.postMessage({ type: 'markdownRendered', items: rendered });
           break;
         }
         case 'debugLog':
           // Forward webview debug logs to the ACP Client output channel
-          log('[DEBUG-WV] ' + (message.message || '(empty)'));
+          if (DEBUG) {
+            log('[DEBUG-WV] ' + (message.message || '(empty)'));
+          }
           break;
       }
     });
@@ -2061,7 +2072,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     const updateData = update.update as any;
 
     // Debug: log user_message_chunk updates to trace raw context link issue
-    if (updateData?.sessionUpdate === 'user_message_chunk') {
+    if (DEBUG && updateData?.sessionUpdate === 'user_message_chunk') {
       const content = updateData.content;
       if (content?.type === 'text' && typeof content.text === 'string') {
         const preview = content.text.length > 200 ? content.text.substring(0, 200) + '...' : content.text;
@@ -2093,7 +2104,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // webview only ever shows one session at a time.
     const activeId = this.sessionManager.getActiveSessionId();
     // [DEBUG-SUBAGENT] Trace which session agent_message_chunk events come from
-    if (updateData?.sessionUpdate === 'agent_message_chunk' || updateData?.sessionUpdate === 'agent_thought_chunk') {
+    if (DEBUG && (updateData?.sessionUpdate === 'agent_message_chunk' || updateData?.sessionUpdate === 'agent_thought_chunk')) {
       const preview = updateData?.content?.text ? updateData.content.text.replace(/\\s+/g, ' ').slice(0, 60) : '';
       log(
         `[DEBUG-SUBAGENT] ${updateData.sessionUpdate} session=${update.sessionId} active=${activeId} match=${update.sessionId === activeId} text="${preview}"`,

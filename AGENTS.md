@@ -50,8 +50,8 @@ The LLM must emit links that work in both editors. There is one primary format.
  
  | Repo | Path | Description |
  |---|---|---|
- | **codex-acp** | `/workspace/git/ezennin/codex-acp` | ACP adapter for Codex CLI (`@agentclientprotocol/codex-acp`). The agent binary spawned by this extension. Key files: `src/CodexAcpServer.ts` (ACP server — session/cancel, prompt, turn/interrupt), `src/CodexAcpClient.ts` (Codex app-server client), `src/CodexAppServerClient.ts` (JSON-RPC transport to Codex core). |
- | **codex** | `/workspace/git/ezennin/codex` | Codex CLI core (Rust). The actual agent engine. Key crate: `codex-rs/app-server/` (app-server protocol, turn/interrupt handling in `src/request_processors/turn_processor.rs`). |
+ | **codex-acp** | `~/projects/codex-acp` | ACP adapter for Codex CLI (`@agentclientprotocol/codex-acp`). The agent binary spawned by this extension. Key files: `src/CodexAcpServer.ts` (ACP server — session/cancel, prompt, turn/interrupt), `src/CodexAcpClient.ts` (Codex app-server client), `src/CodexAppServerClient.ts` (JSON-RPC transport to Codex core). |
+ | **codex** | `../codex` | Codex CLI core (Rust). The actual agent engine. Key crate: `codex-rs/app-server/` (app-server protocol, turn/interrupt handling in `src/request_processors/turn_processor.rs`). |
  
  When debugging agent-side issues (cancel not working, turn not interrupting, etc.), inspect the codex-acp source first — it is the bridge between this extension's JSON-RPC notifications and the Codex core's internal `Op::Interrupt`.
  
@@ -77,13 +77,13 @@ The LLM must emit links that work in both editors. There is one primary format.
 - `npm run deploy` — All-in-one: format → typecheck → test → lint → build → package → deploy
 - `npm run deploy:fast` — Same but skip tests and lint
 
-## Deploy to Remote SSH Server
+## Deploy to Local VS Code
 
-This extension is developed on a remote server accessed via VS Code Remote-SSH. The `code` CLI is not available, so deployment is done by extracting the VSIX directly into `~/.vscode-server/extensions/`.
+This extension runs on a local desktop VS Code installation. Deployment is done by packaging a VSIX and extracting it into `~/.vscode/extensions/`.
 
 ### One-command build + deploy
 
-The all-in-one deploy script runs: Prettier format → TypeScript typecheck → Mocha tests → ESLint → Webpack build → VSIX package → install to `~/.vscode-server/extensions/`.
+The all-in-one deploy script runs: Prettier format → TypeScript typecheck → Mocha tests → ESLint → Webpack build → VSIX package → install to `~/.vscode/extensions/`.
 
 ```bash
 npm run deploy
@@ -97,7 +97,7 @@ bash scripts/deploy-all.sh
 
 Flags: `--skip-tests`, `--skip-lint`, `--skip-format`
 
-### Legacy one-liner (no checks)
+### Build + install (no checks)
 
 ```bash
 npm run package && npx vsce package && ./scripts/install-vscode-server.sh
@@ -107,11 +107,11 @@ Then reload VS Code: `Ctrl+Shift+P` → `Reload Window`.
 
 ### What the install script does
 
-`scripts/install-vscode-server.sh` reads `publisher`, `name`, and `version` from `package.json`, locates the built `*.vsix`, removes the old extension directory at `~/.vscode-server/extensions/<publisher>.<name>-<version>/`, and extracts the new VSIX contents there.
+`scripts/install-vscode-server.sh` reads `publisher`, `name`, and `version` from `package.json`, locates the built `*.vsix`, removes the old extension directory at `~/.vscode/extensions/<publisher>.<name>-<version>/`, and extracts the new VSIX contents there.
 
 ## Checking Logs
 
-VS Code writes extension output channels to disk under `~/.vscode-server/data/logs/<timestamp>/exthost<N>/output_logging_<timestamp>/`. This extension logs to two channels:
+VS Code writes extension output channels to disk under `~/Library/Application Support/Code/logs/<timestamp>/exthost<N>/output_logging_<timestamp>/`. This extension logs to two channels:
 
 | Channel | File pattern | Contents |
 |---|---|---|
@@ -122,22 +122,22 @@ VS Code writes extension output channels to disk under `~/.vscode-server/data/lo
 
 ```bash
 # Find the most recent log directory
-ls -lt ~/.vscode-server/data/logs/ | head -3
+ls -lt ~/Library/Application Support/Code/logs/ | head -3
 
 # List ACP log files in the latest session
-find ~/.vscode-server/data/logs/ -name "*ACP*" -type f | sort | tail -5
+find ~/Library/Application Support/Code/logs/ -name "*ACP*" -type f | sort | tail -5
 
 # Tail the latest ACP Client log
-tail -50 $(find ~/.vscode-server/data/logs/ -name "*ACP Client.log" -type f | sort | tail -1)
+tail -50 $(find ~/Library/Application Support/Code/logs/ -name "*ACP Client.log" -type f | sort | tail -1)
 
 # Tail the latest ACP Traffic log
-tail -100 $(find ~/.vscode-server/data/logs/ -name "*ACP Traffic.log" -type f | sort | tail -1)
+tail -100 $(find ~/Library/Application Support/Code/logs/ -name "*ACP Traffic.log" -type f | sort | tail -1)
 ```
 
 ### Useful grep patterns for debugging
 
 ```bash
-LOGDIR=$(dirname $(find ~/.vscode-server/data/logs/ -name "*ACP Client.log" -type f | sort | tail -1))
+LOGDIR=$(dirname $(find ~/Library/Application Support/Code/logs/ -name "*ACP Client.log" -type f | sort | tail -1))
 
 # Session lifecycle (create/delete/load/resume)
 grep -n "sendPrompt\|deleteSession\|loadSession\|resumeSession\|clearActiveSession" "$LOGDIR/1-ACP Client.log"

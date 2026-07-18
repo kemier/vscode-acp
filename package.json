@@ -323,10 +323,7 @@
           "default": {
             "Codex CLI": {
               "command": "codex-acp",
-              "args": [],
-              "env": {
-                "CODEX_PATH": "/home/ezennin/.npm-global/lib/node_modules/@openai/codex/bin/codex.js"
-              }
+              "args": []
             },
             "Kiro CLI": {
               "command": "kiro-cli",
