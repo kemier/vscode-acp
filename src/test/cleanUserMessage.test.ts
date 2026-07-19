@@ -103,6 +103,21 @@ function cleanUserMessage(rawText: string): string {
 
   displayText = stripTag(displayText, 'context', null);
 
+  const acpCtxMarker = 'Additional ACP context:';
+  const acpCtxIdx = displayText.indexOf(acpCtxMarker);
+  if (acpCtxIdx >= 0) {
+    let acpCut = acpCtxIdx;
+    while (acpCut > 0) {
+      const ac = displayText.charCodeAt(acpCut - 1);
+      if (ac === 32 || ac === 10 || ac === 13 || ac === 9) {
+        acpCut--;
+      } else {
+        break;
+      }
+    }
+    displayText = displayText.substring(0, acpCut);
+  }
+
   const zedProto = 'zed:///';
   let zedIdx = displayText.indexOf(zedProto);
   while (zedIdx !== -1) {
@@ -152,7 +167,9 @@ function cleanUserMessage(rawText: string): string {
       rawText.indexOf('<file') >= 0 ||
       rawText.indexOf('<folder') >= 0 ||
       rawText.indexOf('<context') >= 0 ||
-      rawText.indexOf('zed:///') >= 0;
+      rawText.indexOf('zed:///') >= 0 ||
+      rawText.indexOf('Additional ACP context:') >= 0 ||
+      rawText.indexOf('[ACP resource_link]') >= 0;
     if (hadContext) {
       return '';
     }
@@ -175,6 +192,18 @@ suite('cleanUserMessage', () => {
         '[@NxInfo.h](file:///workspace/path/NxInfo.h)' +
         'run sft in up/epg';
       assert.strictEqual(cleanUserMessage(input), 'run sft in up/epg');
+    });
+
+    test('strips Cursor Agent trailing Additional ACP context dump', () => {
+      const input =
+        "what's the relationship between vscode-acp and codex\n\n" +
+        'Additional ACP context:\n' +
+        '[ACP resource_link] CodexApprovalHandler.ts (file:///Users/zaedinzeng/projects/codex-acp/src/CodexApprovalHandler.ts)\n' +
+        'import * as acp from "@agentclientprotocol/sdk";\n';
+      assert.strictEqual(
+        cleanUserMessage(input),
+        "what's the relationship between vscode-acp and codex",
+      );
     });
 
     test('returns empty string when chunk is ONLY context links (no real text)', () => {

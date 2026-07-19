@@ -154,6 +154,25 @@ function stripBareZedUris(text: string): string {
  * Returns the cleaned title, or empty string if the result is empty
  * (so callers can fall back to agent name or "Agent").
  */
+/** Strip Cursor Agent's trailing "Additional ACP context:" dump from a title. */
+function stripAdditionalAcpContext(text: string): string {
+  const marker = 'Additional ACP context:';
+  const idx = text.indexOf(marker);
+  if (idx < 0) {
+    return text;
+  }
+  let cut = idx;
+  while (cut > 0) {
+    const c = text.charCodeAt(cut - 1);
+    if (c === 32 || c === 10 || c === 13 || c === 9) {
+      cut--;
+    } else {
+      break;
+    }
+  }
+  return text.substring(0, cut);
+}
+
 export function cleanSessionTitle(title: string | null | undefined): string {
   if (!title) {
     return '';
@@ -163,6 +182,7 @@ export function cleanSessionTitle(title: string | null | undefined): string {
   cleaned = stripLeadingResourceLinks(cleaned);
   cleaned = stripContextTags(cleaned);
   cleaned = stripBareZedUris(cleaned);
+  cleaned = stripAdditionalAcpContext(cleaned);
   // Trim trailing whitespace
   let end = cleaned.length;
   while (end > 0) {

@@ -57,6 +57,12 @@ suite('cleanSessionTitle', () => {
     assert.strictEqual(cleanSessionTitle('run sft in up/epg'), 'run sft in up/epg');
   });
 
+  test('strips trailing Additional ACP context dump', () => {
+    const input =
+      'hello world\n\nAdditional ACP context:\n[ACP resource_link] Foo.ts (file:///tmp/Foo.ts)\ncode';
+    assert.strictEqual(cleanSessionTitle(input), 'hello world');
+  });
+
   test('preserves non-context markdown links (no scheme://)', () => {
     const input = '[not a link](relative/path)hello';
     assert.strictEqual(cleanSessionTitle(input), '[not a link](relative/path)hello');

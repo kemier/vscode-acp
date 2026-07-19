@@ -43,7 +43,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   /** When true, suppress webview notifications (used during background session capture or reconnect). */
   suppressWebviewUpdates = false;
   private _hasChatContent = false;
-  private _hasSentFirstPrompt = false;
   private toolCallDiffs = new Map<string, Array<{ path: string; oldText?: string; newText: string }>>();
   private terminalContext = new TerminalContextProvider();
   /**
@@ -2327,19 +2326,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     const supportsEmbedded = !!this.sessionManager.getPromptCapabilities(activeId)?.embeddedContext;
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
 
-    // List of open editor files as context (first message only).
-    // Re-injecting on every turn causes context window explosion.
-    if (!this._hasSentFirstPrompt) {
-      const openFileUris = vscode.window.tabGroups.all
-        .flatMap((g) => g.tabs)
-        .map((t) => (t.input as any)?.uri)
-        .filter((u): u is vscode.Uri => u instanceof vscode.Uri && u.scheme === 'file');
-      for (const u of openFileUris) {
-        contextBlocks.push(buildFileBlock(u.fsPath, supportsEmbedded));
-      }
-    }
-    this._hasSentFirstPrompt = true;
-
     // Detect @terminal — terminal output. EmbeddedResource when supported,
     // else inline fallback (a resource_link would point to an unresolvable
     // zed:///agent/terminal-selection URI).
@@ -3821,7 +3807,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    */
   clearChat(showWelcome: boolean = true): void {
     this._hasChatContent = false;
-    this._hasSentFirstPrompt = false;
     this.toolCallDiffs.clear();
     this.dropAllStreamBuffers();
     this.postMessage({ type: 'clearChat', showWelcome });
@@ -4429,7 +4414,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
  .tool-call-inline .tc-stage { padding: 2px 4px; border-radius: 3px; }
  .tool-call-inline .tc-stage:hover { background: var(--vscode-list-hoverBackground); }
 
- /* Tooltip popover for tool call raw input */
+ /* Tooltip popover for tool call raw input.
+     pointer-events:none is required — the popover is positioned at the
+     cursor, so with pointer-events:auto it immediately steals hover from
+     the tool row, fires pointerleave, and the tooltip vanishes (looks like
+     "no tooltip" when compact mode is toggled off and rows are visible). */
   .tc-tooltip {
     position: fixed;
     top: 0;
@@ -4448,7 +4437,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    white-space: pre-wrap;
     word-break: break-all;
     box-shadow: 0 2px 8px rgba(0,0,0,0.3);
-    pointer-events: auto;
+    pointer-events: none;
   }
   .tc-tooltip pre {
     margin: 0;
@@ -5460,6 +5449,12 @@ let isCompacting = false;  // true while /compact is running
 
     // Thinking state
     let currentThoughtEl = null;
+    // When a mid-turn thought resumes after ensureTurnTools cleared the JS
+    // pointers, we reuse the existing .thought-block at the top of the turn.
+    // thoughtDomBase holds the text already committed to that DOM node so new
+    // chunks append instead of replacing — and only the new portion is pushed
+    // to chatHistory (avoiding duplicates on replay).
+    let thoughtDomBase = '';
     let currentThoughtTextEl = null;
     let currentThoughtText = '';
     let thoughtStartTime = null;
@@ -5682,6 +5677,20 @@ const builtinCommands = [
    }
  // Strip leading <context ref="...">...</context> blocks
  displayText = stripTag(displayText, 'context', null);
+ // Cursor Agent inlines open-file / resource attachments into the user
+ // message text during session/load as a trailing "Additional ACP context:"
+ // block (followed by "[ACP resource_link] ..." dumps). Keep only the real
+ // user text. (Do NOT put backslash-n in this comment — template literal.)
+ var acpCtxMarker = 'Additional ACP context:';
+ var acpCtxIdx = displayText.indexOf(acpCtxMarker);
+ if (acpCtxIdx >= 0) {
+   var acpCut = acpCtxIdx;
+   while (acpCut > 0) {
+     var ac = displayText.charCodeAt(acpCut - 1);
+     if (ac === 32 || ac === 10 || ac === 13 || ac === 9) { acpCut--; } else break;
+   }
+   displayText = displayText.substring(0, acpCut);
+ }
  // Strip bare zed:/// URIs that appear without a [@...] wrapper
  // (e.g. "zed:///agent/terminal-selection?lines=243")
  // Use string-based stripping to avoid regex backslash mangling inside
@@ -5727,7 +5736,9 @@ var end = displayText.length;
           || rawText.indexOf('<folder') >= 0
           || rawText.indexOf('<context') >= 0
           || rawText.indexOf('zed:///') >= 0
-          || rawText.indexOf('"type":"resource_link"') >= 0;
+          || rawText.indexOf('"type":"resource_link"') >= 0
+          || rawText.indexOf('Additional ACP context:') >= 0
+          || rawText.indexOf('[ACP resource_link]') >= 0;
         if (hadContext) {
           return '';
         }
@@ -6628,6 +6639,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       currentThoughtEl = null;
       currentThoughtTextEl = null;
       currentThoughtText = '';
+      thoughtDomBase = '';
       thoughtStartTime = null;
       thoughtEndTime = null;
       messagesEl.innerHTML = '';
@@ -7368,8 +7380,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
   }
 
     // Ensure the current turn has a tools container.
-    // Creates a new tools group when called after text was emitted,
+    // Non-compact: creates a new tools group after text was emitted,
     // preserving interleaved text/tool ordering.
+    // Compact: reuses the turn's single tools group so all actions collapse
+    // into one summary (e.g. "1 read, 4 searches, 1 command") instead of
+    // splitting around mid-turn thoughts / interim status messages.
     function ensureTurnTools() {
      if (!currentTurnEl) {
        currentTurnEl = document.createElement('div');
@@ -7381,15 +7396,22 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      if (currentThoughtEl && currentThoughtText) {
        finalizeThought();
        currentThoughtEl.open = false;
-       chatHistory.push({
-         kind: 'thought',
-         text: currentThoughtText,
-         durationSec: thoughtStartTime ? Math.round((Date.now() - thoughtStartTime) / 1000) : 0,
-       });
-       saveState();
+       // Skip whitespace-only thoughts — agents often emit a lone " " between
+       // tool calls, which would otherwise leave a stray empty Thought block.
+       if (currentThoughtText.trim()) {
+         chatHistory.push({
+           kind: 'thought',
+           text: currentThoughtText,
+           durationSec: thoughtStartTime ? Math.round((Date.now() - thoughtStartTime) / 1000) : 0,
+         });
+         saveState();
+       } else if (currentThoughtEl.parentNode) {
+         currentThoughtEl.parentNode.removeChild(currentThoughtEl);
+       }
        currentThoughtEl = null;
        currentThoughtTextEl = null;
        currentThoughtText = '';
+       thoughtDomBase = '';
        thoughtEndTime = null;
        thoughtStartTime = null;
      }
@@ -7399,6 +7421,19 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        commitCurrentTextSegment();
      }
      if (!currentToolsListEl) {
+       // Compact mode: keep one tools group per turn so reads/searches/commands
+       // that resume after a thought or status line stay in the same collapsed summary.
+       if (compactMode) {
+         var existingWrap = currentTurnEl.querySelector(':scope > .turn-tools');
+         if (existingWrap) {
+           currentToolsCountEl = existingWrap.querySelector('.turn-tools-summary');
+           currentToolsListEl = existingWrap.querySelector('.turn-tools-list');
+           currentToolCount = currentToolsCountEl
+             ? parseInt(currentToolsCountEl.dataset.count || '0', 10) || 0
+             : 0;
+           return;
+         }
+       }
        const toolsWrap = document.createElement('div');
        toolsWrap.className = 'turn-tools';
 
@@ -7410,7 +7445,8 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       summary.addEventListener('click', () => {
         const list = summary.nextElementSibling;
         if (list) {
-          const collapsed = list.classList.toggle('collapsed');
+          list.classList.toggle('collapsed');
+          hideTcTooltip();
           var count = parseInt(summary.dataset.count || '0', 10);
           updateToolGroupSummary(summary, count, summary._titles || [], summary._kinds || [], summary._rawInputs || []);
         }
@@ -7605,7 +7641,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     if (streamingRenderTimer) { clearTimeout(streamingRenderTimer); streamingRenderTimer = null; }
    }
 
-    function addToolCall(toolCallId, title, status, content, rawInput, toolKind) {
+    function addToolCall(toolCallId, title, status, content, rawInput, toolKind, locations) {
       if (currentPsEl) { currentPsEl = null; if (psPanel) psPanel.style.display = 'none'; }
       vscode.postMessage({ type: 'debugLog', message: '[WV-ADDTC] title="' + title + '" id=' + (toolCallId || '').slice(0, 12) + ' chatHistoryLen BEFORE=' + chatHistory.length + ' currentAssistantTextLen=' + currentAssistantText.length + ' hasCurrentAssistantEl=' + !!currentAssistantEl });
       // Commit any pending assistant text BEFORE pushing the tool call,
@@ -7615,10 +7651,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       if (currentAssistantText) {
         commitCurrentTextSegment();
       }
-      chatHistory.push({ kind: 'toolCall', toolCallId, title, status, rawInput, toolKind });
+      chatHistory.push({ kind: 'toolCall', toolCallId, title, status, rawInput, toolKind, locations: locations || null });
       saveState();
       storeDiffContent(toolCallId, content);
-      addToolCallInline(toolCallId, title, status, rawInput, toolKind);
+      addToolCallInline(toolCallId, title, status, rawInput, toolKind, locations);
       vscode.postMessage({ type: 'debugLog', message: '[WV-ADDTC] AFTER push chatHistoryLen=' + chatHistory.length });
     }
 
@@ -7659,8 +7695,28 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     return copy;
   }
 
+  function isEmptyRawInput(rawInput) {
+    if (rawInput == null) return true;
+    if (typeof rawInput === 'string') return !rawInput.trim();
+    if (typeof rawInput !== 'object') return false;
+    try { return Object.keys(rawInput).length === 0; } catch (e) { return true; }
+  }
+
+  function formatLocations(locations) {
+    if (!locations || !locations.length) return '';
+    var lines = [];
+    for (var i = 0; i < locations.length; i++) {
+      var loc = locations[i];
+      if (!loc || !loc.path) continue;
+      lines.push(loc.line != null ? (loc.path + ':' + loc.line) : loc.path);
+    }
+    return lines.join('\\n');
+  }
+
   function formatRawInput(rawInput) {
-    if (!rawInput) return '';
+    // Cursor Agent often sends rawInput: {} on live tool_call; treat that as
+    // empty so tooltips don't show a useless "{}".
+    if (isEmptyRawInput(rawInput)) return '';
     var result = '';
     if (typeof rawInput === 'string') { result = rawInput; }
     // Kiro subagent result: rawInput contains taskResult with the subagent's
@@ -7688,11 +7744,47 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         .filter(function(s) { return s.length > 0; });
       if (cmds.length > 0) { result = cmds.join(' && '); }
     }
-    // Generic: pretty-print as JSON
+    // Common file/search tool fields (Cursor / Codex ACP)
+    else if (typeof rawInput.path === 'string' && rawInput.path) {
+      var pathLine = rawInput.path;
+      if (rawInput.line != null) pathLine += ':' + rawInput.line;
+      if (typeof rawInput.pattern === 'string' && rawInput.pattern) {
+        result = pathLine + '\\npattern: ' + rawInput.pattern;
+      } else if (typeof rawInput.query === 'string' && rawInput.query) {
+        result = pathLine + '\\nquery: ' + rawInput.query;
+      } else {
+        result = pathLine;
+      }
+    }
+    else if (typeof rawInput.pattern === 'string' && rawInput.pattern) {
+      result = rawInput.pattern;
+    }
+    else if (typeof rawInput.query === 'string' && rawInput.query) {
+      result = rawInput.query;
+    }
+    else if (typeof rawInput.target_directory === 'string' && rawInput.target_directory) {
+      result = rawInput.target_directory;
+    }
+    else if (typeof rawInput.file_path === 'string' && rawInput.file_path) {
+      result = rawInput.file_path;
+    }
+    // Generic: pretty-print as JSON (skip empty-object case already handled)
     else {
       try { result = JSON.stringify(rawInput, null, 2); } catch { result = String(rawInput); }
+      if (result === '{}' || result === '[]') result = '';
     }
     return result;
+  }
+
+  /** Best-effort tooltip text: rawInput, then locations, then title. */
+  function formatToolCallTooltipText(title, rawInput, locations) {
+    var parts = [];
+    var formatted = formatRawInput(rawInput);
+    if (formatted) parts.push(formatted);
+    var locText = formatLocations(locations);
+    if (locText && parts.indexOf(locText) < 0) parts.push(locText);
+    if (parts.length === 0 && title) parts.push(title);
+    return parts.join('\\n\\n');
   }
 
    /**
@@ -7701,6 +7793,38 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     */
   var tcTooltipEl = null;
   var TC_TOOLTIP_MAX_CHARS = 2000;
+
+  function ensureTcTooltipEl() {
+    if (!tcTooltipEl) {
+      tcTooltipEl = document.createElement('div');
+      tcTooltipEl.className = 'tc-tooltip';
+      document.documentElement.appendChild(tcTooltipEl);
+    }
+    return tcTooltipEl;
+  }
+
+  function positionTcTooltip(e) {
+    if (!tcTooltipEl) return;
+    var x = e.clientX + 12;
+    var y = e.clientY + 12;
+    var rect = tcTooltipEl.getBoundingClientRect();
+    if (x + rect.width > window.innerWidth) { x = window.innerWidth - rect.width - 8; }
+    if (y + rect.height > window.innerHeight) { y = window.innerHeight - rect.height - 8; }
+    if (x < 8) x = 8;
+    if (y < 8) y = 8;
+    tcTooltipEl.style.left = x + 'px';
+    tcTooltipEl.style.top = y + 'px';
+  }
+
+  function hideTcTooltip() {
+    if (!tcTooltipEl) return;
+    tcTooltipEl.style.display = 'none';
+    if (tcTooltipEl._keydownHandler) {
+      document.removeEventListener('keydown', tcTooltipEl._keydownHandler, true);
+      tcTooltipEl._keydownHandler = null;
+    }
+  }
+
   /**
    * Attach a hover tooltip to a subagent stage element showing the full
    * stage details (name, role, prompt, depends_on). Uses the same shared
@@ -7710,11 +7834,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    if (!stage) return;
   stageEl.addEventListener('pointerenter', function(e) {
     e.stopPropagation();
-     if (!tcTooltipEl) {
-       tcTooltipEl = document.createElement('div');
-       tcTooltipEl.className = 'tc-tooltip';
-       document.documentElement.appendChild(tcTooltipEl);
-     }
+     ensureTcTooltipEl();
      var lines = [];
      lines.push('Name: ' + (stage.name || '(unnamed)'));
       if (stage.role) lines.push('Role: ' + stage.role);
@@ -7740,38 +7860,43 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       }
      tcTooltipEl.style.display = 'block';
      tcTooltipEl._isStageTooltip = true;
-     positionTooltip(e);
+     positionTcTooltip(e);
    });
   stageEl.addEventListener('pointermove', function(e) {
     e.stopPropagation();
     if (tcTooltipEl && tcTooltipEl.style.display !== 'none') {
-      positionTooltip(e);
+      positionTcTooltip(e);
     }
   });
  stageEl.addEventListener('pointerleave', function() {
-   // Note: no event parameter needed here; just hide the tooltip.
-   if (tcTooltipEl) { tcTooltipEl.style.display = 'none'; }
+   hideTcTooltip();
  });
 }
 
- function attachToolCallTooltip(el, rawInput) {
-   var formatted = formatRawInput(rawInput);
-   if (!formatted) return;
+ function attachToolCallTooltip(el) {
+   // Resolve text at hover time from el._rawInput / el._locations / title —
+   // Cursor Agent often sends rawInput:{} first and fills path/locations later.
+   if (el.dataset.tcTooltip) return;
    el.dataset.tcTooltip = '1';
    el.style.cursor = 'pointer';
 
    el.addEventListener('pointerenter', function(e) {
+     // Only show tooltips on expanded tool rows — never on the collapsed summary.
+     var parentList = el.closest('.turn-tools-list');
+     if (parentList && parentList.classList.contains('collapsed')) return;
+
+     var titleEl = el.querySelector('.tc-title');
+     var title = (titleEl && titleEl.textContent) || el._toolTitle || '';
+     var formatted = formatToolCallTooltipText(title, el._rawInput, el._locations);
+     if (!formatted) return;
+
      // If a stage tooltip is currently visible (from a child element), hide it
      // so the parent tooltip can take over.
      if (tcTooltipEl && tcTooltipEl.style.display !== 'none' && tcTooltipEl._isStageTooltip) {
        tcTooltipEl.style.display = 'none';
        tcTooltipEl._isStageTooltip = false;
      }
-     if (!tcTooltipEl) {
-       tcTooltipEl = document.createElement('div');
-       tcTooltipEl.className = 'tc-tooltip';
-       document.documentElement.appendChild(tcTooltipEl);
-     }
+     ensureTcTooltipEl();
      tcTooltipEl._isStageTooltip = false;
      var truncated = formatted.length > TC_TOOLTIP_MAX_CHARS;
       var displayText = truncated ? formatted.slice(0, TC_TOOLTIP_MAX_CHARS) : formatted;
@@ -7816,7 +7941,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      vscode.postMessage({ type: 'copyToClipboard', text: text });
     }
 
-      positionTooltip(e);
+      positionTcTooltip(e);
       // If the tooltip content overflows, add a scroll hint.
       if (tcTooltipEl.scrollHeight > tcTooltipEl.clientHeight) {
         var hint = document.createElement('div');
@@ -7828,46 +7953,30 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
 
     el.addEventListener('pointermove', function(e) {
       if (tcTooltipEl && tcTooltipEl.style.display !== 'none') {
-        positionTooltip(e);
+        positionTcTooltip(e);
       }
     });
 
     el.addEventListener('pointerleave', function() {
-      if (tcTooltipEl) { tcTooltipEl.style.display = 'none'; }
-      if (tcTooltipEl._keydownHandler) { document.removeEventListener('keydown', tcTooltipEl._keydownHandler, true); tcTooltipEl._keydownHandler = null; }
+      hideTcTooltip();
     });
 
-    // Auto-remove scroll hint when user scrolls to the bottom of the tooltip.
-    // Defer scroll-handler setup until the tooltip element is created
-    // (inside pointerenter) — tcTooltipEl is null at attach time.
-    el.addEventListener('pointerenter', function() {
-      if (tcTooltipEl && !tcTooltipEl._scrollHandlerAdded) {
-        tcTooltipEl._scrollHandlerAdded = true;
-        tcTooltipEl.addEventListener('scroll', function() {
-          var hint = tcTooltipEl.querySelector('.tc-tooltip-scroll-hint');
-          if (hint) {
-            var atBottom = tcTooltipEl.scrollHeight - tcTooltipEl.scrollTop - tcTooltipEl.clientHeight < 20;
-            if (atBottom) hint.remove();
-          }
-        });
-     }
-   }, { once: false });
-
-    function positionTooltip(e) {
-       if (!tcTooltipEl) return;
-       var x = e.clientX + 12;
-       var y = e.clientY + 12;
-       var rect = tcTooltipEl.getBoundingClientRect();
-       if (x + rect.width > window.innerWidth) { x = window.innerWidth - rect.width - 8; }
-       if (y + rect.height > window.innerHeight) { y = window.innerHeight - rect.height - 8; }
-       if (x < 8) x = 8;
-       if (y < 8) y = 8;
-       tcTooltipEl.style.left = x + 'px';
-       tcTooltipEl.style.top = y + 'px';
-     }
+    // Tooltip has pointer-events:none (so it can't steal hover). Forward
+    // wheel events from the tool row so long tooltips remain scrollable.
+    el.addEventListener('wheel', function(e) {
+      if (!tcTooltipEl || tcTooltipEl.style.display === 'none') return;
+      if (tcTooltipEl.scrollHeight <= tcTooltipEl.clientHeight) return;
+      tcTooltipEl.scrollTop += e.deltaY;
+      e.preventDefault();
+      var hint = tcTooltipEl.querySelector('.tc-tooltip-scroll-hint');
+      if (hint) {
+        var atBottom = tcTooltipEl.scrollHeight - tcTooltipEl.scrollTop - tcTooltipEl.clientHeight < 20;
+        if (atBottom) hint.remove();
+      }
+    }, { passive: false });
    }
 
-   function addToolCallInline(toolCallId, title, status, rawInput, toolKind) {
+   function addToolCallInline(toolCallId, title, status, rawInput, toolKind, locations) {
       hideEmpty();
      ensureTurnTools();
      currentToolCount++;
@@ -7877,9 +7986,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        if (!currentToolsCountEl._titles) currentToolsCountEl._titles = [];
        if (!currentToolsCountEl._kinds) currentToolsCountEl._kinds = [];
       if (!currentToolsCountEl._rawInputs) currentToolsCountEl._rawInputs = [];
+      if (!currentToolsCountEl._locations) currentToolsCountEl._locations = [];
       currentToolsCountEl._titles.push(title || 'Tool Call');
       currentToolsCountEl._kinds.push(toolKind || null);
       currentToolsCountEl._rawInputs.push(rawInput || null);
+      currentToolsCountEl._locations.push(locations || null);
       // Track if this turn has any subagent tool calls.
       // spawnAgent turns should be collapsed (single event, details on click).
       // Other agent ops (wait/close/sendInput) should also be collapsed.
@@ -7898,6 +8009,8 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      el.id = 'tc-' + toolCallId;
      if (toolKind) el.dataset.toolKind = toolKind;
      el._rawInput = rawInput || null;
+     el._locations = locations || null;
+     el._toolTitle = title || 'Tool Call';
       // For subagent spawn calls, show the task description as the individual
       // tool call title (the group summary header already shows "spawned N subagents").
       // This avoids duplication when the group is expanded.
@@ -7917,6 +8030,16 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
             displayTitle = taskDesc.length > 80 ? taskDesc.substring(0, 77) + '...' : taskDesc;
           } else {
             displayTitle = 'spawned ' + spawnN + ' subagent' + (spawnN > 1 ? 's' : '');
+          }
+        }
+      } else {
+        // Prefer a path/pattern from rawInput or locations when the agent only
+        // sent a generic title like "Read File" / "grep" (Cursor Agent live).
+        var detailHint = formatRawInput(rawInput) || formatLocations(locations);
+        if (detailHint) {
+          var firstLine = detailHint.split('\\n')[0];
+          if (firstLine && firstLine !== displayTitle) {
+            displayTitle = firstLine.length > 80 ? firstLine.substring(0, 77) + '...' : firstLine;
           }
         }
       }
@@ -7949,9 +8072,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         }
       }
     }
-     if (rawInput) {
-       attachToolCallTooltip(el, rawInput);
-     }
+     attachToolCallTooltip(el);
      currentToolsListEl.appendChild(el);
      toolCalls[toolCallId] = el;
      autoScrollIfAtBottom();
@@ -7963,11 +8084,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       const el = document.createElement('div');
       el.className = 'tool-call';
       el.id = 'tc-' + toolCallId;
+      el._rawInput = rawInput || null;
+      el._toolTitle = title || 'Tool Call';
       el.innerHTML = '<span class="title">' + escapeHtml(title || 'Tool Call') + '</span>'
         + '<span class="status-badge ' + status + '">' + status + '</span>';
-      if (rawInput) {
-        attachToolCallTooltip(el, rawInput);
-      }
+      attachToolCallTooltip(el);
      messagesEl.appendChild(el);
      toolCalls[toolCallId] = el;
      autoScrollIfAtBottom();
@@ -8092,8 +8213,8 @@ function renderChatHistory() {
         case 'thought':
           // Buffer the thought; it is flushed as a single merged block when the
           // turn ends (or at end of list), matching the live view's one-thought-
-          // per-turn layout.
-          if (item.text) {
+          // per-turn layout. Skip whitespace-only entries (stray empty blocks).
+          if (item.text && String(item.text).trim()) {
             turnThoughts.push({ text: item.text, durationSec: item.durationSec || 0 });
           }
           trace('  -> thought: buffered (textLen=' + (item.text ? item.text.length : 0) + ',dur=' + (item.durationSec || 0) + 's), turnThoughts=' + turnThoughts.length);
@@ -8287,11 +8408,15 @@ function renderChatHistory() {
       if (currentThoughtText) {
         finalizeThought();
         const tEnd = thoughtEndTime || Date.now();
-        chatHistory.push({
-          kind: 'thought',
-          text: currentThoughtText,
-          durationSec: thoughtStartTime ? Math.round((tEnd - thoughtStartTime) / 1000) : 0,
-        });
+        if (currentThoughtText.trim()) {
+          chatHistory.push({
+            kind: 'thought',
+            text: currentThoughtText,
+            durationSec: thoughtStartTime ? Math.round((tEnd - thoughtStartTime) / 1000) : 0,
+          });
+        } else if (currentThoughtEl && currentThoughtEl.parentNode) {
+          currentThoughtEl.parentNode.removeChild(currentThoughtEl);
+        }
       }
       if (currentAssistantText) {
         chatHistory.push({ kind: 'message', role: 'assistant', text: currentAssistantText });
@@ -8306,6 +8431,7 @@ function renderChatHistory() {
       currentThoughtEl = null;
       currentThoughtTextEl = null;
       currentThoughtText = '';
+      thoughtDomBase = '';
       thoughtStartTime = null;
       thoughtEndTime = null;
     }
@@ -8542,6 +8668,7 @@ sessionState = {
          currentThoughtEl = null;
         currentThoughtTextEl = null;
         currentThoughtText = '';
+        thoughtDomBase = '';
         thoughtStartTime = null;
         thoughtEndTime = null;
         lastRenderTime = 0;
@@ -8557,11 +8684,15 @@ sessionState = {
           if (currentThoughtText) {
             finalizeThought();
             const tEnd = thoughtEndTime || Date.now();
-            chatHistory.push({
-              kind: 'thought',
-              text: currentThoughtText,
-              durationSec: thoughtStartTime ? Math.round((tEnd - thoughtStartTime) / 1000) : 0,
-            });
+            if (currentThoughtText.trim()) {
+              chatHistory.push({
+                kind: 'thought',
+                text: currentThoughtText,
+                durationSec: thoughtStartTime ? Math.round((tEnd - thoughtStartTime) / 1000) : 0,
+              });
+            } else if (currentThoughtEl && currentThoughtEl.parentNode) {
+              currentThoughtEl.parentNode.removeChild(currentThoughtEl);
+            }
           }
         commitCurrentTextSegment();
         // Mark all in-progress tool calls as completed. Some agents (e.g. Kiro CLI)
@@ -8615,6 +8746,7 @@ sessionState = {
           currentThoughtEl = null;
          currentThoughtTextEl = null;
          currentThoughtText = '';
+         thoughtDomBase = '';
          thoughtStartTime = null;
          thoughtEndTime = null;
         // Auto-send next queued message (if any) after the turn completes.
@@ -8662,6 +8794,7 @@ sessionState = {
          currentThoughtEl = null;
          currentThoughtTextEl = null;
         currentThoughtText = '';
+        thoughtDomBase = '';
         thoughtStartTime = null;
         thoughtEndTime = null;
         currentPlanEl = null;
@@ -9346,8 +9479,10 @@ sessionState = {
              finalizeThought();
              currentThoughtEl.open = false;
            }
-           // If there's an active tools group, close it so new text appears below
-           if (currentToolsListEl && !currentAssistantEl) {
+           // Non-compact: close the tools group so new text appears below it
+           // (interleaved text/tool ordering). Compact mode keeps one group per
+           // turn — ensureTurnTools() will reuse it when more tools arrive.
+           if (!compactMode && currentToolsListEl && !currentAssistantEl) {
              currentToolsListEl = null;
              currentToolsCountEl = null;
              currentToolCount = 0;
@@ -9460,37 +9595,55 @@ sessionState = {
          const content = update.content;
          if (content && content.type === 'text') {
            if (!currentThoughtEl) {
-              // Close any active tools group so the new thought appears below
-              if (currentToolsListEl) {
+              // Non-compact: close the tools group so later content isn't
+              // trapped inside it. Compact mode keeps the group open so
+              // post-thought tool calls stay in the same collapsed summary.
+              if (!compactMode && currentToolsListEl) {
                 currentToolsListEl = null;
                 currentToolsCountEl = null;
                 currentToolCount = 0;
               }
-              // Create a new turn container if needed
               if (!currentTurnEl) {
                 currentTurnEl = document.createElement('div');
                 currentTurnEl.className = 'turn';
                 messagesEl.appendChild(currentTurnEl);
                 hideEmpty();
               }
-             currentThoughtEl = document.createElement('details');
-             currentThoughtEl.className = 'thought-block streaming';
-             currentThoughtEl.open = false;
-             currentThoughtEl.innerHTML =
-                '<summary><span class="thought-indicator"></span> Thinking\u2026</summary>' +
-                '<div class="thought-content"></div>';
-              currentThoughtTextEl = currentThoughtEl.querySelector('.thought-content');
-              // Insert at top only if turn is empty; otherwise append after tools
-              if (currentTurnEl.children.length === 0) {
-                currentTurnEl.insertBefore(currentThoughtEl, currentTurnEl.firstChild);
+              // Reuse the turn's existing thought block when tools cleared the
+              // JS pointers mid-turn. Appending a second block was the source of
+              // the stray "Thought" card after the assistant summary.
+              var existingThought = currentTurnEl.querySelector(':scope > .thought-block');
+              if (existingThought) {
+                currentThoughtEl = existingThought;
+                currentThoughtTextEl = existingThought.querySelector('.thought-content');
+                thoughtDomBase = (currentThoughtTextEl && currentThoughtTextEl.textContent) || '';
+                if (thoughtDomBase && !/\\n$/.test(thoughtDomBase)) thoughtDomBase += '\\n\\n';
+                currentThoughtText = '';
+                thoughtEndTime = null;
+                currentThoughtEl.classList.add('streaming');
+                var existingSummary = currentThoughtEl.querySelector('summary');
+                if (existingSummary) {
+                  existingSummary.innerHTML = '<span class="thought-indicator"></span> Thinking\u2026';
+                }
+                if (!thoughtStartTime) thoughtStartTime = Date.now();
               } else {
-                currentTurnEl.appendChild(currentThoughtEl);
+                currentThoughtEl = document.createElement('details');
+                currentThoughtEl.className = 'thought-block streaming';
+                currentThoughtEl.open = false;
+                currentThoughtEl.innerHTML =
+                   '<summary><span class="thought-indicator"></span> Thinking\u2026</summary>' +
+                   '<div class="thought-content"></div>';
+                currentThoughtTextEl = currentThoughtEl.querySelector('.thought-content');
+                // Always pin thoughts to the top of the turn.
+                currentTurnEl.insertBefore(currentThoughtEl, currentTurnEl.firstChild);
+                thoughtStartTime = Date.now();
+                currentThoughtText = '';
+                thoughtDomBase = '';
               }
-              thoughtStartTime = Date.now();
-              currentThoughtText = '';
             }
            currentThoughtText += content.text;
-           currentThoughtTextEl.textContent = currentThoughtText.replace(/^\\s+/, "").replace(/\\n{3,}/g, "\\n\\n");
+           var displayThought = (thoughtDomBase + currentThoughtText).replace(/^\\s+/, '').replace(/\\n{3,}/g, '\\n\\n');
+           currentThoughtTextEl.textContent = displayThought;
            // Auto-scroll the thought content to top when expanded, so the
            // streaming text stays aligned to the top of the block.
           if (currentThoughtEl.open) {

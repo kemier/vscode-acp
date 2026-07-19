@@ -107,7 +107,8 @@
       },
       {
         "command": "acp.removeAgent",
-        "title": "ACP: Remove Agent"
+        "title": "Remove Agent",
+        "icon": "$(trash)"
       },
       {
         "command": "acp.showLog",
@@ -265,24 +266,27 @@
         },
         {
           "command": "acp.removeAgent",
-          "when": "view == acp-sessions && viewItem =~ /^agent/"
-        },
-        {
-          "command": "acp.restartAgent",
-          "when": "view == acp-sessions && viewItem == agent-connected"
-        },
-        {
-          "command": "acp.logout",
-          "when": "view == acp-sessions && viewItem == agent-connected"
+          "when": "view == acp-sessions && (viewItem == agent-connected || viewItem == agent-disconnected)",
+          "group": "session@0"
         },
         {
           "command": "acp.refreshSessions",
-          "when": "view == acp-sessions && viewItem =~ /^agent/",
+          "when": "view == acp-sessions && (viewItem == agent-connected || viewItem == agent-disconnected)",
           "group": "session@1"
         },
         {
+          "command": "acp.restartAgent",
+          "when": "view == acp-sessions && viewItem == agent-connected",
+          "group": "1_modification@1"
+        },
+        {
+          "command": "acp.logout",
+          "when": "view == acp-sessions && viewItem == agent-connected",
+          "group": "1_modification@2"
+        },
+        {
           "command": "acp.copySessionId",
-          "when": "view == acp-sessions && viewItem =~ /^session/",
+          "when": "view == acp-sessions && (viewItem == session || viewItem == session-local || viewItem == session-kiro)",
           "group": "session@1"
         },
         {

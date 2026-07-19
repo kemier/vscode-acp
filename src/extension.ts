@@ -914,7 +914,10 @@ export function activate(context: vscode.ExtensionContext): void {
     const args = argsStr ? argsStr.split(/\s+/) : [];
 
     const config = vscode.workspace.getConfiguration('acp');
-    const agents: Record<string, any> = { ...(config.get<Record<string, any>>('agents') || {}) };
+    // Write only into the user (Global) layer — do not copy package.json
+    // defaults into settings.json (object settings are merged with defaults).
+    const inspected = config.inspect<Record<string, any>>('agents');
+    const agents: Record<string, any> = { ...(inspected?.globalValue || {}) };
     agents[name] = { command, args };
     await config.update('agents', agents, vscode.ConfigurationTarget.Global);
     sessionTreeProvider.refresh();
@@ -923,17 +926,21 @@ export function activate(context: vscode.ExtensionContext): void {
   });
 
   // Remove Agent
+  // Sessions are irrelevant — this only edits `acp.agents` settings. Works
+  // whether the agent is connected, disconnected, or has never had a session.
   const removeAgentCmd = vscode.commands.registerCommand('acp.removeAgent', async (item?: any) => {
     const config = vscode.workspace.getConfiguration('acp');
-    const agents: Record<string, any> = { ...(config.get<Record<string, any>>('agents') || {}) };
-    const agentNames = Object.keys(agents);
+    const agentNames = getAgentNames();
     if (agentNames.length === 0) {
       vscode.window.showInformationMessage('No agents configured.');
       return;
     }
 
+    // Tree context menu passes AgentTreeItem (`agentName` / `id`). Command
+    // Palette passes nothing → QuickPick. Do not require a live session.
     const name =
-      item?.agentName ??
+      (typeof item?.agentName === 'string' && item.agentName) ||
+      (typeof item?.id === 'string' && agentNames.includes(item.id) ? item.id : undefined) ||
       (await vscode.window.showQuickPick(agentNames, {
         placeHolder: 'Select agent to remove',
         title: 'Remove ACP Agent',
@@ -952,9 +959,23 @@ export function activate(context: vscode.ExtensionContext): void {
       await sessionManager.disconnectAgent(name);
     }
 
-    delete agents[name];
-    await config.update('agents', agents, vscode.ConfigurationTarget.Global);
-    sessionTreeProvider.refresh();
+    // Object settings merge with package.json defaults. Deleting a key from
+    // the merged view and writing the rest still leaves built-in agents
+    // (e.g. "Kiro CLI") in the default layer, so they reappear in the list.
+    // Tombstone with null — same as terminal.integrated.profiles.* removal.
+    const inspected = config.inspect<Record<string, any>>('agents');
+    const globalAgents: Record<string, any> = { ...(inspected?.globalValue || {}) };
+    globalAgents[name] = null;
+    await config.update('agents', globalAgents, vscode.ConfigurationTarget.Global);
+
+    // Also tombstone in workspace settings if that layer defines the agent.
+    if (inspected?.workspaceValue && Object.prototype.hasOwnProperty.call(inspected.workspaceValue, name)) {
+      const workspaceAgents: Record<string, any> = { ...inspected.workspaceValue };
+      workspaceAgents[name] = null;
+      await config.update('agents', workspaceAgents, vscode.ConfigurationTarget.Workspace);
+    }
+
+    sessionTreeProvider.refreshAll();
     vscode.window.showInformationMessage(`Agent "${name}" removed.`);
     sendEvent('agent/removed', { agentName: name });
   });
