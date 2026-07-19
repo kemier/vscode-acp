@@ -2344,17 +2344,28 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // else inline fallback (a resource_link would point to an unresolvable
     // zed:///agent/terminal-selection URI).
     if (/@terminal\b/i.test(text)) {
-      const { text: termOutput, name } = this.terminalContext.getLastOutput();
-      if (termOutput) {
-        text = text.replace(/@terminal\b/gi, '').trim();
-        const block = buildTerminalBlock(termOutput, supportsEmbedded);
-        if (block) {
-          contextBlocks.push(block);
-        } else {
-          text = `<terminal name="${name || 'active'}">\n${termOutput}\n</terminal>\n\n${text}`;
-        }
-      }
-    }
+     const { text: termOutput, name } = this.terminalContext.getLastOutput();
+     if (termOutput) {
+       text = text.replace(/@terminal\b/gi, '').trim();
+       const block = buildTerminalBlock(termOutput, supportsEmbedded);
+       if (block) {
+         contextBlocks.push(block);
+       } else {
+         text = `<terminal name="${name || 'active'}">\n${termOutput}\n</terminal>\n\n${text}`;
+       }
+     }
+      else {
+       // No terminal output available — shell integration may be inactive
+       // (vscode-server/SSH) or the buffer is empty. Warn instead of silently
+       // sending a bare "@terminal" keyword to the agent.
+        const hint = this.terminalContext.isCaptureAvailable
+          ? 'Run a command in the terminal first, then retry @terminal.'
+          : 'Shell integration is unavailable (common on vscode-server / SSH). ' +
+            'Enable "terminal.integrated.shellIntegration.enabled" in settings ' +
+            'and use a supported shell.';
+        vscode.window.showWarningMessage(`@terminal: no terminal output captured. ${hint}`);
+     }
+   }
 
     // Detect @problems — workspace diagnostics. Same embedded-or-inline
     // fallback as @terminal.
@@ -5222,6 +5233,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    // on demand.
    window.__acpMermaidUri = ${JSON.stringify(mermaidUri.toString())};
    window.__acpNonce = ${JSON.stringify(nonce)};
+   // Re-declare DEBUG inside the webview iframe (separate JS context from the
+   // extension host). The host's DEBUG flag is not visible here, so without
+   // this the replay trace (trace()) would stay silent.
+   const DEBUG = true;
   const messagesEl = document.getElementById('messages');
   const psPanel = document.getElementById('psPanel');
   const resumeBar = document.getElementById('resumeBar');
@@ -6536,6 +6551,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
   } else {
     execCmd('acp.connectAgent');
   }
+
  });
  updateWelcomeButton();
 
@@ -6564,9 +6580,28 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     // True while a session/load replay is in progress. Used to suppress
     // per-chunk markdown rendering until the replay finishes.
     let isLoadingSession = false;
+    // Snapshot of chatHistory kinds/roles captured at render time so the trace
+    // can show the exact ordering the replay path consumes.
+    function traceHistorySnapshot() {
+      if (!DEBUG) return;
+      var s = [];
+      for (var j = 0; j < chatHistory.length; j++) {
+        var it = chatHistory[j];
+        if (!it) { s.push('null'); continue; }
+        if (it.kind === 'message') s.push(it.role);
+        else if (it.kind === 'thought') s.push('thought(' + (it.durationSec || 0) + 's,len=' + (it.text ? it.text.length : 0) + ')');
+        else if (it.kind === 'toolCall') s.push('tool');
+        else if (it.kind === 'plan') s.push('plan');
+        else s.push(it.kind);
+      }
+      trace('chatHistory order: [' + s.join(',') + ']');
+    }
+    // Lightweight trace: only posts to the extension host when DEBUG is true.
+    function trace(msg) {
+      if (DEBUG) vscode.postMessage({ type: 'debugLog', message: '[REPLAY-TRACE] ' + msg });
+    }
 
  function handleLoadSessionStart() {
-   // Debug: log session load start
    vscode.postMessage({ type: 'debugLog', message: 'handleLoadSessionStart' });
    // Cancel all pending render retries from restoreState — the DOM is
    // about to be wiped and rebuilt, so stale renderMarkdown requests
@@ -6607,8 +6642,6 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
 
   function handleLoadSessionEnd(ok) {
-    // Debug: log session load end
-    vscode.postMessage({ type: 'debugLog', message: 'handleLoadSessionEnd ok=' + ok + ' chatHistory.length=' + chatHistory.length });
     hideEmpty();
     isLoadingSession = false;
     // If history was replayed, there were prior prompts — mark as sent
@@ -6649,7 +6682,6 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      // Batch-render markdown for every assistant message (now that DOM
      // elements are guaranteed to exist from the rebuild above).
      if (assistantItems.length > 0) {
-       vscode.postMessage({ type: 'debugLog', message: 'handleLoadSessionEnd: sending renderMarkdown for ' + assistantItems.length + ' assistant items' });
        // Retry mechanism for loadSessionEnd path too
       var _lsRetryItems = assistantItems.slice();
       var _lsRetryCount = 0;
@@ -7949,8 +7981,8 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    * Returns the list of assistant message indices that need markdown rendering.
    */
 function renderChatHistory() {
-  // Debug: log renderChatHistory entry
-  vscode.postMessage({ type: 'debugLog', message: 'renderChatHistory START: chatHistory.length=' + chatHistory.length });
+  trace('renderChatHistory START: chatHistory.length=' + chatHistory.length);
+  traceHistorySnapshot();
   // Increment generation counter to invalidate any in-flight markdownRendered
   // responses from a previous DOM build. Stale responses would update the
   // wrong elements or skip needed updates after a DOM rebuild.
@@ -7965,6 +7997,26 @@ function renderChatHistory() {
   currentToolsCountEl = null;
   currentToolCount = 0;
   var assistantItems = [];
+  // Accumulate all thoughts within a turn so they render as a single
+  // collapsible block at the top of the turn, matching the live view where
+  // currentThoughtEl accumulates every agent_thought_chunk per turn.
+  var turnThoughts = [];
+  function flushTurnThought() {
+    if (turnThoughts.length === 0) return;
+    var mergedText = turnThoughts.map(function (t) { return t.text; }).join('\\n\\n').trim();
+    var maxDur = turnThoughts.reduce(function (m, t) { return Math.max(m, t.durationSec || 0); }, 0);
+    var count = turnThoughts.length;
+    turnThoughts = [];
+    if (!mergedText) return; // nothing to show (e.g. whitespace-only reasoning)
+    if (!currentTurnEl) {
+      currentTurnEl = document.createElement('div');
+      currentTurnEl.className = 'turn';
+      messagesEl.appendChild(currentTurnEl);
+      hideEmpty();
+    }
+    addThoughtDOM(mergedText, maxDur);
+    trace('flushTurnThought: merged ' + count + ' thoughts, textLen=' + mergedText.length + ', dur=' + maxDur + 's');
+  }
   for (var i = 0; i < chatHistory.length; i++) {
     var item = chatHistory[i];
    if (!item) continue;
@@ -7976,15 +8028,20 @@ function renderChatHistory() {
       var _dbgText = typeof item.text === 'string' ? (item.text.length > 100 ? item.text.substring(0, 100) + '...' : item.text) : '(non-string)';
       vscode.postMessage({ type: 'debugLog', message: 'renderChatHistory item[' + i + '] kind=' + item.kind + ' role=' + item.role + ' textLen=' + (typeof item.text === 'string' ? item.text.length : -1) + ' text="' + _dbgText + '"' });
     }
+    trace('item[' + i + ']: kind=' + item.kind + (item.kind === 'message' ? ' role=' + item.role : '') + ' | turn exists before=' + !!currentTurnEl + ', turn children=' + (currentTurnEl ? currentTurnEl.children.length : '-'));
     switch (item.kind) {
       case 'message':
         // Start a new turn for user/system/error messages.
         // Assistant messages continue the current turn (or start one)
         // so that tool calls are grouped under the assistant text.
        if (item.role === 'user' || item.role === 'error' || item.role === 'system') {
+         // Belongs to the turn that just ended: flush its buffered thought(s)
+         // to the top of that turn before resetting for the user message.
+         flushTurnThought();
          currentTurnEl = null;
          currentToolsListEl = null;
          currentToolsCountEl = null;
+         trace('  -> user/error/system: reset turn, append directly to messages');
          // Safety net: clean user messages again in case raw context
          // links were stored in chatHistory before the fix.
          var displayText = item.role === 'user' ? cleanUserMessage(item.text) : item.text;
@@ -7992,12 +8049,28 @@ function renderChatHistory() {
          vscode.postMessage({ type: 'debugLog', message: 'renderChatHistory displayText for item[' + i + ']: len=' + displayText.length + ' text="' + (displayText.length > 100 ? displayText.substring(0, 100) + '...' : displayText) + '"' });
          addMessageDOM(item.role, displayText);
         } else {
-           // Assistant message: create a turn and put the message inside it,
-           // matching live streaming layout where text + tool calls share a .turn.
+           // Assistant message. Codex emits back-to-back agent turns with no
+           // interleaving user message (chatHistory order is
+           // assistant,tool(s),thought repeating). Each assistant therefore
+           // opens a NEW turn UNLESS the current turn only holds a lone thought
+           // still waiting for its assistant (the user,thought,assistant
+           // pattern). We detect the latter by checking whether the current turn
+           // already contains an assistant message.
+           var turnHasAssistant = currentTurnEl && currentTurnEl.querySelector('.message.assistant');
+           if (turnHasAssistant) {
+             // This assistant starts a NEW Codex turn. The turn that just ended
+             // may have buffered thought(s) — flush them to its top first.
+             flushTurnThought();
+             trace('  -> assistant: current turn already has assistant -> start NEW turn');
+             currentTurnEl = null;
+           }
            if (!currentTurnEl) {
              currentTurnEl = document.createElement('div');
              currentTurnEl.className = 'turn';
              messagesEl.appendChild(currentTurnEl);
+             trace('  -> assistant: created/reused turn, append message');
+           } else {
+             trace('  -> assistant: reuse turn (lone thought waiting), append message');
            }
            // Reset tool group for the new assistant turn
            currentToolsListEl = null;
@@ -8017,7 +8090,13 @@ function renderChatHistory() {
          }
          break;
         case 'thought':
-          addThoughtDOM(item.text, item.durationSec || 0);
+          // Buffer the thought; it is flushed as a single merged block when the
+          // turn ends (or at end of list), matching the live view's one-thought-
+          // per-turn layout.
+          if (item.text) {
+            turnThoughts.push({ text: item.text, durationSec: item.durationSec || 0 });
+          }
+          trace('  -> thought: buffered (textLen=' + (item.text ? item.text.length : 0) + ',dur=' + (item.durationSec || 0) + 's), turnThoughts=' + turnThoughts.length);
           break;
        case 'toolCall':
          addToolCallInline(item.toolCallId, item.title, item.status,
@@ -8031,6 +8110,8 @@ function renderChatHistory() {
           break;
       }
     }
+    // Flush any thought(s) still buffered for the final turn.
+    flushTurnThought();
     currentTurnEl = null;
    currentToolsListEl = null;
    currentToolsCountEl = null;
@@ -8236,7 +8317,20 @@ function renderChatHistory() {
      el.innerHTML =
         '<summary>' + (durationSec > 0 ? 'Thought for ' + durationSec + 's' : (durationSec === 0 ? 'Thought for &lt;1s' : 'Thought')) + '</summary>' +
        '<div class="thought-content">' + escapeHtml(text.trim().replace(/\\n{3,}/g, '\\n\\n')) + '</div>';
-    messagesEl.appendChild(el);
+    // Attach into the current turn so the thought groups with its assistant
+    // response (matching the live-streaming layout). During replay the chatHistory
+    // order is user -> thought -> assistant, so the turn may not exist yet when
+    // the thought is rendered; create it here and prepend the thought to the top.
+    if (!currentTurnEl) {
+      currentTurnEl = document.createElement('div');
+      currentTurnEl.className = 'turn';
+      messagesEl.appendChild(currentTurnEl);
+      hideEmpty();
+      trace('    addThoughtDOM: created new turn, prepended thought');
+    } else {
+      trace('    addThoughtDOM: reusing existing turn (children=' + currentTurnEl.children.length + '), prepended thought to top');
+    }
+    currentTurnEl.insertBefore(el, currentTurnEl.firstChild);
     scrollToBottom();
   }
 
@@ -9715,7 +9809,6 @@ sessionState = {
 
     // Restore previous state before telling extension we're ready
     restoreState();
-
     // Tell extension we're ready
     vscode.postMessage({ type: 'ready' });
   </script>
