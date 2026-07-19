@@ -107,8 +107,7 @@
       },
       {
         "command": "acp.removeAgent",
-        "title": "Remove Agent",
-        "icon": "$(trash)"
+        "title": "ACP: Remove Agent"
       },
       {
         "command": "acp.showLog",
@@ -265,14 +264,14 @@
           "group": "inline"
         },
         {
-          "command": "acp.removeAgent",
-          "when": "view == acp-sessions && (viewItem == agent-connected || viewItem == agent-disconnected)",
-          "group": "session@0"
-        },
-        {
           "command": "acp.refreshSessions",
           "when": "view == acp-sessions && (viewItem == agent-connected || viewItem == agent-disconnected)",
           "group": "session@1"
+        },
+        {
+          "command": "acp.removeAgent",
+          "when": "view == acp-sessions && (viewItem == agent-connected || viewItem == agent-disconnected)",
+          "group": "1_modification@0"
         },
         {
           "command": "acp.restartAgent",
