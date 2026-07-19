@@ -81,14 +81,37 @@ step "6/7  Packaging VSIX"
 npx vsce package --no-git-tag-version || fail "VSIX packaging failed"
 ok "VSIX packaged"
 
-# ─── 7. Install into local VS Code ─────────────────────────────────
-step "7/7  Installing to local VS Code (~/.vscode/extensions)"
-bash "$SCRIPT_DIR/install-vscode-server.sh" || fail "Deploy failed"
-ok "Deployed successfully"
+# ─── 7. Install into local editors (Mac VS Code + Cursor) ──────────
+step "7/8  Installing to local editors (~/.vscode + ~/.cursor)"
+bash "$SCRIPT_DIR/install-vscode-server.sh" || fail "Local deploy failed"
+ok "Local editors installed"
+
+# ─── 8. Install on remote SSH host (server + local) ────────────────
+# Default host: workstation. Override with ACP_SSH_HOST=... or skip with
+# ACP_SSH_HOST= (empty) / --skip-remote.
+SKIP_REMOTE=false
+for arg in "$@"; do
+  case "$arg" in
+    --skip-remote) SKIP_REMOTE=true ;;
+  esac
+done
+
+if [ "$SKIP_REMOTE" = false ]; then
+  SSH_HOST="${ACP_SSH_HOST:-workstation}"
+  if [ -n "$SSH_HOST" ]; then
+    step "8/8  Installing on remote ($SSH_HOST: server + local VS Code/Cursor)"
+    ACP_SSH_HOST="$SSH_HOST" bash "$SCRIPT_DIR/install-vscode-server-remote.sh" || fail "Remote deploy failed"
+    ok "Remote installed ($SSH_HOST)"
+  else
+    warn "Skipping remote (ACP_SSH_HOST empty)"
+  fi
+else
+  warn "Skipping remote (--skip-remote)"
+fi
 
 # ─── Summary ───────────────────────────────────────────────────────
 echo ""
 echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
 echo -e "${GREEN}║  🚀 All steps completed successfully!                ║${NC}"
-echo -e "${GREEN}║  Reload VS Code: Ctrl+Shift+P → 'Reload Window'      ║${NC}"
+echo -e "${GREEN}║  Reload each editor: Ctrl+Shift+P → 'Reload Window'  ║${NC}"
 echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"

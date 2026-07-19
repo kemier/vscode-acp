@@ -1120,12 +1120,12 @@ export class SessionManager extends EventEmitter {
    * (and models with an effort suffix like glm-5.2[high]) support effort.
    */
   private modelSupportsEffort(modelId: string): boolean {
-    if (!modelId) return false;
+    if (!modelId) {return false;}
     // Models with effort suffix (e.g. "glm-5.2[high]", "qwen2.5-14b-1m[none]")
     // encode effort in the model ID — no separate /effort needed.
-    if (/\[(?:low|medium|high|xhigh|max|none)\]$/.test(modelId)) return false;
+    if (/\[(?:low|medium|high|xhigh|max|none)\]$/.test(modelId)) {return false;}
     // Claude models support effort via /effort slash command
-    if (/^claude-/i.test(modelId)) return true;
+    if (/^claude-/i.test(modelId)) {return true;}
     // All other models (minimax-*, qwen*, auto, etc.) don't support effort
     return false;
   }
@@ -1135,7 +1135,7 @@ export class SessionManager extends EventEmitter {
    * whether the current model supports effort. Called after model changes.
    */
   private updateEffortPickerVisibility(session: SessionInfo): void {
-    if (!session.configOptions) return;
+    if (!session.configOptions) {return;}
     const modelOpt = session.configOptions.find((o: any) => o.category === 'model');
     const currentModel = String(modelOpt?.currentValue || session.models?.currentModelId || '');
     const supportsEffort = this.modelSupportsEffort(currentModel);

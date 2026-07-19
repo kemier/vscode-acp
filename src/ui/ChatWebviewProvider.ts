@@ -2101,7 +2101,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // webview only ever shows one session at a time.
     const activeId = this.sessionManager.getActiveSessionId();
     // [DEBUG-SUBAGENT] Trace which session agent_message_chunk events come from
-    if (DEBUG && (updateData?.sessionUpdate === 'agent_message_chunk' || updateData?.sessionUpdate === 'agent_thought_chunk')) {
+    if (
+      DEBUG &&
+      (updateData?.sessionUpdate === 'agent_message_chunk' || updateData?.sessionUpdate === 'agent_thought_chunk')
+    ) {
       const preview = updateData?.content?.text ? updateData.content.text.replace(/\\s+/g, ' ').slice(0, 60) : '';
       log(
         `[DEBUG-SUBAGENT] ${updateData.sessionUpdate} session=${update.sessionId} active=${activeId} match=${update.sessionId === activeId} text="${preview}"`,
@@ -2328,28 +2331,27 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // else inline fallback (a resource_link would point to an unresolvable
     // zed:///agent/terminal-selection URI).
     if (/@terminal\b/i.test(text)) {
-     const { text: termOutput, name } = this.terminalContext.getLastOutput();
-     if (termOutput) {
-       text = text.replace(/@terminal\b/gi, '').trim();
-       const block = buildTerminalBlock(termOutput, supportsEmbedded);
-       if (block) {
-         contextBlocks.push(block);
-       } else {
-         text = `<terminal name="${name || 'active'}">\n${termOutput}\n</terminal>\n\n${text}`;
-       }
-     }
-      else {
-       // No terminal output available — shell integration may be inactive
-       // (vscode-server/SSH) or the buffer is empty. Warn instead of silently
-       // sending a bare "@terminal" keyword to the agent.
+      const { text: termOutput, name } = this.terminalContext.getLastOutput();
+      if (termOutput) {
+        text = text.replace(/@terminal\b/gi, '').trim();
+        const block = buildTerminalBlock(termOutput, supportsEmbedded);
+        if (block) {
+          contextBlocks.push(block);
+        } else {
+          text = `<terminal name="${name || 'active'}">\n${termOutput}\n</terminal>\n\n${text}`;
+        }
+      } else {
+        // No terminal output available — shell integration may be inactive
+        // (vscode-server/SSH) or the buffer is empty. Warn instead of silently
+        // sending a bare "@terminal" keyword to the agent.
         const hint = this.terminalContext.isCaptureAvailable
           ? 'Run a command in the terminal first, then retry @terminal.'
           : 'Shell integration is unavailable (common on vscode-server / SSH). ' +
             'Enable "terminal.integrated.shellIntegration.enabled" in settings ' +
             'and use a supported shell.';
         vscode.window.showWarningMessage(`@terminal: no terminal output captured. ${hint}`);
-     }
-   }
+      }
+    }
 
     // Detect @problems — workspace diagnostics. Same embedded-or-inline
     // fallback as @terminal.
@@ -2592,8 +2594,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           }
           const modalities = m.input_modalities;
           // Only show image upload when the catalog explicitly lists image.
-          const supports =
-            Array.isArray(modalities) && modalities.map(String).includes('image');
+          const supports = Array.isArray(modalities) && modalities.map(String).includes('image');
           // Prefer an explicit true if any catalog file claims image support.
           if (supports || !map.has(slug)) {
             map.set(slug, supports);
@@ -4377,6 +4378,15 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    }
    .turn-tools-list { }
    .turn-tools-list.collapsed { display: none; }
+   /* Compact mode: summary + fold wrap thought/tools only. Assistant reply stays
+      outside the fold so it streams on the chat panel while Collapse is on. */
+   .turn > .turn-tools-summary { margin: 2px 0; }
+   .turn-fold-body {
+     display: flex;
+     flex-direction: column;
+     gap: 4px;
+   }
+   .turn-fold-body.collapsed { display: none; }
 
    /* Compact inline tool call */
    .tool-call-inline {
@@ -5136,7 +5146,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       <div class="agent" id="bannerAgent"></div>
       <div class="cwd" id="bannerCwd"></div>
     </div>
-   <button class="follow-toggle active" id="compactToggle" title="Collapse tool calls — toggle compact view" aria-pressed="true">
+   <button class="follow-toggle active" id="compactToggle" title="Collapse turn details — hide thoughts, tools, and replies" aria-pressed="true">
     <span class="icon">⊟</span>
     <span class="label">Collapse</span>
   </button>
@@ -6527,7 +6537,7 @@ var end = displayText.length;
     vscode.postMessage({ type: 'executeCommand', command });
   }
 
-  // Compact mode toggle — collapse/expand all tool call groups
+  // Compact mode toggle — collapse/expand all turn folds (thought + tools + reply)
  var compactMode = true; // default: compact (collapsed)
  const compactToggleBtn = document.getElementById('compactToggle');
  if (compactToggleBtn) {
@@ -6535,18 +6545,7 @@ var end = displayText.length;
      compactMode = !compactMode;
      compactToggleBtn.classList.toggle('active', compactMode);
       compactToggleBtn.setAttribute('aria-pressed', compactMode ? 'true' : 'false');
-     var summaries = messagesEl.querySelectorAll('.turn-tools-summary');
-      summaries.forEach(function(summary) {
-        var list = summary.nextElementSibling;
-        if (!list) return;
-        if (compactMode) {
-          list.classList.add('collapsed');
-        } else {
-          list.classList.remove('collapsed');
-        }
-        var count = parseInt(summary.dataset.count || '0', 10);
-        updateToolGroupSummary(summary, count, summary._titles || [], summary._kinds || [], summary._rawInputs || []);
-      });
+     applyCompactModeToAllTurns(compactMode);
     });
   }
 
@@ -7399,87 +7398,543 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
   }
 
+    function attachTurnSummaryClick(summary) {
+      if (summary._foldClickBound) return;
+      summary._foldClickBound = true;
+      summary.addEventListener('click', function() {
+        // Compact: summary's next sibling is .turn-fold-body on the turn.
+        // Non-compact: next sibling is the tools list (or legacy fold around list).
+        var body = summary.nextElementSibling;
+        if (!body) return;
+        body.classList.toggle('collapsed');
+        // Remember manual expand so streaming updates don't force-collapse again.
+        body._userExpanded = !body.classList.contains('collapsed');
+        hideTcTooltip();
+        var count = parseInt(summary.dataset.count || '0', 10);
+        updateToolGroupSummary(summary, count, summary._titles || [], summary._kinds || [], summary._rawInputs || []);
+      });
+    }
+
+    function getTurnSummaryEl(turn) {
+      if (!turn) return null;
+      return turn.querySelector(':scope > .turn-tools-summary')
+        || turn.querySelector(':scope > .turn-tools > .turn-tools-summary');
+    }
+
+    function getTurnFoldBody(turn) {
+      if (!turn) return null;
+      return turn.querySelector(':scope > .turn-fold-body')
+        || turn.querySelector(':scope > .turn-tools > .turn-fold-body');
+    }
+
+    function isMeaningfulThought(el) {
+      if (!el) return false;
+      if (el === currentThoughtEl) return true;
+      if (el.classList.contains('streaming')) return true;
+      var content = el.querySelector('.thought-content');
+      if (content && content.textContent && content.textContent.trim()) return true;
+      // Keep finalized cards even if content was briefly empty.
+      var sum = el.querySelector('summary');
+      var sumText = (sum && sum.textContent) || '';
+      return /Thought\b/i.test(sumText);
+    }
+
+    /** Full thought text from DOM + in-progress buffers (never drop mid-turn). */
+    function getAccumulatedThoughtText() {
+      var fromDom = '';
+      if (currentThoughtTextEl && typeof currentThoughtTextEl.textContent === 'string') {
+        fromDom = currentThoughtTextEl.textContent;
+      }
+      var fromBuf = ((thoughtDomBase || '') + (currentThoughtText || ''));
+      var best = fromDom.trim() ? fromDom : fromBuf;
+      return (best || '').replace(/^\\s+/, '').replace(/\\n{3,}/g, '\\n\\n').trim();
+    }
+
+    function commitOrDiscardCurrentThought() {
+      if (!currentThoughtEl && !(currentThoughtText || thoughtDomBase)) return;
+      if (currentThoughtEl) {
+        finalizeThought();
+        currentThoughtEl.open = false;
+      }
+      var historyText = getAccumulatedThoughtText();
+      if (historyText) {
+        // Ensure DOM still shows the committed text (reuse paths can desync).
+        if (currentThoughtEl && currentThoughtTextEl && !currentThoughtTextEl.textContent.trim()) {
+          currentThoughtTextEl.textContent = historyText;
+        }
+        // Avoid duplicate history entries when assistant-start already finalized
+        // and tools/promptEnd commit the same block again.
+        if (!currentThoughtEl || !currentThoughtEl._thoughtCommitted) {
+          chatHistory.push({
+            kind: 'thought',
+            text: historyText,
+            durationSec: thoughtStartTime ? Math.round(((thoughtEndTime || Date.now()) - thoughtStartTime) / 1000) : 0,
+          });
+          saveState();
+          if (currentThoughtEl) currentThoughtEl._thoughtCommitted = true;
+        }
+        if (currentTurnEl) {
+          var sumEl = getTurnSummaryEl(currentTurnEl);
+          if (sumEl) sumEl._hasThought = true;
+        }
+      } else if (currentThoughtEl && currentThoughtEl.parentNode) {
+        // Only drop never-filled placeholders (no text ever arrived).
+        currentThoughtEl.parentNode.removeChild(currentThoughtEl);
+      }
+      currentThoughtEl = null;
+      currentThoughtTextEl = null;
+      currentThoughtText = '';
+      thoughtDomBase = '';
+      thoughtEndTime = null;
+      thoughtStartTime = null;
+    }
+
+    /**
+     * Compact layout:
+     *   .turn
+     *     > .turn-tools-summary          (Thought · tools)
+     *     > .turn-fold-body              (collapsed when Collapse is on)
+     *         > .thought-block*
+     *         > .turn-tools > list
+     *         > .message.assistant.assistant-interim*   (mid-turn text)
+     *     > .message.assistant.assistant-summary        (final reply — always visible)
+     * @param force  when true, create the fold shell even before any content
+     *                exists (needed so the first thought lands inside the fold).
+     */
+    function ensureTurnFoldStructure(turn, collapsed, force) {
+      if (!turn) return null;
+
+      // Collect pieces from any prior layout (turn-level or nested under .turn-tools).
+      // Multiple .turn-tools groups are intentional (thought/tools interleaved).
+      var summary = getTurnSummaryEl(turn);
+      var body = getTurnFoldBody(turn);
+      var allLists = Array.prototype.slice.call(turn.querySelectorAll('.turn-tools-list'));
+      var thoughts = Array.prototype.slice.call(turn.querySelectorAll('.thought-block'));
+      var allAssistants = Array.prototype.slice.call(turn.querySelectorAll('.message.assistant'));
+      // Mid-turn assistant segments go in the fold; the last/summary stays outside.
+      var interimAssistants = [];
+      var summaryAssistants = [];
+      allAssistants.forEach(function(a) {
+        if (a.classList.contains('assistant-interim')) interimAssistants.push(a);
+        else summaryAssistants.push(a);
+      });
+      // If nothing is classified yet, treat all but the last as interim.
+      if (interimAssistants.length === 0 && summaryAssistants.length > 1) {
+        interimAssistants = summaryAssistants.slice(0, -1);
+        summaryAssistants = summaryAssistants.slice(-1);
+        interimAssistants.forEach(function(a) {
+          a.classList.add('assistant-interim');
+          a.classList.remove('assistant-summary');
+        });
+      }
+      // Do NOT auto-promote the last interim to summary here. Mid-turn commits
+      // clear currentAssistantEl; promoting then made each segment flash in the
+      // panel until the next one arrived and demoted it. Only placeSummaryAssistant
+      // (promptEnd) or promoteFinalAssistantForTurn (history) may lift a reply out.
+      summaryAssistants.forEach(function(a) {
+        a.classList.add('assistant-summary');
+        a.classList.remove('assistant-interim');
+      });
+
+      // Count meaningful thoughts for the summary flag. Never delete thought
+      // nodes here — removing "empty" blocks during fold rebuild made later
+      // thoughts flash then vanish, and left only the first thought after unwrap.
+      var meaningfulThoughts = thoughts.filter(isMeaningfulThought);
+
+      if (!force && !summary && meaningfulThoughts.length === 0 && allAssistants.length === 0 && allLists.length === 0) {
+        return null;
+      }
+
+      if (!summary) {
+        summary = document.createElement('div');
+        summary.className = 'turn-tools-summary';
+        summary.dataset.count = '0';
+        summary.style.display = 'none';
+      }
+      if (meaningfulThoughts.length) summary._hasThought = true;
+      // Restore tool meta from wraps / lists when re-enabling Collapse.
+      if ((!summary._titles || !summary._titles.length)) {
+        var aggTitles = [];
+        var aggKinds = [];
+        var aggRaw = [];
+        var aggSub = false;
+        Array.prototype.forEach.call(turn.querySelectorAll('.turn-tools'), function(wrap) {
+          if (wrap._titles && wrap._titles.length) {
+            aggTitles = aggTitles.concat(wrap._titles);
+            aggKinds = aggKinds.concat(wrap._kinds || []);
+            aggRaw = aggRaw.concat(wrap._rawInputs || []);
+            if (wrap._hasSubagent) aggSub = true;
+          }
+        });
+        if (!aggTitles.length) {
+          allLists.forEach(function(list) {
+            var collected = collectToolMetaFromList(list);
+            aggTitles = aggTitles.concat(collected.titles);
+            aggKinds = aggKinds.concat(collected.kinds);
+            aggRaw = aggRaw.concat(collected.rawInputs);
+            if (collected.hasSubagent) aggSub = true;
+          });
+        }
+        if (aggTitles.length) {
+          summary._titles = aggTitles;
+          summary._kinds = aggKinds;
+          summary._rawInputs = aggRaw;
+          summary._hasSubagent = aggSub;
+          summary.dataset.count = String(aggTitles.length);
+        }
+      }
+      attachTurnSummaryClick(summary);
+
+      if (!body) {
+        body = document.createElement('div');
+        body.className = 'turn-fold-body';
+      }
+
+      // Rebuild into the canonical turn-level structure.
+      // Always pin summary as the first child so nothing (e.g. an early thought)
+      // can sit above the collapse control outside the fold.
+      turn.insertBefore(summary, turn.firstChild);
+      if (summary.nextSibling !== body) {
+        if (summary.nextSibling) turn.insertBefore(body, summary.nextSibling);
+        else turn.appendChild(body);
+      }
+
+      // Each tools list keeps its own wrap (left rail) — never merge groups.
+      allLists.forEach(function(list) {
+        var wrap = list.closest('.turn-tools');
+        if (!wrap) {
+          wrap = document.createElement('div');
+          wrap.className = 'turn-tools';
+          if (list.parentNode) list.parentNode.insertBefore(wrap, list);
+          wrap.appendChild(list);
+        }
+      });
+
+      // Keep fold contents in document/turn order (do not regroup all thoughts
+      // before all tools — that made newer blocks look like they overwrote older ones).
+      orderCompactFoldContents(body);
+
+      // Final summary assistant(s) always sit after the fold (visible while collapsed).
+      summaryAssistants.forEach(function(a) {
+        if (body.nextSibling) turn.insertBefore(a, body.nextSibling);
+        turn.appendChild(a);
+      });
+
+      // Collapse mode defaults the fold shut, but honor a manual expand so the
+      // user can keep watching thought/tools while the turn streams.
+      if (collapsed && !body._userExpanded) body.classList.add('collapsed');
+      else body.classList.remove('collapsed');
+
+      var count = parseInt(summary.dataset.count || '0', 10);
+      updateToolGroupSummary(summary, count, summary._titles || [], summary._kinds || [], summary._rawInputs || []);
+      return body;
+    }
+
+    /**
+     * Scoop foldable nodes into the fold body preserving document order:
+     * thought / tools / interim assistant segments as they occurred in the turn.
+     */
+    function orderCompactFoldContents(body) {
+      if (!body) return;
+      var turn = body.parentElement;
+      if (!turn || !turn.classList.contains('turn')) return;
+
+      var foldables = [];
+      function consider(el) {
+        if (!el || foldables.indexOf(el) >= 0) return;
+        if (el.classList.contains('thought-block')) { foldables.push(el); return; }
+        if (el.classList.contains('turn-tools')) { foldables.push(el); return; }
+        if (el.classList.contains('message') && el.classList.contains('assistant') &&
+            el.classList.contains('assistant-interim')) {
+          foldables.push(el);
+        }
+      }
+      // Prefer current body order, then any strays still on the turn.
+      Array.prototype.forEach.call(body.children, consider);
+      Array.prototype.forEach.call(turn.children, function(child) {
+        if (child === body || child.classList.contains('turn-tools-summary')) return;
+        consider(child);
+        if (child.classList.contains('turn-fold-body') && child !== body) {
+          Array.prototype.forEach.call(child.children, consider);
+        }
+      });
+      // Stable document order
+      foldables.sort(function(a, b) {
+        if (a === b) return 0;
+        var pos = a.compareDocumentPosition(b);
+        if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+        if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+        return 0;
+      });
+      foldables.forEach(function(el) { body.appendChild(el); });
+    }
+
+    /** Place the visible final assistant summary after the fold (always streams). */
+    function placeSummaryAssistant(assistantEl) {
+      if (!currentTurnEl) return;
+      assistantEl.classList.add('assistant-summary');
+      assistantEl.classList.remove('assistant-interim');
+      if (compactMode) {
+        ensureCurrentTurnFold();
+        var body = getTurnFoldBody(currentTurnEl);
+        if (body) {
+          // Demote any prior summary so only the true final reply sits outside.
+          Array.prototype.forEach.call(
+            currentTurnEl.querySelectorAll('.message.assistant.assistant-summary'),
+            function(prev) {
+              if (prev === assistantEl) return;
+              prev.classList.add('assistant-interim');
+              prev.classList.remove('assistant-summary');
+              body.appendChild(prev);
+            }
+          );
+          if (body.nextSibling) currentTurnEl.insertBefore(assistantEl, body.nextSibling);
+          currentTurnEl.appendChild(assistantEl);
+          return;
+        }
+      }
+      currentTurnEl.appendChild(assistantEl);
+    }
+
+    /** After history restore: lift the last assistant out of the fold as the reply. */
+    function promoteFinalAssistantForTurn(turn) {
+      if (!turn || !compactMode) return;
+      var assistants = Array.prototype.slice.call(turn.querySelectorAll('.message.assistant'));
+      if (!assistants.length) return;
+      var body = getTurnFoldBody(turn) || ensureTurnFoldStructure(turn, true, true);
+      assistants.forEach(function(a, idx) {
+        if (idx === assistants.length - 1) {
+          a.classList.add('assistant-summary');
+          a.classList.remove('assistant-interim');
+          turn.appendChild(a);
+        } else {
+          a.classList.add('assistant-interim');
+          a.classList.remove('assistant-summary');
+          if (body) body.appendChild(a);
+        }
+      });
+    }
+
+    /** Move a committed mid-turn assistant segment into the collapsed fold. */
+    function moveAssistantIntoFold(assistantEl) {
+      if (!assistantEl || !currentTurnEl || !compactMode) return;
+      assistantEl.classList.add('assistant-interim');
+      assistantEl.classList.remove('assistant-summary');
+      var body = ensureCurrentTurnFold();
+      if (body) {
+        // Append after existing fold contents so multiple interim msgs stay in order.
+        body.appendChild(assistantEl);
+      }
+    }
+
+    /** Collect tool title/kind metadata from inline rows (for re-folding). */
+    function collectToolMetaFromList(list) {
+      var titles = [];
+      var kinds = [];
+      var rawInputs = [];
+      var hasSubagent = false;
+      if (!list) return { titles: titles, kinds: kinds, rawInputs: rawInputs, hasSubagent: hasSubagent, count: 0 };
+      list.querySelectorAll('.tool-call-inline').forEach(function(tc) {
+        var tcTitle = tc.querySelector('.tc-title') ? tc.querySelector('.tc-title').textContent : (tc._toolTitle || '');
+        var tcKind = tc.dataset.toolKind || null;
+        titles.push(tcTitle);
+        kinds.push(tcKind);
+        rawInputs.push(tc._rawInput || null);
+        if (isSubagentToolCall(tcTitle, tcKind)) hasSubagent = true;
+      });
+      return { titles: titles, kinds: kinds, rawInputs: rawInputs, hasSubagent: hasSubagent, count: titles.length };
+    }
+
+    /**
+     * Restore the normal (non-compact) turn layout.
+     * Lifts fold children in place — preserves turn order (do not move
+     * thoughts to the front).
+     */
+    function unwrapTurnFold(turn) {
+      if (!turn) return;
+      var foldBody = getTurnFoldBody(turn);
+      var list = turn.querySelector('.turn-tools-list');
+      var toolsWrap = list ? list.closest('.turn-tools') : null;
+      var summary = getTurnSummaryEl(turn);
+      var meta = summary && summary._titles && summary._titles.length
+        ? {
+            titles: summary._titles || [],
+            kinds: summary._kinds || [],
+            rawInputs: summary._rawInputs || [],
+            hasSubagent: !!summary._hasSubagent,
+            count: parseInt(summary.dataset.count || '0', 10) || 0,
+          }
+        : collectToolMetaFromList(list);
+
+      // Lift fold children onto the turn in the same relative order, then
+      // drop the fold shell. insertBefore(foldBody) keeps turn chronology
+      // (thought → tools → thought → …), including every thinking block.
+      if (foldBody) {
+        while (foldBody.firstChild) {
+          turn.insertBefore(foldBody.firstChild, foldBody);
+        }
+        foldBody.remove();
+      }
+
+      // Remove every summary / expand control.
+      Array.prototype.slice.call(turn.querySelectorAll('.turn-tools-summary')).forEach(function(el) {
+        el.remove();
+      });
+
+      // Keep each tools group that still has rows; drop empty shells only.
+      Array.prototype.slice.call(turn.querySelectorAll('.turn-tools')).forEach(function(wrap) {
+        var wrapList = wrap.querySelector('.turn-tools-list');
+        if (wrap.querySelector('.tool-call-inline')) {
+          if (wrapList) wrapList.classList.remove('collapsed');
+          if (!wrap._titles && meta.titles && meta.titles.length && wrap === toolsWrap) {
+            wrap._titles = meta.titles;
+            wrap._kinds = meta.kinds;
+            wrap._rawInputs = meta.rawInputs;
+            wrap._hasSubagent = meta.hasSubagent;
+            wrap.dataset.count = String(meta.count || meta.titles.length);
+          }
+        } else if (!wrapList || !wrapList.children.length) {
+          wrap.remove();
+        }
+      });
+
+      // Clear interim/summary markers — everything is visible when unwrapped.
+      Array.prototype.forEach.call(turn.querySelectorAll('.message.assistant'), function(a) {
+        a.classList.remove('assistant-interim');
+        a.classList.remove('assistant-summary');
+      });
+    }
+
+    function applyCompactModeToAllTurns(collapsed) {
+      messagesEl.querySelectorAll('.turn').forEach(function(turn) {
+        if (collapsed) {
+          var body = getTurnFoldBody(turn);
+          if (body) body._userExpanded = false;
+          ensureTurnFoldStructure(turn, true);
+        } else {
+          unwrapTurnFold(turn);
+        }
+      });
+    }
+
+    /** Compact-mode fold for the live turn; returns .turn-fold-body. */
+    function ensureCurrentTurnFold() {
+      if (!currentTurnEl) {
+        currentTurnEl = document.createElement('div');
+        currentTurnEl.className = 'turn';
+        messagesEl.appendChild(currentTurnEl);
+        hideEmpty();
+      }
+      // Fold (thought/tools/interim) stays collapsed when Collapse is on.
+      // The final assistant summary sits outside and streams in the panel.
+      return ensureTurnFoldStructure(currentTurnEl, !!compactMode, true);
+    }
+
+    function refreshCurrentTurnSummary() {
+      if (!currentTurnEl) return;
+      if (!currentToolsCountEl || !currentToolsCountEl.classList.contains('turn-tools-summary')) {
+        currentToolsCountEl = getTurnSummaryEl(currentTurnEl);
+      }
+      if (!currentToolsCountEl || !currentToolsCountEl.classList.contains('turn-tools-summary')) return;
+      updateToolGroupSummary(
+        currentToolsCountEl,
+        parseInt(currentToolsCountEl.dataset.count || '0', 10),
+        currentToolsCountEl._titles || [],
+        currentToolsCountEl._kinds || [],
+        currentToolsCountEl._rawInputs || []
+      );
+    }
+
+    function placeThoughtInTurn(thoughtEl) {
+      // Close the open tools group so later tools start a new group after this
+      // thought. Compact mode used to reuse one list, which shoved every later
+      // thought to the end of the fold after all tool rows.
+      if (currentToolsListEl) {
+        currentToolsListEl = null;
+        if (!compactMode) {
+          currentToolsCountEl = null;
+          currentToolCount = 0;
+        }
+      }
+      if (compactMode) {
+        var body = ensureCurrentTurnFold();
+        if (!body) {
+          currentTurnEl.appendChild(thoughtEl);
+          return;
+        }
+        // Append in turn order (after prior thoughts/tools/interim already in the fold).
+        body.appendChild(thoughtEl);
+        refreshCurrentTurnSummary();
+      } else {
+        // Non-compact: keep chronological append order within the turn.
+        currentTurnEl.appendChild(thoughtEl);
+      }
+    }
+
+    function placeAssistantInTurn(assistantEl) {
+      // Compact: stream the live assistant in the panel (outside the fold) so
+      // the user can read it as it arrives. If more tools follow, interim commit
+      // tucks that segment into the fold — only placeSummaryAssistant / promptEnd
+      // leave a reply visible. Do not keep the live bubble folded for the whole
+      // turn (that delayed the final reply until streaming finished).
+      placeSummaryAssistant(assistantEl);
+      refreshCurrentTurnSummary();
+    }
+
     // Ensure the current turn has a tools container.
     // Non-compact: creates a new tools group after text was emitted,
     // preserving interleaved text/tool ordering.
-    // Compact: reuses the turn's single tools group so all actions collapse
-    // into one summary (e.g. "1 read, 4 searches, 1 command") instead of
-    // splitting around mid-turn thoughts / interim status messages.
+    // Compact: reuses the turn's single fold so thoughts, tools, and replies
+    // collapse into one summary instead of splitting around mid-turn content.
     function ensureTurnTools() {
      if (!currentTurnEl) {
        currentTurnEl = document.createElement('div');
        currentTurnEl.className = 'turn';
        messagesEl.appendChild(currentTurnEl);
      }
-     // If there's an active thought block, finalize and commit it to history
-     // so the tool group appears below it in DOM order.
-     if (currentThoughtEl && currentThoughtText) {
-       finalizeThought();
-       currentThoughtEl.open = false;
-       // Skip whitespace-only thoughts — agents often emit a lone " " between
-       // tool calls, which would otherwise leave a stray empty Thought block.
-       if (currentThoughtText.trim()) {
-         chatHistory.push({
-           kind: 'thought',
-           text: currentThoughtText,
-           durationSec: thoughtStartTime ? Math.round((Date.now() - thoughtStartTime) / 1000) : 0,
-         });
-         saveState();
-       } else if (currentThoughtEl.parentNode) {
-         currentThoughtEl.parentNode.removeChild(currentThoughtEl);
-       }
-       currentThoughtEl = null;
-       currentThoughtTextEl = null;
-       currentThoughtText = '';
-       thoughtDomBase = '';
-       thoughtEndTime = null;
-       thoughtStartTime = null;
+     // Finalize any in-progress thought before tools render. Use DOM+buffers so
+     // a whitespace-only latest chunk cannot delete an earlier real thought.
+     if (currentThoughtEl) {
+       commitOrDiscardCurrentThought();
      }
-     // If there's an active text segment, finalize it so the tool group
-     // appears below it in DOM order.
+     // Mid-turn assistant text (before more tools) goes into the fold.
      if (currentAssistantEl && currentAssistantText) {
-       commitCurrentTextSegment();
+       commitCurrentTextSegment({ interim: true });
      }
      if (!currentToolsListEl) {
-       // Compact mode: keep one tools group per turn so reads/searches/commands
-       // that resume after a thought or status line stay in the same collapsed summary.
+       // Always start a fresh tools group. Compact still uses one fold/summary
+       // per turn, but multiple .turn-tools sections preserve chronology:
+       // thought → tools → thought → tools (instead of all tools then thoughts).
+       var preservedCount = 0;
        if (compactMode) {
-         var existingWrap = currentTurnEl.querySelector(':scope > .turn-tools');
-         if (existingWrap) {
-           currentToolsCountEl = existingWrap.querySelector('.turn-tools-summary');
-           currentToolsListEl = existingWrap.querySelector('.turn-tools-list');
-           currentToolCount = currentToolsCountEl
-             ? parseInt(currentToolsCountEl.dataset.count || '0', 10) || 0
-             : 0;
-           return;
+         var existingSummary = getTurnSummaryEl(currentTurnEl);
+         if (existingSummary) {
+           preservedCount = parseInt(existingSummary.dataset.count || '0', 10) || 0;
+         } else {
+           preservedCount = currentToolCount || 0;
          }
        }
-       const toolsWrap = document.createElement('div');
-       toolsWrap.className = 'turn-tools';
 
-       currentToolCount = 0;
-       const summary = document.createElement('div');
-       summary.className = 'turn-tools-summary';
-      summary.textContent = '▸ Tool calls';
-      currentToolsCountEl = summary;
-      summary.addEventListener('click', () => {
-        const list = summary.nextElementSibling;
-        if (list) {
-          list.classList.toggle('collapsed');
-          hideTcTooltip();
-          var count = parseInt(summary.dataset.count || '0', 10);
-          updateToolGroupSummary(summary, count, summary._titles || [], summary._kinds || [], summary._rawInputs || []);
-        }
-      });
-       toolsWrap.appendChild(summary);
-
+       currentToolCount = compactMode ? preservedCount : 0;
        const list = document.createElement('div');
        list.className = 'turn-tools-list';
-       if (compactMode) { list.classList.add('collapsed'); }
-       toolsWrap.appendChild(list);
        currentToolsListEl = list;
 
-       currentTurnEl.appendChild(toolsWrap);
+       if (compactMode) {
+         var body = ensureTurnFoldStructure(currentTurnEl, true, true);
+         var toolsWrap = document.createElement('div');
+         toolsWrap.className = 'turn-tools';
+         toolsWrap.appendChild(list);
+         if (body) body.appendChild(toolsWrap);
+         currentToolsCountEl = getTurnSummaryEl(currentTurnEl);
+       } else {
+         // Non-compact: no summary/expand chrome — just the tool rows.
+         const toolsWrap = document.createElement('div');
+         toolsWrap.className = 'turn-tools';
+         toolsWrap.appendChild(list);
+         currentTurnEl.appendChild(toolsWrap);
+         currentToolsCountEl = toolsWrap; // meta host only (not a visible summary)
+       }
      }
    }
  
@@ -7495,10 +7950,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     var agentOpCount = 0;
     for (var i = 0; i < titles.length; i++) {
       var cat;
-      // Check for subagent tool calls first — they take priority over
-      // the generic "other" category from ACP kind.
-      var isAgent = isSubagentToolCall(titles[i], kinds && kinds[i]);
-      if (isAgent) {
+      var kind = kinds && kinds[i];
+      // Prefer concrete ACP kinds (read/edit/…) over title heuristics. A read of
+      // a file named close_agent must not become "1 subagent op".
+      if (kind && kind !== 'other' && kind !== 'think') {
+        cat = acpKindToCategory(kind);
+      } else if (isSubagentToolCall(titles[i], kind)) {
         cat = 'agent';
         // Distinguish spawn (creates agents) from other agent ops (wait/close/etc)
         var tn = (titles[i] || '').trim();
@@ -7516,8 +7973,8 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         } else {
           agentOpCount++;
         }
-      } else if (kinds && kinds[i]) {
-        cat = acpKindToCategory(kinds[i]);
+      } else if (kind) {
+        cat = acpKindToCategory(kind);
       } else {
         cat = categorizeToolCall((titles[i] || '').toLowerCase());
       }
@@ -7546,8 +8003,16 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      // Also check the full title for keywords like "read file" or "search for"
      // but only match word-boundary keywords, not substrings inside paths.
      var kw = ' ' + t + ' ';
-     if (firstWord === 'read' || firstWord === 'cat' || firstWord === 'view' || kw.indexOf(' read ') >= 0 || kw.indexOf(' view ') >= 0) return 'read';
-     if (firstWord === 'edit' || firstWord === 'write' || firstWord === 'patch' || firstWord === 'apply' || kw.indexOf(' edit ') >= 0 || kw.indexOf(' write ') >= 0 || kw.indexOf(' patch ') >= 0) return 'edit';
+     if (firstWord === 'read' || firstWord === 'read_file' || firstWord === 'fs_read' ||
+         firstWord.indexOf('read_') === 0 || firstWord === 'cat' || firstWord === 'view' ||
+         kw.indexOf(' read ') >= 0 || kw.indexOf(' view ') >= 0 || kw.indexOf(' read_file ') >= 0) {
+       return 'read';
+     }
+     if (firstWord === 'edit' || firstWord === 'write' || firstWord === 'write_file' ||
+         firstWord === 'patch' || firstWord === 'apply' || firstWord.indexOf('edit_') === 0 ||
+         kw.indexOf(' edit ') >= 0 || kw.indexOf(' write ') >= 0 || kw.indexOf(' patch ') >= 0) {
+       return 'edit';
+     }
      if (firstWord === 'search' || firstWord === 'grep' || firstWord === 'find' || firstWord === 'glob' || firstWord === 'rg' || kw.indexOf(' search ') >= 0 || kw.indexOf(' grep ') >= 0 || kw.indexOf(' find ') >= 0) return 'search';
      if (firstWord === 'ls' || firstWord === 'command' || firstWord === 'exec' || firstWord === 'shell' || firstWord === 'run' || firstWord === 'cd' || kw.indexOf(' command ') >= 0 || kw.indexOf(' exec ') >= 0 || kw.indexOf(' run ') >= 0) return 'command';
      if (firstWord === 'plan' || firstWord === 'todo' || kw.indexOf(' plan ') >= 0 || kw.indexOf(' todo ') >= 0) return 'plan';
@@ -7576,22 +8041,31 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
   // spawnAgent, sendInput, resumeAgent, wait, closeAgent.
   // Kiro may send similar agent-spawning tool calls.
   var subagentToolNames = new Set([
-    'spawnAgent', 'spawn_agent', 'spawn_agents_on_csv',
-    'sendInput', 'send_input',
-    'resumeAgent', 'resume_agent',
-    'waitAgent', 'wait_agent', 'wait',
-    'closeAgent', 'close_agent',
-    'listAgents', 'list_agents',
-    'followupTask', 'followup_task',
-    'interruptAgent', 'interrupt_agent',
-    'reportAgentJobResult', 'report_agent_job_result',
+    'spawnagent', 'spawn_agent', 'spawn_agents_on_csv',
+    'sendinput', 'send_input',
+    'resumeagent', 'resume_agent',
+    'waitagent', 'wait_agent', 'wait',
+    'closeagent', 'close_agent',
+    'listagents', 'list_agents',
+    'followuptask', 'followup_task',
+    'interruptagent', 'interrupt_agent',
+    'reportagentjobresult', 'report_agent_job_result',
   ]);
   function isSubagentToolCall(title, toolKind) {
-    // Check by exact tool name match (case-insensitive)
+    // Concrete ACP file/command kinds are never collab-agent controls — even
+    // when the title/path is literally "close_agent" / "wait" / etc.
+    if (toolKind === 'read' || toolKind === 'edit' || toolKind === 'delete' ||
+        toolKind === 'move' || toolKind === 'search' || toolKind === 'fetch' ||
+        toolKind === 'execute') {
+      return false;
+    }
     var t = (title || '').trim();
-    if (subagentToolNames.has(t)) return true;
-    // Also check common patterns
+    if (!t) return false;
+    // Paths / filenames (e.g. reading src/close_agent.rs) are not agent ops.
+    if (/[\\/]/.test(t) || /\\.[a-zA-Z0-9]{1,8}$/.test(t)) return false;
     var lower = t.toLowerCase();
+    if (subagentToolNames.has(lower)) return true;
+    // Also check common patterns (human-readable titles, not bare filenames)
     if (lower.startsWith('spawn') && lower.includes('agent')) return true;
     if (lower.startsWith('subagent') || lower.startsWith('sub_agent')) return true;
     // Kiro CLI sends subagent tool calls with human-readable titles:
@@ -7619,16 +8093,36 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
   }
  
    function updateToolGroupSummary(summaryEl, count, titles, kinds, rawInputs) {
+     var toolCount = count || (titles && titles.length) || 0;
+     if (!toolCount) {
+       var turn = summaryEl.closest && summaryEl.closest('.turn');
+       if (turn) toolCount = turn.querySelectorAll('.tool-call-inline').length;
+     }
+     // Hide the collapse header until there is at least one tool call —
+     // no "0 tool calls" / empty label during intermediate thought/reply.
+     if (toolCount === 0) {
+       summaryEl.style.display = 'none';
+       summaryEl.innerHTML = '';
+       return;
+     }
+     summaryEl.style.display = '';
+     var body = summaryEl.nextElementSibling;
+     var collapsed = !!(body && body.classList.contains('collapsed'));
      var detail = generateToolGroupSummary(titles, kinds, rawInputs);
-     var collapsed = summaryEl.nextElementSibling && summaryEl.nextElementSibling.classList.contains('collapsed');
+     if (!detail) detail = toolCount + ' tool call' + (toolCount === 1 ? '' : 's');
      summaryEl.innerHTML = (collapsed ? '▸ ' : '▾ ') + '<span class="tc-summary-detail">' + escapeHtml(detail) + '</span>';
    }
 
-    /** Commit the current text segment to history and request its markdown render. */
-  function commitCurrentTextSegment() {
+    /**
+     * Commit the current text segment to history and request its markdown render.
+     * @param opts.interim  when true (mid-turn, before more tools), tuck the
+     *   segment into the collapse fold so only the final summary stays visible.
+     */
+  function commitCurrentTextSegment(opts) {
     if (!currentAssistantText) return;
+    var asInterim = !!(opts && opts.interim);
     var _commitPreview = currentAssistantText.replace(/\\s+/g, ' ').slice(0, 80);
-    vscode.postMessage({ type: 'debugLog', message: '[WV-COMMIT] commitCurrentTextSegment: textLen=' + currentAssistantText.length + ' hasEl=' + !!currentAssistantEl + ' chatHistoryLen BEFORE=' + chatHistory.length + ' preview="' + _commitPreview + '"' });
+    vscode.postMessage({ type: 'debugLog', message: '[WV-COMMIT] commitCurrentTextSegment: textLen=' + currentAssistantText.length + ' hasEl=' + !!currentAssistantEl + ' interim=' + asInterim + ' chatHistoryLen BEFORE=' + chatHistory.length + ' preview="' + _commitPreview + '"' });
     streamingRenderGen++; // invalidate any in-flight streaming renders
     var committedText = currentAssistantText;
     chatHistory.push({ kind: 'message', role: 'assistant', text: committedText });
@@ -7655,7 +8149,18 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      }
     // Mark the element as committed so promptStart can distinguish it
     // from orphaned slash-command responses.
-    if (currentAssistantEl) { currentAssistantEl.classList.add('md-committed'); }
+    if (currentAssistantEl) {
+      currentAssistantEl.classList.add('md-committed');
+      if (asInterim && compactMode) {
+        moveAssistantIntoFold(currentAssistantEl);
+        // Next tools must open a new group after this interim segment.
+        currentToolsListEl = null;
+      } else {
+        // Final segment: lift out of the fold (e.g. text-only turn that was
+        // provisionally folded, or summary that already streams outside).
+        placeSummaryAssistant(currentAssistantEl);
+      }
+    }
     currentAssistantEl = null;
     currentAssistantText = '';
     if (streamingRenderTimer) { clearTimeout(streamingRenderTimer); streamingRenderTimer = null; }
@@ -7669,7 +8174,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       // [toolCall, assistantText] which happens when addToolCallInline
       // calls ensureTurnTools → commitCurrentTextSegment AFTER the push.
       if (currentAssistantText) {
-        commitCurrentTextSegment();
+        commitCurrentTextSegment({ interim: true });
       }
       chatHistory.push({ kind: 'toolCall', toolCallId, title, status, rawInput, toolKind, locations: locations || null });
       saveState();
@@ -7904,6 +8409,8 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      // Only show tooltips on expanded tool rows — never on the collapsed summary.
      var parentList = el.closest('.turn-tools-list');
      if (parentList && parentList.classList.contains('collapsed')) return;
+     var foldBody = el.closest('.turn-fold-body');
+     if (foldBody && foldBody.classList.contains('collapsed')) return;
 
      var titleEl = el.querySelector('.tc-title');
      var title = (titleEl && titleEl.textContent) || el._toolTitle || '';
@@ -8018,7 +8525,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         currentToolsCountEl._hasSubagent = true;
         currentToolsCountEl._hasSpawnAgent = true;
       }
-      updateToolGroupSummary(currentToolsCountEl, currentToolCount, currentToolsCountEl._titles, currentToolsCountEl._kinds, currentToolsCountEl._rawInputs || []);
+      if (currentToolsCountEl.classList.contains('turn-tools-summary')) {
+        updateToolGroupSummary(currentToolsCountEl, currentToolCount, currentToolsCountEl._titles, currentToolsCountEl._kinds, currentToolsCountEl._rawInputs || []);
+      }
      }
 
      const el = document.createElement('div');
@@ -8095,6 +8604,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      attachToolCallTooltip(el);
      currentToolsListEl.appendChild(el);
      toolCalls[toolCallId] = el;
+     if (compactMode && currentTurnEl) {
+       orderCompactFoldContents(getTurnFoldBody(currentTurnEl));
+     }
      autoScrollIfAtBottom();
    }
 
@@ -8138,25 +8650,24 @@ function renderChatHistory() {
   currentToolsCountEl = null;
   currentToolCount = 0;
   var assistantItems = [];
-  // Accumulate all thoughts within a turn so they render as a single
-  // collapsible block at the top of the turn, matching the live view where
-  // currentThoughtEl accumulates every agent_thought_chunk per turn.
+  // Buffer thoughts only until we can attach them to a turn; each thought
+  // renders as its own block (in history order) — never merge/overwrite.
   var turnThoughts = [];
   function flushTurnThought() {
     if (turnThoughts.length === 0) return;
-    var mergedText = turnThoughts.map(function (t) { return t.text; }).join('\\n\\n').trim();
-    var maxDur = turnThoughts.reduce(function (m, t) { return Math.max(m, t.durationSec || 0); }, 0);
-    var count = turnThoughts.length;
+    var pending = turnThoughts.slice();
     turnThoughts = [];
-    if (!mergedText) return; // nothing to show (e.g. whitespace-only reasoning)
     if (!currentTurnEl) {
       currentTurnEl = document.createElement('div');
       currentTurnEl.className = 'turn';
       messagesEl.appendChild(currentTurnEl);
       hideEmpty();
     }
-    addThoughtDOM(mergedText, maxDur);
-    trace('flushTurnThought: merged ' + count + ' thoughts, textLen=' + mergedText.length + ', dur=' + maxDur + 's');
+    pending.forEach(function (t) {
+      if (!t.text || !String(t.text).trim()) return;
+      addThoughtDOM(t.text, t.durationSec || 0);
+    });
+    trace('flushTurnThought: rendered ' + pending.length + ' separate thought block(s)');
   }
   for (var i = 0; i < chatHistory.length; i++) {
     var item = chatHistory[i];
@@ -8190,38 +8701,45 @@ function renderChatHistory() {
          vscode.postMessage({ type: 'debugLog', message: 'renderChatHistory displayText for item[' + i + ']: len=' + displayText.length + ' text="' + (displayText.length > 100 ? displayText.substring(0, 100) + '...' : displayText) + '"' });
          addMessageDOM(item.role, displayText);
         } else {
-           // Assistant message. Codex emits back-to-back agent turns with no
-           // interleaving user message (chatHistory order is
-           // assistant,tool(s),thought repeating). Each assistant therefore
-           // opens a NEW turn UNLESS the current turn only holds a lone thought
-           // still waiting for its assistant (the user,thought,assistant
-           // pattern). We detect the latter by checking whether the current turn
-           // already contains an assistant message.
+           // Assistant message. Same turn when tools already ran (mid-turn
+           // interim text + final summary). New turn only for back-to-back
+           // assistants with no tools between them.
            var turnHasAssistant = currentTurnEl && currentTurnEl.querySelector('.message.assistant');
-           if (turnHasAssistant) {
-             // This assistant starts a NEW Codex turn. The turn that just ended
-             // may have buffered thought(s) — flush them to its top first.
+           var turnHasTools = currentTurnEl && currentTurnEl.querySelector('.tool-call-inline');
+           if (turnHasAssistant && !turnHasTools) {
              flushTurnThought();
-             trace('  -> assistant: current turn already has assistant -> start NEW turn');
+             trace('  -> assistant: prior assistant without tools -> start NEW turn');
              currentTurnEl = null;
+             currentToolsListEl = null;
+             currentToolsCountEl = null;
+             currentToolCount = 0;
+           } else if (turnHasAssistant && turnHasTools) {
+             // Prior assistant segments in this turn become interim (folded).
+             Array.prototype.forEach.call(
+               currentTurnEl.querySelectorAll('.message.assistant'),
+               function(a) {
+                 a.classList.add('assistant-interim');
+                 a.classList.remove('assistant-summary');
+               }
+             );
+             trace('  -> assistant: same turn after tools, prior assistants marked interim');
            }
            if (!currentTurnEl) {
              currentTurnEl = document.createElement('div');
              currentTurnEl.className = 'turn';
              messagesEl.appendChild(currentTurnEl);
-             trace('  -> assistant: created/reused turn, append message');
+             currentToolsListEl = null;
+             currentToolsCountEl = null;
+             currentToolCount = 0;
+             trace('  -> assistant: created turn, append message');
            } else {
-             trace('  -> assistant: reuse turn (lone thought waiting), append message');
+             trace('  -> assistant: reuse turn, append message');
            }
-           // Reset tool group for the new assistant turn
-           currentToolsListEl = null;
-           currentToolsCountEl = null;
-           currentToolCount = 0;
            hideEmpty();
            var msgEl = document.createElement('div');
            msgEl.className = 'message ' + item.role;
            msgEl.textContent = item.text;
-           currentTurnEl.appendChild(msgEl);
+           placeAssistantInTurn(msgEl);
          }
          if (item.role === 'assistant') {
           assistantItems.push({ index: i, text: item.text });
@@ -8231,13 +8749,17 @@ function renderChatHistory() {
          }
          break;
         case 'thought':
-          // Buffer the thought; it is flushed as a single merged block when the
-          // turn ends (or at end of list), matching the live view's one-thought-
-          // per-turn layout. Skip whitespace-only entries (stray empty blocks).
+          // Render each thought as its own block in history order (do not merge).
           if (item.text && String(item.text).trim()) {
-            turnThoughts.push({ text: item.text, durationSec: item.durationSec || 0 });
+            if (!currentTurnEl) {
+              currentTurnEl = document.createElement('div');
+              currentTurnEl.className = 'turn';
+              messagesEl.appendChild(currentTurnEl);
+              hideEmpty();
+            }
+            addThoughtDOM(item.text, item.durationSec || 0);
+            trace('  -> thought: rendered block (textLen=' + item.text.length + ',dur=' + (item.durationSec || 0) + 's)');
           }
-          trace('  -> thought: buffered (textLen=' + (item.text ? item.text.length : 0) + ',dur=' + (item.durationSec || 0) + 's), turnThoughts=' + turnThoughts.length);
           break;
        case 'toolCall':
          addToolCallInline(item.toolCallId, item.title, item.status,
@@ -8257,37 +8779,39 @@ function renderChatHistory() {
    currentToolsListEl = null;
    currentToolsCountEl = null;
    currentToolCount = 0;
-  // Collapse all tool call groups in restored history for a compact view.
- var toolLists = messagesEl.querySelectorAll('.turn-tools-list');
- toolLists.forEach(function(list) {
-   var summary = list.previousElementSibling;
-   if (summary && summary.classList.contains('turn-tools-summary')) {
-     // Collect titles from the tool call elements for the summary
-     var titles = [];
-     var kinds = [];
-     var rawInputs = [];
-     var hasSubagent = false;
-     var tcEls = list.querySelectorAll('.tool-call-inline');
-     tcEls.forEach(function(tc) {
-       var tcTitle = tc.querySelector('.tc-title') ? tc.querySelector('.tc-title').textContent : '';
-       var tcKind = tc.dataset.toolKind || null;
-       var tcRaw = tc._rawInput || null;
-       titles.push(tcTitle);
-       kinds.push(tcKind);
-       rawInputs.push(tcRaw);
-       if (isSubagentToolCall(tcTitle, tcKind)) hasSubagent = true;
-     });
-     var count = parseInt(summary.dataset.count || '0', 10);
-     summary._titles = titles;
-     summary._kinds = kinds;
-     summary._rawInputs = rawInputs;
-     summary._hasSubagent = hasSubagent;
-     // Collapse turns with subagent events into a single summary.
-     // spawnAgent/wait/closeAgent are orchestration events — collapsed by default.
-     list.classList.add('collapsed');
-     updateToolGroupSummary(summary, count, titles, kinds, rawInputs);
-   }
- });
+  // Collect tool titles from every tools group, then (in compact mode) fold.
+  messagesEl.querySelectorAll('.turn').forEach(function(turn) {
+    var lists = turn.querySelectorAll('.turn-tools-list');
+    var summary = getTurnSummaryEl(turn);
+    if (lists.length && summary) {
+      var titles = [];
+      var kinds = [];
+      var rawInputs = [];
+      var hasSubagent = false;
+      lists.forEach(function(list) {
+        list.querySelectorAll('.tool-call-inline').forEach(function(tc) {
+          var tcTitle = tc.querySelector('.tc-title') ? tc.querySelector('.tc-title').textContent : '';
+          var tcKind = tc.dataset.toolKind || null;
+          var tcRaw = tc._rawInput || null;
+          titles.push(tcTitle);
+          kinds.push(tcKind);
+          rawInputs.push(tcRaw);
+          if (isSubagentToolCall(tcTitle, tcKind)) hasSubagent = true;
+        });
+      });
+      summary._titles = titles;
+      summary._kinds = kinds;
+      summary._rawInputs = rawInputs;
+      summary._hasSubagent = hasSubagent;
+      summary.dataset.count = String(titles.length);
+    }
+    if (compactMode) {
+      ensureTurnFoldStructure(turn, true);
+      promoteFinalAssistantForTurn(turn);
+    } else if (lists.length && summary) {
+      updateToolGroupSummary(summary, parseInt(summary.dataset.count || '0', 10), summary._titles || [], summary._kinds || [], summary._rawInputs || []);
+    }
+  });
    return assistantItems;
  }
 
@@ -8425,18 +8949,8 @@ function renderChatHistory() {
      * the next turn starts fresh.
      */
     function finalizeCurrentAssistantTurn() {
-      if (currentThoughtText) {
-        finalizeThought();
-        const tEnd = thoughtEndTime || Date.now();
-        if (currentThoughtText.trim()) {
-          chatHistory.push({
-            kind: 'thought',
-            text: currentThoughtText,
-            durationSec: thoughtStartTime ? Math.round((tEnd - thoughtStartTime) / 1000) : 0,
-          });
-        } else if (currentThoughtEl && currentThoughtEl.parentNode) {
-          currentThoughtEl.parentNode.removeChild(currentThoughtEl);
-        }
+      if (currentThoughtEl || currentThoughtText || thoughtDomBase) {
+        commitOrDiscardCurrentThought();
       }
       if (currentAssistantText) {
         chatHistory.push({ kind: 'message', role: 'assistant', text: currentAssistantText });
@@ -8476,7 +8990,7 @@ function renderChatHistory() {
     } else {
       trace('    addThoughtDOM: reusing existing turn (children=' + currentTurnEl.children.length + '), prepended thought to top');
     }
-    currentTurnEl.insertBefore(el, currentTurnEl.firstChild);
+    placeThoughtInTurn(el);
     scrollToBottom();
   }
 
@@ -8696,19 +9210,9 @@ sessionState = {
       vscode.postMessage({ type: 'debugLog', message: '[WV-PROMPTEND] promptEnd received. chatHistoryLen=' + chatHistory.length + ' currentAssistantTextLen=' + currentAssistantText.length + ' hasCurrentAssistantEl=' + !!currentAssistantEl });
        // Safety: reset isCompacting in case compacted message was missed
        if (isCompacting) { isCompacting = false; if (statusEl) statusEl.innerHTML = ''; }
-          // Finalize thought block if present
-          if (currentThoughtText) {
-            finalizeThought();
-            const tEnd = thoughtEndTime || Date.now();
-            if (currentThoughtText.trim()) {
-              chatHistory.push({
-                kind: 'thought',
-                text: currentThoughtText,
-                durationSec: thoughtStartTime ? Math.round((tEnd - thoughtStartTime) / 1000) : 0,
-              });
-            } else if (currentThoughtEl && currentThoughtEl.parentNode) {
-              currentThoughtEl.parentNode.removeChild(currentThoughtEl);
-            }
+          // Finalize thought block if present (DOM+buffers — don't drop on whitespace chunk)
+          if (currentThoughtEl || currentThoughtText || thoughtDomBase) {
+            commitOrDiscardCurrentThought();
           }
         commitCurrentTextSegment();
         // Mark all in-progress tool calls as completed. Some agents (e.g. Kiro CLI)
@@ -8739,22 +9243,17 @@ sessionState = {
           setTimeout(() => { if (statusEl.textContent === '— Conversation interrupted —') { statusEl.textContent = ''; } }, 5000);
       }
      }
-    // Auto-collapse tool calls in completed turns (respect compact mode)
-     if (currentToolsListEl) {
+    // Auto-collapse completed turns (respect compact mode): hide thought +
+    // tools + reply behind the summary line.
+     if (currentTurnEl) {
         if (currentToolsCountEl) currentToolsCountEl.dataset.count = String(currentToolCount);
-        // Collapse turns with subagent events (spawnAgent/wait/closeAgent etc.)
-        // into a single collapsed summary. These are orchestration events that
-        // don't need to be expanded by default — the summary shows
-        // "spawned N subagents" or "N subagent ops".
         var _hasSubagent = currentToolsCountEl && currentToolsCountEl._hasSubagent;
-        if (_hasSubagent) {
-          currentToolsListEl.classList.add('collapsed');
-        } else if (compactMode || currentToolCount > 3) {
-          currentToolsListEl.classList.add('collapsed');
+        var _shouldCollapse = compactMode || _hasSubagent || currentToolCount > 3;
+        if (_shouldCollapse) {
+          ensureTurnFoldStructure(currentTurnEl, true);
+        } else if (currentToolsCountEl && currentToolsCountEl.classList.contains('turn-tools-summary')) {
+          updateToolGroupSummary(currentToolsCountEl, currentToolCount, currentToolsCountEl._titles || [], currentToolsCountEl._kinds || [], currentToolsCountEl._rawInputs || []);
         }
-         if (currentToolsCountEl) {
-           updateToolGroupSummary(currentToolsCountEl, currentToolCount, currentToolsCountEl._titles || [], currentToolsCountEl._kinds || [], currentToolsCountEl._rawInputs || []);
-         }
         }
           currentToolsListEl = null;
           currentToolsCountEl = null;
@@ -9470,7 +9969,7 @@ sessionState = {
              }
              currentAssistantEl = document.createElement('div');
              currentAssistantEl.className = 'message assistant';
-             currentTurnEl.appendChild(currentAssistantEl);
+             placeAssistantInTurn(currentAssistantEl);
            }
            currentAssistantEl.textContent = compactedWarningText;
            commitCurrentTextSegment();
@@ -9485,15 +9984,10 @@ sessionState = {
           if (!currentAssistantEl && !currentAssistantText.trim()) {
             break;
           }
-          // Auto-collapse thought when assistant text starts.
-          // NOTE: finalizeThought() must be called even when the thought
-          // block is already collapsed (open=false). Codex creates thought
-          // blocks with open=false, so without this fix, finalizeThought()
-          // is never called and the summary stays as "Thinking…" with the
-          // streaming indicator forever, and thoughtEndTime is never set.
-          if (currentThoughtEl) {
-             finalizeThought();
-             currentThoughtEl.open = false;
+          // Commit the in-progress thought when assistant text starts so it
+          // stays in the turn (and history) and the next thought gets a new block.
+          if (currentThoughtEl || currentThoughtText || thoughtDomBase) {
+             commitOrDiscardCurrentThought();
            }
            // Non-compact: close the tools group so new text appears below it
            // (interleaved text/tool ordering). Compact mode keeps one group per
@@ -9513,7 +10007,7 @@ sessionState = {
              }
             currentAssistantEl = document.createElement('div');
             currentAssistantEl.className = 'message assistant';
-            currentTurnEl.appendChild(currentAssistantEl);
+            placeAssistantInTurn(currentAssistantEl);
             // Don't set textContent here — leave the element empty until the
             // first streaming markdown render completes. Setting raw text
             // immediately causes a flash of unrendered markdown (e.g. a stray
@@ -9610,14 +10104,22 @@ sessionState = {
        case 'agent_thought_chunk': {
          const content = update.content;
          if (content && content.type === 'text') {
+           currentThoughtText += content.text;
+           // Don't mount an empty Thinking… card — it flashes then vanishes when
+           // tools arrive before any real text (same idea as assistant bubbles).
+           if (!currentThoughtEl && !(thoughtDomBase + currentThoughtText).trim()) {
+             if (!thoughtStartTime) thoughtStartTime = Date.now();
+             break;
+           }
            if (!currentThoughtEl) {
-              // Non-compact: close the tools group so later content isn't
-              // trapped inside it. Compact mode keeps the group open so
-              // post-thought tool calls stay in the same collapsed summary.
-              if (!compactMode && currentToolsListEl) {
+              // Close the tools group so this thought (and later tools) stay in
+              // chronological order. placeThoughtInTurn also clears the list.
+              if (currentToolsListEl) {
                 currentToolsListEl = null;
-                currentToolsCountEl = null;
-                currentToolCount = 0;
+                if (!compactMode) {
+                  currentToolsCountEl = null;
+                  currentToolCount = 0;
+                }
               }
               if (!currentTurnEl) {
                 currentTurnEl = document.createElement('div');
@@ -9625,18 +10127,22 @@ sessionState = {
                 messagesEl.appendChild(currentTurnEl);
                 hideEmpty();
               }
-              // Reuse the turn's existing thought block when tools cleared the
-              // JS pointers mid-turn. Appending a second block was the source of
-              // the stray "Thought" card after the assistant summary.
-              var existingThought = currentTurnEl.querySelector(':scope > .thought-block');
+              // Only resume a still-streaming thought block. After a thought is
+              // finalized (tools arrived), the next thought segment must become
+              // a NEW block so older thoughts are not overwritten.
+              var streamingThoughts = currentTurnEl.querySelectorAll('.thought-block.streaming');
+              var existingThought = streamingThoughts.length
+                ? streamingThoughts[streamingThoughts.length - 1]
+                : null;
               if (existingThought) {
                 currentThoughtEl = existingThought;
                 currentThoughtTextEl = existingThought.querySelector('.thought-content');
                 thoughtDomBase = (currentThoughtTextEl && currentThoughtTextEl.textContent) || '';
                 if (thoughtDomBase && !/\\n$/.test(thoughtDomBase)) thoughtDomBase += '\\n\\n';
-                currentThoughtText = '';
+                // Keep the just-received chunk in currentThoughtText; don't wipe it.
                 thoughtEndTime = null;
                 currentThoughtEl.classList.add('streaming');
+                currentThoughtEl._thoughtCommitted = false;
                 var existingSummary = currentThoughtEl.querySelector('summary');
                 if (existingSummary) {
                   existingSummary.innerHTML = '<span class="thought-indicator"></span> Thinking\u2026';
@@ -9650,19 +10156,17 @@ sessionState = {
                    '<summary><span class="thought-indicator"></span> Thinking\u2026</summary>' +
                    '<div class="thought-content"></div>';
                 currentThoughtTextEl = currentThoughtEl.querySelector('.thought-content');
-                // Always pin thoughts to the top of the turn.
-                currentTurnEl.insertBefore(currentThoughtEl, currentTurnEl.firstChild);
-                thoughtStartTime = Date.now();
-                currentThoughtText = '';
+                // Append in turn order inside the fold (do not replace prior thoughts).
+                placeThoughtInTurn(currentThoughtEl);
+                if (!thoughtStartTime) thoughtStartTime = Date.now();
                 thoughtDomBase = '';
               }
             }
-           currentThoughtText += content.text;
            var displayThought = (thoughtDomBase + currentThoughtText).replace(/^\\s+/, '').replace(/\\n{3,}/g, '\\n\\n');
-           currentThoughtTextEl.textContent = displayThought;
+           if (currentThoughtTextEl) currentThoughtTextEl.textContent = displayThought;
            // Auto-scroll the thought content to top when expanded, so the
            // streaming text stays aligned to the top of the block.
-          if (currentThoughtEl.open) {
+          if (currentThoughtEl && currentThoughtEl.open && currentThoughtTextEl) {
             currentThoughtTextEl.scrollTop = 0;
           }
           autoScrollIfAtBottom();

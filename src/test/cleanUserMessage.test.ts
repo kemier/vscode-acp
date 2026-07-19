@@ -200,10 +200,7 @@ suite('cleanUserMessage', () => {
         'Additional ACP context:\n' +
         '[ACP resource_link] CodexApprovalHandler.ts (file:///Users/zaedinzeng/projects/codex-acp/src/CodexApprovalHandler.ts)\n' +
         'import * as acp from "@agentclientprotocol/sdk";\n';
-      assert.strictEqual(
-        cleanUserMessage(input),
-        "what's the relationship between vscode-acp and codex",
-      );
+      assert.strictEqual(cleanUserMessage(input), "what's the relationship between vscode-acp and codex");
     });
 
     test('returns empty string when chunk is ONLY context links (no real text)', () => {

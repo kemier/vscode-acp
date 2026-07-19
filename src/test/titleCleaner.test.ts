@@ -58,8 +58,7 @@ suite('cleanSessionTitle', () => {
   });
 
   test('strips trailing Additional ACP context dump', () => {
-    const input =
-      'hello world\n\nAdditional ACP context:\n[ACP resource_link] Foo.ts (file:///tmp/Foo.ts)\ncode';
+    const input = 'hello world\n\nAdditional ACP context:\n[ACP resource_link] Foo.ts (file:///tmp/Foo.ts)\ncode';
     assert.strictEqual(cleanSessionTitle(input), 'hello world');
   });
 
