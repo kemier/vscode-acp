@@ -7551,6 +7551,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         summary.dataset.count = '0';
         summary.style.display = 'none';
       }
+      // Only one summary header per turn — leftovers from older nested layouts
+      // stack as a second line and look like the detail was concatenated.
+      Array.prototype.slice.call(turn.querySelectorAll('.turn-tools-summary')).forEach(function(extra) {
+        if (extra !== summary) extra.remove();
+      });
       if (meaningfulThoughts.length) summary._hasThought = true;
       // Restore tool meta from wraps / lists when re-enabling Collapse.
       if ((!summary._titles || !summary._titles.length)) {
@@ -8151,6 +8156,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     // from orphaned slash-command responses.
     if (currentAssistantEl) {
       currentAssistantEl.classList.add('md-committed');
+      // Stable target for markdownRendered — index into querySelectorAll can
+      // drift when a live (uncommitted) assistant bubble exists beside interim ones.
+      currentAssistantEl.setAttribute('data-history-index', String(chatHistory.length - 1));
       if (asInterim && compactMode) {
         moveAssistantIntoFold(currentAssistantEl);
         // Next tools must open a new group after this interim segment.
@@ -8739,6 +8747,7 @@ function renderChatHistory() {
            var msgEl = document.createElement('div');
            msgEl.className = 'message ' + item.role;
            msgEl.textContent = item.text;
+           msgEl.setAttribute('data-history-index', String(i));
            placeAssistantInTurn(msgEl);
          }
          if (item.role === 'assistant') {
@@ -9498,6 +9507,9 @@ sessionState = {
            if (item.index === -1) {
              // Discard stale renders from a previous text segment
              if (item.gen !== undefined && item.gen !== streamingRenderGen) continue;
+             // Never paint streaming HTML onto an already-committed bubble
+             // (can happen if currentAssistantEl briefly lags a commit).
+             if (currentAssistantEl && currentAssistantEl.classList.contains('md-committed')) continue;
              vscode.postMessage({ type: 'debugLog', message: 'markdownRendered[-1]: gen=' + item.gen + ' currentGen=' + streamingRenderGen + ' hasEl=' + !!currentAssistantEl + ' htmlLen=' + (item.html ? item.html.length : 0) });
            if (currentAssistantEl) { currentAssistantEl.innerHTML = item.html; currentAssistantEl.classList.add('md-rendered'); wireFileLinks(currentAssistantEl); }
             if (currentAssistantEl) renderMermaidBlocks(currentAssistantEl);
@@ -9517,17 +9529,26 @@ sessionState = {
             continue;
           }
 
-          // Find the element — walk all .message.assistant elements
-           const allAssistant = messagesEl.querySelectorAll('.message.assistant');
-           vscode.postMessage({ type: 'debugLog', message: 'markdownRendered[' + item.index + ']: allAssistant.length=' + allAssistant.length + ' historyItem.role=' + (historyItem ? historyItem.role : 'null') });
-           // The item.index tracks position in chatHistory; count only assistant messages up to this index
-           let assistantIdx = 0;
-           for (let i = 0; i < chatHistory.length; i++) {
-             if (i === item.index) break;
-             if (chatHistory[i].kind === 'message' && chatHistory[i].role === 'assistant') assistantIdx++;
-           }
-           const el = allAssistant[assistantIdx];
-           vscode.postMessage({ type: 'debugLog', message: 'markdownRendered[' + item.index + ']: assistantIdx=' + assistantIdx + ' foundEl=' + !!el + ' htmlLen=' + (item.html ? item.html.length : 0) });
+          // Prefer the element tagged at commit time. Falling back to ordinal
+          // index is unsafe while a live (uncommitted) assistant exists — a
+          // late render for section 1 can overwrite section 2's bubble and
+          // then the next stream paint concatenates both into one block.
+          var el = messagesEl.querySelector('.message.assistant[data-history-index="' + item.index + '"]');
+          if (!el) {
+            const allAssistant = messagesEl.querySelectorAll('.message.assistant');
+            let assistantIdx = 0;
+            for (let i = 0; i < chatHistory.length; i++) {
+              if (i === item.index) break;
+              if (chatHistory[i].kind === 'message' && chatHistory[i].role === 'assistant') assistantIdx++;
+            }
+            el = allAssistant[assistantIdx] || null;
+          }
+          // Never clobber the in-progress streaming bubble with a history paint.
+          if (el && el === currentAssistantEl) {
+            vscode.postMessage({ type: 'debugLog', message: 'markdownRendered[' + item.index + ']: SKIPPED (targets live streaming el)' });
+            continue;
+          }
+           vscode.postMessage({ type: 'debugLog', message: 'markdownRendered[' + item.index + ']: foundEl=' + !!el + ' htmlLen=' + (item.html ? item.html.length : 0) });
            if (el) {
              // Skip if already rendered with the same HTML (prevents
              // copy-button blinking from duplicate renderMarkdown responses)
@@ -9538,6 +9559,7 @@ sessionState = {
              }
               el.classList.add('md-rendered');
               el.setAttribute('data-render-hash', renderHash);
+              el.setAttribute('data-history-index', String(item.index));
              el.innerHTML = item.html;
             wireFileLinks(el);
             renderMermaidBlocks(el);
