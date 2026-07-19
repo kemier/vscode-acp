@@ -65,11 +65,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   private followCoalescer: FollowCoalescer;
 
   /**
-   * Cache of model slug → supports-image flag, loaded from
-   * ~/.codex/model_catalog.json (written by ericai-proxy start.sh).
-   * Used to determine per-model image capability when the agent
-   * advertises image: true at the agent level but doesn't send
-   * per-model input_modalities (e.g. Kiro CLI).
+   * Cache of model slug → supports-image flag, loaded from ~/.codex
+   * catalog JSON files (`model_catalog.json`, `model.json`, `*models.json`).
+   * Only `true` when `input_modalities` explicitly includes `"image"`.
    */
   private modelImageSupport: Map<string, boolean> | null = null;
   private modelImageSupportLoaded = false;
@@ -2559,9 +2557,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
-   * Load model → supports-image map from ~/.codex/model_catalog.json.
-   * Called lazily on first use. The catalog is written by ericai-proxy
-   * start.sh and contains `input_modalities` per model.
+   * Load model → supports-image map from ~/.codex catalog JSON files.
+   * A model is image-capable only when `input_modalities` explicitly
+   * includes `"image"`. Missing / unclear modalities → false.
    */
   private loadModelImageSupport(): void {
     if (this.modelImageSupportLoaded) {
@@ -2569,48 +2567,64 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     }
     this.modelImageSupportLoaded = true;
     const map = new Map<string, boolean>();
-    // Read the codex model catalog (written by ericai-proxy start.sh).
-    // Kiro models are NOT in the codex catalog; for Kiro we use
-    // modelSupportsImageForAgent() which checks the model name pattern.
-    const catalogPaths = [path.join(os.homedir(), '.codex', 'model_catalog.json')];
+    const codexDir = path.join(os.homedir(), '.codex');
+    const catalogPaths = new Set<string>([
+      path.join(codexDir, 'model_catalog.json'),
+      path.join(codexDir, 'model.json'),
+    ]);
+    try {
+      for (const name of fs.readdirSync(codexDir)) {
+        if (/model.*\.json$/i.test(name) || /models\.json$/i.test(name)) {
+          catalogPaths.add(path.join(codexDir, name));
+        }
+      }
+    } catch {
+      // ~/.codex missing — leave map empty
+    }
+
     for (const catalogPath of catalogPaths) {
       try {
-        const raw = fs.readFileSync(catalogPath, 'utf-8');
-        const data = JSON.parse(raw);
+        const data = JSON.parse(fs.readFileSync(catalogPath, 'utf-8'));
         for (const m of data.models || []) {
-          const slug = m.slug as string;
-          const modalities: string[] = m.input_modalities || ['text'];
-          map.set(slug, modalities.includes('image'));
+          const slug = typeof m?.slug === 'string' ? m.slug : '';
+          if (!slug) {
+            continue;
+          }
+          const modalities = m.input_modalities;
+          // Only show image upload when the catalog explicitly lists image.
+          const supports =
+            Array.isArray(modalities) && modalities.map(String).includes('image');
+          // Prefer an explicit true if any catalog file claims image support.
+          if (supports || !map.has(slug)) {
+            map.set(slug, supports);
+          }
         }
       } catch {
         // Catalog not found or invalid — skip it
       }
     }
-    this.modelImageSupport = map.size > 0 ? map : null;
+    this.modelImageSupport = map;
   }
 
   /**
    * Check if a model supports image input.
-   * For Codex CLI: uses the model catalog (~/.codex/model_catalog.json).
-   * For Kiro CLI: uses the model name — Claude models support images,
-   *   all others (minimax, qwen, glm, kimi) are text-only.
-   * Returns undefined if no info available.
+   * For Codex / catalog-backed agents: true only when ~/.codex catalogs
+   * list the model with `input_modalities` including `"image"`. Unknown
+   * models and text-only entries return false (hide upload).
+   * For Kiro CLI: Claude models support images; others are text-only.
    */
-  private modelSupportsImage(modelId: string, agentName?: string): boolean | undefined {
+  private modelSupportsImage(modelId: string, agentName?: string): boolean {
     // Strip effort suffix: "glm-5.2[high]" → "glm-5.2"
     const base = modelId.replace(/\[(?:low|medium|high|xhigh|max|none)\]$/, '');
     // For Kiro CLI, determine from model name — no catalog file.
     if (agentName && /kiro/i.test(agentName)) {
-      // Claude models support image input; all others are text-only.
       return /claude/i.test(base);
     }
-    // For Codex CLI (and other agents), use the model catalog.
     this.loadModelImageSupport();
-    if (!this.modelImageSupport) {
-      return undefined;
+    if (!this.modelImageSupport || this.modelImageSupport.size === 0) {
+      return false;
     }
-    const result = this.modelImageSupport.get(base);
-    return result;
+    return this.modelImageSupport.get(base) === true;
   }
 
   /**
@@ -7041,14 +7055,20 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
 
         dropdown.classList.remove('open');
        vscode.postMessage({ type: 'setConfigOption', configId, value });
-       // If this is a model change, update attach button visibility
+       // If this is a model change, update attach button visibility immediately.
        if (configId === 'model' || opt.category === 'model') {
-         // For Kiro, check model name pattern; for others, the
-         // modelsUpdate message will provide the authoritative value.
          var agent = sessionState && sessionState.agentName ? sessionState.agentName : '';
+         var modelBase2 = value.replace(/\\[(?:low|medium|high|xhigh|max|none)\\]$/, '');
          if (agent && /kiro/i.test(agent)) {
-          var modelBase2 = value.replace(/\\[(?:low|medium|high|xhigh|max|none)\\]$/, '');
            if (attachBtn) attachBtn.style.display = /claude/i.test(modelBase2) ? '' : 'none';
+         } else if (sessionState && sessionState.modelImageMap) {
+           var mapped = Object.prototype.hasOwnProperty.call(sessionState.modelImageMap, modelBase2)
+             ? !!sessionState.modelImageMap[modelBase2]
+             : false;
+           if (sessionState) sessionState.currentModelImageSupport = mapped;
+           updateAttachButtonVisibility(undefined, mapped);
+         } else {
+           updateAttachButtonVisibility(undefined, false);
          }
        }
        return;
@@ -8566,17 +8586,12 @@ sessionState = {
 
   /**
    * Show/hide the image attach button based on:
-  * 1. Agent-level promptCapabilities.image (from ACP initialize response)
- * 2. Per-model capability from the model catalog (~/.codex/model_catalog.json),
- *    which contains input_modalities per model. The extension reads this
- *    and passes modelImageMap (slug → boolean). The webview looks up the
- *    current model (effort suffix stripped) in this map:
- *    - found true → show button
- *    - found false → hide button
- *    - not found → trust agent-level capability
- * 3. For Kiro CLI agents, model name pattern is used: Claude models
- *    support images, all others (minimax, qwen, glm, kimi) are text-only.
-*/
+   * 1. Agent-level promptCapabilities.image (must be true)
+   * 2. Per-model capability from ~/.codex catalogs (input_modalities):
+   *    - explicitly includes "image" → show
+   *    - text-only / missing / unknown model → hide
+   * 3. Kiro CLI: Claude model names only
+   */
  function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
    if (!attachBtn) { return; }
    const caps = promptCaps || (sessionState && sessionState.promptCapabilities) || null;
@@ -8591,23 +8606,24 @@ sessionState = {
      attachBtn.style.display = /claude/i.test(kiroBase) ? '' : 'none';
      return;
    }
-   // Agent supports image at the capability level.
-   // Check per-model info: explicit arg > sessionState > modelImageMap lookup.
-   if (modelImageSupport !== undefined) {
+   // Codex / catalog-backed: only show when the catalog explicitly allows image.
+   if (modelImageSupport === true || modelImageSupport === false) {
      attachBtn.style.display = modelImageSupport ? '' : 'none';
-   } else if (sessionState && sessionState.currentModelImageSupport !== undefined) {
-     attachBtn.style.display = sessionState.currentModelImageSupport ? '' : 'none';
-   } else if (currentModelId && sessionState && sessionState.modelImageMap) {
-    var modelBase = currentModelId.replace(/\\[(?:low|medium|high|xhigh|max|none)\\]$/, '');
-     if (modelBase in sessionState.modelImageMap) {
-       attachBtn.style.display = sessionState.modelImageMap[modelBase] ? '' : 'none';
-     } else {
-       attachBtn.style.display = '';
-     }
-   } else {
-     // No per-model info — trust the agent-level capability
-     attachBtn.style.display = '';
+     return;
    }
+   if (sessionState && (sessionState.currentModelImageSupport === true || sessionState.currentModelImageSupport === false)) {
+     attachBtn.style.display = sessionState.currentModelImageSupport ? '' : 'none';
+     return;
+   }
+   if (currentModelId && sessionState && sessionState.modelImageMap) {
+    var modelBase = currentModelId.replace(/\\[(?:low|medium|high|xhigh|max|none)\\]$/, '');
+     if (Object.prototype.hasOwnProperty.call(sessionState.modelImageMap, modelBase)) {
+       attachBtn.style.display = sessionState.modelImageMap[modelBase] ? '' : 'none';
+       return;
+     }
+   }
+   // Not clarified in catalog → do not show upload.
+   attachBtn.style.display = 'none';
  }
 
    // Handle messages from the extension
