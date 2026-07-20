@@ -8463,7 +8463,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         titles.push(tcTitle);
         kinds.push(tcKind);
         rawInputs.push(tc._rawInput || null);
-        if (isSubagentToolCall(tcTitle, tcKind)) hasSubagent = true;
+        if (isSubagentToolCall(tcTitle, tcKind, tc._rawInput || null)) hasSubagent = true;
       });
       return { titles: titles, kinds: kinds, rawInputs: rawInputs, hasSubagent: hasSubagent, count: titles.length };
     }
@@ -8685,20 +8685,22 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     for (var i = 0; i < titles.length; i++) {
       var cat;
       var kind = kinds && kinds[i];
+      var ri = rawInputs && rawInputs[i];
       // Prefer concrete ACP kinds (read/edit/…) over title heuristics. A read of
       // a file named close_agent must not become "1 subagent op".
-      if (kind && kind !== 'other' && kind !== 'think') {
-        cat = acpKindToCategory(kind);
-      } else if (isSubagentToolCall(titles[i], kind)) {
+      // kind=think is excluded: Claude Agent spawns misuse think + description
+      // titles on resume — detect those via rawInput/toolName first.
+      if (isSubagentToolCall(titles[i], kind, ri)) {
         cat = 'agent';
         // Distinguish spawn (creates agents) from other agent ops (wait/close/etc)
-        if (isSubagentSpawnTitle(titles[i])) {
+        if (isSubagentSpawnTitle(titles[i], ri)) {
           // For Kiro's "Spawning agent crew", count stages array
-          var ri = rawInputs && rawInputs[i];
           spawnCount += getSubagentSpawnCount(titles[i], ri);
         } else {
           agentOpCount++;
         }
+      } else if (kind && kind !== 'other' && kind !== 'think') {
+        cat = acpKindToCategory(kind);
       } else if (kind) {
         cat = acpKindToCategory(kind);
       } else {
@@ -8784,7 +8786,30 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     'interruptagent', 'interrupt_agent',
     'reportagentjobresult', 'report_agent_job_result',
   ]);
-  function isSubagentToolCall(title, toolKind) {
+  /**
+   * Claude Agent spawn shape. Live turns use title "Task"; session/load resume
+   * often replaces the title with the task description and keeps
+   * kind=think + rawInput.subagent_type / _meta.claudeCode.toolName=Agent.
+   * Without this, resume summaries become "N plan updates" instead of
+   * "spawned N subagents".
+   */
+  function looksLikeClaudeAgentSpawn(title, rawInput, toolName) {
+    var tn = String(toolName || '').trim().toLowerCase();
+    if (tn === 'agent') return true;
+    if (rawInput && typeof rawInput === 'object') {
+      if (typeof rawInput.subagent_type === 'string' && rawInput.subagent_type.trim()) {
+        return true;
+      }
+      // Persist/restore may stash the protocol tool name on rawInput.
+      if (String(rawInput._toolName || '').trim().toLowerCase() === 'agent') {
+        return true;
+      }
+    }
+    var lower = String(title || '').trim().toLowerCase();
+    return lower === 'task' || lower === 'agent';
+  }
+
+  function isSubagentToolCall(title, toolKind, rawInput, toolName) {
     // Concrete ACP file/command kinds are never collab-agent controls — even
     // when the title/path is literally "close_agent" / "wait" / etc.
     if (toolKind === 'read' || toolKind === 'edit' || toolKind === 'delete' ||
@@ -8792,6 +8817,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         toolKind === 'execute') {
       return false;
     }
+    if (looksLikeClaudeAgentSpawn(title, rawInput, toolName)) return true;
     var t = (title || '').trim();
     if (!t) return false;
     // Paths / filenames (e.g. reading src/close_agent.rs) are not agent ops.
@@ -8811,21 +8837,18 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     if (lower === 'summarizing') return true;
     if (lower.includes('spawning') && lower.includes('agent')) return true;
     if (lower.includes('agent crew')) return true;
-    // Claude ACP Agent tool: title is usually "Task", toolName "Agent" in _meta.
-    if (lower === 'task' || lower === 'agent') return true;
     return false;
   }
 
-  function isSubagentSpawnTitle(title) {
+  function isSubagentSpawnTitle(title, rawInput, toolName) {
+    if (looksLikeClaudeAgentSpawn(title, rawInput, toolName)) return true;
     var tn = (title || '').trim();
     var tnLower = tn.toLowerCase();
     return tn === 'spawnAgent' || tn === 'spawn_agent' || tn === 'spawn_agents_on_csv' ||
       (tnLower.startsWith('spawn') && tnLower.includes('agent')) ||
       tnLower === 'subagent' ||
       (tnLower.includes('spawning') && tnLower.includes('agent')) ||
-      tnLower.includes('agent crew') ||
-      tnLower === 'task' ||
-      tnLower === 'agent';
+      tnLower.includes('agent crew');
   }
 
   // Count how many subagents a tool call spawns.
@@ -9026,6 +9049,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     if (typeof rawInput.description === 'string') slim.description = rawInput.description.slice(0, 200);
     if (typeof rawInput.subagent_type === 'string') slim.subagent_type = rawInput.subagent_type.slice(0, 80);
     if (typeof rawInput.name === 'string') slim.name = rawInput.name.slice(0, 80);
+    if (typeof rawInput._toolName === 'string') slim._toolName = rawInput._toolName.slice(0, 40);
     if (Array.isArray(rawInput.stages)) {
       slim.stages = rawInput.stages.map(function(stage) {
         if (!stage || typeof stage !== 'object') return { name: 'stage' };
@@ -9817,7 +9841,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          description: stageMeta.description || '',
        }],
      });
-     var spawnTitle = isSubagentSpawnTitle(title) ? title : 'Task';
+     var spawnTitle = 'Task';
+     // Keep Codex/Kiro protocol spawn titles; Claude description titles → Task.
+     if (isSubagentSpawnTitle(title) && !looksLikeClaudeAgentSpawn(title, null)) {
+       spawnTitle = title;
+     }
      // Spawn ack often arrives as completed; stages stay spinning until promptEnd.
      var parentStatus = (status === 'failed' || status === 'error') ? status : 'running';
      ensureTurnTools();
@@ -9884,13 +9912,13 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      // Kiro stages[] → aggregate into one Kiro-style crew card.
      var hasKiroStages = rawInput && typeof rawInput === 'object' &&
        Array.isArray(rawInput.stages) && rawInput.stages.length > 0;
-     if (isSubagentSpawnTitle(title) && !hasKiroStages) {
+     if (isSubagentSpawnTitle(title, rawInput) && !hasKiroStages) {
        addOrExtendSubagentCrew(toolCallId, title, status, rawInput, toolKind, locations);
        return;
      }
      // Restored synthetic crew (single stage) — append to existing crew card.
      // Native Kiro multi-stage crews take the normal stages-render path below.
-     if (isSubagentSpawnTitle(title) && hasKiroStages && rawInput.stages.length === 1) {
+     if (isSubagentSpawnTitle(title, rawInput) && hasKiroStages && rawInput.stages.length === 1) {
        var existingCrew = findCurrentTurnSubagentCrew();
        if (existingCrew) {
          addOrExtendSubagentCrew(toolCallId, title, status, rawInput, toolKind, locations);
@@ -9909,7 +9937,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        currentToolsCountEl._kinds.push(toolKind || null);
        currentToolsCountEl._rawInputs.push(rawInput || null);
        currentToolsCountEl._locations.push(locations || null);
-       if (hasKiroStages || isSubagentToolCall(title, toolKind)) {
+       if (hasKiroStages || isSubagentToolCall(title, toolKind, rawInput)) {
          currentToolsCountEl._hasSubagent = true;
          currentToolsCountEl._hasSpawnAgent = true;
        }
@@ -9920,7 +9948,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
 
      const el = document.createElement('div');
      el.className = 'tool-call-inline';
-     if (hasKiroStages || isSubagentToolCall(title, toolKind)) {
+     if (hasKiroStages || isSubagentToolCall(title, toolKind, rawInput)) {
        el.className += ' tc-subagent';
      }
      el.id = 'tc-' + toolCallId;
@@ -9936,9 +9964,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       }
       // Any tool with stages[] is a crew card — even if the title is an opaque
       // Kiro "operation" blob rather than "Spawning agent crew".
-      if (hasKiroStages || isSubagentToolCall(title, toolKind)) {
+      if (hasKiroStages || isSubagentToolCall(title, toolKind, rawInput)) {
         var spawnN = getSubagentSpawnCount(title, rawInput);
-        if ((hasKiroStages || isSubagentSpawnTitle(title)) && spawnN > 0) {
+        if ((hasKiroStages || isSubagentSpawnTitle(title, rawInput)) && spawnN > 0) {
           var taskDesc = (rawInput && (rawInput.task || rawInput.prompt || rawInput.description)) || '';
           if (hasKiroStages) {
             displayTitle = 'spawned ' + spawnN + ' subagent' + (spawnN > 1 ? 's' : '');
@@ -9976,7 +10004,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
            : '';
          var stageRole = stage.role || '';
          var depends = stage.depends_on && stage.depends_on.length > 0 ? ' (depends: ' + stage.depends_on.join(', ') + ')' : '';
-         var stageToolIdAttr = (isSubagentSpawnTitle(title) && si === 0)
+         var stageToolIdAttr = (isSubagentSpawnTitle(title, rawInput) && si === 0)
            ? ' data-tool-call-id="' + escapeHtml(String(toolCallId)) + '"'
            : '';
          // Prefer persisted stage.status. Live mid-turn keeps spinning even when
@@ -10011,7 +10039,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         }
         syncCrewParentRawInput(el);
       }
-      if (isSubagentSpawnTitle(title)) {
+      if (isSubagentSpawnTitle(title, rawInput)) {
         el.classList.add('tc-subagent');
         el.setAttribute('data-subagent-crew', '1');
         el.setAttribute('data-claude-crew', '1');
@@ -10233,7 +10261,7 @@ function renderChatHistory() {
           titles.push(tcTitle);
           kinds.push(tcKind);
           rawInputs.push(tcRaw);
-          if (isSubagentToolCall(tcTitle, tcKind)) hasSubagent = true;
+          if (isSubagentToolCall(tcTitle, tcKind, tcRaw)) hasSubagent = true;
         });
       });
       summary._titles = titles;
@@ -10328,9 +10356,9 @@ function renderChatHistory() {
             // Apply friendly title for subagent spawn calls
             var dt = title;
             var elRawInput = el._rawInput || rawInput;
-            if (isSubagentToolCall(title, el.dataset.toolKind || null)) {
+            if (isSubagentToolCall(title, el.dataset.toolKind || null, elRawInput)) {
               var sn = getSubagentSpawnCount(title, elRawInput);
-              if (isSubagentSpawnTitle(title) && sn > 0) {
+              if (isSubagentSpawnTitle(title, elRawInput) && sn > 0) {
                 var taskDesc2 = (elRawInput && (elRawInput.task || elRawInput.prompt || elRawInput.description)) || '';
                 if (Array.isArray(elRawInput && elRawInput.stages) && elRawInput.stages.length > 0) {
                   dt = 'spawned ' + sn + ' subagent' + (sn > 1 ? 's' : '');
@@ -12034,9 +12062,28 @@ sessionState = {
       const tc = update;
       var _parentId = update._meta && update._meta.claudeCode && update._meta.claudeCode.parentToolUseId;
       var _claudeToolName = update._meta && update._meta.claudeCode && update._meta.claudeCode.toolName;
-      // Claude Agent tool often arrives as title "Task" + toolName "Agent".
+      // Claude Agent: live title is usually "Task"; session/load resume often
+      // uses the task description as title with kind=think. Normalize to Task
+      // for spawn/crew heuristics and keep the description on rawInput.
       var _tcTitleForUi = tc.title || 'Tool Call';
-      if (_claudeToolName === 'Agent' && (!_tcTitleForUi || _tcTitleForUi === 'Tool Call')) {
+      var _tcRawInput = tc.rawInput && tc.rawInput.taskResult
+        ? stripTaskResult(tc.rawInput)
+        : tc.rawInput;
+      if (_claudeToolName === 'Agent' || looksLikeClaudeAgentSpawn(_tcTitleForUi, _tcRawInput, _claudeToolName)) {
+        if (_tcRawInput && typeof _tcRawInput === 'object') {
+          _tcRawInput = Object.assign({}, _tcRawInput);
+          if (!_tcRawInput._toolName) _tcRawInput._toolName = 'Agent';
+          if (!_tcRawInput.description && _tcTitleForUi &&
+              _tcTitleForUi !== 'Task' && _tcTitleForUi !== 'Tool Call' && _tcTitleForUi !== 'Agent') {
+            _tcRawInput.description = _tcTitleForUi;
+          }
+        } else if (_tcTitleForUi && _tcTitleForUi !== 'Task' && _tcTitleForUi !== 'Tool Call') {
+          _tcRawInput = { description: _tcTitleForUi, _toolName: 'Agent' };
+        } else {
+          _tcRawInput = Object.assign({}, (_tcRawInput && typeof _tcRawInput === 'object') ? _tcRawInput : {}, {
+            _toolName: 'Agent',
+          });
+        }
         _tcTitleForUi = 'Task';
       }
       addToolCall(
@@ -12044,9 +12091,7 @@ sessionState = {
         _tcTitleForUi,
          (tc.status === 'in_progress' ? 'running' : tc.status) || 'pending',
         tc.content,
-         tc.rawInput && tc.rawInput.taskResult
-           ? stripTaskResult(tc.rawInput)
-           : tc.rawInput,
+        _tcRawInput,
         tc.kind,
         tc.locations,
         _parentId || null,
