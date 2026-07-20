@@ -8376,12 +8376,26 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         assistants.forEach(function(a) {
           a.classList.add('assistant-interim');
           a.classList.remove('assistant-summary');
+          a.setAttribute('data-interrupted', '1');
         });
         // Do NOT body.appendChild here — that dumps every assistant at the
         // fold bottom and breaks thought → tools → reply order on Kiro
         // interrupted resume. Mark interim, then scoop strays in document order.
         if (body) orderCompactFoldContents(body);
         if (turn) turn.setAttribute('data-turn-interrupted', '1');
+        // Ensure the ▸ header is visible — interrupted turns often have only
+        // thoughts / interim reply (Claude after cancel + VS Code restart).
+        var foldSummary = getTurnSummaryEl(turn);
+        if (foldSummary) {
+          if (turn.querySelector('.thought-block')) foldSummary._hasThought = true;
+          updateToolGroupSummary(
+            foldSummary,
+            parseInt(foldSummary.dataset.count || '0', 10),
+            foldSummary._titles || [],
+            foldSummary._kinds || [],
+            foldSummary._rawInputs || []
+          );
+        }
         return;
       }
       assistants.forEach(function(a, idx) {
@@ -9008,29 +9022,75 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
   }
  
    function updateToolGroupSummary(summaryEl, count, titles, kinds, rawInputs) {
+     var turn = summaryEl.closest && summaryEl.closest('.turn');
      var toolCount = count || (titles && titles.length) || 0;
-     if (!toolCount) {
-       var turn = summaryEl.closest && summaryEl.closest('.turn');
-       if (turn) {
-         toolCount = turn.querySelectorAll('.tool-call-inline:not([data-parent-tool])').length;
-       }
+     if (!toolCount && turn) {
+       toolCount = turn.querySelectorAll('.tool-call-inline:not([data-parent-tool])').length;
      }
-     // Hide the collapse header until there is at least one tool call —
-     // no "0 tool calls" / empty label during intermediate thought/reply.
-     if (toolCount === 0) {
+     // Re-detect thought from DOM — _hasThought is lost across history rebuilds
+     // unless ensureTurnFoldStructure just ran.
+     var hasThought = !!(summaryEl._hasThought ||
+       (turn && turn.querySelector('.thought-block') &&
+         Array.prototype.some.call(turn.querySelectorAll('.thought-block'), isMeaningfulThought)));
+     if (hasThought) summaryEl._hasThought = true;
+     var isInterruptedFold = !!(turn && (
+       turn.getAttribute('data-turn-interrupted') === '1' ||
+       turn.querySelector('.message.assistant[data-interrupted="1"]')
+     ));
+     var hasInterim = !!(turn && turn.querySelector('.message.assistant.assistant-interim'));
+     // Show the ▸ header when there is foldable content. Previously we hid it
+     // until toolCount > 0, which made interrupted Claude turns (thought +
+     // partial reply, or tools lost on restore) vanish after Collapse —
+     // fold body collapsed with no visible chrome after interrupt / restart.
+     if (toolCount === 0 && !hasThought && !(isInterruptedFold && hasInterim)) {
        summaryEl.style.display = 'none';
        summaryEl.innerHTML = '';
        return;
      }
      summaryEl.style.display = '';
-     var turnForFold = summaryEl.closest && summaryEl.closest('.turn');
-     var body = (turnForFold && getTurnFoldBody(turnForFold)) || summaryEl.nextElementSibling;
+     var body = (turn && getTurnFoldBody(turn)) || summaryEl.nextElementSibling;
      var isOpen = !!(body && (
        body.classList.contains('expanded') ||
        (body.classList.contains('collapsed') === false && !(messagesEl && messagesEl.classList.contains('compact-mode')))
      ));
-     var detail = generateToolGroupSummary(titles, kinds, rawInputs);
-     if (!detail) detail = toolCount + ' tool call' + (toolCount === 1 ? '' : 's');
+     // Prefer live DOM titles when the summary meta was never populated
+     // (common after interrupted Claude restore with only a crew card).
+     var useTitles = titles || [];
+     var useKinds = kinds || [];
+     var useRaw = rawInputs || [];
+     if (toolCount > 0 && (!useTitles.length) && turn) {
+       var collected = { titles: [], kinds: [], rawInputs: [] };
+       Array.prototype.forEach.call(turn.querySelectorAll('.turn-tools-list'), function(list) {
+         var meta = collectToolMetaFromList(list);
+         collected.titles = collected.titles.concat(meta.titles);
+         collected.kinds = collected.kinds.concat(meta.kinds);
+         collected.rawInputs = collected.rawInputs.concat(meta.rawInputs);
+       });
+       if (collected.titles.length) {
+         useTitles = collected.titles;
+         useKinds = collected.kinds;
+         useRaw = collected.rawInputs;
+         summaryEl._titles = useTitles;
+         summaryEl._kinds = useKinds;
+         summaryEl._rawInputs = useRaw;
+         summaryEl.dataset.count = String(useTitles.length);
+         toolCount = useTitles.length;
+       }
+     }
+     var detail = '';
+     if (toolCount > 0) {
+       if (useTitles.length) {
+         detail = generateToolGroupSummary(useTitles, useKinds, useRaw);
+       }
+       if (!detail) {
+         detail = toolCount + ' tool call' + (toolCount === 1 ? '' : 's');
+       }
+     }
+     if (hasThought) {
+       detail = detail ? ('Thought · ' + detail) : 'Thought';
+     } else if (!detail) {
+       detail = 'Interrupted';
+     }
      summaryEl.innerHTML = (isOpen ? '▾ ' : '▸ ') + '<span class="tc-summary-detail">' + escapeHtml(detail) + '</span>';
    }
 
@@ -11033,6 +11093,13 @@ sessionState = {
           clearSessionInterrupted();
         }
         setProcessing(false);
+        // Interrupted: keep partial reply folded and refresh the ▸ header
+        // (thought-only / Claude cancel often had toolCount 0 → header hidden).
+        if (_wasCancelled && currentTurnEl && compactMode) {
+          foldInterruptedAssistantsOnPromote = true;
+          promoteFinalAssistantForTurn(currentTurnEl);
+          foldInterruptedAssistantsOnPromote = false;
+        }
        // Kiro /compact can still be running after execute's promptEnd — keep
        // the Stop/spinner state until we get a true compacted notice.
        if (isCompacting) {
