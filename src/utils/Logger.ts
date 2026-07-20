@@ -171,22 +171,15 @@ export function logTraffic(direction: 'send' | 'recv', data: unknown): void {
       label = ` [NOTIFICATION] ${method}`;
       ringEntry = { ts: timestamp, direction, kind: 'notification', method, params: (msg as any).params };
 
-      // Special-case the dominant high-frequency stream events: collapse the
-      // entire entry to a single line carrying just the delta. Codex emits
-      // these per-token, and the multi-line pretty form wastes ~350 bytes per
-      // 1-5 char delta — historically 40+ % of the traffic log file.
+      // Drop per-token message/thought deltas entirely — Codex emits dozens
+      // per second and even one-line summaries flood the traffic channel.
+      // tool_call_update is collapsed to a single line below (still useful).
       if (method === 'session/update') {
         const params = (msg as any).params as Record<string, unknown> | undefined;
         const update = params?.update as Record<string, unknown> | undefined;
         const kind = update?.sessionUpdate as string | undefined;
         if (kind === 'agent_message_chunk' || kind === 'agent_thought_chunk') {
-          const content = update?.content as { type?: string; text?: string } | undefined;
-          let preview = '';
-          if (content?.type === 'text' && typeof content.text === 'string') {
-            const oneLine = content.text.replace(/\s+/g, ' ');
-            preview = oneLine.length > 80 ? oneLine.slice(0, 80) + '…' : oneLine;
-          }
-          chunkLine = `[${timestamp}] ${arrow} chunk[${kind === 'agent_message_chunk' ? 'msg' : 'thought'}] ${JSON.stringify(preview)}`;
+          return;
         } else if (kind === 'tool_call_update') {
           // Collapse tool_call_update notifications (terminal output deltas,
           // progress text) to a single line — these are high-frequency and

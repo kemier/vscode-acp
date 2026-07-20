@@ -120,7 +120,7 @@ suite('Logger.logTraffic', () => {
     assert.ok(tap.lines[2].includes('[RESPONSE] id=7'));
   });
 
-  test('per-token agent_message_chunk collapses to ONE line, not 11', () => {
+  test('per-token agent_message_chunk is not logged', () => {
     logTraffic('recv', {
       jsonrpc: '2.0',
       method: 'session/update',
@@ -129,34 +129,31 @@ suite('Logger.logTraffic', () => {
         update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'Hi' } },
       },
     });
-    assert.strictEqual(tap.lines.length, 1, 'chunk must collapse to a single line');
-    const out = tap.lines[0];
-    assert.ok(out.includes('chunk[msg]'), `expected chunk[msg] marker, got: ${out}`);
-    assert.ok(out.includes('"Hi"'), `expected the delta text inline, got: ${out}`);
-    assert.ok(!out.includes('\n  "params"'), 'must NOT pretty-print the chunk envelope');
+    assert.strictEqual(tap.lines.length, 0, 'message chunks must be dropped');
   });
 
-  test('per-token agent_thought_chunk uses chunk[thought] marker', () => {
+  test('per-token agent_thought_chunk is not logged', () => {
     logTraffic('recv', {
       method: 'session/update',
       params: { update: { sessionUpdate: 'agent_thought_chunk', content: { type: 'text', text: 'thinking…' } } },
     });
-    assert.strictEqual(tap.lines.length, 1);
-    assert.ok(tap.lines[0].includes('chunk[thought]'));
+    assert.strictEqual(tap.lines.length, 0, 'thought chunks must be dropped');
   });
 
-  test('chunk preview truncates very long deltas to ≤ 80 chars', () => {
-    const longDelta = 'X'.repeat(500);
+  test('tool_call_update collapses to ONE line', () => {
     logTraffic('recv', {
       method: 'session/update',
-      params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: longDelta } } },
+      params: {
+        update: {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'tc-abcdefghij',
+          _meta: { terminal_output_delta: { data: 'hello\\n' } },
+        },
+      },
     });
-    const out = tap.lines[0];
-    assert.ok(out.endsWith('…"'), `expected an ellipsis at the truncation point, got tail: ${out.slice(-30)}`);
-    // Body is JSON.stringify'd (so it has quotes around it). 80 chars + the
-    // ellipsis + 2 quotes is the upper bound for the inline preview.
-    const previewMatch = out.match(/"([^"]*)"$/);
-    assert.ok(previewMatch && previewMatch[1].length <= 81, `preview too long (${previewMatch?.[1]?.length} chars)`);
+    assert.strictEqual(tap.lines.length, 1);
+    assert.ok(tap.lines[0].includes('chunk[tool_update]'));
+    assert.ok(!tap.lines[0].includes('\n  "params"'), 'must NOT pretty-print tool_update');
   });
 
   test('non-chunk notifications still pretty-print as before', () => {
@@ -171,16 +168,7 @@ suite('Logger.logTraffic', () => {
     assert.ok(tap.lines[0].includes('[NOTIFICATION] session/update'));
   });
 
-  test('chunk path still respects logTraffic = false', async () => {
-    await setLogTraffic(false);
-    logTraffic('recv', {
-      method: 'session/update',
-      params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 'x' } } },
-    });
-    assert.strictEqual(tap.lines.length, 0);
-  });
-
-  test('chunk path still counts toward rotation', async () => {
+  test('dropped message chunks do not count toward rotation', async () => {
     await setLogTrafficMaxEntries(50);
     for (let i = 0; i < 50; i++) {
       logTraffic('recv', {
@@ -188,7 +176,8 @@ suite('Logger.logTraffic', () => {
         params: { update: { sessionUpdate: 'agent_message_chunk', content: { type: 'text', text: 't' } } },
       });
     }
-    assert.strictEqual(tap.getClears(), 1, 'rotation must count chunk entries too');
+    assert.strictEqual(tap.lines.length, 0);
+    assert.strictEqual(tap.getClears(), 0, 'silent chunks must not rotate the channel');
   });
 });
 
