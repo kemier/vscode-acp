@@ -7518,6 +7518,8 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
 
     // --- Messages ---
    function addMessage(role, text) {
+     // Drop the post-compact banner once the user continues chatting.
+     if (role === 'user') clearCompactNotices();
      chatHistory.push({ kind: 'message', role, text });
      saveState();
      return addMessageDOM(role, text);
@@ -7530,6 +7532,40 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        setTimeout(function () {
          if (el.parentNode) { el.parentNode.removeChild(el); }
        }, 4000);
+     }
+   }
+
+   /**
+    * Post-compact banner — DOM only (not chatHistory). Cleared when the user
+    * sends the next message so it does not stick around forever.
+    */
+   function showCompactNotice() {
+     clearCompactNotices();
+     var el = addMessageDOM('system', 'Conversation compacted.');
+     if (el) el.classList.add('compact-notice');
+   }
+
+   function clearCompactNotices() {
+     if (!messagesEl) return;
+     var nodes = messagesEl.querySelectorAll('.message.system.compact-notice');
+     for (var i = 0; i < nodes.length; i++) {
+       if (nodes[i].parentNode) nodes[i].parentNode.removeChild(nodes[i]);
+     }
+     // Also strip any persisted copy from an older build that saved it to history.
+     var kept = [];
+     var changed = false;
+     for (var j = 0; j < chatHistory.length; j++) {
+       var it = chatHistory[j];
+       if (it && it.kind === 'message' && it.role === 'system' &&
+           String(it.text || '').trim() === 'Conversation compacted.') {
+         changed = true;
+         continue;
+       }
+       kept.push(it);
+     }
+     if (changed) {
+       chatHistory = kept;
+       saveState();
      }
    }
 
@@ -9114,7 +9150,11 @@ function renderChatHistory() {
          var displayText = item.role === 'user' ? cleanUserMessage(item.text) : item.text;
          // Debug: log cleaned displayText
          vscode.postMessage({ type: 'debugLog', message: 'renderChatHistory displayText for item[' + i + ']: len=' + displayText.length + ' text="' + (displayText.length > 100 ? displayText.substring(0, 100) + '...' : displayText) + '"' });
-         addMessageDOM(item.role, displayText);
+         var _sysEl = addMessageDOM(item.role, displayText);
+         if (item.role === 'system' && _sysEl &&
+             String(item.text || '').trim() === 'Conversation compacted.') {
+           _sysEl.classList.add('compact-notice');
+         }
         } else {
            // Assistant message. Same turn when tools already ran (mid-turn
            // interim text + final summary). New turn only for back-to-back
@@ -10405,7 +10445,7 @@ sessionState = {
       hideEmpty();
       // Swallow late agent boilerplate (Codex Heads-up, Claude AbortError, …).
       suppressPostCompactNoiseUntil = Date.now() + 2500;
-      addMessage('system', 'Conversation compacted.');
+      showCompactNotice();
     }
 
     function currentAgentLabel() {
