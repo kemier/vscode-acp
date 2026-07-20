@@ -8321,6 +8321,17 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       var assistants = Array.prototype.slice.call(turn.querySelectorAll('.message.assistant'));
       if (!assistants.length) return;
       var body = getTurnFoldBody(turn) || ensureTurnFoldStructure(turn, true, true);
+      // Interrupted turns (failed/running crew after reload) — keep every
+      // assistant inside the fold so mid-turn / partial summary does not sit
+      // in the main chat before the user resumes.
+      if (turnLooksInterrupted(turn)) {
+        assistants.forEach(function(a) {
+          a.classList.add('assistant-interim');
+          a.classList.remove('assistant-summary');
+          if (body) body.appendChild(a);
+        });
+        return;
+      }
       assistants.forEach(function(a, idx) {
         if (idx === assistants.length - 1) {
           a.classList.add('assistant-summary');
@@ -8332,6 +8343,50 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           if (body) body.appendChild(a);
         }
       });
+    }
+
+    /** True when a restored/live turn still has failed or unfinished tools. */
+    function turnLooksInterrupted(turn) {
+      if (!turn) return false;
+      return !!(
+        turn.querySelector(
+          '.tc-icon.failed, .tc-icon.error, .tc-stage-icon.error, .tc-stage-icon.failed'
+        ) ||
+        turn.querySelector(
+          '.tc-icon.running, .tc-icon.in_progress, .tc-icon.pending, ' +
+          '.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending'
+        )
+      );
+    }
+
+    /** Mark a crew so later Kiro list_update cannot revive its stages. */
+    function markSubagentCrewStale(crewEl) {
+      if (!crewEl) return;
+      crewEl.setAttribute('data-crew-stale', '1');
+    }
+
+    function markFailedCrewsStale(root) {
+      var scope = root || document;
+      var crews = scope.querySelectorAll
+        ? scope.querySelectorAll('.tool-call-inline.tc-subagent')
+        : [];
+      for (var i = 0; i < crews.length; i++) {
+        var crew = crews[i];
+        var parentBad = crew.querySelector(':scope > .tc-icon.failed, :scope > .tc-icon.error');
+        var stageBad = crew.querySelector('.tc-stage-icon.error, .tc-stage-icon.failed');
+        if (parentBad || stageBad) markSubagentCrewStale(crew);
+      }
+    }
+
+    function isStaleOrTerminalStage(stageEl) {
+      if (!stageEl) return true;
+      var crew = stageEl.closest('.tool-call-inline');
+      if (crew && crew.getAttribute('data-crew-stale') === '1') return true;
+      var icon = stageEl.querySelector('.tc-stage-icon');
+      if (!icon) return false;
+      return icon.classList.contains('error') ||
+        icon.classList.contains('failed') ||
+        icon.classList.contains('completed');
     }
 
     /** Move a committed mid-turn assistant segment into the collapsed fold. */
@@ -9505,6 +9560,24 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        var stageEl = icons[i].closest('.tc-stage');
        if (stageEl) applyStageIcon(stageEl, 'failed');
      }
+     // Also force-fail spinning stages under already-failed parents, and mark
+     // those crews stale so go-on list_update cannot revive them by name.
+     var failedParents = document.querySelectorAll(
+       '.tool-call-inline.tc-subagent > .tc-icon.failed, ' +
+       '.tool-call-inline.tc-subagent > .tc-icon.error'
+     );
+     for (var fp = 0; fp < failedParents.length; fp++) {
+       var failedCrew = failedParents[fp].parentElement;
+       if (!failedCrew) continue;
+       var spinKids = failedCrew.querySelectorAll(
+         '.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending'
+       );
+       for (var ci = 0; ci < spinKids.length; ci++) {
+         var st = spinKids[ci].closest('.tc-stage');
+         if (st) applyStageIcon(st, 'failed');
+       }
+       markSubagentCrewStale(failedCrew);
+     }
      var parents = document.querySelectorAll(
        '.tool-call-inline.tc-subagent > .tc-icon.running, ' +
        '.tool-call-inline.tc-subagent > .tc-icon.in_progress, ' +
@@ -9518,8 +9591,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        if (!still) {
          parents[p].className = 'tc-icon failed';
          parents[p].textContent = getStatusIcon('failed');
+         markSubagentCrewStale(crew);
        }
      }
+     markFailedCrewsStale(document);
      for (var h = 0; h < chatHistory.length; h++) {
        var it = chatHistory[h];
        if (!it || it.kind !== 'toolCall') continue;
@@ -10089,6 +10164,8 @@ function renderChatHistory() {
   // promoteFinalAssistant / structure rebuild can leave folds open after
   // session/load — force Collapse mode shut once the DOM is final.
   forceCollapseTurnFolds();
+  // Interrupted crews stay failed — ignore later list_update by name.
+  markFailedCrewsStale(messagesEl);
    return assistantItems;
  }
 
@@ -12257,8 +12334,15 @@ sessionState = {
   // We match each subagent to a stage element by sessionName and update its spinner.
   function handleKiroSubagentListUpdate(params) {
     if (!params || !Array.isArray(params.subagents)) return;
-    // Find all tc-stage elements in the current turn's tool calls
-    var stageEls = document.querySelectorAll('.tc-stage[data-stage-name]');
+    // Prefer the live turn's stages only. Never fall back to the whole
+    // document while a turn is active — same stage names on a stale crew
+    // would re-spin after "go on".
+    var stageEls;
+    if (currentTurnEl) {
+      stageEls = currentTurnEl.querySelectorAll('.tc-stage[data-stage-name]');
+    } else {
+      stageEls = document.querySelectorAll('.tc-stage[data-stage-name]');
+    }
     if (!stageEls || stageEls.length === 0) return;
     for (var i = 0; i < params.subagents.length; i++) {
       var sa = params.subagents[i];
@@ -12277,15 +12361,14 @@ sessionState = {
       // Find matching stage element(s) by sessionName
       for (var j = 0; j < stageEls.length; j++) {
         var stageEl = stageEls[j];
-        if (stageEl.getAttribute('data-stage-name') === saName) {
-          if (sa.sessionId) {
-            stageEl.setAttribute('data-session-id', String(sa.sessionId));
-          }
-          var iconEl = stageEl.querySelector('.tc-stage-icon');
-          if (iconEl) {
-            applyStageIcon(stageEl, iconStatus === 'error' ? 'failed' : iconStatus);
-          }
+        if (stageEl.getAttribute('data-stage-name') !== saName) continue;
+        // Stale interrupted crews / already-terminal stages: do not revive.
+        if (iconStatus === 'running' && isStaleOrTerminalStage(stageEl)) continue;
+        if (stageEl.closest('.tool-call-inline[data-crew-stale="1"]')) continue;
+        if (sa.sessionId) {
+          stageEl.setAttribute('data-session-id', String(sa.sessionId));
         }
+        applyStageIcon(stageEl, iconStatus === 'error' ? 'failed' : iconStatus);
       }
    }
  // If all subagents are done/empty, also mark the parent crew tool call as completed
@@ -12297,12 +12380,10 @@ sessionState = {
    var pName = pendingStages[p].name || '';
    if (!pName) continue;
    for (var q = 0; q < stageEls.length; q++) {
-     if (stageEls[q].getAttribute('data-stage-name') === pName) {
-       var pIconEl = stageEls[q].querySelector('.tc-stage-icon');
-       if (pIconEl && !pIconEl.classList.contains('completed') && !pIconEl.classList.contains('error')) {
-         applyStageIcon(stageEls[q], 'running');
-       }
-     }
+     if (stageEls[q].getAttribute('data-stage-name') !== pName) continue;
+     if (isStaleOrTerminalStage(stageEls[q])) continue;
+     if (stageEls[q].closest('.tool-call-inline[data-crew-stale="1"]')) continue;
+     applyStageIcon(stageEls[q], 'running');
    }
  }
  var allDone = pendingStages.length === 0 && params.subagents.length > 0;
@@ -12317,7 +12398,11 @@ sessionState = {
   }
   if (allDone) {
      // All subagents have finished — mark any running crew tool call as completed
-      var crewEls = document.querySelectorAll('.tool-call-inline.tc-subagent .tc-icon.running, .tool-call-inline.tc-subagent .tc-icon.pending');
+      // (skip stale interrupted crews from a prior turn).
+      var crewEls = document.querySelectorAll(
+        '.tool-call-inline.tc-subagent:not([data-crew-stale="1"]) > .tc-icon.running, ' +
+        '.tool-call-inline.tc-subagent:not([data-crew-stale="1"]) > .tc-icon.pending'
+      );
       for (var k = 0; k < crewEls.length; k++) {
         crewEls[k].className = 'tc-icon completed';
         crewEls[k].textContent = getStatusIcon('completed');
