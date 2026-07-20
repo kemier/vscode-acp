@@ -6073,7 +6073,15 @@ var end = displayText.length;
        }
        return item;
      });
-  vscode.setState({ chatHistory: capped, sessionState, hasActiveSession, lastConnectedAgent, lastConnectedAgentDisplay, lastConnectedSessionId });
+  vscode.setState({
+    chatHistory: capped,
+    sessionState,
+    hasActiveSession,
+    lastConnectedAgent,
+    lastConnectedAgentDisplay,
+    lastConnectedSessionId,
+    interruptedSessionIds: interruptedSessionIds,
+  });
   // Debug: log saveState (only user messages)
   for (var _si = 0; _si < capped.length; _si++) {
     if (capped[_si] && capped[_si].kind === 'message' && capped[_si].role === 'user') {
@@ -6093,6 +6101,9 @@ var end = displayText.length;
     lastConnectedAgent = saved.lastConnectedAgent || null;
     lastConnectedAgentDisplay = saved.lastConnectedAgentDisplay || null;
     lastConnectedSessionId = saved.lastConnectedSessionId || null;
+    interruptedSessionIds = (saved.interruptedSessionIds && typeof saved.interruptedSessionIds === 'object')
+      ? saved.interruptedSessionIds
+      : {};
     updateWelcomeButton();
 
     // Clean user messages so restored state does not show raw
@@ -6128,11 +6139,17 @@ var end = displayText.length;
        if (riItem && riItem.kind === 'toolCall' && (riItem.status === 'in_progress' || riItem.status === 'running' || riItem.status === 'pending')) {
          riItem = { ...riItem, status: 'failed' };
        }
-       // Kiro crew stages: parent spawn is often already "completed" while
-       // stages were still running. On webview crash restore, missing/running
-       // stage status → failed so spinners do not return.
+       // Drop Kiro Summarizing/summary tool rows — redundant with the main
+       // agent_message summary and used to reappear as a wrapped tool block.
+       if (riItem && riItem.kind === 'toolCall' && isKiroSummaryToolTitle(riItem.title)) {
+         continue;
+       }
+       // Kiro crew stages: only fail explicitly in-flight statuses. Missing
+       // status on a completed parent is a finished historical crew — keep
+       // completed so the final summary stays outside the fold after restart.
        if (riItem && riItem.kind === 'toolCall' && riItem.rawInput &&
            Array.isArray(riItem.rawInput.stages) && riItem.rawInput.stages.length > 0) {
+         var _parentDone = riItem.status === 'completed';
          var _rstStages = riItem.rawInput.stages.map(function(st) {
            if (!st || typeof st !== 'object') return st;
            var ss = st.status;
@@ -6140,8 +6157,10 @@ var end = displayText.length;
                ss === 'failed' || ss === 'error') {
              return st;
            }
-           // Explicit in-flight, or missing after crash → failed.
-           return Object.assign({}, st, { status: 'failed' });
+           if (ss === 'running' || ss === 'in_progress' || ss === 'pending' || ss === 'working') {
+             return Object.assign({}, st, { status: 'failed' });
+           }
+           return Object.assign({}, st, { status: _parentDone ? 'completed' : 'failed' });
          });
          var _rstFailed = _rstStages.some(function(st) {
            return st && (st.status === 'failed' || st.status === 'error');
@@ -6872,9 +6891,12 @@ var end = displayText.length;
   // Compact mode toggle — collapse/expand all turn folds (thought + tools + reply)
  var compactMode = true; // default: compact (collapsed)
  // When true, promoteFinalAssistantForTurn keeps interrupted-turn assistants
- // inside the fold (webview crash restore). Session/load resume leaves this
- // false so the final reply is promoted outside the collapse group.
+ // inside the fold (webview crash restore + session/load resume).
  var foldInterruptedAssistantsOnPromote = false;
+ // sessionId → true after a cancelled turn; cleared on a successful end_turn.
+ // Survives restart via vscode.setState so Codex/Kiro resume can keep the
+ // partial reply folded even when agent history marks tools completed.
+ var interruptedSessionIds = {};
  const compactToggleBtn = document.getElementById('compactToggle');
  if (messagesEl) messagesEl.classList.add('compact-mode');
  if (compactToggleBtn) {
@@ -7062,9 +7084,13 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      // committed to history without a corresponding DOM node.  Rebuilding
      // from scratch (same pattern as restoreState) guarantees every
      // chatHistory entry has a DOM element before we batch-render markdown.
+    // Rebuild from chatHistory. Keep interrupted-turn assistants folded the
+    // same way as webview crash restore — otherwise resume promotes them into
+    // the main chat and a completed summary looks like it "showed again".
+    foldInterruptedAssistantsOnPromote = true;
     var assistantItems = renderChatHistory();
-    // renderChatHistory clears isLoadingSession's DOM rebuild while the flag
-    // is already false — force folds shut again after promote.
+    foldInterruptedAssistantsOnPromote = false;
+    // renderChatHistory can leave folds open after promote — force shut.
     forceCollapseTurnFolds();
     if (loadOverlay) loadOverlay.classList.remove('visible');
     if (inputArea) inputArea.classList.remove('disabled');
@@ -8306,16 +8332,22 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       var assistants = Array.prototype.slice.call(turn.querySelectorAll('.message.assistant'));
       if (!assistants.length) return;
       var body = getTurnFoldBody(turn) || ensureTurnFoldStructure(turn, true, true);
-      // Webview crash restore: keep interrupted-turn text inside the fold so it
-      // does not sit in the main chat before the user resumes. Session/load
-      // resume clears foldInterruptedAssistantsOnPromote so the final reply
-      // is promoted outside instead of buried at the bottom of the group.
-      if (foldInterruptedAssistantsOnPromote && turnLooksInterrupted(turn)) {
+      // Interrupted turns: keep every assistant inside the fold (thoughts +
+      // tools + partial reply together). Otherwise Codex resume promoted the
+      // last bubble to the main chat while expand still grouped the rest.
+      var isLastTurn = !turn.nextElementSibling || !turn.parentElement ||
+        turn === turn.parentElement.querySelector('.turn:last-of-type');
+      var forceFold = foldInterruptedAssistantsOnPromote && (
+        turnLooksInterrupted(turn) ||
+        (isLastTurn && sessionMarkedInterrupted())
+      );
+      if (forceFold) {
         assistants.forEach(function(a) {
           a.classList.add('assistant-interim');
           a.classList.remove('assistant-summary');
           if (body) body.appendChild(a);
         });
+        if (turn) turn.setAttribute('data-turn-interrupted', '1');
         return;
       }
       assistants.forEach(function(a, idx) {
@@ -8331,9 +8363,30 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       });
     }
 
+    function sessionMarkedInterrupted() {
+      var sid = sessionState && sessionState.sessionId;
+      return !!(sid && interruptedSessionIds[sid]);
+    }
+
+    function markSessionInterrupted() {
+      var sid = sessionState && sessionState.sessionId;
+      if (!sid) return;
+      interruptedSessionIds[sid] = true;
+      saveState();
+    }
+
+    function clearSessionInterrupted() {
+      var sid = sessionState && sessionState.sessionId;
+      if (!sid || !interruptedSessionIds[sid]) return;
+      delete interruptedSessionIds[sid];
+      saveState();
+    }
+
     /** True when a restored/live turn still has failed or unfinished tools. */
     function turnLooksInterrupted(turn) {
       if (!turn) return false;
+      if (turn.getAttribute('data-turn-interrupted') === '1') return true;
+      if (turn.querySelector('.message.assistant[data-interrupted="1"]')) return true;
       return !!(
         turn.querySelector(
           '.tc-icon.failed, .tc-icon.error, .tc-stage-icon.error, .tc-stage-icon.failed'
@@ -8709,6 +8762,13 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
   }
 
+  // Kiro "Summarizing" / toolName summary — redundant with agent_message summary.
+  function isKiroSummaryToolTitle(title, toolName) {
+    var t = String(title || '').trim().toLowerCase();
+    var n = String(toolName || '').trim().toLowerCase();
+    return n === 'summary' || t === 'summary' || t === 'summarizing';
+  }
+
   // Check if a tool call title indicates a subagent/agent-control event.
   // Codex sends these as collabAgentToolCall with tool names:
   // spawnAgent, sendInput, resumeAgent, wait, closeAgent.
@@ -8821,11 +8881,14 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     if (!currentAssistantText) return;
     cancelProvisionalSummaryPromote();
     var asInterim = !!(opts && opts.interim);
+    var asInterrupted = !!(opts && opts.interrupted);
     var _commitPreview = currentAssistantText.replace(/\\s+/g, ' ').slice(0, 80);
     vscode.postMessage({ type: 'debugLog', message: '[WV-COMMIT] commitCurrentTextSegment: textLen=' + currentAssistantText.length + ' hasEl=' + !!currentAssistantEl + ' interim=' + asInterim + ' chatHistoryLen BEFORE=' + chatHistory.length + ' preview="' + _commitPreview + '"' });
     streamingRenderGen++; // invalidate any in-flight streaming renders
     var committedText = currentAssistantText;
-    chatHistory.push({ kind: 'message', role: 'assistant', text: committedText });
+    var histEntry = { kind: 'message', role: 'assistant', text: committedText };
+    if (asInterrupted) histEntry.interrupted = true;
+    chatHistory.push(histEntry);
     saveState();
     vscode.postMessage({ type: 'debugLog', message: '[WV-COMMIT] AFTER push chatHistoryLen=' + chatHistory.length + ' index=' + (chatHistory.length - 1) });
    if (currentAssistantEl) {
@@ -8856,6 +8919,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       currentAssistantEl.setAttribute('data-history-index', String(chatHistory.length - 1));
       if (asInterim && compactMode) {
         moveAssistantIntoFold(currentAssistantEl);
+        if (asInterrupted) {
+          currentAssistantEl.setAttribute('data-interrupted', '1');
+          if (currentTurnEl) currentTurnEl.setAttribute('data-turn-interrupted', '1');
+        }
         // Next tools must open a new group after this interim segment.
         currentToolsListEl = null;
       } else {
@@ -8873,6 +8940,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       if (currentPsEl) { currentPsEl = null; if (psPanel) psPanel.style.display = 'none'; }
       // Cursor stub tool_call ({_toolName:"task"}) — rich UI comes from cursor/task.
       if (isCursorTaskPlaceholder(title, rawInput)) {
+        return;
+      }
+      // Kiro Summarizing/summary — never land in history/DOM.
+      if (isKiroSummaryToolTitle(title)) {
         return;
       }
       // Claude nested child tools (parentToolUseId): Kiro never surfaces subagent
@@ -10024,6 +10095,8 @@ function renderChatHistory() {
   for (var i = 0; i < chatHistory.length; i++) {
     var item = chatHistory[i];
    if (!item) continue;
+   // Skip persisted Kiro Summarizing rows (redundant with assistant summary).
+   if (item.kind === 'toolCall' && isKiroSummaryToolTitle(item.title)) continue;
    // Debug: log each item
     if (item.kind === 'toolCall') {
       vscode.postMessage({ type: 'debugLog', message: '[WV-RENDER] renderChatHistory item[' + i + '] kind=toolCall title="' + (item.title || '') + '" id=' + (item.toolCallId || '').slice(0, 12) });
@@ -10096,6 +10169,10 @@ function renderChatHistory() {
            msgEl.className = 'message ' + item.role;
            msgEl.textContent = item.text;
            msgEl.setAttribute('data-history-index', String(i));
+           if (item.interrupted) {
+             msgEl.setAttribute('data-interrupted', '1');
+             if (currentTurnEl) currentTurnEl.setAttribute('data-turn-interrupted', '1');
+           }
            placeAssistantInTurn(msgEl);
          }
          if (item.role === 'assistant') {
@@ -10631,31 +10708,53 @@ sessionState = {
           if (currentThoughtEl || currentThoughtText || thoughtDomBase) {
             commitOrDiscardCurrentThought();
           }
-        commitCurrentTextSegment();
-        // Mark all in-progress tool calls as completed. Some agents (e.g. Kiro CLI)
-        // don't send a tool_call_update with status=completed for subagent crew
-        // tool calls — the turn just ends with end_turn. Without this, the spinner
-        // stays forever on those tool calls.
+        // Interrupted turns: keep the partial reply inside the fold so resume
+        // / restore do not promote it into the main chat.
+        var _wasCancelled = msg.stopReason === 'cancelled';
+        commitCurrentTextSegment(_wasCancelled ? { interim: true, interrupted: true } : undefined);
+        // On cancel: mark in-flight tools failed (not completed). Codex was
+        // marking them completed which made turnLooksInterrupted false and
+        // promoted the partial assistant into the main chat on resume.
+        // On normal end_turn: complete remaining spinners (Kiro crew, etc.).
         for (var _tcId in toolCalls) {
           var _tcEl = toolCalls[_tcId];
           if (_tcEl) {
             var _iconEl = _tcEl.querySelector(':scope > .tc-icon') || _tcEl.querySelector('.tc-icon');
-            if (_iconEl && (_iconEl.className.indexOf('running') >= 0 || _iconEl.className.indexOf('pending') >= 0)) {
-              _iconEl.className = 'tc-icon completed';
-              _iconEl.textContent = getStatusIcon('completed');
+            if (_iconEl && (_iconEl.className.indexOf('running') >= 0 || _iconEl.className.indexOf('pending') >= 0 ||
+                _iconEl.className.indexOf('in_progress') >= 0)) {
+              if (_wasCancelled) {
+                _iconEl.className = 'tc-icon failed';
+                _iconEl.textContent = getStatusIcon('failed');
+              } else {
+                _iconEl.className = 'tc-icon completed';
+                _iconEl.textContent = getStatusIcon('completed');
+              }
             }
-            // Crew stages: Claude/Codex kept these spinning during the turn
-            // (tool_call "completed" only meant spawned). Flip them now.
             var _stages = _tcEl.querySelectorAll('.tc-stage');
             for (var _si = 0; _si < _stages.length; _si++) {
               var _stIcon = _stages[_si].querySelector('.tc-stage-icon');
               if (_stIcon && (_stIcon.classList.contains('running') ||
                   _stIcon.classList.contains('in_progress') ||
                   _stIcon.classList.contains('pending'))) {
-                applyStageIcon(_stages[_si], 'completed');
+                applyStageIcon(_stages[_si], _wasCancelled ? 'failed' : 'completed');
               }
             }
           }
+        }
+        if (_wasCancelled) {
+          markSessionInterrupted();
+          // Mirror failed status into chatHistory so restore/load heuristics match.
+          for (var _hi = 0; _hi < chatHistory.length; _hi++) {
+            var _hItem = chatHistory[_hi];
+            if (_hItem && _hItem.kind === 'toolCall' &&
+                (_hItem.status === 'in_progress' || _hItem.status === 'running' || _hItem.status === 'pending')) {
+              _hItem.status = 'failed';
+            }
+          }
+          saveState();
+          if (currentTurnEl) currentTurnEl.setAttribute('data-turn-interrupted', '1');
+        } else if (!isLoadingSession) {
+          clearSessionInterrupted();
         }
         setProcessing(false);
        // Kiro /compact can still be running after execute's promptEnd — keep
@@ -11917,18 +12016,14 @@ sessionState = {
         }
         break;
       }
-      // Kiro "Summarizing"/"summary" tool calls carry the subagent's full
-      // taskResult (raw markdown) in rawInput. This is redundant — the main
-      // agent will deliver its own rendered summary via agent_message_chunk.
-      // Suppress these tool calls entirely so the user doesn't see the raw
-      // markdown duplicated below the subagent call.
+      // Kiro "Summarizing"/"summary" tool calls are redundant with the main
+      // agent's agent_message_chunk summary — always suppress (with or without
+      // taskResult), otherwise they reappear as a wrapped tool block on resume.
       var _tcTitle = (update.title || '').toLowerCase();
       var _tcToolName = update._meta && update._meta.kiro && update._meta.kiro.toolName
         ? update._meta.kiro.toolName.toLowerCase() : '';
-      if (_tcToolName === 'summary' || _tcTitle === 'summarizing' || _tcTitle === 'summary') {
-        if (update.rawInput && update.rawInput.taskResult) {
-          break; // Suppress — taskResult is redundant with main agent's summary
-        }
+      if (isKiroSummaryToolTitle(update.title, _tcToolName)) {
+        break;
       }
       // Cursor stub tool_call before cursor/task — drop; rich UI comes from cursor/task.
       if (isCursorTaskPlaceholder(update.title, update.rawInput)) {
@@ -12000,6 +12095,12 @@ sessionState = {
       }
       // Strip taskResult from tool_call_update rawInput too (Kiro may
       // send an update with the full taskResult markdown).
+      var _tcuTitle = update.title || '';
+      var _tcuToolName = update._meta && update._meta.kiro && update._meta.kiro.toolName
+        ? update._meta.kiro.toolName : '';
+      if (isKiroSummaryToolTitle(_tcuTitle, _tcuToolName)) {
+        break;
+      }
       var _tcuRawInput = update.rawInput && update.rawInput.taskResult
         ? stripTaskResult(update.rawInput)
         : update.rawInput;
