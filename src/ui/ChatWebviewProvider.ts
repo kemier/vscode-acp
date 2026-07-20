@@ -7831,8 +7831,13 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         // Sticky expand only while the turn is still streaming — completed
         // turns must not stay open across promptEnd / history restore.
         body._userExpanded = !isLoadingSession && isProcessing && willExpand;
-        // Do not lift the live assistant on collapse — mid-turn Claude/Codex
-        // text must stay inside the fold until promptEnd.
+        // Collapsing mid-stream: tuck the live bubble back into the fold in
+        // case a sticky rebuild had parked it outside as assistant-summary.
+        if (!willExpand && isProcessing && currentAssistantEl && turn &&
+            turn.contains(currentAssistantEl) &&
+            !currentAssistantEl.classList.contains('md-committed')) {
+          moveAssistantIntoFold(currentAssistantEl);
+        }
         hideTcTooltip();
         var count = parseInt(summary.dataset.count || '0', 10);
         updateToolGroupSummary(summary, count, summary._titles || [], summary._kinds || [], summary._rawInputs || []);
@@ -7939,6 +7944,20 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       var interimAssistants = [];
       var summaryAssistants = [];
       allAssistants.forEach(function(a) {
+        // While the turn is still streaming, keep live/uncommitted assistants
+        // inside the fold. ensureTurnFoldStructure used to treat unmarked
+        // nodes as summary and park them outside; expand → rebuild → collapse
+        // then left Codex mid-turn text visible in the panel.
+        // Exception: placeSummaryAssistant runs on promptEnd before
+        // setProcessing(false), so a just-promoted md-committed summary must
+        // stay outside even while isProcessing is briefly still true.
+        if (isProcessing && !isLoadingSession &&
+            !(a.classList.contains('assistant-summary') && a.classList.contains('md-committed'))) {
+          a.classList.add('assistant-interim');
+          a.classList.remove('assistant-summary');
+          interimAssistants.push(a);
+          return;
+        }
         if (a.classList.contains('assistant-interim')) interimAssistants.push(a);
         else summaryAssistants.push(a);
       });
@@ -7954,7 +7973,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       // Do NOT auto-promote the last interim to summary here. Mid-turn commits
       // clear currentAssistantEl; promoting then made each segment flash in the
       // panel until the next one arrived and demoted it. Only placeSummaryAssistant
-      // (promptEnd / debounced idle promote) may lift a reply out.
+      // (promptEnd) may lift a reply out.
       summaryAssistants.forEach(function(a) {
         a.classList.add('assistant-summary');
         a.classList.remove('assistant-interim');
@@ -8049,6 +8068,17 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         if (body.nextSibling) turn.insertBefore(a, body.nextSibling);
         turn.appendChild(a);
       });
+
+      // Belt-and-suspenders: live streaming bubble must stay inside the fold
+      // even if a prior rebuild parked it outside as assistant-summary.
+      // Skip md-committed summaries already lifted by placeSummaryAssistant.
+      if (isProcessing && !isLoadingSession && currentAssistantEl &&
+          turn.contains(currentAssistantEl) &&
+          !currentAssistantEl.classList.contains('md-committed')) {
+        currentAssistantEl.classList.add('assistant-interim');
+        currentAssistantEl.classList.remove('assistant-summary');
+        body.appendChild(currentAssistantEl);
+      }
 
       // Default shut. Honor sticky expand only while a live turn is streaming
       // (isProcessing) — never during session/load or after promptEnd.
