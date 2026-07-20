@@ -6209,7 +6209,7 @@ var end = displayText.length;
 
     // Render chat history using compact turn-based inline layout
     // (groups tool calls into collapsible containers instead of standalone cards)
-    applyInterruptNoticesFromHistory();
+    reconcileInterruptedSessionFlag(false);
     failInterruptedSpawnToolsInHistory();
     failInterruptedSubagentStagesInHistory();
     foldInterruptedAssistantsOnPromote = true;
@@ -7091,14 +7091,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          }
        }
      }
-     failInterruptedSubagentStagesInHistory();
-     applyInterruptNoticesFromHistory();
-     // Incomplete tools on resume ⇒ interrupted turn (Codex spawnAgent completed
-     // but wait still running, Claude Agent pending, etc.). Keeps the latest
-     // assistant inside the fold instead of promoting to main chat.
-     if (_failedAnyTool) markSessionInterrupted();
-     // Spawn "completed" only means agents were launched — rewrite those crews
-     // to failed when this session was interrupted (otherwise green checks).
+     // Do not fail completed→failed until we know the session actually ended
+     // interrupted (finished resumes must keep green checks + promote summary).
+     reconcileInterruptedSessionFlag(_failedAnyTool);
      failInterruptedSpawnToolsInHistory();
      failInterruptedSubagentStagesInHistory();
      saveState();
@@ -8369,9 +8364,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       // Interrupted turns: keep every assistant inside the fold (thoughts +
       // tools + partial reply together). Otherwise Codex resume promoted the
       // last bubble to the main chat while expand still grouped the rest.
+      // Finished turns must still promote the summary outside — never wrap a
+      // completed reply just because the session was interrupted earlier.
       var isLastTurn = !turn.nextElementSibling || !turn.parentElement ||
         turn === turn.parentElement.querySelector('.turn:last-of-type');
-      var forceFold = foldInterruptedAssistantsOnPromote && (
+      var forceFold = foldInterruptedAssistantsOnPromote && !turnLooksFinished(turn) && (
         turnLooksInterrupted(turn) ||
         (isLastTurn && sessionMarkedInterrupted())
       );
@@ -8432,26 +8429,83 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
 
     /** Scan chatHistory for Claude interrupt notices; mark session + prior assistant. */
     function applyInterruptNoticesFromHistory() {
-      var sawInterrupt = false;
+      var lastInterrupt = -1;
+      var lastRealUser = -1;
       for (var i = 0; i < chatHistory.length; i++) {
         var item = chatHistory[i];
         if (!item || item.kind !== 'message' || item.role !== 'user') continue;
-        if (!isSessionInterruptNotice(item.text)) continue;
-        sawInterrupt = true;
-        for (var j = i - 1; j >= 0; j--) {
-          var prev = chatHistory[j];
-          if (!prev) continue;
-          if (prev.kind === 'message' && prev.role === 'assistant') {
-            prev.interrupted = true;
-            break;
-          }
-          if (prev.kind === 'message' && prev.role === 'user' && !isSessionInterruptNotice(prev.text)) {
-            break;
+        if (isSessionInterruptNotice(item.text)) lastInterrupt = i;
+        else lastRealUser = i;
+      }
+      if (lastInterrupt < 0) return false;
+      for (var j = lastInterrupt - 1; j >= 0; j--) {
+        var prev = chatHistory[j];
+        if (!prev) continue;
+        if (prev.kind === 'message' && prev.role === 'assistant') {
+          prev.interrupted = true;
+          break;
+        }
+        if (prev.kind === 'message' && prev.role === 'user' && !isSessionInterruptNotice(prev.text)) {
+          break;
+        }
+      }
+      // Only mark the session interrupted when the interrupt is the latest
+      // end (no later real user prompt). Otherwise "go on" after interrupt
+      // would keep wrapping finished summaries inside the fold.
+      if (lastInterrupt > lastRealUser) {
+        markSessionInterrupted();
+        return true;
+      }
+      return false;
+    }
+
+    /**
+     * True when chatHistory's last user turn completed successfully (assistant
+     * present, no failed/in-flight tools, not ended on an interrupt notice).
+     */
+    function historyLastTurnLooksFinished() {
+      var lastUser = -1;
+      for (var i = chatHistory.length - 1; i >= 0; i--) {
+        var it = chatHistory[i];
+        if (it && it.kind === 'message' && it.role === 'user' && !isSessionInterruptNotice(it.text)) {
+          lastUser = i;
+          break;
+        }
+      }
+      if (lastUser < 0) return false;
+      for (var j = chatHistory.length - 1; j > lastUser; j--) {
+        var x = chatHistory[j];
+        if (x && x.kind === 'message' && x.role === 'user' && isSessionInterruptNotice(x.text)) {
+          return false;
+        }
+      }
+      var hasAssistant = false;
+      for (var k = lastUser + 1; k < chatHistory.length; k++) {
+        var item = chatHistory[k];
+        if (!item) continue;
+        if (item.kind === 'message' && item.role === 'assistant') {
+          if (item.interrupted) return false;
+          hasAssistant = true;
+        }
+        if (item.kind === 'toolCall') {
+          var st = item.status;
+          if (st === 'failed' || st === 'error' || st === 'pending' ||
+              st === 'running' || st === 'in_progress') {
+            return false;
           }
         }
       }
-      if (sawInterrupt) markSessionInterrupted();
-      return sawInterrupt;
+      return hasAssistant;
+    }
+
+    /** Clear stale interrupted flag when the loaded history ended successfully. */
+    function reconcileInterruptedSessionFlag(failedAnyTool) {
+      applyInterruptNoticesFromHistory();
+      if (historyLastTurnLooksFinished()) {
+        clearSessionInterrupted();
+        return;
+      }
+      if (failedAnyTool) markSessionInterrupted();
     }
 
     /** True when a restored/live turn still has failed or unfinished tools. */
@@ -8468,6 +8522,19 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           '.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending'
         )
       );
+    }
+
+    /** True when a turn has a final reply and no failed/in-flight tools. */
+    function turnLooksFinished(turn) {
+      if (!turn) return false;
+      if (!turn.querySelector('.message.assistant')) return false;
+      if (turn.getAttribute('data-turn-interrupted') === '1') return false;
+      if (turn.querySelector('.message.assistant[data-interrupted="1"]')) return false;
+      if (turn.querySelector(
+        '.tc-icon.failed, .tc-icon.error, .tc-stage-icon.error, .tc-stage-icon.failed'
+      )) return false;
+      if (turnElHasRunningTools(turn)) return false;
+      return true;
     }
 
     /** Mark a crew so later Kiro list_update cannot revive its stages. */
@@ -9734,6 +9801,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     */
    function failInterruptedSpawnToolsInHistory() {
      if (!sessionMarkedInterrupted()) return;
+     if (historyLastTurnLooksFinished()) return;
      var lastUser = -1;
      for (var i = chatHistory.length - 1; i >= 0; i--) {
        var it = chatHistory[i];
@@ -9766,6 +9834,8 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      var turns = messagesEl.querySelectorAll('.turn');
      if (!turns.length) return;
      var lastTurn = turns[turns.length - 1];
+     // Never rewrite a finished turn's green checks — that wraps the summary.
+     if (turnLooksFinished(lastTurn) || historyLastTurnLooksFinished()) return;
      var force = sessionMarkedInterrupted() ||
        lastTurn.getAttribute('data-turn-interrupted') === '1' ||
        turnLooksInterrupted(lastTurn);
