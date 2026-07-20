@@ -5761,6 +5761,10 @@ const builtinCommands = [
     // --- State persistence ---
     let chatHistory = [];
     let sessionState = null;
+    // Snapshot taken at loadSessionStart so Claude incomplete session/load
+    // (interrupted mid-turn often replays only the user prompt) can restore
+    // tools/thoughts that were already in the webview / vscode.setState.
+    let preLoadChatHistorySnapshot = null;
 
     /**
      * Strip injected context blocks from user message text.
@@ -6999,6 +7003,153 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       if (DEBUG) vscode.postMessage({ type: 'debugLog', message: '[REPLAY-TRACE] ' + msg });
     }
 
+    /**
+     * Claude session/load often drops an interrupted mid-turn (tools never
+     * flushed to the agent transcript). Re-inject the last turn from the
+     * pre-load webview snapshot — including the user prompt when Claude only
+     * replayed "[Request interrupted by user]".
+     */
+    function mergePreLoadInterruptedTurn(snapshot) {
+      if (!snapshot || !snapshot.length) return false;
+
+      var snapUserIdx = -1;
+      for (var j = snapshot.length - 1; j >= 0; j--) {
+        var s = snapshot[j];
+        if (s && s.kind === 'message' && s.role === 'user' && !isSessionInterruptNotice(s.text)) {
+          snapUserIdx = j;
+          break;
+        }
+      }
+      if (snapUserIdx < 0) return false;
+      var snapUserText = String(snapshot[snapUserIdx].text || '').trim();
+      if (!snapUserText) return false;
+
+      var loadedLastUserIdx = -1;
+      for (var i = chatHistory.length - 1; i >= 0; i--) {
+        var it = chatHistory[i];
+        if (it && it.kind === 'message' && it.role === 'user' && !isSessionInterruptNotice(it.text) &&
+            String(it.text || '').trim() === snapUserText) {
+          loadedLastUserIdx = i;
+          break;
+        }
+      }
+
+      function failToolCopy(item) {
+        var toolCopy = Object.assign({}, item, { status: 'failed' });
+        if (toolCopy.rawInput && typeof toolCopy.rawInput === 'object' &&
+            Array.isArray(toolCopy.rawInput.stages)) {
+          toolCopy.rawInput = Object.assign({}, toolCopy.rawInput, {
+            stages: toolCopy.rawInput.stages.map(function(st) {
+              if (!st || typeof st !== 'object') return st;
+              return Object.assign({}, st, { status: 'failed' });
+            }),
+          });
+        }
+        return toolCopy;
+      }
+
+      function collectSnapTurn(includeUser) {
+        var items = [];
+        for (var m = snapUserIdx; m < snapshot.length; m++) {
+          var item = snapshot[m];
+          if (!item) continue;
+          if (m > snapUserIdx && item.kind === 'message' && item.role === 'user' &&
+              !isSessionInterruptNotice(item.text)) {
+            break;
+          }
+          if (item.kind === 'message' && item.role === 'user') {
+            if (isSessionInterruptNotice(item.text)) {
+              items.push({ kind: 'message', role: 'user', text: String(item.text).trim() });
+            } else if (includeUser) {
+              items.push(Object.assign({}, item));
+            }
+            continue;
+          }
+          if (item.kind === 'toolCall') {
+            items.push(failToolCopy(item));
+            continue;
+          }
+          if (item.kind === 'thought') {
+            items.push(item);
+            continue;
+          }
+          if (item.kind === 'message' && item.role === 'assistant') {
+            items.push(Object.assign({}, item, { interrupted: true }));
+          }
+        }
+        return items;
+      }
+
+      // Claude replayed only the interrupt notice (or nothing) — restore the
+      // whole last turn so the real user prompt is visible again.
+      if (loadedLastUserIdx < 0) {
+        var restored = collectSnapTurn(true);
+        if (!restored.length) return false;
+        var prefix = [];
+        for (var p = 0; p < chatHistory.length; p++) {
+          var ch = chatHistory[p];
+          if (ch && ch.kind === 'message' && ch.role === 'user' && isSessionInterruptNotice(ch.text)) {
+            continue;
+          }
+          prefix.push(ch);
+        }
+        chatHistory = prefix.concat(restored);
+        markSessionInterrupted();
+        vscode.postMessage({
+          type: 'debugLog',
+          message: '[WV-MERGE] restored full interrupted turn from snapshot (incl. user prompt), items=' + restored.length,
+        });
+        return true;
+      }
+
+      var haveIds = {};
+      var loadedToolCount = 0;
+      var insertAt = chatHistory.length;
+      for (var k = loadedLastUserIdx + 1; k < chatHistory.length; k++) {
+        var cur = chatHistory[k];
+        if (!cur) continue;
+        if (cur.kind === 'message' && cur.role === 'user') {
+          insertAt = k;
+          break;
+        }
+        if (cur.kind === 'toolCall') {
+          loadedToolCount++;
+          if (cur.toolCallId) haveIds[cur.toolCallId] = true;
+        }
+      }
+
+      var missing = collectSnapTurn(false).filter(function(item) {
+        if (item.kind === 'toolCall') {
+          if (item.toolCallId && haveIds[item.toolCallId]) return false;
+          return true;
+        }
+        if (item.kind === 'message' && item.role === 'user' && isSessionInterruptNotice(item.text)) {
+          return false;
+        }
+        return item.kind === 'thought' || (item.kind === 'message' && item.role === 'assistant');
+      });
+      if (!missing.length) return false;
+      var missingTools = missing.filter(function(x) { return x.kind === 'toolCall'; });
+      if (loadedToolCount > 0 && missingTools.length === 0) return false;
+      if (loadedToolCount > 0 && missingTools.length > 0 &&
+          missingTools.every(function(t) { return t.toolCallId && haveIds[t.toolCallId]; })) {
+        return false;
+      }
+      if (loadedToolCount === 0 && missingTools.length === 0 &&
+          !missing.some(function(x) {
+            return x.kind === 'thought' || (x.kind === 'message' && x.role === 'assistant');
+          })) {
+        return false;
+      }
+      Array.prototype.splice.apply(chatHistory, [insertAt, 0].concat(missing));
+      markSessionInterrupted();
+      vscode.postMessage({
+        type: 'debugLog',
+        message: '[WV-MERGE] restored ' + missing.length + ' pre-load item(s) into interrupted turn (tools=' + missingTools.length + ')',
+      });
+      return true;
+    }
+
  function handleLoadSessionStart() {
    vscode.postMessage({ type: 'debugLog', message: 'handleLoadSessionStart' });
    // Cancel all pending render retries from restoreState — the DOM is
@@ -7020,10 +7171,16 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     tokenUsage = null;
      hasSentPrompt = false;
      if (tokenUsageRing) tokenUsageRing.classList.remove('visible');
+      // Keep a copy of the restored webview history. Claude session/load for an
+      // interrupted mid-turn often only replays the user prompt — without this
+      // snapshot (and without saveState of the empty array) the collapse block
+      // permanently disappears after VS Code restart.
+      preLoadChatHistorySnapshot = chatHistory.slice();
       // Reset all chat state; behaves like clearChat but keeps the session
       // banner / input area structure intact.
       chatHistory = [];
-      saveState();
+      // Do NOT saveState() here — persisting [] would erase tools that Claude
+      // will not replay. saveState runs after loadSessionEnd merge instead.
       currentAssistantEl = null;
       currentAssistantText = '';
       toolCalls = {};
@@ -7060,6 +7217,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     compactedNoticeText = '';
     if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
     hideCompactionProgress();
+    // Claude interrupted mid-turn: merge tools/thoughts from webview snapshot
+    // when session/load only returned the user prompt.
+    if (preLoadChatHistorySnapshot && preLoadChatHistorySnapshot.length) {
+      mergePreLoadInterruptedTurn(preLoadChatHistorySnapshot);
+    }
+    preLoadChatHistorySnapshot = null;
     // If history was replayed, there were prior prompts — mark as sent
     // so the context usage ring can appear when metadata arrives.
     if (chatHistory.length > 0) hasSentPrompt = true;
@@ -8013,7 +8176,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     /**
      * Compact layout:
      *   .turn
-     *     > .turn-tools-summary          (Thought · tools)
+     *     > .turn-tools-summary          (tool summary / fold chrome)
      *     > .turn-fold-body              (collapsed when Collapse is on)
      *         > .thought-block*
      *         > .turn-tools > list
@@ -9027,22 +9190,15 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      if (!toolCount && turn) {
        toolCount = turn.querySelectorAll('.tool-call-inline:not([data-parent-tool])').length;
      }
-     // Re-detect thought from DOM — _hasThought is lost across history rebuilds
-     // unless ensureTurnFoldStructure just ran.
-     var hasThought = !!(summaryEl._hasThought ||
-       (turn && turn.querySelector('.thought-block') &&
-         Array.prototype.some.call(turn.querySelectorAll('.thought-block'), isMeaningfulThought)));
-     if (hasThought) summaryEl._hasThought = true;
      var isInterruptedFold = !!(turn && (
        turn.getAttribute('data-turn-interrupted') === '1' ||
        turn.querySelector('.message.assistant[data-interrupted="1"]')
      ));
      var hasInterim = !!(turn && turn.querySelector('.message.assistant.assistant-interim'));
-     // Show the ▸ header when there is foldable content. Previously we hid it
-     // until toolCount > 0, which made interrupted Claude turns (thought +
-     // partial reply, or tools lost on restore) vanish after Collapse —
-     // fold body collapsed with no visible chrome after interrupt / restart.
-     if (toolCount === 0 && !hasThought && !(isInterruptedFold && hasInterim)) {
+     // Show the ▸ header for tools, or for interrupted interim-only folds.
+     // Do NOT show a placeholder like "Details"/"Thought" while thinking —
+     // that flashes mid-turn before the first tool arrives.
+     if (toolCount === 0 && !(isInterruptedFold && hasInterim)) {
        summaryEl.style.display = 'none';
        summaryEl.innerHTML = '';
        return;
@@ -9085,10 +9241,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        if (!detail) {
          detail = toolCount + ' tool call' + (toolCount === 1 ? '' : 's');
        }
-     }
-     if (hasThought) {
-       detail = detail ? ('Thought · ' + detail) : 'Thought';
-     } else if (!detail) {
+     } else {
        detail = 'Interrupted';
      }
      summaryEl.innerHTML = (isOpen ? '▾ ' : '▸ ') + '<span class="tc-summary-detail">' + escapeHtml(detail) + '</span>';
@@ -10451,6 +10604,15 @@ function renderChatHistory() {
          currentTurnEl = null;
          currentToolsListEl = null;
          currentToolsCountEl = null;
+         // Interrupt notices stay in chatHistory for fold/interrupt heuristics.
+         // Prefer not showing them as user bubbles — but if Claude omitted the
+         // real prompt and we have nothing else to show, surface a system line.
+         if (item.role === 'user' && isSessionInterruptNotice(item.text)) {
+           if (!messagesEl.querySelector('.message.user')) {
+             addMessageDOM('system', '— Conversation interrupted —');
+           }
+           break;
+         }
          trace('  -> user/error/system: reset turn, append directly to messages');
          // Safety net: clean user messages again in case raw context
          // links were stored in chatHistory before the fix.
@@ -12190,12 +12352,25 @@ sessionState = {
           if (/<task-notification[\\s>]/i.test(content.text)) {
             break;
           }
+          // Claude interrupt notice — keep in history for fold heuristics, but
+          // never coalesce onto the real user prompt and never show as a bubble.
+          if (isSessionInterruptNotice(content.text)) {
+            finalizeCurrentAssistantTurn();
+            var _lastHist = chatHistory[chatHistory.length - 1];
+            if (!(_lastHist && _lastHist.kind === 'message' && _lastHist.role === 'user' &&
+                  isSessionInterruptNotice(_lastHist.text))) {
+              chatHistory.push({ kind: 'message', role: 'user', text: String(content.text).trim() });
+            }
+            markSessionInterrupted();
+            break;
+          }
           // Strip injected context blocks from replayed user messages.
           // Uses the shared cleanUserMessage helper defined above.
          finalizeCurrentAssistantTurn();
          // Coalesce consecutive user chunks into one message.
          const last = chatHistory[chatHistory.length - 1];
-         if (last && last.kind === 'message' && last.role === 'user') {
+         if (last && last.kind === 'message' && last.role === 'user' &&
+             !isSessionInterruptNotice(last.text)) {
           // Debug: log coalescing
           vscode.postMessage({ type: 'debugLog', message: 'UMC coalesce: existing last.text len=' + last.text.length + ' new chunk len=' + content.text.length });
           // Accumulate raw text, then clean the full concatenation.
