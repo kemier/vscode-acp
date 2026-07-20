@@ -6210,12 +6210,16 @@ var end = displayText.length;
     // Render chat history using compact turn-based inline layout
     // (groups tool calls into collapsible containers instead of standalone cards)
     applyInterruptNoticesFromHistory();
+    failInterruptedSpawnToolsInHistory();
+    failInterruptedSubagentStagesInHistory();
     foldInterruptedAssistantsOnPromote = true;
     var assistantItems = renderChatHistory();
     foldInterruptedAssistantsOnPromote = false;
     failRunningSubagentStagesInDom();
+    failCompletedCrewsInInterruptedTurn();
     forceCollapseTurnFolds();
     failRunningSubagentStagesInDom();
+    failCompletedCrewsInInterruptedTurn();
     if (assistantItems.length > 0) {
       vscode.postMessage({ type: 'debugLog', message: 'restoreState: sending renderMarkdown for ' + assistantItems.length + ' assistant items' });
       vscode.postMessage({ type: 'renderMarkdown', items: assistantItems });
@@ -7093,6 +7097,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      // but wait still running, Claude Agent pending, etc.). Keeps the latest
      // assistant inside the fold instead of promoting to main chat.
      if (_failedAnyTool) markSessionInterrupted();
+     // Spawn "completed" only means agents were launched — rewrite those crews
+     // to failed when this session was interrupted (otherwise green checks).
+     failInterruptedSpawnToolsInHistory();
+     failInterruptedSubagentStagesInHistory();
      saveState();
      // Commit any trailing assistant turn captured during the replay.
      finalizeCurrentAssistantTurn();
@@ -7113,9 +7121,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     // Codex/Claude: crew stages can still render as running after rebuild —
     // force any leftover spinners to failed and mark crews stale.
     failRunningSubagentStagesInDom();
+    failCompletedCrewsInInterruptedTurn();
     // renderChatHistory can leave folds open after promote — force shut.
     forceCollapseTurnFolds();
     failRunningSubagentStagesInDom();
+    failCompletedCrewsInInterruptedTurn();
     if (loadOverlay) loadOverlay.classList.remove('visible');
     if (inputArea) inputArea.classList.remove('disabled');
     updateSendButton();
@@ -9666,18 +9676,13 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    }
 
    /**
-    * After reload, any stage that never reached a terminal status will never
-    * receive list_update/terminate — mark it failed so it does not spin forever.
-    * Kiro often marks the parent spawn tool completed while stages still run,
-    * so parent status alone is not enough.
-    */
-   /**
-    * After session/load: only fail stages that were explicitly still running.
-    * Missing status on a completed parent means a finished historical crew
-    * (agent history often omits per-stage status) — treat as completed so
-    * the final assistant is promoted outside the fold after resume.
+    * After session/load: fail stages that never finished.
+    * When the session was interrupted, also rewrite completed spawn stages —
+    * Codex/Claude mark spawnAgent/Agent as completed once launched even though
+    * the subagent work was cut off (would otherwise show a green check).
     */
    function failInterruptedSubagentStagesInHistory() {
+     var sessionInterrupted = sessionMarkedInterrupted();
      for (var i = 0; i < chatHistory.length; i++) {
        var item = chatHistory[i];
        if (!item || item.kind !== 'toolCall' || !item.rawInput || typeof item.rawInput !== 'object') {
@@ -9691,6 +9696,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          var stage = stages[s];
          if (!stage || typeof stage !== 'object') continue;
          var st = stage.status;
+         if (sessionInterrupted &&
+             (st === 'completed' || st === 'done' || st === 'success' || st === 'terminated')) {
+           stages[s] = Object.assign({}, stage, { status: 'failed' });
+           anyFailed = true;
+           continue;
+         }
          if (st === 'completed' || st === 'done' || st === 'success' || st === 'terminated') continue;
          if (st === 'failed' || st === 'error') { anyFailed = true; continue; }
          if (st === 'running' || st === 'in_progress' || st === 'pending' || st === 'working') {
@@ -9698,16 +9709,84 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
            anyFailed = true;
            continue;
          }
-         // Missing status: completed parent → completed; otherwise failed.
-         stages[s] = Object.assign({}, stage, { status: parentDone ? 'completed' : 'failed' });
-         if (!parentDone) anyFailed = true;
+         // Missing status: interrupted or incomplete parent → failed;
+         // completed parent on a finished session → completed.
+         if (sessionInterrupted || !parentDone) {
+           stages[s] = Object.assign({}, stage, { status: 'failed' });
+           anyFailed = true;
+         } else {
+           stages[s] = Object.assign({}, stage, { status: 'completed' });
+         }
        }
-       if (anyFailed) {
+       if (anyFailed || sessionInterrupted) {
          item.rawInput = Object.assign({}, item.rawInput, { stages: stages });
          item.status = 'failed';
        } else {
          item.rawInput = Object.assign({}, item.rawInput, { stages: stages });
        }
+     }
+   }
+
+   /**
+    * Fail spawn/crew toolCalls that belong to the last user turn when the
+    * session was interrupted — including spawnAgent rows that arrived as
+    * status=completed (launch ack only).
+    */
+   function failInterruptedSpawnToolsInHistory() {
+     if (!sessionMarkedInterrupted()) return;
+     var lastUser = -1;
+     for (var i = chatHistory.length - 1; i >= 0; i--) {
+       var it = chatHistory[i];
+       if (it && it.kind === 'message' && it.role === 'user' && !isSessionInterruptNotice(it.text)) {
+         lastUser = i;
+         break;
+       }
+     }
+     for (var k = lastUser + 1; k < chatHistory.length; k++) {
+       var item = chatHistory[k];
+       if (!item || item.kind !== 'toolCall') continue;
+       var isCrew = (item.rawInput && Array.isArray(item.rawInput.stages) && item.rawInput.stages.length > 0) ||
+         isSubagentSpawnTitle(item.title, item.rawInput);
+       if (!isCrew) continue;
+       item.status = 'failed';
+       if (item.rawInput && Array.isArray(item.rawInput.stages)) {
+         item.rawInput = Object.assign({}, item.rawInput, {
+           stages: item.rawInput.stages.map(function(st) {
+             if (!st || typeof st !== 'object') return st;
+             return Object.assign({}, st, { status: 'failed' });
+           }),
+         });
+       }
+     }
+   }
+
+   /** Flip checked/completed crew icons to failed in an interrupted last turn. */
+   function failCompletedCrewsInInterruptedTurn() {
+     if (!messagesEl) return;
+     var turns = messagesEl.querySelectorAll('.turn');
+     if (!turns.length) return;
+     var lastTurn = turns[turns.length - 1];
+     var force = sessionMarkedInterrupted() ||
+       lastTurn.getAttribute('data-turn-interrupted') === '1' ||
+       turnLooksInterrupted(lastTurn);
+     if (!force) return;
+     var crews = lastTurn.querySelectorAll('.tool-call-inline.tc-subagent');
+     for (var c = 0; c < crews.length; c++) {
+       var crew = crews[c];
+       var parentIcon = crew.querySelector(':scope > .tc-icon');
+       if (parentIcon && (parentIcon.classList.contains('completed') ||
+           parentIcon.classList.contains('running') ||
+           parentIcon.classList.contains('in_progress') ||
+           parentIcon.classList.contains('pending'))) {
+         parentIcon.className = 'tc-icon failed';
+         parentIcon.textContent = getStatusIcon('failed');
+       }
+       var stageIcons = crew.querySelectorAll('.tc-stage-icon');
+       for (var s = 0; s < stageIcons.length; s++) {
+         var stageEl = stageIcons[s].closest('.tc-stage');
+         if (stageEl) applyStageIcon(stageEl, 'failed');
+       }
+       markSubagentCrewStale(crew);
      }
    }
 
@@ -9866,12 +9945,14 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    function addOrExtendSubagentCrew(toolCallId, title, status, rawInput, toolKind, locations) {
      hideEmpty();
      var stagePrompt = crewStageFullPrompt(rawInput);
-     // On resume/load, interrupted Claude Agent tools arrive as pending/failed
-     // without per-stage status. Default new stages to failed (not spinning)
-     // unless we are in a live mid-turn stream.
+     // On resume/load, interrupted Claude/Codex Agent tools often arrive as
+     // status=completed (spawn succeeded) even though subagents never finished.
+     // Default new stages to failed when the session was interrupted; only keep
+     // completed for truly finished historical crews.
      var liveStream = isProcessing && !isLoadingSession;
      var stageInitStatus = 'running';
      if (status === 'failed' || status === 'error') stageInitStatus = 'failed';
+     else if (!liveStream && sessionMarkedInterrupted()) stageInitStatus = 'failed';
      else if (status === 'completed' && !liveStream) stageInitStatus = 'completed';
      else if (!liveStream && (status === 'pending' || status === 'in_progress' || status === 'running' || !status)) {
        stageInitStatus = 'failed';
@@ -10376,6 +10457,7 @@ function renderChatHistory() {
   forceCollapseTurnFolds();
   // Codex/Claude interrupted crews often still have running icons after rebuild.
   failRunningSubagentStagesInDom();
+  failCompletedCrewsInInterruptedTurn();
   // Interrupted crews stay failed — ignore later list_update by name.
   markFailedCrewsStale(messagesEl);
    return assistantItems;
