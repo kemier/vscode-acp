@@ -5307,6 +5307,11 @@ var pendingRenderRetries = {}; // keys of pending renderMarkdown retries
 var historyRenderGen = 0; // generation counter for history renders (invalidated on DOM rebuild)
 let isCompacting = false;  // true while /compact is running
  let compactedWarningText = '';  // buffered warning text during compaction
+ // "*Context compacted*" notice — Codex emits this BEFORE the Heads-up
+ // warning (item/completed → thread/compacted → Warning). Buffer both and
+ // flush Warning first so the UI matches the intended order.
+ let compactedNoticeText = '';
+ let compactionFlushTimer = null;
 
    // --- Message queue ---
     // When the agent is generating, new messages are queued and
@@ -6368,6 +6373,8 @@ var end = displayText.length;
     imagePreviewStrip.innerHTML = '';
     isCompacting = true;
     compactedWarningText = '';
+    compactedNoticeText = '';
+    if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
     setProcessing(true);
     addMessage('user', '/compact');
     vscode.postMessage({ type: 'sendPrompt', text: '/compact' });
@@ -6644,7 +6651,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     // leave isCompacting stuck true — that silently blocks handleSend().
     isCompacting = false;
     compactedWarningText = '';
-     tokenUsage = null;
+    compactedNoticeText = '';
+    if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+    tokenUsage = null;
      hasSentPrompt = false;
      if (tokenUsageRing) tokenUsageRing.classList.remove('visible');
       // Reset all chat state; behaves like clearChat but keeps the session
@@ -6682,6 +6691,8 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     // Safety: never leave compact-mode latched after a history replay.
     isCompacting = false;
     compactedWarningText = '';
+    compactedNoticeText = '';
+    if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
     // If history was replayed, there were prior prompts — mark as sent
     // so the context usage ring can appear when metadata arrives.
     if (chatHistory.length > 0) hasSentPrompt = true;
@@ -9312,7 +9323,13 @@ sessionState = {
       case 'promptEnd':
       vscode.postMessage({ type: 'debugLog', message: '[WV-PROMPTEND] promptEnd received. chatHistoryLen=' + chatHistory.length + ' currentAssistantTextLen=' + currentAssistantText.length + ' hasCurrentAssistantEl=' + !!currentAssistantEl });
        // Safety: reset isCompacting in case compacted message was missed
-       if (isCompacting) { isCompacting = false; if (statusEl) statusEl.innerHTML = ''; }
+       if (isCompacting) {
+         flushCompactionMessages();
+         if (isCompacting) {
+           isCompacting = false;
+           if (statusEl) statusEl.innerHTML = '';
+         }
+       }
           // Finalize thought block if present (DOM+buffers — don't drop on whitespace chunk)
           if (currentThoughtEl || currentThoughtText || thoughtDomBase) {
             commitOrDiscardCurrentThought();
@@ -9980,6 +9997,68 @@ sessionState = {
 
     const STREAMING_RENDER_INTERVAL = 80; // ms
 
+    /**
+     * Clear the chat and show compaction notices in the intended order:
+     * 1) Warning: Heads up…  2) *Context compacted…*
+     * Codex emits the notice before the warning on the wire; we buffer both.
+     */
+    function flushCompactionMessages() {
+      if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+      var warning = compactedWarningText;
+      var notice = compactedNoticeText;
+      compactedWarningText = '';
+      compactedNoticeText = '';
+      if (!warning && !notice) {
+        isCompacting = false;
+        if (statusEl) statusEl.innerHTML = '';
+        return;
+      }
+      chatHistory = [];
+      messagesEl.innerHTML = '';
+      historyRenderGen++;
+      for (var _cmpRk in pendingRenderRetries) { delete pendingRenderRetries[_cmpRk]; }
+      currentTurnEl = null;
+      currentAssistantEl = null;
+      currentAssistantText = '';
+      currentToolsListEl = null;
+      currentToolsCountEl = null;
+      currentToolCount = 0;
+      toolCalls = {};
+      toolCallDiffs = {};
+      isCompacting = false;
+      if (statusEl) statusEl.innerHTML = '';
+      hideEmpty();
+      function commitCompactionText(text) {
+        if (!text || !String(text).trim()) return;
+        currentAssistantText = text;
+        if (!currentTurnEl) {
+          currentTurnEl = document.createElement('div');
+          currentTurnEl.className = 'turn';
+          messagesEl.appendChild(currentTurnEl);
+        }
+        currentAssistantEl = document.createElement('div');
+        currentAssistantEl.className = 'message assistant';
+        placeAssistantInTurn(currentAssistantEl);
+        currentAssistantEl.textContent = text;
+        commitCurrentTextSegment();
+      }
+      // Warning first (Heads up…), then the italic compacted notice.
+      commitCompactionText(warning);
+      commitCompactionText(notice);
+    }
+
+    function scheduleCompactionFlush() {
+      if (compactionFlushTimer) clearTimeout(compactionFlushTimer);
+      // Codex sends Warning right after thread/compacted; wait briefly so
+      // both land before we paint (Warning → notice).
+      compactionFlushTimer = setTimeout(function() {
+        compactionFlushTimer = null;
+        if (isCompacting && (compactedWarningText || compactedNoticeText)) {
+          flushCompactionMessages();
+        }
+      }, 400);
+    }
+
     function doStreamingRender() {
       streamingRenderPending = false;
       lastRenderTime = Date.now();
@@ -10048,54 +10127,32 @@ sessionState = {
            content.text.trim().startsWith('*Context compacted')) {
          isCompacting = true;
          compactedWarningText = '';
+         compactedNoticeText = '';
        }
-       // During /compact: keep old messages visible until the actual
-       // compacted summary arrives. Warning messages are buffered.
+       // During compaction: Codex emits "*Context compacted*" then
+       // "Warning: Heads up…". Buffer both and flush Warning-first.
        if (isCompacting) {
           var chunkText = content && content.type === 'text' ? content.text : '';
-          var isWarning = chunkText.trim().indexOf('Warning:') === 0;
+          var trimmedChunk = chunkText.trim();
+          var isWarning = trimmedChunk.indexOf('Warning:') === 0;
+          var isCompactNotice = trimmedChunk.indexOf('*Context compacted') === 0;
           if (isWarning) {
             compactedWarningText += chunkText;
+            // Notice usually arrived first — flush now that we have both.
+            if (compactedNoticeText) {
+              flushCompactionMessages();
+            } else {
+              scheduleCompactionFlush();
+            }
             break;
           }
-          // Actual compacted summary - clear old messages now
-          chatHistory = [];
-         messagesEl.innerHTML = '';
-         // Invalidate stale renders and cancel retries — DOM was wiped.
-         historyRenderGen++;
-         for (var _cmpRk in pendingRenderRetries) { delete pendingRenderRetries[_cmpRk]; }
-         currentTurnEl = null;
-         currentAssistantEl = null;
-         currentAssistantText = '';
-         currentToolsListEl = null;
-         currentToolsCountEl = null;
-         currentToolCount = 0;
-         toolCalls = {};
-         toolCallDiffs = {};
-        isCompacting = false;
-         if (statusEl) statusEl.innerHTML = '';
-         if (compactedWarningText) {
-           // Commit the warning as its own assistant message, separate
-           // from the compacted summary that follows. This prevents the
-           // warning from being concatenated into the same text block.
-           commitCurrentTextSegment();
-           currentAssistantText = compactedWarningText;
-           // Force a render of the warning immediately
-           if (!currentAssistantEl) {
-             if (!currentTurnEl) {
-               currentTurnEl = document.createElement('div');
-               currentTurnEl.className = 'turn';
-               messagesEl.appendChild(currentTurnEl);
-               hideEmpty();
-             }
-             currentAssistantEl = document.createElement('div');
-             currentAssistantEl.className = 'message assistant';
-             placeAssistantInTurn(currentAssistantEl);
-           }
-           currentAssistantEl.textContent = compactedWarningText;
-           commitCurrentTextSegment();
-           compactedWarningText = '';
-         }
+          if (isCompactNotice) {
+            compactedNoticeText += chunkText;
+            scheduleCompactionFlush();
+            break;
+          }
+          // Real post-compaction content — flush buffered notices, then stream.
+          flushCompactionMessages();
        }
         if (content && content.type === 'text' && content.text) {
           currentAssistantText += content.text;
@@ -10310,6 +10367,8 @@ sessionState = {
         }
         isCompacting = true;
         compactedWarningText = '';
+        compactedNoticeText = '';
+        if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
         break;
       }
       // Kiro "Summarizing"/"summary" tool calls carry the subagent's full
@@ -10350,6 +10409,8 @@ sessionState = {
         }
         isCompacting = true;
         compactedWarningText = '';
+        compactedNoticeText = '';
+        if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
         break;
       }
       // Strip taskResult from tool_call_update rawInput too (Kiro may
