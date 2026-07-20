@@ -6634,6 +6634,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    currentPsEl = null;
     if (psPanel) psPanel.style.display = 'none';
     isLoadingSession = true;
+    // A historical "Context compacted" tool_call during session/load must NOT
+    // leave isCompacting stuck true — that silently blocks handleSend().
+    isCompacting = false;
+    compactedWarningText = '';
      tokenUsage = null;
      hasSentPrompt = false;
      if (tokenUsageRing) tokenUsageRing.classList.remove('visible');
@@ -6669,6 +6673,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
   function handleLoadSessionEnd(ok) {
     hideEmpty();
     isLoadingSession = false;
+    // Safety: never leave compact-mode latched after a history replay.
+    isCompacting = false;
+    compactedWarningText = '';
     // If history was replayed, there were prior prompts — mark as sent
     // so the context usage ring can appear when metadata arrives.
     if (chatHistory.length > 0) hasSentPrompt = true;
@@ -9945,7 +9952,8 @@ sessionState = {
       }
       // Detect auto-compaction: if the agent sends "*Context compacted*" text
       // without a preceding contextCompaction tool_call, treat it as compaction.
-       if (!isCompacting && content && content.type === 'text' &&
+      // Skip during session/load — that text is historical, not a live /compact.
+       if (!isLoadingSession && !isCompacting && content && content.type === 'text' &&
            content.text.trim().startsWith('*Context compacted')) {
          isCompacting = true;
          compactedWarningText = '';
@@ -10202,7 +10210,13 @@ sessionState = {
       // Detect auto-compaction: Codex core auto-compacts when context is too
       // long, sending a "Context compacting" tool_call with _meta.contextCompaction.
       // Set isCompacting so the subsequent "Context compacted" message clears history.
+      // During session/load replay this is a historical marker only — do NOT
+      // enter live compacting mode (that blocks Send until a message arrives).
       if (!isCompacting && update._meta && update._meta.contextCompaction) {
+        if (isLoadingSession) {
+          addMessage('system', 'Earlier conversation was compacted — history before this point is unavailable.');
+          break;
+        }
         isCompacting = true;
         compactedWarningText = '';
         break;
@@ -10240,6 +10254,9 @@ sessionState = {
       // Detect auto-compaction in tool_call_update as well (some code paths
       // send the compaction as a tool_call_update rather than tool_call)
       if (!isCompacting && update._meta && update._meta.contextCompaction) {
+        if (isLoadingSession) {
+          break;
+        }
         isCompacting = true;
         compactedWarningText = '';
         break;
