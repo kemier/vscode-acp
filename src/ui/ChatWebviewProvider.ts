@@ -5477,6 +5477,10 @@ let isCompacting = false;  // true while /compact is running
  let compactedNoticeText = '';
  let compactionFlushTimer = null;
  let kiroCompactWatchdog = null; // safety timeout while waiting for true Kiro done
+ // After a successful compact flush, drop late Codex boilerplate
+ // ("Warning: Heads up…", "*Context compacted…") that arrives after isCompacting
+ // is cleared so it never lands in the chat panel.
+ let suppressPostCompactNoiseUntil = 0;
 
    // --- Message queue ---
     // When the agent is generating, new messages are queued and
@@ -6544,12 +6548,23 @@ var end = displayText.length;
  vscode.postMessage({ type: 'summarizeSession', sessionName: sessionName, queryText: remainingQuery });
  return true;
 }
-  // /compact|/summarize|/compress — context compaction for all agents.
-  // Kiro: _kiro.dev/commands/execute. Codex/Claude/Cursor: session/prompt
-  // (Cursor primary is /summarize; /compact and /compress are aliases).
+  // /compact|/summarize|/compress — context compaction where the agent
+  // supports it. Kiro: _kiro.dev/commands/execute. Codex/Claude: session/prompt.
+  // Cursor Agent has no compact slash command (its available_commands_update
+  // never advertises one) — do not fake /summarize or send a dead prompt.
   var compactMatch = text.match(/^\\/(compact|summarize|compress)\\b(.*)$/i);
   if (compactMatch) {
     if (isCompacting) { return true; }
+    var agentLabel = (sessionState && (sessionState.agentName || sessionState.agentConfigKey || '')) || '';
+    var isCursorAgent = /cursor/i.test(agentLabel);
+    if (isCursorAgent) {
+      promptInput.value = '';
+      updateSendButton();
+      addMessage('system',
+        'Cursor Agent does not support /' + compactMatch[1].toLowerCase() +
+        '. Start a new chat to free context.');
+      return true;
+    }
     promptInput.value = '';
     updateSendButton();
     pendingImages.splice(0);
@@ -6565,7 +6580,7 @@ var end = displayText.length;
     var compactPrompt = compactArgs ? (compactCmd + ' ' + compactArgs) : compactCmd;
     addMessage('user', compactPrompt);
     showCompactionProgress('Compacting conversation...', null);
-    var isKiro = sessionState && /kiro/i.test(sessionState.agentName || sessionState.agentConfigKey || '');
+    var isKiro = /kiro/i.test(agentLabel);
     if (isKiro) {
       kiroCompactWatchdog = setTimeout(function() {
         kiroCompactWatchdog = null;
@@ -6577,8 +6592,21 @@ var end = displayText.length;
       }, 180000);
       vscode.postMessage({ type: 'executeKiroCommand', command: 'compact' });
     } else {
-      // Cursor prefers /summarize; Codex/Claude use /compact. Send what the
-      // user typed so aliases resolve on the agent side.
+      // Codex/Claude resolve /compact (and aliases) as a prompt slash command.
+      // Keep waiting after promptEnd for contextCompaction completed / notice.
+      kiroCompactWatchdog = setTimeout(function() {
+        kiroCompactWatchdog = null;
+        if (!isCompacting) return;
+        isCompacting = false;
+        compactedWarningText = '';
+        compactedNoticeText = '';
+        if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+        hideCompactionProgress();
+        if (statusEl) statusEl.innerHTML = '';
+        setProcessing(false);
+        addMessage('system',
+          'Timed out waiting for compaction to finish. Conversation was left unchanged.');
+      }, 180000);
       vscode.postMessage({ type: 'sendPrompt', text: compactPrompt });
     }
     return true;
@@ -9601,17 +9629,16 @@ sessionState = {
       vscode.postMessage({ type: 'debugLog', message: '[WV-PROMPTEND] promptEnd received. chatHistoryLen=' + chatHistory.length + ' currentAssistantTextLen=' + currentAssistantText.length + ' hasCurrentAssistantEl=' + !!currentAssistantEl });
        // Compaction: only clear the conversation when we already buffered a
        // real completion notice. Do NOT wipe history on a bare execute ack /
-       // promptEnd (Kiro returns before compaction finishes).
+       // promptEnd (Kiro returns before compaction finishes; Codex often
+       // finishes the prompt turn before thread/compacted / contextCompaction
+       // completed arrives — keep waiting).
        if (isCompacting) {
          if (compactedWarningText || compactedNoticeText) {
            flushCompactionMessages();
-         } else if (!(sessionState && /kiro/i.test(sessionState.agentName || sessionState.agentConfigKey || ''))) {
-           // Codex safety net: abandon stuck compacting with no notice.
-           isCompacting = false;
-           if (statusEl) statusEl.innerHTML = '';
          }
-         // Kiro: leave isCompacting true until compaction/status or
-         // "Conversation compacted" arrives.
+         // Leave isCompacting true until notice / contextCompaction completed /
+         // Kiro compaction status. A stuck spinner is cleared by Stop or the
+         // Kiro/Codex compact watchdogs.
        }
           // Finalize thought block if present (DOM+buffers — don't drop on whitespace chunk)
           if (currentThoughtEl || currentThoughtText || thoughtDomBase) {
@@ -10332,13 +10359,10 @@ sessionState = {
     const STREAMING_RENDER_INTERVAL = 80; // ms
 
     /**
-     * Clear the chat and show compaction notices in the intended order:
-     * 1) Warning: Heads up…  2) *Context compacted…*
-     * Codex emits the notice before the warning on the wire; we buffer both.
-     *
-     * Use system messages (not assistant turns): committing two assistants in
-     * one turn lets placeSummaryAssistant demote the Heads-up into the
-     * collapsed fold, so it vanishes after the notice is painted.
+     * Clear the chat after compaction. Codex emits "Warning: Heads up…" and
+     * "*Context compacted…*" from codex-core / codex-acp — do not re-paint
+     * those into the panel (status spinner already covered progress).
+     * Show a short client-owned system note instead.
      */
     function flushCompactionMessages() {
       if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
@@ -10368,9 +10392,18 @@ sessionState = {
       isCompacting = false;
       if (statusEl) statusEl.innerHTML = '';
       hideEmpty();
-      // System messages sit outside turn folds — never tucked into Collapse.
-      if (warning && String(warning).trim()) addMessage('system', warning.trim());
-      if (notice && String(notice).trim()) addMessage('system', notice.trim());
+      // Swallow late Codex Heads-up / Context-compacted agent_message chunks.
+      suppressPostCompactNoiseUntil = Date.now() + 2500;
+      addMessage('system', 'Conversation compacted.');
+    }
+
+    function isCodexPostCompactBoilerplate(text) {
+      var t = String(text || '').trim();
+      if (!t) return false;
+      if (t.indexOf('*Context compacted') === 0) return true;
+      if (/^Warning:\\s*Heads up/i.test(t)) return true;
+      if (/conversation compacted/i.test(t) && t.length < 200) return true;
+      return false;
     }
 
     function scheduleCompactionFlush() {
@@ -10446,6 +10479,12 @@ sessionState = {
           content.text.trim().startsWith('Effort configuration is currently not available')) {
         break;
       }
+      // Drop late Codex post-compact boilerplate so it never lands in the panel.
+      if (!isCompacting && !isLoadingSession && content && content.type === 'text' &&
+          Date.now() < suppressPostCompactNoiseUntil &&
+          isCodexPostCompactBoilerplate(content.text)) {
+        break;
+      }
       // Detect auto-compaction: if the agent sends "*Context compacted*" text
       // without a preceding contextCompaction tool_call, treat it as compaction.
       // Also recognize Kiro CLI "Conversation compacted" notices and Claude's
@@ -10511,7 +10550,12 @@ sessionState = {
             break;
           }
           // Real post-compaction content — flush buffered notices, then stream.
-          flushCompactionMessages();
+          // If we have no notice yet, keep waiting (do not abandon / stream mid-compact).
+          if (compactedWarningText || compactedNoticeText) {
+            flushCompactionMessages();
+          } else {
+            break;
+          }
        }
         if (content && content.type === 'text' && content.text) {
           currentAssistantText += content.text;
@@ -10712,24 +10756,41 @@ sessionState = {
         }
 
     case 'tool_call': {
-      // Suppress contextCompaction tool calls during /compact
-      if (isCompacting && update._meta && update._meta.contextCompaction) { break; }
-      // Detect auto-compaction: Codex core auto-compacts when context is too
-      // long, sending a "Context compacting" tool_call with _meta.contextCompaction.
-      // Set isCompacting so the subsequent "Context compacted" message clears history.
-      // During session/load replay this is a historical marker only — do NOT
-      // enter live compacting mode (that blocks Send until a message arrives).
-      if (!isCompacting && update._meta && update._meta.contextCompaction) {
+      // Codex contextCompaction tool cards are suppressed; completion still
+      // clears history (some paths emit completed as tool_call, not update).
+      if (update._meta && update._meta.contextCompaction) {
         if (isLoadingSession) {
-          addMessage('system', 'Earlier conversation was compacted — history before this point is unavailable.');
+          if (!isCompacting) {
+            addMessage('system', 'Earlier conversation was compacted — history before this point is unavailable.');
+          }
           break;
         }
-        isCompacting = true;
-        compactedWarningText = '';
-        compactedNoticeText = '';
-        if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
-        showCompactionProgress(update.title || 'Compacting conversation...', null);
-        setProcessing(true);
+        if (!isCompacting) {
+          isCompacting = true;
+          compactedWarningText = '';
+          compactedNoticeText = '';
+          if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+          showCompactionProgress('Compacting conversation...', null);
+          setProcessing(true);
+        }
+        var _tcCcStatus = update.status || '';
+        if (_tcCcStatus === 'failed') {
+          isCompacting = false;
+          compactedWarningText = '';
+          compactedNoticeText = '';
+          if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+          hideCompactionProgress();
+          if (statusEl) statusEl.innerHTML = '';
+          setProcessing(false);
+          addMessage('error', 'Compaction failed');
+          break;
+        }
+        if (_tcCcStatus === 'completed') {
+          if (!compactedNoticeText) {
+            compactedNoticeText = "*Context compacted to fit the model's context window.*";
+          }
+          scheduleCompactionFlush();
+        }
         break;
       }
       // Kiro "Summarizing"/"summary" tool calls carry the subagent's full
@@ -10770,8 +10831,10 @@ sessionState = {
      }
 
     case 'tool_call_update': {
-      // Codex contextCompaction lifecycle — drive the shared progress banner
-      // (no tool card). Binary start/complete; no percent stream.
+      // Codex contextCompaction lifecycle — never push codex-core titles into
+      // the status bar. On completed, clear chat history (manual /compact and
+      // auto-compact both rely on this; the text notice may arrive after
+      // promptEnd or not at all).
       if (update._meta && update._meta.contextCompaction) {
         if (isLoadingSession) {
           break;
@@ -10781,16 +10844,26 @@ sessionState = {
           compactedWarningText = '';
           compactedNoticeText = '';
           if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
-          showCompactionProgress(update.title || 'Compacting conversation...', null);
+          showCompactionProgress('Compacting conversation...', null);
           setProcessing(true);
-        } else {
-          var _ccStatus = update.status || '';
-          if (_ccStatus === 'completed' || _ccStatus === 'failed') {
-            showCompactionProgress(
-              update.title || (_ccStatus === 'failed' ? 'Compaction failed' : 'Context compacted'),
-              _ccStatus === 'completed' ? 100 : null,
-            );
+        }
+        var _ccStatus = update.status || '';
+        if (_ccStatus === 'failed') {
+          isCompacting = false;
+          compactedWarningText = '';
+          compactedNoticeText = '';
+          if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+          hideCompactionProgress();
+          if (statusEl) statusEl.innerHTML = '';
+          setProcessing(false);
+          addMessage('error', 'Compaction failed');
+          break;
+        }
+        if (_ccStatus === 'completed') {
+          if (!compactedNoticeText) {
+            compactedNoticeText = "*Context compacted to fit the model's context window.*";
           }
+          scheduleCompactionFlush();
         }
         break;
       }
