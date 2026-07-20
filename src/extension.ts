@@ -291,6 +291,19 @@ export function activate(context: vscode.ExtensionContext): void {
     chatWebviewProvider.notifyKiroSubagentListUpdate(params);
   });
 
+  // Forward Kiro slash-command catalog updates (merged into availableCommands)
+  sessionManager.on('available-commands-changed', (sessionId: string, commands: any) => {
+    if (sessionId !== sessionManager.getActiveSessionId()) {
+      return;
+    }
+    chatWebviewProvider.notifyAvailableCommands(commands);
+  });
+
+  // Forward _kiro.dev/compaction/status (context compaction progress)
+  sessionManager.on('kiro-compaction-status', (params: any) => {
+    chatWebviewProvider.notifyKiroCompactionStatus(params);
+  });
+
   // Session-load replay state — drive the webview overlay.
   sessionManager.on('session-load-start', () => {
     chatWebviewProvider.notifyLoadSessionStart();

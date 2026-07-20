@@ -114,6 +114,8 @@ export interface SessionManagerEvents {
   'agent-error': [agentId: string, error: any];
   'kiro-metadata': [params: any];
   'kiro-subagent-list-update': [params: any];
+  'kiro-commands-available': [params: any];
+  'kiro-compaction-status': [params: any];
 }
 
 export class SessionManager extends EventEmitter {
@@ -1015,6 +1017,57 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
+   * Execute a Kiro CLI slash command via `_kiro.dev/commands/execute`.
+   * Kiro expects an adjacently-tagged command object (not a plain string) —
+   * see kirodotdev/Kiro#5763. Leading `/` is stripped from the name.
+   *
+   * Returns any acknowledgment message from the result (message/text/content).
+   */
+  async executeKiroCommand(
+    sessionId: string,
+    commandName: string,
+    args: Record<string, string> = {},
+  ): Promise<string | undefined> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      throw new Error(`Session ${sessionId} not found`);
+    }
+    const connInfo = this.connectionManager.getConnection(session.agentId);
+    if (!connInfo) {
+      throw new Error(`No connection for session ${sessionId}`);
+    }
+    const name = commandName.replace(/^\//, '');
+    log(`executeKiroCommand: session=${sessionId}, command="${name}"`);
+    this.inFlightPromptSessions.add(sessionId);
+    try {
+      const result = await connInfo.connection.request<any, any>('_kiro.dev/commands/execute', {
+        sessionId,
+        command: { command: name, args },
+      });
+      if (!result || typeof result !== 'object') {
+        return typeof result === 'string' ? result : undefined;
+      }
+      if (typeof result.message === 'string') {
+        return result.message;
+      }
+      if (typeof result.text === 'string') {
+        return result.text;
+      }
+      if (typeof result.content === 'string') {
+        return result.content;
+      }
+      return undefined;
+    } finally {
+      this.inFlightPromptSessions.delete(sessionId);
+    }
+  }
+
+  /** True when the configured agent name looks like Kiro CLI. */
+  isKiroAgentName(agentName: string | null | undefined): boolean {
+    return !!agentName && /kiro/i.test(agentName);
+  }
+
+  /**
    * Replace a session's configOptions in place and notify listeners.
    * Used by both the setter response and the `config_option_update`
    * push-notification handler.
@@ -1413,10 +1466,9 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
-   * Wire up the _kiro.dev/metadata notification handler on a ConnectionInfo.
-   * Called from both connectToAgent() and ensureConnected() so that Kiro
-   * CLI metadata (context usage %, effort level) is always captured
-   * regardless of which code path created the connection.
+   * Wire up Kiro CLI `_kiro.dev/*` notification handlers on a ConnectionInfo.
+   * Called from both connectToAgent() and ensureConnected() so metadata,
+   * slash-command catalogs, and compaction status are always captured.
    */
   private wireKiroMetadataHandler(connInfo: ConnectionInfo, agentName: string): void {
     connInfo.onKiroMetadata = (params: any) => {
@@ -1475,6 +1527,46 @@ export class SessionManager extends EventEmitter {
     // webview uses to update per-stage spinners in the crew tool call.
     connInfo.onKiroSubagentListUpdate = (params: any) => {
       this.emit('kiro-subagent-list-update', params);
+    };
+
+    // Merge Kiro slash commands into the session's availableCommands so the
+    // webview autocomplete shows `/compact` etc. (Kiro does not use the
+    // standard ACP available_commands_update for these.)
+    connInfo.onKiroCommandsAvailable = (params: any) => {
+      const sessionId = typeof params?.sessionId === 'string' ? params.sessionId : undefined;
+      const raw = Array.isArray(params?.commands) ? params.commands : [];
+      const kiroCmds: AvailableCommand[] = raw
+        .map((c: any) => {
+          const name = String(c?.name || '')
+            .replace(/^\//, '')
+            .trim();
+          if (!name) {
+            return null;
+          }
+          return {
+            name,
+            description: typeof c?.description === 'string' ? c.description : '',
+          } as AvailableCommand;
+        })
+        .filter((c: AvailableCommand | null): c is AvailableCommand => !!c);
+
+      if (sessionId && kiroCmds.length > 0) {
+        const session = this.sessions.get(sessionId);
+        const existing = session?.availableCommands || this.pendingAvailableCommands.get(sessionId) || [];
+        const byName = new Map<string, AvailableCommand>();
+        for (const c of existing) {
+          byName.set(c.name, c);
+        }
+        for (const c of kiroCmds) {
+          byName.set(c.name, c);
+        }
+        this.applyAvailableCommands(sessionId, [...byName.values()]);
+      }
+      this.emit('kiro-commands-available', params);
+    };
+
+    connInfo.onKiroCompactionStatus = (params: any) => {
+      this.emit('kiro-compaction-status', params);
     };
   }
 

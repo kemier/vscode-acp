@@ -19,6 +19,10 @@ export interface ConnectionInfo {
   initResponse: InitializeResponse;
   onKiroMetadata?: (params: any) => void;
   onKiroSubagentListUpdate?: (params: any) => void;
+  /** `_kiro.dev/commands/available` — Kiro slash-command catalog. */
+  onKiroCommandsAvailable?: (params: any) => void;
+  /** `_kiro.dev/compaction/status` — context compaction progress. */
+  onKiroCompactionStatus?: (params: any) => void;
 }
 
 /**
@@ -152,23 +156,22 @@ export class ConnectionManager {
     const recvTap = new TransformStream({
       transform: (chunk: unknown, controller: TransformStreamDefaultController) => {
         logTraffic('recv', chunk);
-        // Intercept _kiro.dev/metadata notifications (Kiro CLI specific)
-        if (chunk && typeof chunk === 'object' && (chunk as any).method === '_kiro.dev/metadata') {
+        // Intercept Kiro CLI vendor extension notifications. The ACP SDK
+        // does not dispatch `_kiro.dev/*` methods to Client handlers, so we
+        // tap them here and forward via ConnectionInfo callbacks.
+        if (chunk && typeof chunk === 'object' && typeof (chunk as any).method === 'string') {
+          const method = (chunk as any).method as string;
           const params = (chunk as any).params;
-          if (params) {
+          if (params && method.startsWith('_kiro.dev/')) {
             const info = this.connections.get(agentId);
-            if (info?.onKiroMetadata) {
+            if (method === '_kiro.dev/metadata' && info?.onKiroMetadata) {
               info.onKiroMetadata(params);
-            }
-          }
-        }
-        // Intercept _kiro.dev/subagent/list_update notifications (Kiro CLI specific)
-        if (chunk && typeof chunk === 'object' && (chunk as any).method === '_kiro.dev/subagent/list_update') {
-          const params = (chunk as any).params;
-          if (params) {
-            const info = this.connections.get(agentId);
-            if (info?.onKiroSubagentListUpdate) {
+            } else if (method === '_kiro.dev/subagent/list_update' && info?.onKiroSubagentListUpdate) {
               info.onKiroSubagentListUpdate(params);
+            } else if (method === '_kiro.dev/commands/available' && info?.onKiroCommandsAvailable) {
+              info.onKiroCommandsAvailable(params);
+            } else if (method === '_kiro.dev/compaction/status' && info?.onKiroCompactionStatus) {
+              info.onKiroCompactionStatus(params);
             }
           }
         }

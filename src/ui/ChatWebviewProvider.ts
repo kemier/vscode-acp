@@ -1959,6 +1959,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           this._hasChatContent = true;
           await this.handleSendPrompt(message.text, message.images);
           break;
+        case 'executeKiroCommand':
+          this._hasChatContent = true;
+          await this.handleExecuteKiroCommandFromWebview(message.command, message.args);
+          break;
         case 'renameSession':
           this.handleRenameSession(message.title);
           break;
@@ -2263,7 +2267,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // the text directly so the agent can intercept it.
     if (text.startsWith('/')) {
       try {
-        await this.sessionManager.sendPrompt(activeId, text);
+        // Kiro does not intercept `/compact` as a prompt — it requires
+        // `_kiro.dev/commands/execute` (see kiro.dev ACP extensions).
+        const session = this.sessionManager.getSession(activeId);
+        if (text === '/compact' && this.sessionManager.isKiroAgentName(session?.agentName)) {
+          await this.handleExecuteKiroCommand('compact');
+        } else {
+          await this.sessionManager.sendPrompt(activeId, text);
+        }
       } catch (e: any) {
         logError('Slash command failed', e);
         this.postMessage({ type: 'error', message: e.message || 'Command failed' });
@@ -2502,6 +2513,55 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         }
         this._cancelFallbackTimer = null;
       }, 5_000);
+    }
+  }
+
+  /**
+   * Webview-initiated Kiro slash command (e.g. `/compact`). Wraps execute +
+   * promptEnd so the chat leave-processing path matches sendPrompt.
+   */
+  private async handleExecuteKiroCommandFromWebview(
+    command: string,
+    args?: Record<string, string>,
+  ): Promise<void> {
+    const activeId = this.sessionManager.getActiveSessionId();
+    if (!activeId) {
+      return;
+    }
+    try {
+      await this.handleExecuteKiroCommand(command, args);
+    } catch (e: any) {
+      logError('Kiro command failed', e);
+      this.postMessage({ type: 'error', message: e.message || 'Command failed' });
+    } finally {
+      this.streamCoalescer.flush(activeId);
+      this.postMessage({ type: 'promptEnd', stopReason: 'end_turn' });
+    }
+  }
+
+  /**
+   * Run a Kiro slash command via `_kiro.dev/commands/execute`.
+   * Does not emit promptEnd — callers own that.
+   */
+  private async handleExecuteKiroCommand(
+    command: string,
+    args?: Record<string, string>,
+  ): Promise<void> {
+    const activeId = this.sessionManager.getActiveSessionId();
+    if (!activeId || !command) {
+      return;
+    }
+    const name = String(command).replace(/^\//, '');
+    try {
+      const msg = await this.sessionManager.executeKiroCommand(activeId, name, args || {});
+      if (name === 'compact') {
+        this.postMessage({ type: 'kiroCompactDone', message: msg || undefined });
+      }
+    } catch (e: any) {
+      if (name === 'compact') {
+        this.postMessage({ type: 'kiroCompactDone', error: true, message: e?.message });
+      }
+      throw e;
     }
   }
 
@@ -3780,6 +3840,19 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   /** Notify webview of _kiro.dev/subagent/list_update (Kiro CLI: live subagent statuses). */
   notifyKiroSubagentListUpdate(params: any): void {
     this.postMessage({ type: 'kiroSubagentListUpdate', params });
+  }
+
+  /** Notify webview of merged available slash commands (ACP + Kiro). */
+  notifyAvailableCommands(commands: any[]): void {
+    this.postMessage({
+      type: 'sessionUpdate',
+      update: { sessionUpdate: 'available_commands_update', availableCommands: commands || [] },
+    });
+  }
+
+  /** Notify webview of _kiro.dev/compaction/status progress. */
+  notifyKiroCompactionStatus(params: any): void {
+    this.postMessage({ type: 'kiroCompactionStatus', params });
   }
 
   /**
@@ -6360,10 +6433,8 @@ var end = displayText.length;
  return true;
 }
   // /compact - clear chat history and show compacted summary (like codex TUI / claude-code)
-  // The command is sent to the agent (codex-acp intercepts it), which runs compaction
-  // and sends back a "Context compacted" agent_message_chunk. We suppress the
-  // intermediate tool_call (contextCompaction _meta) and clear the chat when
-  // the compacted message arrives.
+  // Codex: sent as a prompt; codex-acp intercepts and runs compaction.
+  // Kiro: must use _kiro.dev/commands/execute (not a prompt).
   if (text === '/compact') {
     // Prevent double-compaction — if already compacting, ignore
     if (isCompacting) { return true; }
@@ -6377,7 +6448,12 @@ var end = displayText.length;
     if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
     setProcessing(true);
     addMessage('user', '/compact');
-    vscode.postMessage({ type: 'sendPrompt', text: '/compact' });
+    var isKiro = sessionState && /kiro/i.test(sessionState.agentName || sessionState.agentConfigKey || '');
+    if (isKiro) {
+      vscode.postMessage({ type: 'executeKiroCommand', command: 'compact', args: {} });
+    } else {
+      vscode.postMessage({ type: 'sendPrompt', text: '/compact' });
+    }
     return true;
   }
   // /ps — list background terminal processes (client-side, like codex TUI)
@@ -9599,6 +9675,14 @@ sessionState = {
         handleKiroSubagentListUpdate(msg.params);
         break;
 
+      case 'kiroCompactionStatus':
+        handleKiroCompactionStatus(msg.params);
+        break;
+
+      case 'kiroCompactDone':
+        handleKiroCompactDone(msg);
+        break;
+
       case 'loadSessionStart':
          handleLoadSessionStart();
          break;
@@ -10112,20 +10196,26 @@ sessionState = {
       }
       // Detect auto-compaction: if the agent sends "*Context compacted*" text
       // without a preceding contextCompaction tool_call, treat it as compaction.
+      // Also recognize Kiro CLI "Conversation compacted" notices.
       // Skip during session/load — that text is historical, not a live /compact.
-       if (!isLoadingSession && !isCompacting && content && content.type === 'text' &&
-           content.text.trim().startsWith('*Context compacted')) {
-         isCompacting = true;
-         compactedWarningText = '';
-         compactedNoticeText = '';
+       if (!isLoadingSession && !isCompacting && content && content.type === 'text') {
+         var _autoTrim = content.text.trim();
+         if (_autoTrim.indexOf('*Context compacted') === 0 ||
+             /conversation compacted/i.test(_autoTrim)) {
+           isCompacting = true;
+           compactedWarningText = '';
+           compactedNoticeText = '';
+         }
        }
        // During compaction: Codex emits "*Context compacted*" then
-       // "Warning: Heads up…". Buffer both and flush Warning-first.
+       // "Warning: Heads up…". Kiro emits "Conversation compacted…".
+       // Buffer notices and flush Warning-first when present.
        if (isCompacting) {
           var chunkText = content && content.type === 'text' ? content.text : '';
           var trimmedChunk = chunkText.trim();
           var isWarning = trimmedChunk.indexOf('Warning:') === 0;
-          var isCompactNotice = trimmedChunk.indexOf('*Context compacted') === 0;
+          var isCompactNotice = trimmedChunk.indexOf('*Context compacted') === 0 ||
+            /conversation compacted/i.test(trimmedChunk);
           if (isWarning) {
             compactedWarningText += chunkText;
             // Notice usually arrived first — flush now that we have both.
@@ -10520,6 +10610,56 @@ sessionState = {
          effortOpt.currentValue = params.effort;
          if (useConfigOptions) renderConfigPickers(configOptions);
        }
+    }
+  }
+
+  /**
+   * Handle _kiro.dev/compaction/status — show progress and enter compacting
+   * mode (covers auto-compaction as well as explicit /compact).
+   */
+  function handleKiroCompactionStatus(params) {
+    if (isLoadingSession) return;
+    var msg = params && typeof params.message === 'string' ? params.message : '';
+    if (!isCompacting) {
+      isCompacting = true;
+      compactedWarningText = '';
+      compactedNoticeText = '';
+      if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+      setProcessing(true);
+    }
+    if (statusEl) {
+      statusEl.innerHTML = msg
+        ? '<span class="spinner"></span> ' + escapeHtml(msg)
+        : '<span class="spinner"></span> Compacting conversation...';
+    }
+    // Status text that already looks like a completion notice — buffer it.
+    if (msg && /compacted/i.test(msg)) {
+      compactedNoticeText = compactedNoticeText || msg;
+    }
+  }
+
+  /**
+   * _kiro.dev/commands/execute for compact finished. Clear history and show
+   * the notice (mirrors Codex flushCompactionMessages).
+   */
+  function handleKiroCompactDone(msg) {
+    if (msg && msg.error) {
+      isCompacting = false;
+      compactedWarningText = '';
+      compactedNoticeText = '';
+      if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+      if (statusEl) statusEl.innerHTML = '';
+      return;
+    }
+    var notice = (msg && typeof msg.message === 'string' && msg.message.trim())
+      ? msg.message.trim()
+      : (compactedNoticeText || '*Conversation compacted.*');
+    compactedNoticeText = notice;
+    if (!compactedWarningText) {
+      // No Heads-up from Kiro — flush immediately with the notice alone.
+      flushCompactionMessages();
+    } else {
+      scheduleCompactionFlush();
     }
   }
 
