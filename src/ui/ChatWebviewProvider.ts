@@ -6045,13 +6045,20 @@ var end = displayText.length;
           item = Object.assign({}, item, { rawInput: stripTaskResult(item.rawInput) });
         }
         // Cap rawInput to 10KB so tooltips work on restored history
-        // without bloating vscode.getState() excessively.
+        // without bloating vscode.getState() excessively. For Kiro crew
+        // spawns, always keep a slim stages[] so "spawned N subagents"
+        // survives VS Code restart (full prompts can be huge).
         var rawStr = typeof item.rawInput === 'string'
           ? item.rawInput
           : (function() { try { return JSON.stringify(item.rawInput); } catch(e) { return ''; } })();
          if (rawStr.length > 10240) {
            var copy = Object.assign({}, item);
-           copy.rawInput = rawStr.slice(0, 10240);
+           if (item.rawInput && typeof item.rawInput === 'object' &&
+               Array.isArray(item.rawInput.stages) && item.rawInput.stages.length > 0) {
+             copy.rawInput = slimSubagentRawInput(item.rawInput);
+           } else {
+             copy.rawInput = rawStr.slice(0, 10240);
+           }
            return copy;
          }
          return item;
@@ -6118,6 +6125,15 @@ var end = displayText.length;
        // agent's rendered output. Old saved state may still have it.
        if (riItem && riItem.kind === 'toolCall' && riItem.rawInput && riItem.rawInput.taskResult) {
          riItem = { ...riItem, rawInput: stripTaskResult(riItem.rawInput) };
+       }
+       // Older builds truncated huge rawInput to a JSON string — parse back
+       // so stages[] is available for "spawned N subagents" after restart.
+       if (riItem && riItem.kind === 'toolCall' && typeof riItem.rawInput === 'string') {
+         var parsedRaw = null;
+         try { parsedRaw = JSON.parse(riItem.rawInput); } catch (e) { parsedRaw = null; }
+         if (parsedRaw && typeof parsedRaw === 'object') {
+           riItem = { ...riItem, rawInput: parsedRaw };
+         }
        }
        chatHistory.push(riItem);
      }
@@ -8160,6 +8176,14 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       }
     }
 
+    /** Prefer the original protocol title over the rewritten .tc-title display. */
+    function getToolCallOriginalTitle(tc) {
+      if (!tc) return '';
+      if (typeof tc._toolTitle === 'string' && tc._toolTitle) return tc._toolTitle;
+      var titleEl = tc.querySelector('.tc-title');
+      return titleEl ? (titleEl.textContent || '') : '';
+    }
+
     /** Collect tool title/kind metadata from inline rows (for re-folding). */
     function collectToolMetaFromList(list) {
       var titles = [];
@@ -8168,7 +8192,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       var hasSubagent = false;
       if (!list) return { titles: titles, kinds: kinds, rawInputs: rawInputs, hasSubagent: hasSubagent, count: 0 };
       list.querySelectorAll('.tool-call-inline').forEach(function(tc) {
-        var tcTitle = tc.querySelector('.tc-title') ? tc.querySelector('.tc-title').textContent : (tc._toolTitle || '');
+        var tcTitle = getToolCallOriginalTitle(tc);
         var tcKind = tc.dataset.toolKind || null;
         titles.push(tcTitle);
         kinds.push(tcKind);
@@ -8530,9 +8554,14 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
   // Codex: each spawnAgent call = 1 subagent.
   // Kiro: "Spawning agent crew" with rawInput.stages array = N subagents.
   function getSubagentSpawnCount(title, rawInput) {
+    var input = rawInput;
+    // Persisted state may store a JSON string (or truncated JSON) for large rawInput.
+    if (typeof input === 'string') {
+      try { input = JSON.parse(input); } catch (e) { input = null; }
+    }
     // Kiro: count stages array
-    if (rawInput && typeof rawInput === 'object' && Array.isArray(rawInput.stages)) {
-      return rawInput.stages.length;
+    if (input && typeof input === 'object' && Array.isArray(input.stages)) {
+      return input.stages.length || 1;
     }
     // Codex: each spawnAgent call = 1
     return 1;
@@ -8671,6 +8700,28 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     var copy = Object.assign({}, rawInput);
     delete copy.taskResult;
     return copy;
+  }
+
+  /**
+   * Persist enough of a Kiro subagent crew rawInput for restore: stage count
+   * and short labels. Drop huge prompt_template bodies that blow past the
+   * 10KB state cap and used to leave the summary as "1 other".
+   */
+  function slimSubagentRawInput(rawInput) {
+    var slim = {};
+    if (typeof rawInput.task === 'string') slim.task = rawInput.task.slice(0, 200);
+    if (typeof rawInput.prompt === 'string') slim.prompt = rawInput.prompt.slice(0, 200);
+    if (Array.isArray(rawInput.stages)) {
+      slim.stages = rawInput.stages.map(function(stage) {
+        if (!stage || typeof stage !== 'object') return { name: 'stage' };
+        return {
+          name: stage.name || '',
+          role: stage.role || '',
+          depends_on: Array.isArray(stage.depends_on) ? stage.depends_on : undefined,
+        };
+      });
+    }
+    return slim;
   }
 
   function isEmptyRawInput(rawInput) {
@@ -9252,7 +9303,7 @@ function renderChatHistory() {
       var hasSubagent = false;
       lists.forEach(function(list) {
         list.querySelectorAll('.tool-call-inline').forEach(function(tc) {
-          var tcTitle = tc.querySelector('.tc-title') ? tc.querySelector('.tc-title').textContent : '';
+          var tcTitle = getToolCallOriginalTitle(tc);
           var tcKind = tc.dataset.toolKind || null;
           var tcRaw = tc._rawInput || null;
           titles.push(tcTitle);

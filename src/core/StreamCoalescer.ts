@@ -12,6 +12,12 @@
  * forwarding any non-chunk update for that session, so the agent's prose
  * appears in the chat ahead of any tool call / plan / completion marker that
  * followed the buffered tokens.
+ *
+ * Kind-order invariant: when thought and message chunks arrive in the same
+ * window, they must be emitted in arrival order. Emitting message before a
+ * still-buffered thought makes the webview finalize the current thought card
+ * and open a second one for the delayed thought — consecutive duplicate /
+ * split thinking blocks (seen especially with Kiro in collapsed mode).
  */
 
 export type StreamChunkKind = 'message' | 'thought';
@@ -28,8 +34,8 @@ export interface StreamCoalescerOptions {
 }
 
 interface SessionBuffer {
-  msg: string;
-  thought: string;
+  /** Ordered runs of the same kind; adjacent same-kind appends merge. */
+  runs: Array<{ kind: StreamChunkKind; text: string }>;
   timer?: unknown;
 }
 
@@ -52,13 +58,14 @@ export class StreamCoalescer {
     }
     let buf = this.buffers.get(sessionId);
     if (!buf) {
-      buf = { msg: '', thought: '' };
+      buf = { runs: [] };
       this.buffers.set(sessionId, buf);
     }
-    if (kind === 'message') {
-      buf.msg += text;
+    const last = buf.runs.length > 0 ? buf.runs[buf.runs.length - 1] : null;
+    if (last && last.kind === kind) {
+      last.text += text;
     } else {
-      buf.thought += text;
+      buf.runs.push({ kind, text });
     }
     if (buf.timer === undefined) {
       buf.timer = this.setTimeoutFn(() => this.flush(sessionId), this.opts.flushIntervalMs);
@@ -68,6 +75,7 @@ export class StreamCoalescer {
   /**
    * Emit any buffered text for `sessionId` immediately and clear the buffer.
    * Safe to call when there's nothing pending (no-op).
+   * Runs are emitted in arrival order so thought/message interleaving stays correct.
    */
   flush(sessionId: string): void {
     const buf = this.buffers.get(sessionId);
@@ -78,15 +86,12 @@ export class StreamCoalescer {
       this.clearTimeoutFn(buf.timer);
       buf.timer = undefined;
     }
-    if (buf.msg) {
-      const text = buf.msg;
-      buf.msg = '';
-      this.opts.onFlush(sessionId, 'message', text);
-    }
-    if (buf.thought) {
-      const text = buf.thought;
-      buf.thought = '';
-      this.opts.onFlush(sessionId, 'thought', text);
+    const runs = buf.runs;
+    buf.runs = [];
+    for (const run of runs) {
+      if (run.text) {
+        this.opts.onFlush(sessionId, run.kind, run.text);
+      }
     }
   }
 
@@ -118,6 +123,15 @@ export class StreamCoalescer {
     if (!buf) {
       return undefined;
     }
-    return { msg: buf.msg, thought: buf.thought };
+    let msg = '';
+    let thought = '';
+    for (const run of buf.runs) {
+      if (run.kind === 'message') {
+        msg += run.text;
+      } else {
+        thought += run.text;
+      }
+    }
+    return { msg, thought };
   }
 }

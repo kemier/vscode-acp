@@ -62,17 +62,43 @@ suite('StreamCoalescer', () => {
     assert.deepStrictEqual(emitted[0], { sessionId: 's1', kind: 'message', text: 'hello' });
   });
 
-  test('message + thought are emitted as separate combined chunks', () => {
+  test('message + thought keep arrival order (no cross-kind merge)', () => {
     const { coalescer, clock, emitted } = makeCoalescer(8);
     coalescer.append('s1', 'message', 'hi ');
     coalescer.append('s1', 'thought', 'thinking…');
     coalescer.append('s1', 'message', 'world');
     clock.advance(10);
+    // Kind switches must not merge the two message runs across the thought —
+    // that would emit message-before-thought and split thinking cards in the UI.
+    assert.strictEqual(emitted.length, 3);
+    assert.deepStrictEqual(
+      emitted.map((e) => ({ kind: e.kind, text: e.text })),
+      [
+        { kind: 'message', text: 'hi ' },
+        { kind: 'thought', text: 'thinking…' },
+        { kind: 'message', text: 'world' },
+      ],
+    );
+  });
+
+  test('thought before message in the same window emits thought first', () => {
+    const { coalescer, clock, emitted } = makeCoalescer(8);
+    coalescer.append('s1', 'thought', 'reason');
+    coalescer.append('s1', 'message', 'answer');
+    clock.advance(10);
     assert.strictEqual(emitted.length, 2);
-    const msg = emitted.find((e) => e.kind === 'message')!;
-    const thought = emitted.find((e) => e.kind === 'thought')!;
-    assert.strictEqual(msg.text, 'hi world');
-    assert.strictEqual(thought.text, 'thinking…');
+    assert.deepStrictEqual(emitted[0], { sessionId: 's1', kind: 'thought', text: 'reason' });
+    assert.deepStrictEqual(emitted[1], { sessionId: 's1', kind: 'message', text: 'answer' });
+  });
+
+  test('same-kind runs still coalesce across appends', () => {
+    const { coalescer, clock, emitted } = makeCoalescer(8);
+    coalescer.append('s1', 'thought', 'a');
+    coalescer.append('s1', 'thought', 'b');
+    coalescer.append('s1', 'thought', 'c');
+    clock.advance(10);
+    assert.strictEqual(emitted.length, 1);
+    assert.deepStrictEqual(emitted[0], { sessionId: 's1', kind: 'thought', text: 'abc' });
   });
 
   test('flush() emits immediately and prevents the timer from firing later', () => {
