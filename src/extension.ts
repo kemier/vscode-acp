@@ -304,6 +304,80 @@ export function activate(context: vscode.ExtensionContext): void {
     chatWebviewProvider.notifyKiroCompactionStatus(params);
   });
 
+  // Forward _kiro.dev/clear/status (session history clear progress)
+  sessionManager.on('kiro-clear-status', (params: any) => {
+    chatWebviewProvider.notifyKiroClearStatus(params);
+  });
+
+  // Forward _session/terminate (subagent session ended)
+  sessionManager.on('session-terminate', (params: any) => {
+    chatWebviewProvider.notifySessionTerminate(params);
+  });
+
+  // Cursor ACP extensions (cursor/task subagents, todos, ask/plan)
+  sessionManager.on('cursor-task', (params: any) => {
+    chatWebviewProvider.notifyCursorTask(params);
+  });
+  sessionManager.on('cursor-update-todos', (params: any) => {
+    chatWebviewProvider.notifyCursorUpdateTodos(params);
+  });
+  sessionManager.on('cursor-generate-image', (params: any) => {
+    chatWebviewProvider.notifyCursorGenerateImage(params);
+  });
+  sessionManager.on('cursor-ask-question', async (params: any, respond: (result: any) => void) => {
+    try {
+      const questions: any[] = Array.isArray(params?.questions) ? params.questions : [];
+      const answers: Array<{ questionId: string; selectedOptionIds: string[] }> = [];
+      for (const q of questions) {
+        const options: Array<{ id: string; label: string }> = Array.isArray(q?.options) ? q.options : [];
+        const items = options.map((o) => ({ label: o.label || o.id, id: o.id }));
+        if (items.length === 0) {
+          continue;
+        }
+        const picked = await vscode.window.showQuickPick(items, {
+          title: params?.title || 'Cursor agent question',
+          placeHolder: q.prompt || 'Select an option',
+          canPickMany: !!q.allowMultiple,
+          ignoreFocusOut: true,
+        });
+        if (!picked) {
+          respond({ outcome: { outcome: 'cancelled' } });
+          return;
+        }
+        const selected = Array.isArray(picked) ? picked : [picked];
+        answers.push({
+          questionId: String(q.id),
+          selectedOptionIds: selected.map((s: any) => String(s.id)),
+        });
+      }
+      respond({ outcome: { outcome: 'answered', answers } });
+    } catch (e: any) {
+      respond({ outcome: { outcome: 'skipped', reason: e?.message || 'ask_question failed' } });
+    }
+  });
+  sessionManager.on('cursor-create-plan', async (params: any, respond: (result: any) => void) => {
+    try {
+      const name = params?.name ? String(params.name) : 'Plan';
+      const overview = params?.overview ? String(params.overview) : '';
+      const choice = await vscode.window.showInformationMessage(
+        overview ? `${name}: ${overview}` : `Approve plan: ${name}?`,
+        { modal: true },
+        'Accept',
+        'Reject',
+      );
+      if (choice === 'Accept') {
+        respond({ outcome: { outcome: 'accepted' } });
+        chatWebviewProvider.notifyCursorCreatePlan(params);
+      } else if (choice === 'Reject') {
+        respond({ outcome: { outcome: 'rejected', reason: 'User rejected' } });
+      } else {
+        respond({ outcome: { outcome: 'cancelled' } });
+      }
+    } catch {
+      respond({ outcome: { outcome: 'cancelled' } });
+    }
+  });
+
   // Session-load replay state — drive the webview overlay.
   sessionManager.on('session-load-start', () => {
     chatWebviewProvider.notifyLoadSessionStart();

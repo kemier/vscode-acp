@@ -116,6 +116,13 @@ export interface SessionManagerEvents {
   'kiro-subagent-list-update': [params: any];
   'kiro-commands-available': [params: any];
   'kiro-compaction-status': [params: any];
+  'kiro-clear-status': [params: any];
+  'session-terminate': [params: any];
+  'cursor-task': [params: any];
+  'cursor-update-todos': [params: any];
+  'cursor-generate-image': [params: any];
+  'cursor-ask-question': [params: any, respond: (result: any) => void];
+  'cursor-create-plan': [params: any, respond: (result: any) => void];
 }
 
 export class SessionManager extends EventEmitter {
@@ -1600,6 +1607,40 @@ export class SessionManager extends EventEmitter {
 
     connInfo.onKiroCompactionStatus = (params: any) => {
       this.emit('kiro-compaction-status', params);
+    };
+
+    connInfo.onKiroClearStatus = (params: any) => {
+      this.emit('kiro-clear-status', params);
+    };
+
+    connInfo.onSessionTerminate = (params: any) => {
+      this.emit('session-terminate', params);
+    };
+
+    // Cursor ACP extension methods (cursor.com/docs/cli/acp).
+    connInfo.onCursorMethod = (msg) => {
+      const { method, params, id, respond } = msg;
+      if (method === 'cursor/task') {
+        this.emit('cursor-task', params);
+        return true;
+      }
+      if (method === 'cursor/update_todos') {
+        this.emit('cursor-update-todos', params);
+        return true;
+      }
+      if (method === 'cursor/generate_image') {
+        this.emit('cursor-generate-image', params);
+        return true;
+      }
+      if (method === 'cursor/ask_question' && id !== undefined && id !== null) {
+        this.emit('cursor-ask-question', params, respond);
+        return true;
+      }
+      if (method === 'cursor/create_plan' && id !== undefined && id !== null) {
+        this.emit('cursor-create-plan', params, respond);
+        return true;
+      }
+      return false;
     };
   }
 

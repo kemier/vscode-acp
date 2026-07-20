@@ -2270,7 +2270,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         // Kiro does not intercept `/compact` as a prompt — it requires
         // `_kiro.dev/commands/execute` (see kiro.dev ACP extensions).
         const session = this.sessionManager.getSession(activeId);
-        if (text === '/compact' && this.sessionManager.isKiroAgentName(session?.agentName)) {
+        const compactName = text.match(/^\/(compact|summarize|compress)(?:\s|$)/i)?.[1];
+        if (compactName && this.sessionManager.isKiroAgentName(session?.agentName)) {
           await this.handleExecuteKiroCommand('compact');
         } else {
           await this.sessionManager.sendPrompt(activeId, text);
@@ -2550,18 +2551,21 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       const msg = await this.sessionManager.executeKiroCommand(activeId, name, args || {});
       if (name === 'compact') {
         this.postMessage({ type: 'kiroCompactDone', message: msg || undefined });
+      } else if (name === 'clear') {
+        this.postMessage({ type: 'kiroClearDone', message: msg || undefined });
       }
     } catch (e: any) {
       const raw = String(e?.message || e || 'Command failed');
       // kiro-cli 2.11 can exit the ACP process on a bad execute payload;
       // surface a clearer hint than the generic "ACP connection closed".
       const message =
-        name === 'compact' && /connection closed|exited/i.test(raw)
-          ? 'Kiro exited while running /compact (ACP connection closed). ' +
-            'Reconnect to Kiro CLI and try again — if it keeps happening, check ACP Traffic for the execute payload.'
+        (name === 'compact' || name === 'clear') && /connection closed|exited/i.test(raw)
+          ? 'Kiro exited while running /' + name + ' (ACP connection closed). Reconnect to Kiro CLI and try again.'
           : raw;
       if (name === 'compact') {
         this.postMessage({ type: 'kiroCompactDone', error: true, message });
+      } else if (name === 'clear') {
+        this.postMessage({ type: 'kiroClearDone', error: true, message });
       }
       throw new Error(message);
     }
@@ -3857,6 +3861,36 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     this.postMessage({ type: 'kiroCompactionStatus', params });
   }
 
+  /** Notify webview of _kiro.dev/clear/status progress. */
+  notifyKiroClearStatus(params: any): void {
+    this.postMessage({ type: 'kiroClearStatus', params });
+  }
+
+  /** Notify webview of `_session/terminate` (subagent ended). */
+  notifySessionTerminate(params: any): void {
+    this.postMessage({ type: 'sessionTerminate', params });
+  }
+
+  /** Notify webview of Cursor `cursor/task` (subagent task). */
+  notifyCursorTask(params: any): void {
+    this.postMessage({ type: 'cursorTask', params });
+  }
+
+  /** Notify webview of Cursor `cursor/update_todos`. */
+  notifyCursorUpdateTodos(params: any): void {
+    this.postMessage({ type: 'cursorUpdateTodos', params });
+  }
+
+  /** Notify webview of Cursor `cursor/generate_image`. */
+  notifyCursorGenerateImage(params: any): void {
+    this.postMessage({ type: 'cursorGenerateImage', params });
+  }
+
+  /** Notify webview that a Cursor plan was accepted. */
+  notifyCursorCreatePlan(params: any): void {
+    this.postMessage({ type: 'cursorCreatePlan', params });
+  }
+
   /**
    * Notify webview that a `session/load` replay is starting. The webview
    * wipes any previously-displayed history, disables input, and shows a
@@ -4037,6 +4071,68 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       gap: 6px;
       line-height: 1;
    }
+    /* Kiro _kiro.dev/compaction/status progress banner */
+    .compaction-banner {
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px var(--container-padding) 10px;
+      background: color-mix(in srgb, var(--vscode-progressBar-background) 12%, var(--vscode-editorWidget-background));
+      border-bottom: 1px solid var(--vscode-panel-border);
+      font-size: 0.85em;
+      color: var(--vscode-foreground);
+    }
+    .compaction-banner.visible { display: flex; }
+    .compaction-banner .compaction-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+    .compaction-banner .compaction-label {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      opacity: 0.9;
+    }
+    .compaction-banner .compaction-pct {
+      flex-shrink: 0;
+      font-variant-numeric: tabular-nums;
+      opacity: 0.7;
+      font-size: 0.95em;
+    }
+    .compaction-banner .compaction-track {
+      height: 3px;
+      width: 100%;
+      border-radius: 2px;
+      background: var(--vscode-input-background);
+      overflow: hidden;
+    }
+    .compaction-banner .compaction-fill {
+      height: 100%;
+      width: 0%;
+      border-radius: 2px;
+      background: var(--vscode-progressBar-background);
+      transition: width 0.25s ease;
+    }
+    .compaction-banner .compaction-fill.indeterminate {
+      width: 35%;
+      transition: none;
+      animation: compactionIndeterminate 1.2s ease-in-out infinite;
+    }
+    @keyframes compactionIndeterminate {
+      0% { transform: translateX(-120%); }
+      100% { transform: translateX(320%); }
+    }
+    /* _kiro.dev/clear/status — same banner, warmer tint */
+    .compaction-banner.clearing {
+      background: color-mix(in srgb, var(--vscode-charts-orange, #e2a03a) 14%, var(--vscode-editorWidget-background));
+    }
+    .compaction-banner.clearing .compaction-fill {
+      background: var(--vscode-charts-orange, var(--vscode-progressBar-background));
+    }
     .session-banner .follow-toggle {
       display: inline-flex;
       align-items: center;
@@ -4470,6 +4566,17 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    /* Fail-safe: in Collapse mode, hide fold unless explicitly expanded. */
    .messages.compact-mode .turn > .turn-fold-body { display: none; }
    .messages.compact-mode .turn > .turn-fold-body.expanded { display: flex; }
+   /* Subagent stage details stay inside the fold — never paint when collapsed. */
+   .messages.compact-mode .turn > .turn-fold-body:not(.expanded) .tc-stages {
+     display: none !important;
+   }
+   .messages.compact-mode .turn > .turn-fold-body:not(.expanded) .tc-stage-desc {
+     display: none !important;
+   }
+   /* Cursor/ACP todos belong with turn details; hide plan-bar dump while Collapse is on. */
+   .messages.compact-mode ~ .plan-bar.cursor-todos-outside {
+     display: none !important;
+   }
 
    /* Compact inline tool call */
    .tool-call-inline {
@@ -5241,6 +5348,16 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   </button>
   <span class="status" id="status"></span>
  </div>
+ <div class="compaction-banner" id="compactionBanner" role="status" aria-live="polite" aria-hidden="true">
+   <div class="compaction-row">
+     <span class="spinner"></span>
+     <span class="compaction-label" id="compactionLabel">Compacting conversation...</span>
+     <span class="compaction-pct" id="compactionPct"></span>
+   </div>
+   <div class="compaction-track">
+     <div class="compaction-fill indeterminate" id="compactionFill"></div>
+   </div>
+ </div>
 
  <div class="messages" id="messages">
    <div class="empty-state" id="emptyState">
@@ -5345,6 +5462,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     const attachBtn = document.getElementById('attachBtn');
     const imagePreviewStrip = document.getElementById('imagePreviewStrip');
     const statusEl = document.getElementById('status');
+    const compactionBannerEl = document.getElementById('compactionBanner');
+    const compactionLabelEl = document.getElementById('compactionLabel');
+    const compactionPctEl = document.getElementById('compactionPct');
+    const compactionFillEl = document.getElementById('compactionFill');
     const sessionBanner = document.getElementById('sessionBanner');
   const bannerAgent = document.getElementById('bannerAgent');
   const bannerCwd = document.getElementById('bannerCwd');
@@ -5387,6 +5508,7 @@ let hasSentPrompt = false;
 var pendingRenderRetries = {}; // keys of pending renderMarkdown retries
 var historyRenderGen = 0; // generation counter for history renders (invalidated on DOM rebuild)
 let isCompacting = false;  // true while /compact is running
+ let isClearing = false;    // true while Kiro /clear (or clear/status) is running
  let compactedWarningText = '';  // buffered warning text during compaction
  // "*Context compacted*" notice — Codex emits this BEFORE the Heads-up
  // warning (item/completed → thread/compacted → Warning). Buffer both and
@@ -6461,11 +6583,11 @@ var end = displayText.length;
  vscode.postMessage({ type: 'summarizeSession', sessionName: sessionName, queryText: remainingQuery });
  return true;
 }
-  // /compact - clear chat history and show compacted summary (like codex TUI / claude-code)
-  // Codex: sent as a prompt; codex-acp intercepts and runs compaction.
-  // Kiro: must use _kiro.dev/commands/execute (not a prompt).
-  if (text === '/compact') {
-    // Prevent double-compaction — if already compacting, ignore
+  // /compact|/summarize|/compress — context compaction for all agents.
+  // Kiro: _kiro.dev/commands/execute. Codex/Claude/Cursor: session/prompt
+  // (Cursor primary is /summarize; /compact and /compress are aliases).
+  var compactMatch = text.match(/^\\/(compact|summarize|compress)\\b(.*)$/i);
+  if (compactMatch) {
     if (isCompacting) { return true; }
     promptInput.value = '';
     updateSendButton();
@@ -6477,11 +6599,13 @@ var end = displayText.length;
     if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
     if (kiroCompactWatchdog) { clearTimeout(kiroCompactWatchdog); kiroCompactWatchdog = null; }
     setProcessing(true);
-    addMessage('user', '/compact');
+    var compactCmd = '/' + compactMatch[1].toLowerCase();
+    var compactArgs = (compactMatch[2] || '').trim();
+    var compactPrompt = compactArgs ? (compactCmd + ' ' + compactArgs) : compactCmd;
+    addMessage('user', compactPrompt);
+    showCompactionProgress('Compacting conversation...', null);
     var isKiro = sessionState && /kiro/i.test(sessionState.agentName || sessionState.agentConfigKey || '');
     if (isKiro) {
-      // Wait up to 3 minutes for a true compacted notice before giving up
-      // (without clearing history).
       kiroCompactWatchdog = setTimeout(function() {
         kiroCompactWatchdog = null;
         if (!isCompacting) return;
@@ -6492,7 +6616,46 @@ var end = displayText.length;
       }, 180000);
       vscode.postMessage({ type: 'executeKiroCommand', command: 'compact' });
     } else {
-      vscode.postMessage({ type: 'sendPrompt', text: '/compact' });
+      // Cursor prefers /summarize; Codex/Claude use /compact. Send what the
+      // user typed so aliases resolve on the agent side.
+      vscode.postMessage({ type: 'sendPrompt', text: compactPrompt });
+    }
+    return true;
+  }
+  // /clear — wipe conversation history.
+  // Kiro: _kiro.dev/commands/execute + _kiro.dev/clear/status progress.
+  // Other agents: send as a prompt (or local clear if unknown).
+  if (text === '/clear') {
+    if (isClearing || isCompacting) { return true; }
+    promptInput.value = '';
+    updateSendButton();
+    pendingImages.splice(0);
+    imagePreviewStrip.innerHTML = '';
+    var isKiroClear = sessionState && /kiro/i.test(sessionState.agentName || sessionState.agentConfigKey || '');
+    if (isKiroClear) {
+      isClearing = true;
+      setProcessing(true);
+      addMessage('user', '/clear');
+      showStatusBanner('clear', 'Clearing conversation...', null);
+      vscode.postMessage({ type: 'executeKiroCommand', command: 'clear' });
+    } else {
+      // Local clear for non-Kiro (Codex /clear is usually a prompt; still
+      // wipe the UI immediately so the chat feels responsive).
+      addMessage('user', '/clear');
+      chatHistory = [];
+      messagesEl.innerHTML = '';
+      historyRenderGen++;
+      for (var _clrRk in pendingRenderRetries) { delete pendingRenderRetries[_clrRk]; }
+      currentTurnEl = null;
+      currentAssistantEl = null;
+      currentAssistantText = '';
+      currentToolsListEl = null;
+      currentToolsCountEl = null;
+      currentToolCount = 0;
+      toolCalls = {};
+      toolCallDiffs = {};
+      saveState();
+      vscode.postMessage({ type: 'sendPrompt', text: '/clear' });
     }
     return true;
   }
@@ -6563,7 +6726,7 @@ var end = displayText.length;
    // (like codex TUI's set_task_running(true) during compact).
    // BUT allow local slash commands (e.g. /ps, /rename) that don't
    // interact with the agent.
-   if (isCompacting) {
+   if (isCompacting || isClearing) {
      if (text.startsWith('/')) {
        if (handleLocalSlashCommand()) { return; }
      }
@@ -6675,7 +6838,12 @@ var end = displayText.length;
       compactToggleBtn.setAttribute('aria-pressed', compactMode ? 'true' : 'false');
      if (messagesEl) messagesEl.classList.toggle('compact-mode', compactMode);
      applyCompactModeToAllTurns(compactMode);
-    });
+     // Collapse hides outside dumps (Cursor todos plan-bar). Clear when turning on.
+     if (compactMode && planBar && planBar.classList.contains('cursor-todos-outside')) {
+       planBar.classList.remove('cursor-todos-outside');
+       planBar.innerHTML = '';
+     }
+   });
   }
 
    // Wire up buttons
@@ -6766,9 +6934,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     // A historical "Context compacted" tool_call during session/load must NOT
     // leave isCompacting stuck true — that silently blocks handleSend().
     isCompacting = false;
+    isClearing = false;
     compactedWarningText = '';
     compactedNoticeText = '';
     if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+    hideCompactionProgress();
     tokenUsage = null;
      hasSentPrompt = false;
      if (tokenUsageRing) tokenUsageRing.classList.remove('visible');
@@ -6806,9 +6976,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     isLoadingSession = false;
     // Safety: never leave compact-mode latched after a history replay.
     isCompacting = false;
+    isClearing = false;
     compactedWarningText = '';
     compactedNoticeText = '';
     if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+    hideCompactionProgress();
     // If history was replayed, there were prior prompts — mark as sent
     // so the context usage ring can appear when metadata arrives.
     if (chatHistory.length > 0) hasSentPrompt = true;
@@ -8287,6 +8459,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     // Also check common patterns (human-readable titles, not bare filenames)
     if (lower.startsWith('spawn') && lower.includes('agent')) return true;
     if (lower.startsWith('subagent') || lower.startsWith('sub_agent')) return true;
+    if (lower.startsWith('start subagent') || lower.startsWith('close subagent')) return true;
     // Kiro CLI sends subagent tool calls with human-readable titles:
     // "Spawning agent crew" (toolName: subagent), "Summarizing" (toolName: summary)
     // These have _meta.kiro.toolName on the wire, but by the time we get here
@@ -8801,14 +8974,18 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       el.innerHTML =
         '<span class="tc-icon ' + status + '">' + getStatusIcon(status) + '</span>' +
         '<span class="tc-title">' + escapeHtml(displayTitle) + '</span>';
-     // Render subagent stages as sub-items if present (Kiro crew)
+     // Render subagent stages as sub-items if present (Kiro crew).
+     // In Collapse mode, omit long stage prompts from the DOM — they stay in
+     // the hover tooltip only, so they cannot leak outside a closed fold.
      if (rawInput && Array.isArray(rawInput.stages) && rawInput.stages.length > 0) {
        var stagesHtml = '<div class="tc-stages">';
        for (var si = 0; si < rawInput.stages.length; si++) {
          var stage = rawInput.stages[si];
          var stageName = stage.name || ('stage-' + (si + 1));
          var stagePrompt = stage.prompt_template || '';
-         var stageDesc = stagePrompt.length > 100 ? stagePrompt.substring(0, 97) + '...' : stagePrompt;
+         var stageDesc = (!compactMode && stagePrompt.length > 0)
+           ? (stagePrompt.length > 100 ? stagePrompt.substring(0, 97) + '...' : stagePrompt)
+           : '';
          var stageRole = stage.role || '';
          var depends = stage.depends_on && stage.depends_on.length > 0 ? ' (depends: ' + stage.depends_on.join(', ') + ')' : '';
          stagesHtml += '<div class="tc-stage" data-stage-name="' + escapeHtml(stageName) + '"><span class="tc-stage-icon running">' + getStatusIcon('running') + '</span><span class="tc-stage-name">' + escapeHtml(stageName) + '</span>' +
@@ -9476,8 +9653,17 @@ sessionState = {
        // the Stop/spinner state until we get a true compacted notice.
        if (isCompacting) {
          setProcessing(true);
-         if (statusEl && !statusEl.innerHTML) {
+         if (compactionBannerEl && !compactionBannerEl.classList.contains('visible')) {
+           showCompactionProgress('Compacting conversation...', null);
+         } else if (statusEl && !statusEl.innerHTML) {
            statusEl.innerHTML = '<span class="spinner"></span><span>Compacting conversation...</span>';
+         }
+       } else if (isClearing) {
+         setProcessing(true);
+         if (compactionBannerEl && !compactionBannerEl.classList.contains('visible')) {
+           showStatusBanner('clear', 'Clearing conversation...', null);
+         } else if (statusEl && !statusEl.innerHTML) {
+           statusEl.innerHTML = '<span class="spinner"></span><span>Clearing conversation...</span>';
          }
        }
        // Show interrupted notice in status bar (right upper of input box)
@@ -9544,6 +9730,8 @@ sessionState = {
 
      case 'clearChat':
              isCompacting = false;
+             isClearing = false;
+             hideCompactionProgress();
              // Cancel any pending render retries — DOM is being wiped.
              for (var _crk in pendingRenderRetries) { delete pendingRenderRetries[_crk]; }
              currentPsEl = null;
@@ -9733,8 +9921,36 @@ sessionState = {
         handleKiroCompactionStatus(msg.params);
         break;
 
+      case 'kiroClearStatus':
+        handleKiroClearStatus(msg.params);
+        break;
+
+      case 'sessionTerminate':
+        handleSessionTerminate(msg.params);
+        break;
+
+      case 'cursorTask':
+        handleCursorTask(msg.params);
+        break;
+
+      case 'cursorUpdateTodos':
+        handleCursorUpdateTodos(msg.params);
+        break;
+
+      case 'cursorGenerateImage':
+        handleCursorGenerateImage(msg.params);
+        break;
+
+      case 'cursorCreatePlan':
+        handleCursorCreatePlan(msg.params);
+        break;
+
       case 'kiroCompactDone':
         handleKiroCompactDone(msg);
+        break;
+
+      case 'kiroClearDone':
+        handleKiroClearDone(msg);
         break;
 
       case 'loadSessionStart':
@@ -10147,6 +10363,7 @@ sessionState = {
     function flushCompactionMessages() {
       if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
       if (kiroCompactWatchdog) { clearTimeout(kiroCompactWatchdog); kiroCompactWatchdog = null; }
+      hideCompactionProgress();
       var warning = compactedWarningText;
       var notice = compactedNoticeText;
       compactedWarningText = '';
@@ -10251,15 +10468,36 @@ sessionState = {
       }
       // Detect auto-compaction: if the agent sends "*Context compacted*" text
       // without a preceding contextCompaction tool_call, treat it as compaction.
-      // Also recognize Kiro CLI "Conversation compacted" notices.
+      // Also recognize Kiro CLI "Conversation compacted" notices and Claude's
+      // "Compacting..." / "Compacting completed." progress text.
       // Skip during session/load — that text is historical, not a live /compact.
-       if (!isLoadingSession && !isCompacting && content && content.type === 'text') {
+       if (!isLoadingSession && content && content.type === 'text') {
          var _autoTrim = content.text.trim();
-         if (_autoTrim.indexOf('*Context compacted') === 0 ||
-             /conversation compacted/i.test(_autoTrim)) {
+         if (!isCompacting && (
+             _autoTrim.indexOf('*Context compacted') === 0 ||
+             /conversation compacted/i.test(_autoTrim) ||
+             /^Compacting\\.\\.\\./i.test(_autoTrim))) {
            isCompacting = true;
            compactedWarningText = '';
            compactedNoticeText = '';
+           showCompactionProgress(
+             /^Compacting/i.test(_autoTrim) ? _autoTrim : 'Compacting conversation...',
+             null,
+           );
+           setProcessing(true);
+         }
+         // Claude ACP adapter: "Compacting completed." / "Compacting failed..."
+         if (isCompacting && /^Compacting (completed|failed)/i.test(_autoTrim)) {
+           if (/failed/i.test(_autoTrim)) {
+             isCompacting = false;
+             hideCompactionProgress();
+             if (statusEl) statusEl.innerHTML = '';
+             setProcessing(false);
+             addMessage('error', _autoTrim);
+             break;
+           }
+           finalizeKiroCompact(_autoTrim);
+           break;
          }
        }
        // During compaction: Codex emits "*Context compacted*" then
@@ -10268,9 +10506,15 @@ sessionState = {
        if (isCompacting) {
           var chunkText = content && content.type === 'text' ? content.text : '';
           var trimmedChunk = chunkText.trim();
+          // Don't buffer Claude's in-progress "Compacting..." as a notice.
+          if (/^Compacting\\.\\.\\./i.test(trimmedChunk)) {
+            showCompactionProgress(trimmedChunk, null);
+            break;
+          }
           var isWarning = trimmedChunk.indexOf('Warning:') === 0;
           var isCompactNotice = trimmedChunk.indexOf('*Context compacted') === 0 ||
-            /conversation compacted/i.test(trimmedChunk);
+            /conversation compacted/i.test(trimmedChunk) ||
+            /^Compacting completed/i.test(trimmedChunk);
           if (isWarning) {
             compactedWarningText += chunkText;
             // Notice usually arrived first — flush now that we have both.
@@ -10504,6 +10748,8 @@ sessionState = {
         compactedWarningText = '';
         compactedNoticeText = '';
         if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+        showCompactionProgress(update.title || 'Compacting conversation...', null);
+        setProcessing(true);
         break;
       }
       // Kiro "Summarizing"/"summary" tool calls carry the subagent's full
@@ -10530,22 +10776,42 @@ sessionState = {
            : tc.rawInput,
         tc.kind,
       );
+      // Claude ACP: nested subagent tools carry parentToolUseId in _meta.
+      var _parentId = update._meta && update._meta.claudeCode && update._meta.claudeCode.parentToolUseId;
+      if (_parentId && tc.toolCallId && toolCalls[tc.toolCallId]) {
+        var _childEl = toolCalls[tc.toolCallId];
+        _childEl.classList.add('tc-subagent');
+        _childEl.setAttribute('data-parent-tool', String(_parentId));
+        if (compactMode) {
+          forceCollapseTurnFolds();
+        }
+      }
       break;
      }
 
     case 'tool_call_update': {
-      // Suppress contextCompaction tool call updates during /compact
-      if (isCompacting && update._meta && update._meta.contextCompaction) { break; }
-      // Detect auto-compaction in tool_call_update as well (some code paths
-      // send the compaction as a tool_call_update rather than tool_call)
-      if (!isCompacting && update._meta && update._meta.contextCompaction) {
+      // Codex contextCompaction lifecycle — drive the shared progress banner
+      // (no tool card). Binary start/complete; no percent stream.
+      if (update._meta && update._meta.contextCompaction) {
         if (isLoadingSession) {
           break;
         }
-        isCompacting = true;
-        compactedWarningText = '';
-        compactedNoticeText = '';
-        if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+        if (!isCompacting) {
+          isCompacting = true;
+          compactedWarningText = '';
+          compactedNoticeText = '';
+          if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+          showCompactionProgress(update.title || 'Compacting conversation...', null);
+          setProcessing(true);
+        } else {
+          var _ccStatus = update.status || '';
+          if (_ccStatus === 'completed' || _ccStatus === 'failed') {
+            showCompactionProgress(
+              update.title || (_ccStatus === 'failed' ? 'Compaction failed' : 'Context compacted'),
+              _ccStatus === 'completed' ? 100 : null,
+            );
+          }
+        }
         break;
       }
       // Strip taskResult from tool_call_update rawInput too (Kiro may
@@ -10669,7 +10935,142 @@ sessionState = {
   }
 
   /**
-   * Handle _kiro.dev/compaction/status — show progress and enter compacting
+   * Extract 0–100 progress from Kiro status params when present
+   * (numeric fields or a "NN%" substring in message).
+   */
+  function extractStatusPercent(params) {
+    if (!params || typeof params !== 'object') return null;
+    var keys = ['progress', 'percent', 'percentage', 'fraction', 'progressPercent'];
+    for (var i = 0; i < keys.length; i++) {
+      var v = params[keys[i]];
+      if (typeof v !== 'number' || !isFinite(v)) continue;
+      if (v >= 0 && v <= 1) return Math.round(v * 100);
+      if (v >= 0 && v <= 100) return Math.round(v);
+    }
+    var msg = typeof params.message === 'string' ? params.message : '';
+    var m = msg.match(/(\\d{1,3})\\s*%/);
+    if (m) {
+      var p = parseInt(m[1], 10);
+      if (p >= 0 && p <= 100) return p;
+    }
+    return null;
+  }
+
+  /** Show / update the Kiro status banner (compact or clear). */
+  function showStatusBanner(kind, message, percent) {
+    var isClear = kind === 'clear';
+    var fallback = isClear ? 'Clearing conversation...' : 'Compacting conversation...';
+    var label = (message && String(message).trim()) || fallback;
+    if (compactionBannerEl) {
+      compactionBannerEl.classList.toggle('clearing', isClear);
+    }
+    if (compactionLabelEl) compactionLabelEl.textContent = label;
+    if (compactionPctEl) {
+      compactionPctEl.textContent = (typeof percent === 'number') ? (percent + '%') : '';
+    }
+    if (compactionFillEl) {
+      if (typeof percent === 'number') {
+        compactionFillEl.classList.remove('indeterminate');
+        compactionFillEl.style.width = Math.max(0, Math.min(100, percent)) + '%';
+      } else {
+        compactionFillEl.classList.add('indeterminate');
+        compactionFillEl.style.width = '';
+      }
+    }
+    if (compactionBannerEl) {
+      compactionBannerEl.classList.add('visible');
+      compactionBannerEl.setAttribute('aria-hidden', 'false');
+    }
+    if (statusEl) {
+      statusEl.innerHTML = '<span class="spinner"></span><span>' + escapeHtml(label) + '</span>';
+    }
+  }
+
+  function showCompactionProgress(message, percent) {
+    showStatusBanner('compact', message, percent);
+  }
+
+  function hideCompactionProgress() {
+    if (compactionBannerEl) {
+      compactionBannerEl.classList.remove('visible');
+      compactionBannerEl.classList.remove('clearing');
+      compactionBannerEl.setAttribute('aria-hidden', 'true');
+    }
+    if (compactionFillEl) {
+      compactionFillEl.classList.add('indeterminate');
+      compactionFillEl.style.width = '';
+    }
+    if (compactionPctEl) compactionPctEl.textContent = '';
+    if (compactionLabelEl) compactionLabelEl.textContent = 'Compacting conversation...';
+  }
+
+  /**
+   * Wipe local chat history after a successful Kiro /clear (mirrors
+   * flushCompactionMessages without adding a notice).
+   */
+  function finalizeKiroClear(notice) {
+    if (!isClearing && !notice) return;
+    isClearing = false;
+    hideCompactionProgress();
+    chatHistory = [];
+    messagesEl.innerHTML = '';
+    historyRenderGen++;
+    for (var _clrDoneRk in pendingRenderRetries) { delete pendingRenderRetries[_clrDoneRk]; }
+    currentTurnEl = null;
+    currentAssistantEl = null;
+    currentAssistantText = '';
+    currentToolsListEl = null;
+    currentToolsCountEl = null;
+    currentToolCount = 0;
+    toolCalls = {};
+    toolCallDiffs = {};
+    if (statusEl) statusEl.innerHTML = '';
+    setProcessing(false);
+    saveState();
+    hideEmpty();
+    if (notice && String(notice).trim()) {
+      addMessage('system', String(notice).trim());
+    }
+  }
+
+  /**
+   * Handle _kiro.dev/clear/status — show progress banner; clear UI when done.
+   */
+  function handleKiroClearStatus(params) {
+    if (isLoadingSession) return;
+    var msg = params && typeof params.message === 'string' ? params.message : '';
+    if (!isClearing) {
+      isClearing = true;
+      setProcessing(true);
+    }
+    var looksDone = !!msg && /cleared/i.test(msg) && !/clearing/i.test(msg);
+    if (looksDone) {
+      finalizeKiroClear(msg);
+      return;
+    }
+    showStatusBanner('clear', msg || 'Clearing conversation...', extractStatusPercent(params));
+  }
+
+  /**
+   * _kiro.dev/commands/execute for clear returned.
+   */
+  function handleKiroClearDone(msg) {
+    if (msg && msg.error) {
+      isClearing = false;
+      hideCompactionProgress();
+      if (statusEl) statusEl.innerHTML = '';
+      setProcessing(false);
+      if (msg.message) addMessage('error', String(msg.message));
+      return;
+    }
+    if (!isClearing) return;
+    var fromRpc = (msg && typeof msg.message === 'string') ? msg.message.trim() : '';
+    // Clear is complete once execute resolves (agent history already wiped).
+    finalizeKiroClear(fromRpc || 'Conversation cleared.');
+  }
+
+  /**
+   * Handle _kiro.dev/compaction/status — show progress bar and enter compacting
    * mode (covers auto-compaction as well as explicit /compact).
    */
   function handleKiroCompactionStatus(params) {
@@ -10688,11 +11089,7 @@ sessionState = {
       finalizeKiroCompact(msg);
       return;
     }
-    if (statusEl) {
-      statusEl.innerHTML = msg
-        ? '<span class="spinner"></span><span>' + escapeHtml(msg) + '</span>'
-        : '<span class="spinner"></span><span>Compacting conversation...</span>';
-    }
+    showCompactionProgress(msg || 'Compacting conversation...', extractStatusPercent(params));
   }
 
   /**
@@ -10702,6 +11099,7 @@ sessionState = {
   function finalizeKiroCompact(notice) {
     if (!isCompacting) return;
     if (kiroCompactWatchdog) { clearTimeout(kiroCompactWatchdog); kiroCompactWatchdog = null; }
+    hideCompactionProgress();
     compactedNoticeText = String(notice || '').trim() || '*Conversation compacted.*';
     if (!compactedWarningText) {
       flushCompactionMessages();
@@ -10722,6 +11120,7 @@ sessionState = {
       compactedWarningText = '';
       compactedNoticeText = '';
       if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+      hideCompactionProgress();
       if (statusEl) statusEl.innerHTML = '';
       setProcessing(false);
       if (msg.message) {
@@ -10744,9 +11143,7 @@ sessionState = {
       return;
     }
     // Keep conversation; show waiting status until true completion.
-    if (statusEl) {
-      statusEl.innerHTML = '<span class="spinner"></span><span>Compacting conversation...</span>';
-    }
+    showCompactionProgress('Compacting conversation...', null);
     setProcessing(true);
   }
 
@@ -10776,6 +11173,9 @@ sessionState = {
       for (var j = 0; j < stageEls.length; j++) {
         var stageEl = stageEls[j];
         if (stageEl.getAttribute('data-stage-name') === saName) {
+          if (sa.sessionId) {
+            stageEl.setAttribute('data-session-id', String(sa.sessionId));
+          }
           var iconEl = stageEl.querySelector('.tc-stage-icon');
           if (iconEl) {
             iconEl.className = 'tc-stage-icon ' + iconStatus;
@@ -10819,6 +11219,146 @@ sessionState = {
         crewEls[k].className = 'tc-icon completed';
         crewEls[k].textContent = getStatusIcon('completed');
       }
+    }
+  }
+
+  /**
+   * Handle _session/terminate — mark the matching subagent stage as done.
+   * Params typically include sessionId and optionally sessionName.
+   */
+  function handleSessionTerminate(params) {
+    if (!params || typeof params !== 'object') return;
+    var sid = params.sessionId || params.session_id || '';
+    var sname = params.sessionName || params.session_name || params.name || '';
+    var stageEls = document.querySelectorAll('.tc-stage');
+    var matched = false;
+    for (var i = 0; i < stageEls.length; i++) {
+      var el = stageEls[i];
+      var idMatch = sid && el.getAttribute('data-session-id') === String(sid);
+      var nameMatch = sname && el.getAttribute('data-stage-name') === String(sname);
+      if (!idMatch && !nameMatch) continue;
+      matched = true;
+      if (sid) el.setAttribute('data-session-id', String(sid));
+      var iconEl = el.querySelector('.tc-stage-icon');
+      if (iconEl) {
+        iconEl.className = 'tc-stage-icon completed';
+        iconEl.textContent = getStatusIcon('completed');
+      }
+    }
+    if (!matched && sid) {
+      // No stage yet — still record id so a later list_update can pick it up.
+      vscode.postMessage({
+        type: 'debugLog',
+        message: '[WV] _session/terminate for unknown subagent sessionId=' + sid + ' name=' + sname,
+      });
+    }
+    // If every visible stage is completed, collapse the parent crew spinner.
+    var runningStages = document.querySelectorAll('.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending');
+    if (runningStages.length === 0) {
+      var crewEls = document.querySelectorAll('.tool-call-inline.tc-subagent .tc-icon.running, .tool-call-inline.tc-subagent .tc-icon.pending');
+      for (var k = 0; k < crewEls.length; k++) {
+        crewEls[k].className = 'tc-icon completed';
+        crewEls[k].textContent = getStatusIcon('completed');
+      }
+    }
+  }
+
+  /**
+   * Cursor cursor/task — show a subagent task row (explore/shell/…).
+   * Always lands in the turn tools fold; Collapse keeps details hidden.
+   */
+  function handleCursorTask(params) {
+    if (!params || typeof params !== 'object') return;
+    var id = params.toolCallId || ('cursor-task-' + Date.now());
+    var typeLabel = typeof params.subagentType === 'string'
+      ? params.subagentType
+      : (params.subagentType && params.subagentType.custom) || 'subagent';
+    var title = params.description || ('Subagent: ' + typeLabel);
+    var status = typeof params.durationMs === 'number' ? 'completed' : 'running';
+    // Prefer a short title when Collapse is on — full prompt stays in rawInput tooltip.
+    var displayTitle = title;
+    if (compactMode && typeof title === 'string' && title.length > 60) {
+      displayTitle = title.substring(0, 57) + '...';
+    }
+    addToolCall(id, displayTitle, status, null, {
+      prompt: params.prompt || '',
+      description: params.description || '',
+      subagentType: typeLabel,
+      agentId: params.agentId || '',
+      model: params.model || '',
+      durationMs: params.durationMs,
+    }, 'other');
+    var el = toolCalls[id];
+    if (el) {
+      el.classList.add('tc-subagent');
+      if (params.agentId) el.setAttribute('data-session-id', String(params.agentId));
+    }
+    if (compactMode) {
+      forceCollapseTurnFolds();
+    }
+  }
+
+  /** Cursor cursor/update_todos — only surface outside when Collapse is off. */
+  function handleCursorUpdateTodos(params) {
+    if (!params || !Array.isArray(params.todos) || !planBar) return;
+    // Collapse mode: do not dump todos into the always-visible plan bar
+    // (that sits outside the turn fold). Keep a one-line status hint instead.
+    if (compactMode) {
+      planBar.classList.remove('cursor-todos-outside');
+      planBar.innerHTML = '';
+      if (statusEl && params.todos.length) {
+        statusEl.textContent = params.todos.length + ' todo' + (params.todos.length > 1 ? 's' : '') + ' updated';
+      }
+      return;
+    }
+    var todos = params.todos;
+    if (!todos.length) {
+      if (!params.merge) planBar.innerHTML = '';
+      return;
+    }
+    planBar.classList.add('cursor-todos-outside');
+    if (!params.merge) planBar.innerHTML = '';
+    var html = '<div class="plan"><div class="plan-title">Todos</div>';
+    for (var i = 0; i < todos.length; i++) {
+      var t = todos[i];
+      var st = (t && t.status) || 'pending';
+      var cls = st === 'completed' ? 'plan-entry completed' : 'plan-entry';
+      html += '<div class="' + cls + '">' +
+        '<span>' + (st === 'completed' ? '✓' : st === 'in_progress' ? '…' : '○') + '</span>' +
+        '<span>' + escapeHtml((t && t.content) || '') + '</span></div>';
+    }
+    html += '</div>';
+    if (params.merge && planBar.innerHTML) {
+      planBar.innerHTML += html;
+    } else {
+      planBar.innerHTML = html;
+    }
+  }
+
+  function handleCursorGenerateImage(params) {
+    if (!params) return;
+    var desc = params.description || 'Generated image';
+    var path = params.filePath ? (' (' + params.filePath + ')') : '';
+    // Keep as system notice (outside fold) — short; path only when expanded.
+    if (compactMode) {
+      addMessage('system', 'Image: ' + desc);
+    } else {
+      addMessage('system', 'Image: ' + desc + path);
+    }
+  }
+
+  function handleCursorCreatePlan(params) {
+    if (!params) return;
+    var name = params.name || 'Plan';
+    var overview = params.overview || '';
+    // Collapse: short system line only — don't paste the full plan outside the fold.
+    if (compactMode) {
+      addMessage('system', 'Plan accepted: ' + name);
+      return;
+    }
+    addMessage('system', '**Plan accepted: ' + name + '**' + (overview ? '\\n\\n' + overview : ''));
+    if (Array.isArray(params.todos) && params.todos.length) {
+      handleCursorUpdateTodos({ todos: params.todos, merge: false });
     }
   }
 

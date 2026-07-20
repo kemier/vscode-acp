@@ -23,6 +23,21 @@ export interface ConnectionInfo {
   onKiroCommandsAvailable?: (params: any) => void;
   /** `_kiro.dev/compaction/status` — context compaction progress. */
   onKiroCompactionStatus?: (params: any) => void;
+  /** `_kiro.dev/clear/status` — session history clear progress. */
+  onKiroClearStatus?: (params: any) => void;
+  /** `_session/terminate` — subagent session terminated. */
+  onSessionTerminate?: (params: any) => void;
+  /**
+   * Cursor ACP extension methods (`cursor/*`). Notifications have no `id`;
+   * blocking requests include `id` and must be answered via `respond`.
+   * Return true if the frame was fully handled (do not forward to the SDK).
+   */
+  onCursorMethod?: (msg: {
+    method: string;
+    params: any;
+    id?: number | string;
+    respond: (result: unknown) => void;
+  }) => boolean;
 }
 
 /**
@@ -52,7 +67,7 @@ export class ConnectionManager {
     const stream = ndJsonStream(writable, readable);
 
     // Wrap the stream to intercept and log all ACP traffic
-    const tappedStream = this.tapStream(stream, agentId);
+    const tappedStream = this.tapStream(stream, agentId, process.stdin);
 
     // Create handlers
     const fsHandler = new FileSystemHandler();
@@ -143,7 +158,7 @@ export class ConnectionManager {
   /**
    * Wrap a Stream to intercept and log all messages in both directions.
    */
-  private tapStream(stream: Stream, agentId: string): Stream {
+  private tapStream(stream: Stream, agentId: string, stdin: NodeJS.WritableStream): Stream {
     // Tap outgoing messages (client → agent)
     const sendTap = new TransformStream({
       transform(chunk: unknown, controller: TransformStreamDefaultController) {
@@ -152,18 +167,30 @@ export class ConnectionManager {
       },
     });
 
+    const writeAgentResponse = (id: number | string, result: unknown): void => {
+      try {
+        const frame = { jsonrpc: '2.0', id, result };
+        logTraffic('send', frame);
+        stdin.write(JSON.stringify(frame) + '\n');
+      } catch (e) {
+        logError('Failed to write agent extension response', e);
+      }
+    };
+
     // Tap incoming messages (agent → client)
     const recvTap = new TransformStream({
       transform: (chunk: unknown, controller: TransformStreamDefaultController) => {
         logTraffic('recv', chunk);
-        // Intercept Kiro CLI vendor extension notifications. The ACP SDK
-        // does not dispatch `_kiro.dev/*` methods to Client handlers, so we
-        // tap them here and forward via ConnectionInfo callbacks.
+        // Intercept vendor extension methods the ACP SDK does not dispatch
+        // to Client handlers (Kiro `_kiro.dev/*`, `_session/terminate`,
+        // Cursor `cursor/*`).
         if (chunk && typeof chunk === 'object' && typeof (chunk as any).method === 'string') {
           const method = (chunk as any).method as string;
           const params = (chunk as any).params;
-          if (params && method.startsWith('_kiro.dev/')) {
-            const info = this.connections.get(agentId);
+          const id = (chunk as any).id as number | string | undefined;
+          const info = this.connections.get(agentId);
+
+          if (params && (method.startsWith('_kiro.dev/') || method === '_session/terminate')) {
             if (method === '_kiro.dev/metadata' && info?.onKiroMetadata) {
               info.onKiroMetadata(params);
             } else if (method === '_kiro.dev/subagent/list_update' && info?.onKiroSubagentListUpdate) {
@@ -172,6 +199,27 @@ export class ConnectionManager {
               info.onKiroCommandsAvailable(params);
             } else if (method === '_kiro.dev/compaction/status' && info?.onKiroCompactionStatus) {
               info.onKiroCompactionStatus(params);
+            } else if (method === '_kiro.dev/clear/status' && info?.onKiroClearStatus) {
+              info.onKiroClearStatus(params);
+            } else if (method === '_session/terminate' && info?.onSessionTerminate) {
+              info.onSessionTerminate(params);
+            }
+          } else if (params && method.startsWith('cursor/') && info?.onCursorMethod) {
+            const handled = info.onCursorMethod({
+              method,
+              params,
+              id,
+              respond: (result: unknown) => {
+                if (id === undefined || id === null) {
+                  return;
+                }
+                writeAgentResponse(id, result);
+              },
+            });
+            if (handled) {
+              // Consume — do not forward unknown cursor/* frames to the SDK
+              // (blocking requests would otherwise hang / method-not-found).
+              return;
             }
           }
         }
