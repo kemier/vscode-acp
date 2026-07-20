@@ -2520,10 +2520,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * Webview-initiated Kiro slash command (e.g. `/compact`). Wraps execute +
    * promptEnd so the chat leave-processing path matches sendPrompt.
    */
-  private async handleExecuteKiroCommandFromWebview(
-    command: string,
-    args?: Record<string, string>,
-  ): Promise<void> {
+  private async handleExecuteKiroCommandFromWebview(command: string, args?: Record<string, string>): Promise<void> {
     const activeId = this.sessionManager.getActiveSessionId();
     if (!activeId) {
       return;
@@ -2543,10 +2540,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * Run a Kiro slash command via `_kiro.dev/commands/execute`.
    * Does not emit promptEnd — callers own that.
    */
-  private async handleExecuteKiroCommand(
-    command: string,
-    args?: Record<string, string>,
-  ): Promise<void> {
+  private async handleExecuteKiroCommand(command: string, args?: Record<string, string>): Promise<void> {
     const activeId = this.sessionManager.getActiveSessionId();
     if (!activeId || !command) {
       return;
@@ -5583,9 +5577,20 @@ const builtinCommands = [
   { name: 'session', description: 'Add a past session summary as context' },
 ];
 
-   /** Merge built-in commands with agent-provided ones. */
+   /** Merge built-in commands with agent-provided ones (dedupe by name; builtin wins). */
    function getMergedCommands() {
-     return builtinCommands.concat(availableCommands);
+     var seen = Object.create(null);
+     var merged = [];
+     function add(c) {
+       if (!c || !c.name || seen[c.name]) return;
+       seen[c.name] = true;
+       merged.push(c);
+     }
+     // Builtins first so client-side rename/session handlers win over
+     // agents (e.g. Claude Code) that also advertise the same names.
+     builtinCommands.forEach(add);
+     availableCommands.forEach(add);
+     return merged;
    }
 
    /** Render the session name autocomplete popup. */
@@ -6121,8 +6126,17 @@ var end = displayText.length;
          { name: 'file', description: 'Attach a file' },
          { name: 'folder', description: 'Attach folder listing' },
          { name: 'problems', description: 'Attach workspace diagnostics' },
+         { name: 'rename', description: 'Rename the current conversation' },
+         { name: 'session', description: 'Add a past session summary as context' },
        ];
-        const filtered = mentions.filter(m => m.name.startsWith(query));
+        // Dedupe by name in case a future merge path injects duplicates.
+        var seenMention = {};
+        const filtered = mentions.filter(function(m) {
+          if (!m.name.startsWith(query)) return false;
+          if (seenMention[m.name]) return false;
+          seenMention[m.name] = true;
+          return true;
+        });
         if (filtered.length > 0) {
           slashFilteredCommands = filtered;
           slashPopup.innerHTML = '<div class="slash-popup-header">Context</div>';
