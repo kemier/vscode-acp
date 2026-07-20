@@ -4585,6 +4585,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    .tool-call-inline.tc-subagent { border-left: 2px solid var(--vscode-symbolIcon-iconForeground); padding-left: 6px; }
    .tool-call-inline.tc-subagent .tc-icon { color: var(--vscode-symbolIcon-iconForeground); }
    .tool-call-inline.tc-subagent .tc-title { font-weight: 600; }
+   .tc-nested {
+     margin: 2px 0 2px 10px;
+     padding-left: 8px;
+     border-left: 1px solid var(--vscode-widget-border);
+     display: flex;
+     flex-direction: column;
+     gap: 1px;
+   }
    /* Subagent stages (Kiro crew) */
    .tool-call-inline .tc-stages { margin-top: 4px; margin-left: 20px; }
    .tool-call-inline .tc-stage { padding: 2px 0; font-size: 0.9em; opacity: 0.85; }
@@ -7542,6 +7550,18 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    function addMessage(role, text) {
      // Drop the post-compact banner once the user continues chatting.
      if (role === 'user') clearCompactNotices();
+     // New user message ends the previous assistant turn visually — do not
+     // let later agent chunks / placeSummaryAssistant scoop into the old fold
+     // (Claude ACP often streams between turns after promptEnd).
+     if (role === 'user') {
+       currentTurnEl = null;
+       currentToolsListEl = null;
+       currentToolsCountEl = null;
+       currentToolCount = 0;
+       currentAssistantEl = null;
+       currentAssistantText = '';
+       resetClaudeCrewState();
+     }
      chatHistory.push({ kind: 'message', role, text });
      saveState();
      return addMessageDOM(role, text);
@@ -7811,6 +7831,8 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         // Sticky expand only while the turn is still streaming — completed
         // turns must not stay open across promptEnd / history restore.
         body._userExpanded = !isLoadingSession && isProcessing && willExpand;
+        // Do not lift the live assistant on collapse — mid-turn Claude/Codex
+        // text must stay inside the fold until promptEnd.
         hideTcTooltip();
         var count = parseInt(summary.dataset.count || '0', 10);
         updateToolGroupSummary(summary, count, summary._titles || [], summary._kinds || [], summary._rawInputs || []);
@@ -7932,7 +7954,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       // Do NOT auto-promote the last interim to summary here. Mid-turn commits
       // clear currentAssistantEl; promoting then made each segment flash in the
       // panel until the next one arrived and demoted it. Only placeSummaryAssistant
-      // (promptEnd) or promoteFinalAssistantForTurn (history) may lift a reply out.
+      // (promptEnd / debounced idle promote) may lift a reply out.
       summaryAssistants.forEach(function(a) {
         a.classList.add('assistant-summary');
         a.classList.remove('assistant-interim');
@@ -8145,6 +8167,44 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       currentTurnEl.appendChild(assistantEl);
     }
 
+    /**
+     * Mid-turn Codex/Claude chatter must stay inside the fold while Collapse
+     * is on. Only promote a live bubble outside after tools go idle for a
+     * short debounce (likely the end-turn summary), or on promptEnd.
+     */
+    var provisionalSummaryTimer = null;
+
+    function cancelProvisionalSummaryPromote() {
+      if (provisionalSummaryTimer) {
+        clearTimeout(provisionalSummaryTimer);
+        provisionalSummaryTimer = null;
+      }
+    }
+
+    function turnHasRunningTools() {
+      if (!currentTurnEl) return false;
+      return !!currentTurnEl.querySelector(
+        '.tc-icon.running, .tc-icon.in_progress, .tc-icon.pending, ' +
+        '.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending'
+      );
+    }
+
+    function turnHasAnyTools() {
+      if (currentToolCount > 0) return true;
+      if (!currentTurnEl) return false;
+      if (currentTurnEl.querySelector('.tool-call-inline, .tool-call')) return true;
+      var sum = getTurnSummaryEl(currentTurnEl);
+      return !!(sum && parseInt(sum.dataset.count || '0', 10) > 0);
+    }
+
+    function scheduleProvisionalSummaryPromote() {
+      // Disabled. Promoting on an idle timer leaked Claude/Codex mid-turn
+      // lines ("I'll spawn…", status chatter) into the main chat while
+      // Collapse is on. The final reply is lifted only on promptEnd via
+      // commitCurrentTextSegment → placeSummaryAssistant.
+      cancelProvisionalSummaryPromote();
+    }
+
     /** After history restore: lift the last assistant out of the fold as the reply. */
     function promoteFinalAssistantForTurn(turn) {
       if (!turn || !compactMode) return;
@@ -8192,6 +8252,8 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       var hasSubagent = false;
       if (!list) return { titles: titles, kinds: kinds, rawInputs: rawInputs, hasSubagent: hasSubagent, count: 0 };
       list.querySelectorAll('.tool-call-inline').forEach(function(tc) {
+        // Nested subagent tools live under a parent card — exclude from summary.
+        if (tc.getAttribute('data-parent-tool')) return;
         var tcTitle = getToolCallOriginalTitle(tc);
         var tcKind = tc.dataset.toolKind || null;
         titles.push(tcTitle);
@@ -8338,10 +8400,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
 
     function placeAssistantInTurn(assistantEl) {
-      // Compact: keep the live bubble inside the collapsed fold. Streaming it
-      // outside made mid-turn "I'll check…" text flash in the panel until the
-      // next tool call tucked it away. promptEnd / non-interim commit lifts the
-      // final reply via placeSummaryAssistant.
+      // Compact: keep the live bubble inside the fold for the whole turn.
+      // Mid-turn Claude/Codex lines must not appear in the main chat.
+      // promptEnd → commitCurrentTextSegment → placeSummaryAssistant lifts
+      // the final reply outside.
       if (compactMode) {
         moveAssistantIntoFold(assistantEl);
         refreshCurrentTurnSummary();
@@ -8356,6 +8418,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     // Compact: reuses the turn's single fold so thoughts, tools, and replies
     // collapse into one summary instead of splitting around mid-turn content.
     function ensureTurnTools() {
+     cancelProvisionalSummaryPromote();
      if (!currentTurnEl) {
        currentTurnEl = document.createElement('div');
        currentTurnEl.className = 'turn';
@@ -8427,18 +8490,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       } else if (isSubagentToolCall(titles[i], kind)) {
         cat = 'agent';
         // Distinguish spawn (creates agents) from other agent ops (wait/close/etc)
-        var tn = (titles[i] || '').trim();
-        var tnLower = tn.toLowerCase();
-        var isSpawn = tn === 'spawnAgent' || tn === 'spawn_agent' || tn === 'spawn_agents_on_csv' ||
-            (tnLower.startsWith('spawn') && tnLower.includes('agent')) ||
-            tnLower === 'subagent' ||
-            (tnLower.includes('spawning') && tnLower.includes('agent')) ||
-            tnLower.includes('agent crew');
-        // Kiro "Summarizing"/"summary" is a subagent result op, not a spawn
-        if (isSpawn) {
+        if (isSubagentSpawnTitle(titles[i])) {
           // For Kiro's "Spawning agent crew", count stages array
           var ri = rawInputs && rawInputs[i];
-          spawnCount += getSubagentSpawnCount(tn, ri);
+          spawnCount += getSubagentSpawnCount(titles[i], ri);
         } else {
           agentOpCount++;
         }
@@ -8547,7 +8602,21 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     if (lower === 'summarizing') return true;
     if (lower.includes('spawning') && lower.includes('agent')) return true;
     if (lower.includes('agent crew')) return true;
+    // Claude ACP Agent tool: title is usually "Task", toolName "Agent" in _meta.
+    if (lower === 'task' || lower === 'agent') return true;
     return false;
+  }
+
+  function isSubagentSpawnTitle(title) {
+    var tn = (title || '').trim();
+    var tnLower = tn.toLowerCase();
+    return tn === 'spawnAgent' || tn === 'spawn_agent' || tn === 'spawn_agents_on_csv' ||
+      (tnLower.startsWith('spawn') && tnLower.includes('agent')) ||
+      tnLower === 'subagent' ||
+      (tnLower.includes('spawning') && tnLower.includes('agent')) ||
+      tnLower.includes('agent crew') ||
+      tnLower === 'task' ||
+      tnLower === 'agent';
   }
 
   // Count how many subagents a tool call spawns.
@@ -8571,7 +8640,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      var toolCount = count || (titles && titles.length) || 0;
      if (!toolCount) {
        var turn = summaryEl.closest && summaryEl.closest('.turn');
-       if (turn) toolCount = turn.querySelectorAll('.tool-call-inline').length;
+       if (turn) {
+         toolCount = turn.querySelectorAll('.tool-call-inline:not([data-parent-tool])').length;
+       }
      }
      // Hide the collapse header until there is at least one tool call —
      // no "0 tool calls" / empty label during intermediate thought/reply.
@@ -8599,6 +8670,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      */
   function commitCurrentTextSegment(opts) {
     if (!currentAssistantText) return;
+    cancelProvisionalSummaryPromote();
     var asInterim = !!(opts && opts.interim);
     var _commitPreview = currentAssistantText.replace(/\\s+/g, ' ').slice(0, 80);
     vscode.postMessage({ type: 'debugLog', message: '[WV-COMMIT] commitCurrentTextSegment: textLen=' + currentAssistantText.length + ' hasEl=' + !!currentAssistantEl + ' interim=' + asInterim + ' chatHistoryLen BEFORE=' + chatHistory.length + ' preview="' + _commitPreview + '"' });
@@ -8648,20 +8720,40 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     if (streamingRenderTimer) { clearTimeout(streamingRenderTimer); streamingRenderTimer = null; }
    }
 
-    function addToolCall(toolCallId, title, status, content, rawInput, toolKind, locations) {
+    function addToolCall(toolCallId, title, status, content, rawInput, toolKind, locations, parentToolUseId) {
       if (currentPsEl) { currentPsEl = null; if (psPanel) psPanel.style.display = 'none'; }
+      // Cursor stub tool_call ({_toolName:"task"}) — rich UI comes from cursor/task.
+      if (isCursorTaskPlaceholder(title, rawInput)) {
+        return;
+      }
+      // Claude nested child tools (parentToolUseId): Kiro never surfaces subagent
+      // tool calls in the main turn — only stage rows. Drop them from history/DOM.
+      if (parentToolUseId) {
+        vscode.postMessage({
+          type: 'debugLog',
+          message: '[WV-ADDTC] suppress nested child id=' + (toolCallId || '').slice(0, 12) + ' parent=' + String(parentToolUseId).slice(0, 12),
+        });
+        return;
+      }
       vscode.postMessage({ type: 'debugLog', message: '[WV-ADDTC] title="' + title + '" id=' + (toolCallId || '').slice(0, 12) + ' chatHistoryLen BEFORE=' + chatHistory.length + ' currentAssistantTextLen=' + currentAssistantText.length + ' hasCurrentAssistantEl=' + !!currentAssistantEl });
-      // Commit any pending assistant text BEFORE pushing the tool call,
-      // so chatHistory ordering is: [...assistantText, toolCall] — not
-      // [toolCall, assistantText] which happens when addToolCallInline
-      // calls ensureTurnTools → commitCurrentTextSegment AFTER the push.
+      // Top-level tools must commit any in-flight assistant text so history
+      // order stays text → tools.
       if (currentAssistantText) {
         commitCurrentTextSegment({ interim: true });
       }
-      chatHistory.push({ kind: 'toolCall', toolCallId, title, status, rawInput, toolKind, locations: locations || null });
+      chatHistory.push({
+        kind: 'toolCall',
+        toolCallId: toolCallId,
+        title: title,
+        status: status,
+        rawInput: rawInput,
+        toolKind: toolKind,
+        locations: locations || null,
+        parentToolUseId: null,
+      });
       saveState();
       storeDiffContent(toolCallId, content);
-      addToolCallInline(toolCallId, title, status, rawInput, toolKind, locations);
+      addToolCallInline(toolCallId, title, status, rawInput, toolKind, locations, null);
       vscode.postMessage({ type: 'debugLog', message: '[WV-ADDTC] AFTER push chatHistoryLen=' + chatHistory.length });
     }
 
@@ -8710,14 +8802,20 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
   function slimSubagentRawInput(rawInput) {
     var slim = {};
     if (typeof rawInput.task === 'string') slim.task = rawInput.task.slice(0, 200);
-    if (typeof rawInput.prompt === 'string') slim.prompt = rawInput.prompt.slice(0, 200);
+    if (typeof rawInput.prompt === 'string') slim.prompt = rawInput.prompt.slice(0, 2000);
+    if (typeof rawInput.description === 'string') slim.description = rawInput.description.slice(0, 200);
+    if (typeof rawInput.subagent_type === 'string') slim.subagent_type = rawInput.subagent_type.slice(0, 80);
+    if (typeof rawInput.name === 'string') slim.name = rawInput.name.slice(0, 80);
     if (Array.isArray(rawInput.stages)) {
       slim.stages = rawInput.stages.map(function(stage) {
         if (!stage || typeof stage !== 'object') return { name: 'stage' };
+        var prompt = stage.prompt_template || stage.prompt || '';
         return {
           name: stage.name || '',
           role: stage.role || '',
           depends_on: Array.isArray(stage.depends_on) ? stage.depends_on : undefined,
+          // Keep enough of the prompt for restore hover (Kiro-style detail).
+          prompt_template: typeof prompt === 'string' ? prompt.slice(0, 2000) : '',
         };
       });
     }
@@ -8728,7 +8826,31 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     if (rawInput == null) return true;
     if (typeof rawInput === 'string') return !rawInput.trim();
     if (typeof rawInput !== 'object') return false;
-    try { return Object.keys(rawInput).length === 0; } catch (e) { return true; }
+    try {
+      var keys = Object.keys(rawInput);
+      if (keys.length === 0) return true;
+      // Cursor placeholder task tool_call: { _toolName: "task" } only.
+      if (keys.length === 1 && keys[0] === '_toolName') return true;
+      return false;
+    } catch (e) { return true; }
+  }
+
+  /**
+   * Cursor ACP emits a stub tool_call (title "Task: Subagent task",
+   * rawInput {_toolName:"task"}) before the real cursor/task request.
+   * Those stubs must not create UI rows — cursor/task owns the crew stage.
+   */
+  function isCursorTaskPlaceholder(title, rawInput) {
+    if (rawInput && typeof rawInput === 'object' && rawInput._toolName === 'task') {
+      var keys = Object.keys(rawInput);
+      if (keys.length === 1) return true;
+      // Only meta fields, no real prompt/description yet.
+      if (!rawInput.prompt && !rawInput.description && !rawInput.task && !Array.isArray(rawInput.stages)) {
+        return true;
+      }
+    }
+    var t = (title || '').trim().toLowerCase();
+    return t === 'task: subagent task';
   }
 
   function formatLocations(locations) {
@@ -8755,6 +8877,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    else if (rawInput.taskResult) {
      result = rawInput.taskDescription || rawInput.task || rawInput.__tool_use_purpose || 'Subagent result delivered';
    }
+    // Kiro / unified crew: stages[] with prompt_template — show the same
+    // Name/Role/Prompt detail as hovering a child stage (parent summary).
+    else if (Array.isArray(rawInput.stages) && rawInput.stages.length > 0) {
+      result = formatStagesTooltipText(rawInput.stages, rawInput.task || rawInput.description || '');
+    }
     // Codex collab agent tool call (spawnAgent, sendInput, etc.):
     // rawInput = { prompt, senderThreadId, receiverThreadIds, agentsStates, status }
     // Show the prompt text (the task given to the subagent) instead of
@@ -8803,6 +8930,42 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       if (result === '{}' || result === '[]') result = '';
     }
     return result;
+  }
+
+  /** Kiro-style multi-stage tooltip body (parent crew + child stages). */
+  function formatStagesTooltipText(stages, crewTask) {
+    var lines = [];
+    if (crewTask && String(crewTask).trim()) {
+      lines.push('Task: ' + String(crewTask).trim());
+      lines.push('');
+    }
+    for (var i = 0; i < stages.length; i++) {
+      var stage = stages[i] || {};
+      if (i > 0) lines.push('');
+      lines.push('Name: ' + (stage.name || ('Subagent ' + (i + 1))));
+      if (stage.role) lines.push('Role: ' + stage.role);
+      if (stage.mode) lines.push('Mode: ' + stage.mode);
+      if (stage.depends_on && stage.depends_on.length > 0) {
+        lines.push('Depends on: ' + stage.depends_on.join(', '));
+      }
+      if (stage.loop_to) lines.push('Loops to: ' + stage.loop_to);
+      if (stage.trigger) lines.push('Trigger: ' + stage.trigger);
+      if (stage.max_iterations) lines.push('Max iterations: ' + stage.max_iterations);
+      var prompt = stage.prompt_template || stage.prompt || '';
+      if (prompt) {
+        lines.push('');
+        lines.push('Prompt:');
+        lines.push(prompt);
+      }
+    }
+    return lines.join('\\n');
+  }
+
+  /** Full task text for a spawn tool (prefer prompt over short description). */
+  function crewStageFullPrompt(rawInput) {
+    if (!rawInput || typeof rawInput !== 'object') return '';
+    var full = rawInput.prompt_template || rawInput.prompt || rawInput.message || rawInput.task || '';
+    return typeof full === 'string' ? full : '';
   }
 
   /** Best-effort tooltip text: rawInput, then locations, then title. */
@@ -8860,27 +9023,22 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    * popover as tool call tooltips.
    */
  function attachStageTooltip(stageEl, stage) {
-   if (!stage) return;
-  stageEl.addEventListener('pointerenter', function(e) {
+   if (!stageEl) return;
+   // Resolve at hover time from stageEl._stageData so tool_call_update can
+   // fill in the full prompt after an empty initial tool_call.
+   if (stage && typeof stage === 'object') {
+     stageEl._stageData = Object.assign({}, stageEl._stageData || {}, stage);
+   }
+   if (stageEl.dataset.stageTooltip) return;
+   stageEl.dataset.stageTooltip = '1';
+   stageEl.addEventListener('pointerenter', function(e) {
     e.stopPropagation();
      ensureTcTooltipEl();
-     var lines = [];
-     lines.push('Name: ' + (stage.name || '(unnamed)'));
-      if (stage.role) lines.push('Role: ' + stage.role);
-      if (stage.mode) lines.push('Mode: ' + stage.mode);
-      if (stage.depends_on && stage.depends_on.length > 0) {
-        lines.push('Depends on: ' + stage.depends_on.join(', '));
-      }
-      if (stage.loop_to) lines.push('Loops to: ' + stage.loop_to);
-      if (stage.trigger) lines.push('Trigger: ' + stage.trigger);
-      if (stage.max_iterations) lines.push('Max iterations: ' + stage.max_iterations);
-      lines.push('');
-      var prompt = stage.prompt_template || stage.prompt || '';
-      if (prompt) {
-        lines.push('Prompt:');
-        lines.push(prompt);
-      }
-      var formatted = lines.join('\\n');
+     var data = stageEl._stageData || {};
+     var formatted = formatStagesTooltipText([data], '');
+     if (!formatted) {
+       formatted = 'Name: ' + (data.name || stageEl.getAttribute('data-stage-name') || '(unnamed)');
+     }
       var truncated = formatted.length > TC_TOOLTIP_MAX_CHARS;
       var displayText = truncated ? formatted.slice(0, TC_TOOLTIP_MAX_CHARS) : formatted;
       tcTooltipEl.innerHTML = '<pre>' + escapeHtml(displayText) + '</pre>';
@@ -9007,31 +9165,364 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }, { passive: false });
    }
 
-   function addToolCallInline(toolCallId, title, status, rawInput, toolKind, locations) {
-      hideEmpty();
+   // Nested child tools buffered before parent mount (legacy Claude parentToolUseId).
+   var pendingNestedByParent = {};
+   // Spawn tools (Claude Task, Codex spawnAgent, Cursor task, …) in the current
+   // turn aggregate into one Kiro-style crew card with .tc-stages rows.
+   var subagentCrewPrimaryId = null;
+
+   function resetSubagentCrewState() {
+     subagentCrewPrimaryId = null;
+     pendingNestedByParent = {};
+   }
+   function resetClaudeCrewState() { resetSubagentCrewState(); }
+
+   function isClaudeAgentTaskTitle(title) {
+     // Kept for older call sites; prefer isSubagentSpawnTitle for new code.
+     var t = (title || '').trim().toLowerCase();
+     return t === 'task' || t === 'agent';
+   }
+
+   function crewStageLabel(rawInput, title, index) {
+     var desc = rawInput && (
+       rawInput.description || rawInput.task || rawInput.prompt ||
+       rawInput.subagent_type || rawInput.name || rawInput.agent_name
+     );
+     if (typeof desc === 'string' && desc.trim()) {
+       var s = desc.trim();
+       return s.length > 60 ? s.substring(0, 57) + '...' : s;
+     }
+     var t = (title || '').trim();
+     if (t && !isSubagentSpawnTitle(t)) {
+       return t.length > 60 ? t.substring(0, 57) + '...' : t;
+     }
+     return 'Subagent ' + (index || 1);
+   }
+   function claudeStageLabel(rawInput, index) {
+     return crewStageLabel(rawInput, null, index);
+   }
+
+   function findCurrentTurnSubagentCrew() {
+     if (subagentCrewPrimaryId && toolCalls[subagentCrewPrimaryId] &&
+         (!currentTurnEl || currentTurnEl.contains(toolCalls[subagentCrewPrimaryId]))) {
+       return toolCalls[subagentCrewPrimaryId];
+     }
+     if (!currentTurnEl) return null;
+     var crews = currentTurnEl.querySelectorAll(
+       '.tool-call-inline.tc-subagent[data-subagent-crew], .tool-call-inline.tc-subagent[data-claude-crew]'
+     );
+     if (crews.length) return crews[crews.length - 1];
+     var all = currentTurnEl.querySelectorAll('.tool-call-inline.tc-subagent');
+     for (var i = all.length - 1; i >= 0; i--) {
+       if (all[i].querySelector(':scope > .tc-stages')) return all[i];
+     }
+     return null;
+   }
+   function findCurrentTurnClaudeCrew() { return findCurrentTurnSubagentCrew(); }
+
+   function ensureNestedContainer(parentEl) {
+     if (!parentEl) return null;
+     var nest = parentEl.querySelector(':scope > .tc-nested');
+     if (!nest) {
+       nest = document.createElement('div');
+       nest.className = 'tc-nested';
+       parentEl.appendChild(nest);
+     }
+     return nest;
+   }
+
+   function flushPendingNestedTools(parentToolUseId) {
+     var pending = pendingNestedByParent[parentToolUseId];
+     if (!pending || !pending.length) return;
+     var parentEl = toolCalls[parentToolUseId] || document.getElementById('tc-' + parentToolUseId);
+     if (!parentEl) return;
+     var nest = ensureNestedContainer(parentEl);
+     delete pendingNestedByParent[parentToolUseId];
+     for (var i = 0; i < pending.length; i++) {
+       if (pending[i] && pending[i].parentNode !== nest) {
+         nest.appendChild(pending[i]);
+       }
+     }
+   }
+
+   function createStageElement(stageName, toolCallId, stagePrompt, stageMeta) {
+     var stage = document.createElement('div');
+     stage.className = 'tc-stage';
+     stage.setAttribute('data-stage-name', stageName);
+     if (toolCallId) stage.setAttribute('data-tool-call-id', String(toolCallId));
+     var desc = (!compactMode && stagePrompt)
+       ? (stagePrompt.length > 100 ? stagePrompt.substring(0, 97) + '...' : stagePrompt)
+       : '';
+     // Short label under the name: prefer description; full prompt stays in tooltip.
+     var shortDesc = '';
+     if (!compactMode && stageMeta && typeof stageMeta.description === 'string' && stageMeta.description.trim()) {
+       shortDesc = stageMeta.description.trim();
+       if (shortDesc.length > 100) shortDesc = shortDesc.substring(0, 97) + '...';
+     } else if (desc && stagePrompt && stagePrompt.length > 120) {
+       shortDesc = ''; // avoid dumping long prompt into the row; tooltip has it
+     } else {
+       shortDesc = desc;
+     }
+     stage.innerHTML =
+       '<span class="tc-stage-icon running">' + getStatusIcon('running') + '</span>' +
+       '<span class="tc-stage-name">' + escapeHtml(stageName) + '</span>' +
+       (shortDesc ? '<div class="tc-stage-desc">' + escapeHtml(shortDesc) + '</div>' : '');
+     var stageData = Object.assign({
+       name: stageName,
+       role: (stageMeta && stageMeta.role) || 'agent',
+       prompt_template: stagePrompt || '',
+     }, stageMeta && typeof stageMeta === 'object' ? stageMeta : {});
+     if (!stageData.prompt_template) stageData.prompt_template = stagePrompt || '';
+     stageData.name = stageName;
+     attachStageTooltip(stage, stageData);
+     return stage;
+   }
+
+   function syncCrewParentRawInput(crewEl) {
+     if (!crewEl) return;
+     var stages = crewEl.querySelectorAll(':scope > .tc-stages > .tc-stage');
+     var rebuilt = [];
+     for (var s = 0; s < stages.length; s++) {
+       var data = stages[s]._stageData || {};
+       rebuilt.push({
+         name: data.name || stages[s].getAttribute('data-stage-name') || ('Subagent ' + (s + 1)),
+         role: data.role || 'agent',
+         mode: data.mode,
+         depends_on: data.depends_on,
+         prompt_template: data.prompt_template || data.prompt || '',
+         prompt: data.prompt || '',
+         description: data.description || '',
+       });
+     }
+     var prev = (crewEl._rawInput && typeof crewEl._rawInput === 'object') ? crewEl._rawInput : {};
+     crewEl._rawInput = Object.assign({}, prev, { stages: rebuilt });
+     if (currentToolsCountEl && currentToolsCountEl._rawInputs && currentToolsCountEl._titles) {
+       for (var i = 0; i < currentToolsCountEl._titles.length; i++) {
+         if (!isSubagentSpawnTitle(currentToolsCountEl._titles[i])) continue;
+         currentToolsCountEl._rawInputs[i] = crewEl._rawInput;
+         break;
+       }
+     }
+   }
+
+   function updateStageFromRawInput(stageEl, rawInput, title, opts) {
+     if (!stageEl || !rawInput || typeof rawInput !== 'object') return;
+     var keepName = !!(opts && opts.keepName);
+     var fullPrompt = crewStageFullPrompt(rawInput);
+     var label = keepName
+       ? (stageEl.getAttribute('data-stage-name') || (stageEl._stageData && stageEl._stageData.name) || 'Subagent')
+       : crewStageLabel(rawInput, title, 0);
+     var patch = {
+       name: label || stageEl.getAttribute('data-stage-name') || 'Subagent',
+       role: rawInput.subagent_type || rawInput.role || (stageEl._stageData && stageEl._stageData.role) || 'agent',
+       description: typeof rawInput.description === 'string' ? rawInput.description : '',
+       prompt_template: fullPrompt || (stageEl._stageData && stageEl._stageData.prompt_template) || '',
+       prompt: typeof rawInput.prompt === 'string' ? rawInput.prompt : '',
+       mode: rawInput.mode,
+       depends_on: rawInput.depends_on,
+     };
+     if (!keepName && label) {
+       stageEl.setAttribute('data-stage-name', label);
+       var nameEl = stageEl.querySelector('.tc-stage-name');
+       if (nameEl) nameEl.textContent = label;
+     }
+     attachStageTooltip(stageEl, patch);
+     var crew = stageEl.closest('.tool-call-inline.tc-subagent');
+     if (crew) syncCrewParentRawInput(crew);
+   }
+
+   function refreshSubagentCrewTitle(crewEl) {
+     if (!crewEl) return;
+     var stages = crewEl.querySelectorAll(':scope > .tc-stages > .tc-stage');
+     var n = stages.length || 1;
+     var titleEl = crewEl.querySelector(':scope > .tc-title');
+     if (titleEl) {
+       titleEl.textContent = 'spawned ' + n + ' subagent' + (n > 1 ? 's' : '');
+     }
+     syncCrewParentRawInput(crewEl);
+     if (currentToolsCountEl && currentToolsCountEl.classList.contains('turn-tools-summary')) {
+       updateToolGroupSummary(
+         currentToolsCountEl,
+         currentToolCount,
+         currentToolsCountEl._titles,
+         currentToolsCountEl._kinds,
+         currentToolsCountEl._rawInputs || [],
+       );
+     }
+   }
+   function refreshClaudeCrewTitle(crewEl) { refreshSubagentCrewTitle(crewEl); }
+
+   function setSubagentStageStatus(toolCallId, status) {
+     if (!toolCallId) return;
+     var stage = document.querySelector('.tc-stage[data-tool-call-id="' + String(toolCallId).replace(/"/g, '') + '"]');
+     if (!stage) return;
+     var iconStatus = (status === 'completed' || status === 'failed' || status === 'error')
+       ? (status === 'completed' ? 'completed' : 'error')
+       : 'running';
+     var iconEl = stage.querySelector('.tc-stage-icon');
+     if (iconEl) {
+       iconEl.className = 'tc-stage-icon ' + iconStatus;
+       iconEl.textContent = getStatusIcon(iconStatus === 'running' ? 'running' : iconStatus);
+     }
+     var crew = stage.closest('.tool-call-inline.tc-subagent');
+     if (!crew || iconStatus === 'running') return;
+     var running = crew.querySelectorAll('.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending');
+     if (running.length === 0) {
+       var parentIcon = crew.querySelector(':scope > .tc-icon');
+       if (parentIcon) {
+         parentIcon.className = 'tc-icon completed';
+         parentIcon.textContent = getStatusIcon('completed');
+       }
+     }
+   }
+   function setClaudeStageStatus(toolCallId, status) { setSubagentStageStatus(toolCallId, status); }
+
+   /**
+    * Unify Claude Task / Codex spawnAgent / Cursor task / etc. into the same
+    * Kiro crew UI: one parent "spawned N subagents" card + stage rows.
+    * Extra spawns in the same turn append stages. Nested child tools stay suppressed.
+    */
+   function addOrExtendSubagentCrew(toolCallId, title, status, rawInput, toolKind, locations) {
+     hideEmpty();
+     var stagePrompt = crewStageFullPrompt(rawInput);
+     var stageMeta = (rawInput && typeof rawInput === 'object') ? {
+       description: rawInput.description || '',
+       role: rawInput.subagent_type || rawInput.role || 'agent',
+       mode: rawInput.mode,
+       depends_on: rawInput.depends_on,
+       prompt: typeof rawInput.prompt === 'string' ? rawInput.prompt : '',
+     } : { role: 'agent' };
+     var existing = findCurrentTurnSubagentCrew();
+     if (existing) {
+       var stagesWrap = existing.querySelector(':scope > .tc-stages');
+       if (!stagesWrap) {
+         stagesWrap = document.createElement('div');
+         stagesWrap.className = 'tc-stages';
+         existing.appendChild(stagesWrap);
+       }
+       var idx = stagesWrap.querySelectorAll('.tc-stage').length + 1;
+       var stageName = crewStageLabel(rawInput, title, idx);
+       stagesWrap.appendChild(createStageElement(stageName, toolCallId, String(stagePrompt || ''), stageMeta));
+       toolCalls[toolCallId] = existing;
+       // New stage is running — ensure parent spinner is not left checked.
+       var parentIcon = existing.querySelector(':scope > .tc-icon');
+       if (parentIcon) {
+         parentIcon.className = 'tc-icon running';
+         parentIcon.textContent = getStatusIcon('running');
+       }
+       refreshSubagentCrewTitle(existing);
+       autoScrollIfAtBottom();
+       return;
+     }
+
+     var stageName = crewStageLabel(rawInput, title, 1);
+     var synthRaw = Object.assign({}, (rawInput && typeof rawInput === 'object') ? rawInput : {}, {
+       stages: [{
+         name: stageName,
+         role: stageMeta.role || 'agent',
+         prompt_template: String(stagePrompt || ''),
+         prompt: stageMeta.prompt || '',
+         description: stageMeta.description || '',
+       }],
+     });
+     var spawnTitle = isSubagentSpawnTitle(title) ? title : 'Task';
+     // Spawn ack often arrives as completed; stages stay spinning until promptEnd.
+     var parentStatus = (status === 'failed' || status === 'error') ? status : 'running';
      ensureTurnTools();
      currentToolCount++;
      if (currentToolsCountEl) {
        currentToolsCountEl.dataset.count = String(currentToolCount);
-       // Collect titles and kinds for summary; store on the element
        if (!currentToolsCountEl._titles) currentToolsCountEl._titles = [];
        if (!currentToolsCountEl._kinds) currentToolsCountEl._kinds = [];
-      if (!currentToolsCountEl._rawInputs) currentToolsCountEl._rawInputs = [];
-      if (!currentToolsCountEl._locations) currentToolsCountEl._locations = [];
-      currentToolsCountEl._titles.push(title || 'Tool Call');
-      currentToolsCountEl._kinds.push(toolKind || null);
-      currentToolsCountEl._rawInputs.push(rawInput || null);
-      currentToolsCountEl._locations.push(locations || null);
-      // Track if this turn has any subagent tool calls.
-      // spawnAgent turns should be collapsed (single event, details on click).
-      // Other agent ops (wait/close/sendInput) should also be collapsed.
-      if (isSubagentToolCall(title, toolKind)) {
-        currentToolsCountEl._hasSubagent = true;
-        currentToolsCountEl._hasSpawnAgent = true;
-      }
-      if (currentToolsCountEl.classList.contains('turn-tools-summary')) {
-        updateToolGroupSummary(currentToolsCountEl, currentToolCount, currentToolsCountEl._titles, currentToolsCountEl._kinds, currentToolsCountEl._rawInputs || []);
-      }
+       if (!currentToolsCountEl._rawInputs) currentToolsCountEl._rawInputs = [];
+       if (!currentToolsCountEl._locations) currentToolsCountEl._locations = [];
+       currentToolsCountEl._titles.push(spawnTitle);
+       currentToolsCountEl._kinds.push(toolKind || null);
+       currentToolsCountEl._rawInputs.push(synthRaw);
+       currentToolsCountEl._locations.push(locations || null);
+       currentToolsCountEl._hasSubagent = true;
+       currentToolsCountEl._hasSpawnAgent = true;
+       if (currentToolsCountEl.classList.contains('turn-tools-summary')) {
+         updateToolGroupSummary(currentToolsCountEl, currentToolCount, currentToolsCountEl._titles, currentToolsCountEl._kinds, currentToolsCountEl._rawInputs || []);
+       }
+     }
+
+     const el = document.createElement('div');
+     el.className = 'tool-call-inline tc-subagent';
+     el.id = 'tc-' + toolCallId;
+     el.setAttribute('data-subagent-crew', '1');
+     el.setAttribute('data-claude-crew', '1');
+     if (toolKind) el.dataset.toolKind = toolKind;
+     el._rawInput = synthRaw;
+     el._locations = locations || null;
+     el._toolTitle = spawnTitle;
+     el.innerHTML =
+       '<span class="tc-icon ' + parentStatus + '">' + getStatusIcon(parentStatus) + '</span>' +
+       '<span class="tc-title">spawned 1 subagent</span>' +
+       '<div class="tc-stages"></div>';
+     var stagesEl = el.querySelector('.tc-stages');
+     stagesEl.appendChild(createStageElement(stageName, toolCallId, String(stagePrompt || ''), stageMeta));
+     attachToolCallTooltip(el);
+     if (currentToolsListEl) currentToolsListEl.appendChild(el);
+     toolCalls[toolCallId] = el;
+     subagentCrewPrimaryId = toolCallId;
+     if (compactMode && currentTurnEl) {
+       ensureTurnFoldStructure(currentTurnEl, true);
+       refreshCurrentTurnSummary();
+     }
+     autoScrollIfAtBottom();
+   }
+   function addOrExtendClaudeCrew(toolCallId, title, status, rawInput, toolKind, locations) {
+     addOrExtendSubagentCrew(toolCallId, title, status, rawInput, toolKind, locations);
+   }
+
+   function addNestedToolCallInline(toolCallId, title, status, rawInput, toolKind, locations, parentToolUseId) {
+     // Legacy no-op: nested Claude tools are suppressed (Kiro-style).
+     return;
+   }
+
+   function addToolCallInline(toolCallId, title, status, rawInput, toolKind, locations, parentToolUseId) {
+      hideEmpty();
+     if (parentToolUseId) {
+       addNestedToolCallInline(toolCallId, title, status, rawInput, toolKind, locations, parentToolUseId);
+       return;
+     }
+     // Any spawn (Claude Task, Codex spawnAgent, Cursor Task, …) without native
+     // Kiro stages[] → aggregate into one Kiro-style crew card.
+     var hasKiroStages = rawInput && typeof rawInput === 'object' &&
+       Array.isArray(rawInput.stages) && rawInput.stages.length > 0;
+     if (isSubagentSpawnTitle(title) && !hasKiroStages) {
+       addOrExtendSubagentCrew(toolCallId, title, status, rawInput, toolKind, locations);
+       return;
+     }
+     // Restored synthetic crew (single stage) — append to existing crew card.
+     // Native Kiro multi-stage crews take the normal stages-render path below.
+     if (isSubagentSpawnTitle(title) && hasKiroStages && rawInput.stages.length === 1) {
+       var existingCrew = findCurrentTurnSubagentCrew();
+       if (existingCrew) {
+         addOrExtendSubagentCrew(toolCallId, title, status, rawInput, toolKind, locations);
+         return;
+       }
+     }
+     ensureTurnTools();
+     currentToolCount++;
+     if (currentToolsCountEl) {
+       currentToolsCountEl.dataset.count = String(currentToolCount);
+       if (!currentToolsCountEl._titles) currentToolsCountEl._titles = [];
+       if (!currentToolsCountEl._kinds) currentToolsCountEl._kinds = [];
+       if (!currentToolsCountEl._rawInputs) currentToolsCountEl._rawInputs = [];
+       if (!currentToolsCountEl._locations) currentToolsCountEl._locations = [];
+       currentToolsCountEl._titles.push(title || 'Tool Call');
+       currentToolsCountEl._kinds.push(toolKind || null);
+       currentToolsCountEl._rawInputs.push(rawInput || null);
+       currentToolsCountEl._locations.push(locations || null);
+       if (isSubagentToolCall(title, toolKind)) {
+         currentToolsCountEl._hasSubagent = true;
+         currentToolsCountEl._hasSpawnAgent = true;
+       }
+       if (currentToolsCountEl.classList.contains('turn-tools-summary')) {
+         updateToolGroupSummary(currentToolsCountEl, currentToolCount, currentToolsCountEl._titles, currentToolsCountEl._kinds, currentToolsCountEl._rawInputs || []);
+       }
      }
 
      const el = document.createElement('div');
@@ -9044,30 +9535,21 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      el._rawInput = rawInput || null;
      el._locations = locations || null;
      el._toolTitle = title || 'Tool Call';
-      // For subagent spawn calls, show the task description as the individual
-      // tool call title (the group summary header already shows "spawned N subagents").
-      // This avoids duplication when the group is expanded.
       var displayTitle = title || 'Tool Call';
-      if (isSubagentToolCall(title, toolKind) && rawInput) {
+      if (isSubagentToolCall(title, toolKind)) {
         var spawnN = getSubagentSpawnCount(title, rawInput);
-        var tnLower = (title || '').toLowerCase();
-        var isSpawn = tnLower === 'subagent' ||
-          (tnLower.includes('spawning') && tnLower.includes('agent')) ||
-          tnLower.includes('agent crew') ||
-          title === 'spawnAgent' || title === 'spawn_agent' || title === 'spawn_agents_on_csv';
-        if (isSpawn && spawnN > 0) {
-          // Show task description instead of duplicating "spawned N subagents"
-          var taskDesc = rawInput.task || rawInput.prompt || '';
-          if (typeof taskDesc === 'string' && taskDesc.length > 0) {
-            // Truncate to 80 chars for readability
+        if (isSubagentSpawnTitle(title) && spawnN > 0) {
+          var taskDesc = (rawInput && (rawInput.task || rawInput.prompt || rawInput.description)) || '';
+          // Prefer Kiro-style "spawned N subagents" when stages define the crew.
+          if (hasKiroStages) {
+            displayTitle = 'spawned ' + spawnN + ' subagent' + (spawnN > 1 ? 's' : '');
+          } else if (typeof taskDesc === 'string' && taskDesc.length > 0) {
             displayTitle = taskDesc.length > 80 ? taskDesc.substring(0, 77) + '...' : taskDesc;
           } else {
             displayTitle = 'spawned ' + spawnN + ' subagent' + (spawnN > 1 ? 's' : '');
           }
         }
       } else {
-        // Prefer a path/pattern from rawInput or locations when the agent only
-        // sent a generic title like "Read File" / "grep" (Cursor Agent live).
         var detailHint = formatRawInput(rawInput) || formatLocations(locations);
         if (detailHint) {
           var firstLine = detailHint.split('\\n')[0];
@@ -9079,7 +9561,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       el.innerHTML =
         '<span class="tc-icon ' + status + '">' + getStatusIcon(status) + '</span>' +
         '<span class="tc-title">' + escapeHtml(displayTitle) + '</span>';
-     // Render subagent stages as sub-items if present (Kiro crew).
+     // Render subagent stages as sub-items if present (Kiro crew / Claude synth).
      // In Collapse mode, omit long stage prompts from the DOM — they stay in
      // the hover tooltip only, so they cannot leak outside a closed fold.
      if (rawInput && Array.isArray(rawInput.stages) && rawInput.stages.length > 0) {
@@ -9093,7 +9575,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
            : '';
          var stageRole = stage.role || '';
          var depends = stage.depends_on && stage.depends_on.length > 0 ? ' (depends: ' + stage.depends_on.join(', ') + ')' : '';
-         stagesHtml += '<div class="tc-stage" data-stage-name="' + escapeHtml(stageName) + '"><span class="tc-stage-icon running">' + getStatusIcon('running') + '</span><span class="tc-stage-name">' + escapeHtml(stageName) + '</span>' +
+         var stageToolIdAttr = (isSubagentSpawnTitle(title) && si === 0)
+           ? ' data-tool-call-id="' + escapeHtml(String(toolCallId)) + '"'
+           : '';
+         stagesHtml += '<div class="tc-stage" data-stage-name="' + escapeHtml(stageName) + '"' + stageToolIdAttr + '><span class="tc-stage-icon running">' + getStatusIcon('running') + '</span><span class="tc-stage-name">' + escapeHtml(stageName) + '</span>' +
            (stageRole ? '<span class="tc-stage-role">' + escapeHtml(stageRole) + '</span>' : '') +
            (depends ? '<span class="tc-stage-depends">' + escapeHtml(depends) + '</span>' : '') +
            (stageDesc ? '<div class="tc-stage-desc">' + escapeHtml(stageDesc) + '</div>' : '') +
@@ -9101,19 +9586,29 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        }
       stagesHtml += '</div>';
       el.innerHTML += stagesHtml;
-      // Attach per-stage hover tooltips (after innerHTML is set)
       if (rawInput && Array.isArray(rawInput.stages)) {
         var stageDivs = el.querySelectorAll('.tc-stage[data-stage-name]');
         for (var sti = 0; sti < stageDivs.length && sti < rawInput.stages.length; sti++) {
           attachStageTooltip(stageDivs[sti], rawInput.stages[sti]);
         }
       }
+      if (isSubagentSpawnTitle(title)) {
+        el.classList.add('tc-subagent');
+        el.setAttribute('data-subagent-crew', '1');
+        el.setAttribute('data-claude-crew', '1');
+        subagentCrewPrimaryId = toolCallId;
+      }
     }
      attachToolCallTooltip(el);
-     currentToolsListEl.appendChild(el);
+     if (currentToolsListEl) {
+       currentToolsListEl.appendChild(el);
+     }
      toolCalls[toolCallId] = el;
+     flushPendingNestedTools(toolCallId);
+     // Keep fold structure updated but honor sticky user expand while streaming.
      if (compactMode && currentTurnEl) {
-       orderCompactFoldContents(getTurnFoldBody(currentTurnEl));
+       ensureTurnFoldStructure(currentTurnEl, true);
+       refreshCurrentTurnSummary();
      }
      autoScrollIfAtBottom();
    }
@@ -9151,6 +9646,7 @@ function renderChatHistory() {
   messagesEl.innerHTML = '';
   toolCalls = {};
   toolCallDiffs = {};
+  resetClaudeCrewState();
   currentPlanEl = null;
   if (planBar) { planBar.innerHTML = ''; }
   currentTurnEl = null;
@@ -9279,7 +9775,9 @@ function renderChatHistory() {
            item.rawInput && item.rawInput.taskResult
              ? stripTaskResult(item.rawInput)
              : item.rawInput,
-           item.toolKind);
+           item.toolKind,
+           item.locations,
+           item.parentToolUseId || null);
          break;
         case 'plan':
           updatePlanDOM(item.plan);
@@ -9303,6 +9801,7 @@ function renderChatHistory() {
       var hasSubagent = false;
       lists.forEach(function(list) {
         list.querySelectorAll('.tool-call-inline').forEach(function(tc) {
+          if (tc.getAttribute('data-parent-tool')) return;
           var tcTitle = getToolCallOriginalTitle(tc);
           var tcKind = tc.dataset.toolKind || null;
           var tcRaw = tc._rawInput || null;
@@ -9343,18 +9842,57 @@ function renderChatHistory() {
      saveState();
      storeDiffContent(toolCallId, content);
 
+     // Crew stage: update spinner + fill tooltip from late rawInput (Claude/Codex
+     // often send empty rawInput first, then prompt/description on update).
+     var stageForId = document.querySelector('.tc-stage[data-tool-call-id="' + String(toolCallId).replace(/"/g, '') + '"]');
+     if (stageForId) {
+       if (rawInput) updateStageFromRawInput(stageForId, rawInput, title);
+       // Claude Agent Task / Codex spawn often flip tool_call to "completed"
+       // when the subagent is only *started* (nested child tools still run).
+       // Keep the stage spinning until promptEnd (or a real failure).
+       var stageStatus = status || 'running';
+       if (stageStatus === 'completed' && isProcessing && !isLoadingSession) {
+         stageStatus = 'running';
+       }
+       setSubagentStageStatus(toolCallId, stageStatus);
+       return;
+     }
+
      const el = toolCalls[toolCallId] || document.getElementById('tc-' + toolCallId);
      if (!el) return;
 
      // Attach tooltip if rawInput arrived in an update (not present on
      // the initial tool_call event).
-     if (rawInput && !el.dataset.tcTooltip) {
-       attachToolCallTooltip(el, rawInput);
+     if (rawInput) {
+       if (el.getAttribute('data-subagent-crew') || el.getAttribute('data-claude-crew') ||
+           el.querySelector(':scope > .tc-stages')) {
+         // Parent crew card: merge late rawInput into the matching stage.
+         var stageOnCrew = el.querySelector('.tc-stage[data-tool-call-id="' + String(toolCallId).replace(/"/g, '') + '"]') ||
+           el.querySelector(':scope > .tc-stages > .tc-stage');
+         if (stageOnCrew) updateStageFromRawInput(stageOnCrew, rawInput, title);
+         else {
+           el._rawInput = Object.assign({}, el._rawInput || {}, rawInput);
+         }
+       } else {
+         el._rawInput = rawInput;
+         if (!el.dataset.tcTooltip) attachToolCallTooltip(el);
+       }
      }
 
      // Inline style (turn-based)
-      const iconEl = el.querySelector('.tc-icon');
+      const iconEl = el.querySelector(':scope > .tc-icon') || el.querySelector('.tc-icon');
       if (iconEl) {
+        // Crew parent: keep "spawned N subagents" title; only flip icon when
+        // the turn is done (or a real failure). Mid-turn "completed" from
+        // Claude Agent Task means spawned, not finished.
+        if (el.getAttribute('data-subagent-crew') || el.getAttribute('data-claude-crew') || el.querySelector(':scope > .tc-stages')) {
+          if (status === 'failed' || status === 'error') {
+            setSubagentStageStatus(toolCallId, status);
+          } else if (status === 'completed' && !(isProcessing && !isLoadingSession)) {
+            setSubagentStageStatus(toolCallId, status);
+          }
+          return;
+        }
         iconEl.className = 'tc-icon ' + status;
         iconEl.textContent = getStatusIcon(status);
         if (title) {
@@ -9363,16 +9901,13 @@ function renderChatHistory() {
             // Apply friendly title for subagent spawn calls
             var dt = title;
             var elRawInput = el._rawInput || rawInput;
-            if (isSubagentToolCall(title, el.dataset.toolKind || null) && elRawInput) {
+            if (isSubagentToolCall(title, el.dataset.toolKind || null)) {
               var sn = getSubagentSpawnCount(title, elRawInput);
-              var tl = (title || '').toLowerCase();
-              var isSp = tl === 'subagent' ||
-                (tl.includes('spawning') && tl.includes('agent')) ||
-                tl.includes('agent crew') ||
-                title === 'spawnAgent' || title === 'spawn_agent' || title === 'spawn_agents_on_csv';
-              if (isSp && sn > 0) {
-                var taskDesc2 = elRawInput.task || elRawInput.prompt || '';
-                if (typeof taskDesc2 === 'string' && taskDesc2.length > 0) {
+              if (isSubagentSpawnTitle(title) && sn > 0) {
+                var taskDesc2 = (elRawInput && (elRawInput.task || elRawInput.prompt || elRawInput.description)) || '';
+                if (Array.isArray(elRawInput && elRawInput.stages) && elRawInput.stages.length > 0) {
+                  dt = 'spawned ' + sn + ' subagent' + (sn > 1 ? 's' : '');
+                } else if (typeof taskDesc2 === 'string' && taskDesc2.length > 0) {
                   dt = taskDesc2.length > 80 ? taskDesc2.substring(0, 77) + '...' : taskDesc2;
                 } else {
                   dt = 'spawned ' + sn + ' subagent' + (sn > 1 ? 's' : '');
@@ -9691,6 +10226,8 @@ sessionState = {
       case 'promptStart':
         setProcessing(true);
         isForceCancelled = false;
+        cancelProvisionalSummaryPromote();
+        resetClaudeCrewState();
         // Remove orphaned assistant elements from slash command responses
         // (e.g. /effort, /model) that were streamed to DOM but never committed
         // to chatHistory. Without this, allAssistant.length > chatHistory
@@ -9724,6 +10261,7 @@ sessionState = {
 
       case 'promptEnd':
       vscode.postMessage({ type: 'debugLog', message: '[WV-PROMPTEND] promptEnd received. chatHistoryLen=' + chatHistory.length + ' currentAssistantTextLen=' + currentAssistantText.length + ' hasCurrentAssistantEl=' + !!currentAssistantEl });
+       cancelProvisionalSummaryPromote();
        // Compaction: clear when we already buffered a completion notice.
        // Claude ACP often finishes /compact with only usage_update + end_turn
        // (no "Compacting completed." text) — treat that silent promptEnd as success.
@@ -9748,10 +10286,17 @@ sessionState = {
         for (var _tcId in toolCalls) {
           var _tcEl = toolCalls[_tcId];
           if (_tcEl) {
-            var _iconEl = _tcEl.querySelector('.tc-icon');
+            var _iconEl = _tcEl.querySelector(':scope > .tc-icon') || _tcEl.querySelector('.tc-icon');
             if (_iconEl && (_iconEl.className.indexOf('running') >= 0 || _iconEl.className.indexOf('pending') >= 0)) {
               _iconEl.className = 'tc-icon completed';
               _iconEl.textContent = getStatusIcon('completed');
+            }
+            // Crew stages: Claude/Codex kept these spinning during the turn
+            // (tool_call "completed" only meant spawned). Flip them now.
+            var _stages = _tcEl.querySelectorAll('.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending');
+            for (var _si = 0; _si < _stages.length; _si++) {
+              _stages[_si].className = 'tc-stage-icon completed';
+              _stages[_si].textContent = getStatusIcon('completed');
             }
           }
         }
@@ -9801,12 +10346,18 @@ sessionState = {
           currentToolsListEl = null;
           currentToolsCountEl = null;
           currentToolCount = 0;
+          resetClaudeCrewState();
           currentThoughtEl = null;
          currentThoughtTextEl = null;
          currentThoughtText = '';
          thoughtDomBase = '';
          thoughtStartTime = null;
          thoughtEndTime = null;
+        // Close the turn so the next prompt (or Claude between-turn noise)
+        // cannot append into this fold via placeSummaryAssistant.
+        currentTurnEl = null;
+        currentAssistantEl = null;
+        currentAssistantText = '';
         // Auto-send next queued message (if any) after the turn completes.
         // Uses a microtask delay so the UI fully settles before the next
         // turn starts.
@@ -10663,6 +11214,11 @@ sessionState = {
         }
         break;
       }
+      // After promptEnd the turn is closed. Claude ACP may keep streaming
+      // between turns — ignore so assistants stay per-user-turn.
+      if (!isLoadingSession && !isProcessing && !isCompacting) {
+        break;
+      }
       // Detect auto-compaction: if the agent sends "*Context compacted*" text
       // without a preceding contextCompaction tool_call, treat it as compaction.
       // Also recognize Kiro CLI "Conversation compacted" notices and Claude's
@@ -10816,17 +11372,24 @@ sessionState = {
       }
 
       case 'user_message_chunk': {
-        // Only the session/load replay path emits this; live prompts
-        // never echo the user's message. Use it to break apart historical
-        // turns: finalize any pending assistant turn first, then append
-        // the historical user message.
+        // Session/load replay uses UMC to reconstruct user turns.
+        // Live Claude ACP also emits UMC (prompt echo + <task-notification>
+        // subagent results). Those must NOT finalize the live turn or coalesce
+        // into the user bubble — the webview already added the user message
+        // locally, and task-notifications would mash all assistants into one fold.
         const content = update.content;
-        // Debug: log raw chunk
         if (content && content.type === 'text' && typeof content.text === 'string') {
           var _dbgChunk = content.text.length > 150 ? content.text.substring(0, 150) + '...' : content.text;
           vscode.postMessage({ type: 'debugLog', message: 'UMC chunk: len=' + content.text.length + ' isLoading=' + isLoadingSession + ' text="' + _dbgChunk + '"' });
         }
+        if (!isLoadingSession) {
+          break;
+        }
         if (content && content.type === 'text' && typeof content.text === 'string') {
+          // Subagent task-notification blobs are not user turns.
+          if (/<task-notification[\\s>]/i.test(content.text)) {
+            break;
+          }
           // Strip injected context blocks from replayed user messages.
           // Uses the shared cleanUserMessage helper defined above.
          finalizeCurrentAssistantTurn();
@@ -11009,29 +11572,32 @@ sessionState = {
           break; // Suppress — taskResult is redundant with main agent's summary
         }
       }
+      // Cursor stub tool_call before cursor/task — drop; rich UI comes from cursor/task.
+      if (isCursorTaskPlaceholder(update.title, update.rawInput)) {
+        break;
+      }
       // Non-compaction tool — agent is working again; clear compact status.
       endCompactingOnAgentResume();
       const tc = update;
+      var _parentId = update._meta && update._meta.claudeCode && update._meta.claudeCode.parentToolUseId;
+      var _claudeToolName = update._meta && update._meta.claudeCode && update._meta.claudeCode.toolName;
+      // Claude Agent tool often arrives as title "Task" + toolName "Agent".
+      var _tcTitleForUi = tc.title || 'Tool Call';
+      if (_claudeToolName === 'Agent' && (!_tcTitleForUi || _tcTitleForUi === 'Tool Call')) {
+        _tcTitleForUi = 'Task';
+      }
       addToolCall(
         tc.toolCallId || 'unknown',
-        tc.title || 'Tool Call',
+        _tcTitleForUi,
          (tc.status === 'in_progress' ? 'running' : tc.status) || 'pending',
         tc.content,
          tc.rawInput && tc.rawInput.taskResult
            ? stripTaskResult(tc.rawInput)
            : tc.rawInput,
         tc.kind,
+        tc.locations,
+        _parentId || null,
       );
-      // Claude ACP: nested subagent tools carry parentToolUseId in _meta.
-      var _parentId = update._meta && update._meta.claudeCode && update._meta.claudeCode.parentToolUseId;
-      if (_parentId && tc.toolCallId && toolCalls[tc.toolCallId]) {
-        var _childEl = toolCalls[tc.toolCallId];
-        _childEl.classList.add('tc-subagent');
-        _childEl.setAttribute('data-parent-tool', String(_parentId));
-        if (compactMode) {
-          forceCollapseTurnFolds();
-        }
-      }
       break;
      }
 
@@ -11533,8 +12099,61 @@ sessionState = {
   }
 
   /**
-   * Cursor cursor/task — show a subagent task row (explore/shell/…).
-   * Always lands in the turn tools fold; Collapse keeps details hidden.
+   * Cursor often spawns N explore agents, then N more with NEW agentIds whose
+   * only job is "Get … findings" / "provide your complete summary". Treat those
+   * as updates to the existing crew stages, not extra subagents.
+   */
+  function isCursorTaskFollowUp(params) {
+    var d = String((params && params.description) || '').toLowerCase();
+    var p = String((params && params.prompt) || '').toLowerCase();
+    if (/provide your complete/.test(p)) return true;
+    if (/complete final summary/.test(p) || /final summary now/.test(p)) return true;
+    if (/\bget\b/.test(d) && /finding/.test(d)) return true;
+    if (/^get\s/.test(d)) return true;
+    return false;
+  }
+
+  function scoreCursorStageMatch(stageName, text) {
+    var name = String(stageName || '').toLowerCase();
+    var t = String(text || '').toLowerCase();
+    var score = 0;
+    var keywords = ['architecture', 'flow', 'build', 'test', 'module', 'config', 'deploy', 'session', 'runtime', 'protocol'];
+    for (var i = 0; i < keywords.length; i++) {
+      var kw = keywords[i];
+      if (t.indexOf(kw) >= 0 && name.indexOf(kw) >= 0) score += 2;
+    }
+    var words = name.split(/[^a-z0-9]+/);
+    for (var j = 0; j < words.length; j++) {
+      if (words[j].length > 3 && t.indexOf(words[j]) >= 0) score += 1;
+    }
+    return score;
+  }
+
+  function findCursorFollowUpStage(params) {
+    var crew = findCurrentTurnSubagentCrew();
+    if (!crew) return null;
+    var stages = crew.querySelectorAll(':scope > .tc-stages > .tc-stage');
+    if (!stages.length) return null;
+    var text = String((params && params.description) || '') + ' ' + String((params && params.prompt) || '');
+    var best = null;
+    var bestScore = 0;
+    for (var i = 0; i < stages.length; i++) {
+      var sc = scoreCursorStageMatch(stages[i].getAttribute('data-stage-name') || '', text);
+      if (sc > bestScore) {
+        bestScore = sc;
+        best = stages[i];
+      }
+    }
+    if (best && bestScore > 0) return best;
+    var idx = typeof crew._cursorFollowUpIdx === 'number' ? crew._cursorFollowUpIdx : 0;
+    crew._cursorFollowUpIdx = idx + 1;
+    return stages[idx % stages.length];
+  }
+
+  /**
+   * Cursor cursor/task — same Kiro-style crew UI as Claude Task / Codex spawnAgent.
+   * Dedupes by toolCallId / agentId, and maps "Get findings" follow-ups onto
+   * existing explore stages (Cursor often uses new agentIds for those).
    */
   function handleCursorTask(params) {
     if (!params || typeof params !== 'object') return;
@@ -11542,28 +12161,62 @@ sessionState = {
     var typeLabel = typeof params.subagentType === 'string'
       ? params.subagentType
       : (params.subagentType && params.subagentType.custom) || 'subagent';
-    var title = params.description || ('Subagent: ' + typeLabel);
-    var status = typeof params.durationMs === 'number' ? 'completed' : 'running';
-    // Prefer a short title when Collapse is on — full prompt stays in rawInput tooltip.
-    var displayTitle = title;
-    if (compactMode && typeof title === 'string' && title.length > 60) {
-      displayTitle = title.substring(0, 57) + '...';
+    if (typeLabel && typeof typeLabel === 'object') typeLabel = 'subagent';
+    var status = 'running';
+    // durationMs on the first cursor/task is often just spawn latency, not
+    // "subagent finished". Only mark completed when the turn is already done.
+    if (typeof params.durationMs === 'number' && !isProcessing) {
+      status = 'completed';
     }
-    addToolCall(id, displayTitle, status, null, {
+    var raw = {
       prompt: params.prompt || '',
-      description: params.description || '',
-      subagentType: typeLabel,
+      description: params.description || ('Subagent: ' + typeLabel),
+      subagent_type: typeLabel,
       agentId: params.agentId || '',
       model: params.model || '',
       durationMs: params.durationMs,
-    }, 'other');
-    var el = toolCalls[id];
-    if (el) {
-      el.classList.add('tc-subagent');
-      if (params.agentId) el.setAttribute('data-session-id', String(params.agentId));
+    };
+    var idAttr = String(id).replace(/"/g, '');
+
+    function bindStage(stage, keepName) {
+      if (!stage) return;
+      stage.setAttribute('data-tool-call-id', idAttr);
+      if (params.agentId) stage.setAttribute('data-agent-id', String(params.agentId));
+      var crew = stage.closest('.tool-call-inline.tc-subagent');
+      if (crew) toolCalls[id] = crew;
+      updateStageFromRawInput(stage, raw, 'Task', keepName ? { keepName: true } : null);
+      setSubagentStageStatus(id, status);
     }
-    if (compactMode) {
-      forceCollapseTurnFolds();
+
+    var stageByTc = document.querySelector('.tc-stage[data-tool-call-id="' + idAttr + '"]');
+    if (stageByTc) {
+      bindStage(stageByTc, false);
+      return;
+    }
+    if (params.agentId && currentTurnEl) {
+      var agentAttr = String(params.agentId).replace(/"/g, '');
+      var stageByAgent = currentTurnEl.querySelector('.tc-stage[data-agent-id="' + agentAttr + '"]');
+      if (stageByAgent) {
+        bindStage(stageByAgent, true);
+        return;
+      }
+    }
+    // Follow-up "Get findings" with a fresh agentId → update matched explore stage.
+    if (isCursorTaskFollowUp(params) && findCurrentTurnSubagentCrew()) {
+      var stageFu = findCursorFollowUpStage(params);
+      if (stageFu) {
+        bindStage(stageFu, true);
+        return;
+      }
+    }
+    addToolCall(id, 'Task', status, null, raw, 'other');
+    var stage = document.querySelector('.tc-stage[data-tool-call-id="' + idAttr + '"]');
+    if (stage && params.agentId) stage.setAttribute('data-agent-id', String(params.agentId));
+    var el = toolCalls[id];
+    if (el && params.agentId) el.setAttribute('data-session-id', String(params.agentId));
+    if (compactMode && currentTurnEl) {
+      ensureTurnFoldStructure(currentTurnEl, true);
+      refreshCurrentTurnSummary();
     }
   }
 
