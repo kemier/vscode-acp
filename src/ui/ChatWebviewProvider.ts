@@ -10001,6 +10001,10 @@ sessionState = {
      * Clear the chat and show compaction notices in the intended order:
      * 1) Warning: Heads up…  2) *Context compacted…*
      * Codex emits the notice before the warning on the wire; we buffer both.
+     *
+     * Use system messages (not assistant turns): committing two assistants in
+     * one turn lets placeSummaryAssistant demote the Heads-up into the
+     * collapsed fold, so it vanishes after the notice is painted.
      */
     function flushCompactionMessages() {
       if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
@@ -10028,23 +10032,9 @@ sessionState = {
       isCompacting = false;
       if (statusEl) statusEl.innerHTML = '';
       hideEmpty();
-      function commitCompactionText(text) {
-        if (!text || !String(text).trim()) return;
-        currentAssistantText = text;
-        if (!currentTurnEl) {
-          currentTurnEl = document.createElement('div');
-          currentTurnEl.className = 'turn';
-          messagesEl.appendChild(currentTurnEl);
-        }
-        currentAssistantEl = document.createElement('div');
-        currentAssistantEl.className = 'message assistant';
-        placeAssistantInTurn(currentAssistantEl);
-        currentAssistantEl.textContent = text;
-        commitCurrentTextSegment();
-      }
-      // Warning first (Heads up…), then the italic compacted notice.
-      commitCompactionText(warning);
-      commitCompactionText(notice);
+      // System messages sit outside turn folds — never tucked into Collapse.
+      if (warning && String(warning).trim()) addMessage('system', warning.trim());
+      if (notice && String(notice).trim()) addMessage('system', notice.trim());
     }
 
     function scheduleCompactionFlush() {
