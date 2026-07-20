@@ -1039,13 +1039,19 @@ export class SessionManager extends EventEmitter {
       throw new Error(`No connection for session ${sessionId}`);
     }
     const name = commandName.replace(/^\//, '');
-    // Omit empty args — some TuiCommand unit variants reject `args: {}`.
-    const command: { command: string; args?: Record<string, string> } = { command: name };
-    if (args && Object.keys(args).length > 0) {
-      command.args = args;
-    }
+    // Kiro's TuiCommand is an adjacently-tagged enum (`tag=command`,
+    // `content=args`). The `args` field must be present — even `{}` —
+    // otherwise kiro-cli 2.11+ can fail the request and exit the ACP
+    // process (exit 0, "ACP connection closed"). See kirodotdev/Kiro#5763
+    // and Kantoku's executeSlashCommand which always sends args.
+    const command = {
+      command: name,
+      args: args && Object.keys(args).length > 0 ? args : {},
+    };
     const timeoutMs = name === 'compact' ? 180_000 : 30_000;
-    log(`executeKiroCommand: session=${sessionId}, command="${name}", timeoutMs=${timeoutMs}`);
+    log(
+      `executeKiroCommand: session=${sessionId}, command="${name}", timeoutMs=${timeoutMs}, payload=${JSON.stringify(command)}`,
+    );
     this.inFlightPromptSessions.add(sessionId);
     let timer: ReturnType<typeof setTimeout> | undefined;
     try {

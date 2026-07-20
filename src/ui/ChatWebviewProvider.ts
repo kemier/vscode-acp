@@ -2552,10 +2552,18 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         this.postMessage({ type: 'kiroCompactDone', message: msg || undefined });
       }
     } catch (e: any) {
+      const raw = String(e?.message || e || 'Command failed');
+      // kiro-cli 2.11 can exit the ACP process on a bad execute payload;
+      // surface a clearer hint than the generic "ACP connection closed".
+      const message =
+        name === 'compact' && /connection closed|exited/i.test(raw)
+          ? 'Kiro exited while running /compact (ACP connection closed). ' +
+            'Reconnect to Kiro CLI and try again — if it keeps happening, check ACP Traffic for the execute payload.'
+          : raw;
       if (name === 'compact') {
-        this.postMessage({ type: 'kiroCompactDone', error: true, message: e?.message });
+        this.postMessage({ type: 'kiroCompactDone', error: true, message });
       }
-      throw e;
+      throw new Error(message);
     }
   }
 
