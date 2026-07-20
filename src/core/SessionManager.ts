@@ -1055,7 +1055,7 @@ export class SessionManager extends EventEmitter {
       command: name,
       args: args && Object.keys(args).length > 0 ? args : {},
     };
-    const timeoutMs = name === 'compact' ? 180_000 : 30_000;
+    const timeoutMs = name === 'compact' ? 600_000 : 30_000;
     log(
       `executeKiroCommand: session=${sessionId}, command="${name}", timeoutMs=${timeoutMs}, payload=${JSON.stringify(command)}`,
     );

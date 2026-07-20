@@ -6589,7 +6589,7 @@ var end = displayText.length;
           error: true,
           message: 'Kiro /compact timed out waiting for a compaction notice. Conversation was left unchanged.',
         });
-      }, 180000);
+      }, 600000);
       vscode.postMessage({ type: 'executeKiroCommand', command: 'compact' });
     } else {
       // Codex/Claude resolve /compact (and aliases) as a prompt slash command.
@@ -6606,7 +6606,7 @@ var end = displayText.length;
         setProcessing(false);
         addMessage('system',
           'Timed out waiting for compaction to finish. Conversation was left unchanged.');
-      }, 180000);
+      }, 600000);
       vscode.postMessage({ type: 'sendPrompt', text: compactPrompt });
     }
     return true;
