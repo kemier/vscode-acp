@@ -6129,7 +6129,8 @@ var end = displayText.length;
          riItem = { ...riItem, status: 'failed' };
        }
        // Kiro crew stages: parent spawn is often already "completed" while
-       // stages were still running — coerce incomplete stages to failed.
+       // stages were still running. On webview crash restore, missing/running
+       // stage status → failed so spinners do not return.
        if (riItem && riItem.kind === 'toolCall' && riItem.rawInput &&
            Array.isArray(riItem.rawInput.stages) && riItem.rawInput.stages.length > 0) {
          var _rstStages = riItem.rawInput.stages.map(function(st) {
@@ -6139,6 +6140,7 @@ var end = displayText.length;
                ss === 'failed' || ss === 'error') {
              return st;
            }
+           // Explicit in-flight, or missing after crash → failed.
            return Object.assign({}, st, { status: 'failed' });
          });
          var _rstFailed = _rstStages.some(function(st) {
@@ -6188,7 +6190,9 @@ var end = displayText.length;
 
     // Render chat history using compact turn-based inline layout
     // (groups tool calls into collapsible containers instead of standalone cards)
+    foldInterruptedAssistantsOnPromote = true;
     var assistantItems = renderChatHistory();
+    foldInterruptedAssistantsOnPromote = false;
     if (assistantItems.length > 0) {
       vscode.postMessage({ type: 'debugLog', message: 'restoreState: sending renderMarkdown for ' + assistantItems.length + ' assistant items' });
       vscode.postMessage({ type: 'renderMarkdown', items: assistantItems });
@@ -6867,6 +6871,10 @@ var end = displayText.length;
 
   // Compact mode toggle — collapse/expand all turn folds (thought + tools + reply)
  var compactMode = true; // default: compact (collapsed)
+ // When true, promoteFinalAssistantForTurn keeps interrupted-turn assistants
+ // inside the fold (webview crash restore). Session/load resume leaves this
+ // false so the final reply is promoted outside the collapse group.
+ var foldInterruptedAssistantsOnPromote = false;
  const compactToggleBtn = document.getElementById('compactToggle');
  if (messagesEl) messagesEl.classList.add('compact-mode');
  if (compactToggleBtn) {
@@ -7977,19 +7985,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         // inside the fold. ensureTurnFoldStructure used to treat unmarked
         // nodes as summary and park them outside; expand → rebuild → collapse
         // then left Codex mid-turn text visible in the panel.
-        // Exceptions:
-        // - placeSummaryAssistant on promptEnd (md-committed summary)
-        // - end-turn summary after tools go idle (Kiro): keep outside so
-        //   collapsing mid-stream still shows the reply in the main chat
+        // Exception: placeSummaryAssistant on promptEnd (md-committed) or when
+        // the user manually collapses during end-turn summary.
         if (isProcessing && !isLoadingSession &&
             !(a.classList.contains('assistant-summary') && a.classList.contains('md-committed'))) {
-          if (isLikelyFinalSummaryStreaming(turn) &&
-              (a === currentAssistantEl || a.classList.contains('assistant-summary'))) {
-            a.classList.add('assistant-summary');
-            a.classList.remove('assistant-interim');
-            summaryAssistants.push(a);
-            return;
-          }
           a.classList.add('assistant-interim');
           a.classList.remove('assistant-summary');
           interimAssistants.push(a);
@@ -8106,22 +8105,16 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         turn.appendChild(a);
       });
 
-      // Live streaming bubble placement while processing:
-      // - Mid-turn (tools running / no tools yet) → keep inside the fold
-      // - End-turn summary (tools idle) → keep outside as assistant-summary
+      // Live streaming bubble stays inside the fold while processing.
+      // Manual collapse during end-turn summary may have lifted it; only
+      // re-fold when tools are still clearly mid-turn.
       if (isProcessing && !isLoadingSession && currentAssistantEl &&
           turn.contains(currentAssistantEl) &&
-          !currentAssistantEl.classList.contains('md-committed')) {
-        if (isLikelyFinalSummaryStreaming(turn)) {
-          currentAssistantEl.classList.add('assistant-summary');
-          currentAssistantEl.classList.remove('assistant-interim');
-          if (body.nextSibling) turn.insertBefore(currentAssistantEl, body.nextSibling);
-          turn.appendChild(currentAssistantEl);
-        } else {
-          currentAssistantEl.classList.add('assistant-interim');
-          currentAssistantEl.classList.remove('assistant-summary');
-          body.appendChild(currentAssistantEl);
-        }
+          !currentAssistantEl.classList.contains('md-committed') &&
+          !currentAssistantEl.classList.contains('assistant-summary')) {
+        currentAssistantEl.classList.add('assistant-interim');
+        currentAssistantEl.classList.remove('assistant-summary');
+        body.appendChild(currentAssistantEl);
       }
 
       // Default shut. Honor sticky expand only while a live turn is streaming
@@ -8282,17 +8275,15 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
 
     /**
-     * True when the live assistant bubble is the end-turn summary: the turn
-     * already ran tools and no parent tool spinners remain. Stage icons may
-     * still spin (Kiro/Claude crew) while the main agent streams the reply —
-     * those must not hide the summary when Collapse is on.
+     * True when the live bubble is likely the end-turn summary (tools exist,
+     * parent tool rows idle). Used only for manual collapse-promote — auto
+     * streaming always stays folded until promptEnd.
      */
     function isLikelyFinalSummaryStreaming(turn) {
       var t = turn || currentTurnEl;
       if (!isProcessing || isLoadingSession || !currentAssistantEl) return false;
       if (!t) return false;
       if (!turnElHasAnyTools(t)) return false;
-      // Parent tool rows only — ignore .tc-stage-icon spinners.
       if (t.querySelector(
         '.tool-call-inline > .tc-icon.running, .tool-call-inline > .tc-icon.in_progress, .tool-call-inline > .tc-icon.pending'
       )) {
@@ -8302,17 +8293,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
 
     function scheduleProvisionalSummaryPromote() {
+      // Disabled for auto streaming — promoting when parent tools go idle
+      // leaked Kiro replies into the main chat while stages still ran.
+      // Manual collapse still lifts via attachTurnSummaryClick; promptEnd
+      // lifts via placeSummaryAssistant.
       cancelProvisionalSummaryPromote();
-      if (!isProcessing || isLoadingSession || !compactMode) return;
-      if (!isLikelyFinalSummaryStreaming(currentTurnEl)) return;
-      // Short debounce so a brief idle gap between tools does not flash the
-      // mid-turn line outside; Kiro end-turn summaries typically stream for
-      // longer than this once tools are done.
-      provisionalSummaryTimer = setTimeout(function() {
-        provisionalSummaryTimer = null;
-        if (!isLikelyFinalSummaryStreaming(currentTurnEl) || !currentAssistantEl) return;
-        placeSummaryAssistant(currentAssistantEl);
-      }, 350);
     }
 
     /** After history restore: lift the last assistant out of the fold as the reply. */
@@ -8321,10 +8306,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       var assistants = Array.prototype.slice.call(turn.querySelectorAll('.message.assistant'));
       if (!assistants.length) return;
       var body = getTurnFoldBody(turn) || ensureTurnFoldStructure(turn, true, true);
-      // Interrupted turns (failed/running crew after reload) — keep every
-      // assistant inside the fold so mid-turn / partial summary does not sit
-      // in the main chat before the user resumes.
-      if (turnLooksInterrupted(turn)) {
+      // Webview crash restore: keep interrupted-turn text inside the fold so it
+      // does not sit in the main chat before the user resumes. Session/load
+      // resume clears foldInterruptedAssistantsOnPromote so the final reply
+      // is promoted outside instead of buried at the bottom of the group.
+      if (foldInterruptedAssistantsOnPromote && turnLooksInterrupted(turn)) {
         assistants.forEach(function(a) {
           a.classList.add('assistant-interim');
           a.classList.remove('assistant-summary');
@@ -8565,15 +8551,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
 
     function placeAssistantInTurn(assistantEl) {
-      // Compact: mid-turn chatter stays inside the fold. Once tools are idle
-      // the live bubble is the end-turn summary — put it outside so Collapse
-      // still shows the streaming reply (Kiro).
+      // Compact: keep the live bubble inside the fold while streaming.
+      // promptEnd / manual collapse during end-turn summary lift it outside.
       if (compactMode) {
-        if (isLikelyFinalSummaryStreaming(currentTurnEl)) {
-          placeSummaryAssistant(assistantEl);
-        } else {
-          moveAssistantIntoFold(assistantEl);
-        }
+        moveAssistantIntoFold(assistantEl);
         refreshCurrentTurnSummary();
         return;
       }
@@ -9093,6 +9074,14 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     else if (typeof rawInput.file_path === 'string' && rawInput.file_path) {
       result = rawInput.file_path;
     }
+    // Kiro "operation" payloads — never dump the whole JSON into the title.
+    else if (typeof rawInput.operation === 'string' && rawInput.operation) {
+      result = rawInput.operation;
+    }
+    else if (rawInput.operation && typeof rawInput.operation === 'object') {
+      result = rawInput.operation.type || rawInput.operation.name ||
+        rawInput.operation.kind || 'operation';
+    }
     // Generic: pretty-print as JSON (skip empty-object case already handled)
     else {
       try { result = JSON.stringify(rawInput, null, 2); } catch { result = String(rawInput); }
@@ -9525,6 +9514,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     * Kiro often marks the parent spawn tool completed while stages still run,
     * so parent status alone is not enough.
     */
+   /**
+    * After session/load: only fail stages that were explicitly still running.
+    * Missing status on a completed parent means a finished historical crew
+    * (agent history often omits per-stage status) — treat as completed so
+    * the final assistant is promoted outside the fold after resume.
+    */
    function failInterruptedSubagentStagesInHistory() {
      for (var i = 0; i < chatHistory.length; i++) {
        var item = chatHistory[i];
@@ -9534,19 +9529,27 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        if (!Array.isArray(item.rawInput.stages) || item.rawInput.stages.length === 0) continue;
        var stages = item.rawInput.stages.slice();
        var anyFailed = false;
+       var parentDone = item.status === 'completed';
        for (var s = 0; s < stages.length; s++) {
          var stage = stages[s];
          if (!stage || typeof stage !== 'object') continue;
          var st = stage.status;
          if (st === 'completed' || st === 'done' || st === 'success' || st === 'terminated') continue;
          if (st === 'failed' || st === 'error') { anyFailed = true; continue; }
-         // running / pending / missing — interrupted by reload or crash.
-         stages[s] = Object.assign({}, stage, { status: 'failed' });
-         anyFailed = true;
+         if (st === 'running' || st === 'in_progress' || st === 'pending' || st === 'working') {
+           stages[s] = Object.assign({}, stage, { status: 'failed' });
+           anyFailed = true;
+           continue;
+         }
+         // Missing status: completed parent → completed; otherwise failed.
+         stages[s] = Object.assign({}, stage, { status: parentDone ? 'completed' : 'failed' });
+         if (!parentDone) anyFailed = true;
        }
        if (anyFailed) {
          item.rawInput = Object.assign({}, item.rawInput, { stages: stages });
          item.status = 'failed';
+       } else {
+         item.rawInput = Object.assign({}, item.rawInput, { stages: stages });
        }
      }
    }
@@ -9835,7 +9838,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        currentToolsCountEl._kinds.push(toolKind || null);
        currentToolsCountEl._rawInputs.push(rawInput || null);
        currentToolsCountEl._locations.push(locations || null);
-       if (isSubagentToolCall(title, toolKind)) {
+       if (hasKiroStages || isSubagentToolCall(title, toolKind)) {
          currentToolsCountEl._hasSubagent = true;
          currentToolsCountEl._hasSpawnAgent = true;
        }
@@ -9846,7 +9849,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
 
      const el = document.createElement('div');
      el.className = 'tool-call-inline';
-     if (isSubagentToolCall(title, toolKind)) {
+     if (hasKiroStages || isSubagentToolCall(title, toolKind)) {
        el.className += ' tc-subagent';
      }
      el.id = 'tc-' + toolCallId;
@@ -9855,11 +9858,17 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      el._locations = locations || null;
      el._toolTitle = title || 'Tool Call';
       var displayTitle = title || 'Tool Call';
-      if (isSubagentToolCall(title, toolKind)) {
+      // Title itself may be a JSON operation blob from Kiro.
+      var titleTrim = String(displayTitle).trim();
+      if (titleTrim.charAt(0) === '{' || titleTrim.charAt(0) === '[') {
+        displayTitle = hasKiroStages ? 'spawned subagents' : 'operation';
+      }
+      // Any tool with stages[] is a crew card — even if the title is an opaque
+      // Kiro "operation" blob rather than "Spawning agent crew".
+      if (hasKiroStages || isSubagentToolCall(title, toolKind)) {
         var spawnN = getSubagentSpawnCount(title, rawInput);
-        if (isSubagentSpawnTitle(title) && spawnN > 0) {
+        if ((hasKiroStages || isSubagentSpawnTitle(title)) && spawnN > 0) {
           var taskDesc = (rawInput && (rawInput.task || rawInput.prompt || rawInput.description)) || '';
-          // Prefer Kiro-style "spawned N subagents" when stages define the crew.
           if (hasKiroStages) {
             displayTitle = 'spawned ' + spawnN + ' subagent' + (spawnN > 1 ? 's' : '');
           } else if (typeof taskDesc === 'string' && taskDesc.length > 0) {
@@ -9871,8 +9880,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       } else {
         var detailHint = formatRawInput(rawInput) || formatLocations(locations);
         if (detailHint) {
-          var firstLine = detailHint.split('\\n')[0];
-          if (firstLine && firstLine !== displayTitle) {
+          var firstLine = detailHint.split('\\n')[0].trim();
+          // Never replace the tool title with a JSON blob (Kiro operation payloads).
+          if (firstLine && firstLine !== displayTitle &&
+              firstLine.charAt(0) !== '{' && firstLine.charAt(0) !== '[') {
             displayTitle = firstLine.length > 80 ? firstLine.substring(0, 77) + '...' : firstLine;
           }
         }
