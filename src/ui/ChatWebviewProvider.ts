@@ -6209,9 +6209,13 @@ var end = displayText.length;
 
     // Render chat history using compact turn-based inline layout
     // (groups tool calls into collapsible containers instead of standalone cards)
+    applyInterruptNoticesFromHistory();
     foldInterruptedAssistantsOnPromote = true;
     var assistantItems = renderChatHistory();
     foldInterruptedAssistantsOnPromote = false;
+    failRunningSubagentStagesInDom();
+    forceCollapseTurnFolds();
+    failRunningSubagentStagesInDom();
     if (assistantItems.length > 0) {
       vscode.postMessage({ type: 'debugLog', message: 'restoreState: sending renderMarkdown for ' + assistantItems.length + ' assistant items' });
       vscode.postMessage({ type: 'renderMarkdown', items: assistantItems });
@@ -7058,21 +7062,37 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     // Force any interrupted tool calls to 'failed' status.
      // After session replay, any tool calls still in 'in_progress'/'running'/'pending'
      // state will never receive a completion update — they were interrupted.
+     var _failedAnyTool = false;
      for (let i = 0; i < chatHistory.length; i++) {
        const item = chatHistory[i];
        if (item && item.kind === 'toolCall' &&
            (item.status === 'in_progress' || item.status === 'running' || item.status === 'pending')) {
          item.status = 'failed';
+         _failedAnyTool = true;
          const el = toolCalls[item.toolCallId] || document.getElementById('tc-' + item.toolCallId);
          if (el) {
            const iconEl = el.querySelector('.tc-icon');
            if (iconEl) { iconEl.className = 'tc-icon failed'; iconEl.textContent = getStatusIcon('failed'); }
            const badge = el.querySelector('.status-badge');
            if (badge) { badge.className = 'status-badge failed'; badge.textContent = 'failed'; }
+           // Codex/Claude crew parents synthesized as running during load.
+           if (el.classList.contains('tc-subagent')) {
+             var _stSpin = el.querySelectorAll('.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending');
+             for (var _ssi = 0; _ssi < _stSpin.length; _ssi++) {
+               var _stEl = _stSpin[_ssi].closest('.tc-stage');
+               if (_stEl) applyStageIcon(_stEl, 'failed');
+             }
+             markSubagentCrewStale(el);
+           }
          }
        }
      }
      failInterruptedSubagentStagesInHistory();
+     applyInterruptNoticesFromHistory();
+     // Incomplete tools on resume ⇒ interrupted turn (Codex spawnAgent completed
+     // but wait still running, Claude Agent pending, etc.). Keeps the latest
+     // assistant inside the fold instead of promoting to main chat.
+     if (_failedAnyTool) markSessionInterrupted();
      saveState();
      // Commit any trailing assistant turn captured during the replay.
      finalizeCurrentAssistantTurn();
@@ -7090,8 +7110,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     foldInterruptedAssistantsOnPromote = true;
     var assistantItems = renderChatHistory();
     foldInterruptedAssistantsOnPromote = false;
+    // Codex/Claude: crew stages can still render as running after rebuild —
+    // force any leftover spinners to failed and mark crews stale.
+    failRunningSubagentStagesInDom();
     // renderChatHistory can leave folds open after promote — force shut.
     forceCollapseTurnFolds();
+    failRunningSubagentStagesInDom();
     if (loadOverlay) loadOverlay.classList.remove('visible');
     if (inputArea) inputArea.classList.remove('disabled');
     updateSendButton();
@@ -8345,8 +8369,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         assistants.forEach(function(a) {
           a.classList.add('assistant-interim');
           a.classList.remove('assistant-summary');
-          if (body) body.appendChild(a);
         });
+        // Do NOT body.appendChild here — that dumps every assistant at the
+        // fold bottom and breaks thought → tools → reply order on Kiro
+        // interrupted resume. Mark interim, then scoop strays in document order.
+        if (body) orderCompactFoldContents(body);
         if (turn) turn.setAttribute('data-turn-interrupted', '1');
         return;
       }
@@ -8358,9 +8385,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         } else {
           a.classList.add('assistant-interim');
           a.classList.remove('assistant-summary');
-          if (body) body.appendChild(a);
         }
       });
+      // Re-home interim segments in document order (avoid append-to-bottom).
+      if (body) orderCompactFoldContents(body);
     }
 
     function sessionMarkedInterrupted() {
@@ -8380,6 +8408,40 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       if (!sid || !interruptedSessionIds[sid]) return;
       delete interruptedSessionIds[sid];
       saveState();
+    }
+
+    /** Claude (and some adapters) record cancel as a user history line. */
+    function isSessionInterruptNotice(text) {
+      var t = String(text || '').trim();
+      if (!t) return false;
+      if (/^\[Request interrupted by user\]/i.test(t)) return true;
+      if (/^Request interrupted by user\.?$/i.test(t)) return true;
+      if (/^—?\s*Conversation interrupted\s*—?$/i.test(t)) return true;
+      return false;
+    }
+
+    /** Scan chatHistory for Claude interrupt notices; mark session + prior assistant. */
+    function applyInterruptNoticesFromHistory() {
+      var sawInterrupt = false;
+      for (var i = 0; i < chatHistory.length; i++) {
+        var item = chatHistory[i];
+        if (!item || item.kind !== 'message' || item.role !== 'user') continue;
+        if (!isSessionInterruptNotice(item.text)) continue;
+        sawInterrupt = true;
+        for (var j = i - 1; j >= 0; j--) {
+          var prev = chatHistory[j];
+          if (!prev) continue;
+          if (prev.kind === 'message' && prev.role === 'assistant') {
+            prev.interrupted = true;
+            break;
+          }
+          if (prev.kind === 'message' && prev.role === 'user' && !isSessionInterruptNotice(prev.text)) {
+            break;
+          }
+        }
+      }
+      if (sawInterrupt) markSessionInterrupted();
+      return sawInterrupt;
     }
 
     /** True when a restored/live turn still has failed or unfinished tools. */
@@ -9683,14 +9745,18 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      );
      for (var p = 0; p < parents.length; p++) {
        var crew = parents[p].parentElement;
-       var still = crew && crew.querySelector(
+       // Always fail spinning parents on resume — Codex/Claude leave both the
+       // parent and last stage spinning after an interrupted session load.
+       var spinKids2 = crew ? crew.querySelectorAll(
          '.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending'
-       );
-       if (!still) {
-         parents[p].className = 'tc-icon failed';
-         parents[p].textContent = getStatusIcon('failed');
-         markSubagentCrewStale(crew);
+       ) : [];
+       for (var ck = 0; ck < spinKids2.length; ck++) {
+         var st2 = spinKids2[ck].closest('.tc-stage');
+         if (st2) applyStageIcon(st2, 'failed');
        }
+       parents[p].className = 'tc-icon failed';
+       parents[p].textContent = getStatusIcon('failed');
+       if (crew) markSubagentCrewStale(crew);
      }
      markFailedCrewsStale(document);
      for (var h = 0; h < chatHistory.length; h++) {
@@ -9800,13 +9866,24 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    function addOrExtendSubagentCrew(toolCallId, title, status, rawInput, toolKind, locations) {
      hideEmpty();
      var stagePrompt = crewStageFullPrompt(rawInput);
+     // On resume/load, interrupted Claude Agent tools arrive as pending/failed
+     // without per-stage status. Default new stages to failed (not spinning)
+     // unless we are in a live mid-turn stream.
+     var liveStream = isProcessing && !isLoadingSession;
+     var stageInitStatus = 'running';
+     if (status === 'failed' || status === 'error') stageInitStatus = 'failed';
+     else if (status === 'completed' && !liveStream) stageInitStatus = 'completed';
+     else if (!liveStream && (status === 'pending' || status === 'in_progress' || status === 'running' || !status)) {
+       stageInitStatus = 'failed';
+     }
      var stageMeta = (rawInput && typeof rawInput === 'object') ? {
        description: rawInput.description || '',
        role: rawInput.subagent_type || rawInput.role || 'agent',
        mode: rawInput.mode,
        depends_on: rawInput.depends_on,
        prompt: typeof rawInput.prompt === 'string' ? rawInput.prompt : '',
-     } : { role: 'agent' };
+       status: stageInitStatus,
+     } : { role: 'agent', status: stageInitStatus };
      var existing = findCurrentTurnSubagentCrew();
      if (existing) {
        var stagesWrap = existing.querySelector(':scope > .tc-stages');
@@ -9820,11 +9897,20 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        stagesWrap.appendChild(createStageElement(stageName, toolCallId, String(stagePrompt || ''), stageMeta));
        toolCalls[toolCallId] = existing;
        syncCrewParentRawInput(existing);
-       // New stage is running — ensure parent spinner is not left checked.
        var parentIcon = existing.querySelector(':scope > .tc-icon');
        if (parentIcon) {
-         parentIcon.className = 'tc-icon running';
-         parentIcon.textContent = getStatusIcon('running');
+         if (liveStream && stageInitStatus === 'running') {
+           parentIcon.className = 'tc-icon running';
+           parentIcon.textContent = getStatusIcon('running');
+         } else if (stageInitStatus === 'failed' || stageInitStatus === 'error' ||
+                    existing.querySelector('.tc-stage-icon.error, .tc-stage-icon.failed')) {
+           parentIcon.className = 'tc-icon failed';
+           parentIcon.textContent = getStatusIcon('failed');
+           markSubagentCrewStale(existing);
+         } else if (!liveStream) {
+           parentIcon.className = 'tc-icon completed';
+           parentIcon.textContent = getStatusIcon('completed');
+         }
        }
        refreshSubagentCrewTitle(existing);
        autoScrollIfAtBottom();
@@ -9839,6 +9925,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          prompt_template: String(stagePrompt || ''),
          prompt: stageMeta.prompt || '',
          description: stageMeta.description || '',
+         status: stageInitStatus,
        }],
      });
      var spawnTitle = 'Task';
@@ -9846,8 +9933,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      if (isSubagentSpawnTitle(title) && !looksLikeClaudeAgentSpawn(title, null)) {
        spawnTitle = title;
      }
-     // Spawn ack often arrives as completed; stages stay spinning until promptEnd.
-     var parentStatus = (status === 'failed' || status === 'error') ? status : 'running';
+     // Live spawn ack often arrives completed while stages still run → parent
+     // stays running. Resume/interrupted → use failed/completed, never spin.
+     var parentStatus = 'running';
+     if (status === 'failed' || status === 'error' || stageInitStatus === 'failed') parentStatus = 'failed';
+     else if (!liveStream && status === 'completed') parentStatus = 'completed';
+     else if (!liveStream) parentStatus = 'failed';
      ensureTurnTools();
      currentToolCount++;
      if (currentToolsCountEl) {
@@ -9883,6 +9974,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      var stagesEl = el.querySelector('.tc-stages');
      stagesEl.appendChild(createStageElement(stageName, toolCallId, String(stagePrompt || ''), stageMeta));
      syncCrewParentRawInput(el);
+     if (parentStatus === 'failed' || parentStatus === 'error') markSubagentCrewStale(el);
      attachToolCallTooltip(el);
      if (currentToolsListEl) currentToolsListEl.appendChild(el);
      toolCalls[toolCallId] = el;
@@ -10013,7 +10105,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          if (!rowStageStatus) {
            if (status === 'failed' || status === 'error') rowStageStatus = 'failed';
            else if (isProcessing && !isLoadingSession) rowStageStatus = 'running';
-           else rowStageStatus = (status === 'completed') ? 'completed' : 'running';
+           else if (status === 'completed') rowStageStatus = 'completed';
+           // Resume/history: missing status means the stage never finished.
+           else rowStageStatus = 'failed';
          }
          var stageIcon = stageIconStatus(rowStageStatus);
          stagesHtml += '<div class="tc-stage" data-stage-name="' + escapeHtml(stageName) + '"' + stageToolIdAttr + '><span class="tc-stage-icon ' + stageIcon + '">' + getStatusIcon(stageIcon === 'error' ? 'error' : stageIcon) + '</span><span class="tc-stage-name">' + escapeHtml(stageName) + '</span>' +
@@ -10031,7 +10125,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           var tipStatus = stageIconStatus(st.status || (
             (isProcessing && !isLoadingSession) ? 'running'
               : ((status === 'failed' || status === 'error') ? 'failed'
-                : (status === 'completed' ? 'completed' : 'running'))
+                : (status === 'completed' ? 'completed' : 'failed'))
           ));
           attachStageTooltip(stageDivs[sti], Object.assign({}, st, {
             status: tipStatus === 'error' ? 'failed' : tipStatus,
@@ -10280,6 +10374,8 @@ function renderChatHistory() {
   // promoteFinalAssistant / structure rebuild can leave folds open after
   // session/load — force Collapse mode shut once the DOM is final.
   forceCollapseTurnFolds();
+  // Codex/Claude interrupted crews often still have running icons after rebuild.
+  failRunningSubagentStagesInDom();
   // Interrupted crews stay failed — ignore later list_update by name.
   markFailedCrewsStale(messagesEl);
    return assistantItems;
