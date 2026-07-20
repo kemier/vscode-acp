@@ -75,8 +75,10 @@ export class SessionHistoryStore {
    * for the agent are returned.
    */
   list(agentName: string, cwd?: string): PersistedSessionEntry[] {
+    // Empty-cwd entries (e.g. created by /rename before cwd was known) still
+    // match the current workspace so renames show up in the session tree.
     return this.entries
-      .filter((e) => e.agentName === agentName && (!cwd || e.cwd === cwd))
+      .filter((e) => e.agentName === agentName && (!cwd || !e.cwd || e.cwd === cwd))
       .sort((a, b) => (b.lastActiveAt || '').localeCompare(a.lastActiveAt || ''));
   }
 
@@ -223,16 +225,19 @@ export class SessionHistoryStore {
     }
     this.persist();
   }
-  /** User explicitly renamed a session via /rename. Sets userRenamed flag. */ userRename(
-    agentName: string,
-    sessionId: string,
-    title: string,
-  ): void {
+  /**
+   * User explicitly renamed a session via /rename. Sets userRenamed flag.
+   * When `cwd` is provided, fills it in on new or empty-cwd entries so the
+   * rename survives workspace-scoped `list()` filtering (Kiro tree merge).
+   */
+  userRename(agentName: string, sessionId: string, title: string, cwd?: string): void {
     let entry = this.get(agentName, sessionId);
     if (!entry) {
       const now = new Date().toISOString();
-      entry = { agentName, cwd: '', sessionId, createdAt: now, lastActiveAt: now };
+      entry = { agentName, cwd: cwd || '', sessionId, createdAt: now, lastActiveAt: now };
       this.entries.push(entry);
+    } else if (cwd && !entry.cwd) {
+      entry.cwd = cwd;
     }
     entry.title = title;
     entry.userRenamed = true;

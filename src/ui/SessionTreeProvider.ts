@@ -727,7 +727,12 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<AgentNode | 
     agentName: string,
     activeId: string | null,
   ): SessionTreeItem {
-    const label = cleanSessionTitle(entry.title || '') || shortSessionId(entry.sessionId);
+    // Prefer client-side title (from /rename) over the on-disk Kiro title —
+    // same as buildAgentSessionItem. Needed when the history entry is not
+    // yet in localEntries (e.g. cwd mismatch) but get() still finds it.
+    const localEntry = this.historyStore?.get(agentName, entry.sessionId);
+    const title = localEntry?.title || entry.title || '';
+    const label = cleanSessionTitle(title) || shortSessionId(entry.sessionId);
     const description = relativeTime(entry.lastActiveAt);
     const tooltip = buildSessionTooltip(agentName, entry.sessionId, entry.cwd, entry.lastActiveAt, 'kiro');
     return new SessionTreeItem(

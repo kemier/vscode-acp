@@ -1332,7 +1332,8 @@ export class SessionManager extends EventEmitter {
     const session = this.sessions.get(sessionId);
     const agentName = session?.agentName;
     if (agentName) {
-      this.historyStore?.userRename(agentName, sessionId, title);
+      // Pass cwd so the history entry matches workspace-scoped tree list().
+      this.historyStore?.userRename(agentName, sessionId, title, session?.cwd);
     }
     if (session) {
       session.title = title;
