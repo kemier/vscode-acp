@@ -4071,68 +4071,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       gap: 6px;
       line-height: 1;
    }
-    /* Kiro _kiro.dev/compaction/status progress banner */
-    .compaction-banner {
-      display: none;
-      flex-direction: column;
-      gap: 6px;
-      padding: 8px var(--container-padding) 10px;
-      background: color-mix(in srgb, var(--vscode-progressBar-background) 12%, var(--vscode-editorWidget-background));
-      border-bottom: 1px solid var(--vscode-panel-border);
-      font-size: 0.85em;
-      color: var(--vscode-foreground);
-    }
-    .compaction-banner.visible { display: flex; }
-    .compaction-banner .compaction-row {
-      display: flex;
-      align-items: center;
-      gap: 8px;
-      min-width: 0;
-    }
-    .compaction-banner .compaction-label {
-      flex: 1;
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      opacity: 0.9;
-    }
-    .compaction-banner .compaction-pct {
-      flex-shrink: 0;
-      font-variant-numeric: tabular-nums;
-      opacity: 0.7;
-      font-size: 0.95em;
-    }
-    .compaction-banner .compaction-track {
-      height: 3px;
-      width: 100%;
-      border-radius: 2px;
-      background: var(--vscode-input-background);
-      overflow: hidden;
-    }
-    .compaction-banner .compaction-fill {
-      height: 100%;
-      width: 0%;
-      border-radius: 2px;
-      background: var(--vscode-progressBar-background);
-      transition: width 0.25s ease;
-    }
-    .compaction-banner .compaction-fill.indeterminate {
-      width: 35%;
-      transition: none;
-      animation: compactionIndeterminate 1.2s ease-in-out infinite;
-    }
-    @keyframes compactionIndeterminate {
-      0% { transform: translateX(-120%); }
-      100% { transform: translateX(320%); }
-    }
-    /* _kiro.dev/clear/status — same banner, warmer tint */
-    .compaction-banner.clearing {
-      background: color-mix(in srgb, var(--vscode-charts-orange, #e2a03a) 14%, var(--vscode-editorWidget-background));
-    }
-    .compaction-banner.clearing .compaction-fill {
-      background: var(--vscode-charts-orange, var(--vscode-progressBar-background));
-    }
     .session-banner .follow-toggle {
       display: inline-flex;
       align-items: center;
@@ -5348,16 +5286,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   </button>
   <span class="status" id="status"></span>
  </div>
- <div class="compaction-banner" id="compactionBanner" role="status" aria-live="polite" aria-hidden="true">
-   <div class="compaction-row">
-     <span class="spinner"></span>
-     <span class="compaction-label" id="compactionLabel">Compacting conversation...</span>
-     <span class="compaction-pct" id="compactionPct"></span>
-   </div>
-   <div class="compaction-track">
-     <div class="compaction-fill indeterminate" id="compactionFill"></div>
-   </div>
- </div>
 
  <div class="messages" id="messages">
    <div class="empty-state" id="emptyState">
@@ -5462,10 +5390,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     const attachBtn = document.getElementById('attachBtn');
     const imagePreviewStrip = document.getElementById('imagePreviewStrip');
     const statusEl = document.getElementById('status');
-    const compactionBannerEl = document.getElementById('compactionBanner');
-    const compactionLabelEl = document.getElementById('compactionLabel');
-    const compactionPctEl = document.getElementById('compactionPct');
-    const compactionFillEl = document.getElementById('compactionFill');
     const sessionBanner = document.getElementById('sessionBanner');
   const bannerAgent = document.getElementById('bannerAgent');
   const bannerCwd = document.getElementById('bannerCwd');
@@ -9653,17 +9577,13 @@ sessionState = {
        // the Stop/spinner state until we get a true compacted notice.
        if (isCompacting) {
          setProcessing(true);
-         if (compactionBannerEl && !compactionBannerEl.classList.contains('visible')) {
+         if (statusEl && !statusEl.innerHTML) {
            showCompactionProgress('Compacting conversation...', null);
-         } else if (statusEl && !statusEl.innerHTML) {
-           statusEl.innerHTML = '<span class="spinner"></span><span>Compacting conversation...</span>';
          }
        } else if (isClearing) {
          setProcessing(true);
-         if (compactionBannerEl && !compactionBannerEl.classList.contains('visible')) {
+         if (statusEl && !statusEl.innerHTML) {
            showStatusBanner('clear', 'Clearing conversation...', null);
-         } else if (statusEl && !statusEl.innerHTML) {
-           statusEl.innerHTML = '<span class="spinner"></span><span>Clearing conversation...</span>';
          }
        }
        // Show interrupted notice in status bar (right upper of input box)
@@ -10956,30 +10876,16 @@ sessionState = {
     return null;
   }
 
-  /** Show / update the Kiro status banner (compact or clear). */
+  /**
+   * Show compact/clear progress in the session-banner status only
+   * (title spinner). Do not add a second banner in the chat panel.
+   */
   function showStatusBanner(kind, message, percent) {
     var isClear = kind === 'clear';
     var fallback = isClear ? 'Clearing conversation...' : 'Compacting conversation...';
     var label = (message && String(message).trim()) || fallback;
-    if (compactionBannerEl) {
-      compactionBannerEl.classList.toggle('clearing', isClear);
-    }
-    if (compactionLabelEl) compactionLabelEl.textContent = label;
-    if (compactionPctEl) {
-      compactionPctEl.textContent = (typeof percent === 'number') ? (percent + '%') : '';
-    }
-    if (compactionFillEl) {
-      if (typeof percent === 'number') {
-        compactionFillEl.classList.remove('indeterminate');
-        compactionFillEl.style.width = Math.max(0, Math.min(100, percent)) + '%';
-      } else {
-        compactionFillEl.classList.add('indeterminate');
-        compactionFillEl.style.width = '';
-      }
-    }
-    if (compactionBannerEl) {
-      compactionBannerEl.classList.add('visible');
-      compactionBannerEl.setAttribute('aria-hidden', 'false');
+    if (typeof percent === 'number') {
+      label = label + ' (' + percent + '%)';
     }
     if (statusEl) {
       statusEl.innerHTML = '<span class="spinner"></span><span>' + escapeHtml(label) + '</span>';
@@ -10991,17 +10897,7 @@ sessionState = {
   }
 
   function hideCompactionProgress() {
-    if (compactionBannerEl) {
-      compactionBannerEl.classList.remove('visible');
-      compactionBannerEl.classList.remove('clearing');
-      compactionBannerEl.setAttribute('aria-hidden', 'true');
-    }
-    if (compactionFillEl) {
-      compactionFillEl.classList.add('indeterminate');
-      compactionFillEl.style.width = '';
-    }
-    if (compactionPctEl) compactionPctEl.textContent = '';
-    if (compactionLabelEl) compactionLabelEl.textContent = 'Compacting conversation...';
+    if (statusEl) statusEl.innerHTML = '';
   }
 
   /**
