@@ -347,7 +347,7 @@
             "remember"
           ],
           "default": "remember",
-          "description": "Automatically approve agent permission requests. 'ask' always prompts, 'allowAll' approves everything, 'remember' auto-approves commands you have approved before (persisted across sessions)."
+          "description": "Automatically approve agent permission requests. 'ask' always prompts, 'allowAll' approves everything, 'remember' auto-approves commands and tools you have approved before (persisted across sessions)."
         },
         "acp.approvedCommands": {
           "type": "array",
@@ -356,6 +356,14 @@
           },
           "default": [],
           "description": "List of normalized commands that have been approved by the user and will be auto-approved in 'remember' mode."
+        },
+        "acp.approvedTools": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Fingerprints of non-command tools (e.g. Kiro subagent crew) approved via allow_always / remember. Survives VS Code reload."
         },
         "acp.deniedCommands": {
           "type": "array",

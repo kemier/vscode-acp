@@ -15,6 +15,8 @@ import type { RequestPermissionRequest, RequestPermissionResponse } from '@agent
  *   across sessions). Uses longest-prefix-match: approving "gh" auto-approves
  *   "gh issue view 3715", "gh pr list", etc. A denylist takes precedence
  *   when its prefix is equally or more specific.
+ *   Non-command tools (e.g. Kiro "Spawning agent crew") are remembered by a
+ *   stable tool fingerprint when the user picks allow_always / Allow.
  */
 
 type CommandDecision = 'auto_approve' | 'auto_deny' | 'ask_user';
@@ -223,6 +225,9 @@ export class PermissionHandler {
     resolve: (response: RequestPermissionResponse) => void;
   }> = [];
   private isProcessingPermission = false;
+  /** Sync cache so back-to-back identical tool permissions (two subagents) hit
+   *  before vscode.ConfigurationTarget.Global finishes writing. */
+  private approvedToolsCache: Set<string> | null = null;
 
   /** Extract the command string from a tool call's rawInput. */
   private extractCommand(toolCall: any): string | undefined {
@@ -294,13 +299,89 @@ export class PermissionHandler {
     }
   }
 
+  /**
+   * Stable key for non-shell tool permissions (subagent crew, MCP tools, etc.).
+   * Same title+kind → same key so "two identical subagents" and post-reload
+   * re-spawns reuse an allow_always grant.
+   */
+  private extractToolFingerprint(params: RequestPermissionRequest): string | undefined {
+    const toolCall = params.toolCall as any;
+    if (!toolCall) {
+      return undefined;
+    }
+    const title = typeof toolCall.title === 'string' ? toolCall.title.trim().toLowerCase() : '';
+    const kind = typeof toolCall.kind === 'string' ? toolCall.kind.trim().toLowerCase() : '';
+    const raw = toolCall.rawInput && typeof toolCall.rawInput === 'object' ? toolCall.rawInput : null;
+    const toolName =
+      (raw && typeof raw._toolName === 'string' && raw._toolName) ||
+      (raw && typeof raw.toolName === 'string' && raw.toolName) ||
+      (toolCall._meta?.kiro?.toolName && String(toolCall._meta.kiro.toolName)) ||
+      (toolCall._meta?.claudeCode?.toolName && String(toolCall._meta.claudeCode.toolName)) ||
+      '';
+    const name = String(toolName).trim().toLowerCase();
+    if (!title && !kind && !name) {
+      return undefined;
+    }
+    // Prefer toolName when present (stable across title wording); else title+kind.
+    if (name) {
+      return `tool:${name}|${kind || 'other'}`;
+    }
+    return `tool:${title || 'untitled'}|${kind || 'other'}`;
+  }
+
+  private loadApprovedTools(): string[] {
+    if (this.approvedToolsCache) {
+      return Array.from(this.approvedToolsCache);
+    }
+    const stored = vscode.workspace.getConfiguration('acp').get<string[]>('approvedTools', []);
+    this.approvedToolsCache = new Set(stored);
+    return stored;
+  }
+
+  private saveApprovedTool(fingerprint: string): void {
+    if (!fingerprint) {
+      return;
+    }
+    if (!this.approvedToolsCache) {
+      this.approvedToolsCache = new Set(vscode.workspace.getConfiguration('acp').get<string[]>('approvedTools', []));
+    }
+    if (this.approvedToolsCache.has(fingerprint)) {
+      return;
+    }
+    this.approvedToolsCache.add(fingerprint);
+    const approved = Array.from(this.approvedToolsCache);
+    if (approved.length > 500) {
+      const trimmed = approved.slice(approved.length - 500);
+      this.approvedToolsCache = new Set(trimmed);
+    }
+    vscode.workspace
+      .getConfiguration('acp')
+      .update('approvedTools', Array.from(this.approvedToolsCache), vscode.ConfigurationTarget.Global)
+      .then(undefined, (e) => log(`Failed to save approved tool: ${e}`));
+  }
+
+  private isToolApproved(fingerprint: string | undefined): boolean {
+    if (!fingerprint) {
+      return false;
+    }
+    return this.loadApprovedTools().includes(fingerprint);
+  }
+
   async requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
     const config = vscode.workspace.getConfiguration('acp');
     const autoApprove = config.get<string>('autoApprovePermissions', 'ask');
     const rawCommand = this.extractCommand(params.toolCall);
+    const toolFp = this.extractToolFingerprint(params);
 
     // Fast path: allowAll auto-approves everything
     if (autoApprove === 'allowAll') {
+      return this.handleAutoApproveAll(params);
+    }
+
+    // Fast path: previously allow_always'd non-command tools (Kiro subagent, etc.)
+    // Honor regardless of ask/remember — allow_always means don't ask again.
+    if (this.isToolApproved(toolFp)) {
+      log(`Auto-approving (approved tool): ${toolFp}`);
       return this.handleAutoApproveAll(params);
     }
 
@@ -362,9 +443,10 @@ export class PermissionHandler {
     const config = vscode.workspace.getConfiguration('acp');
     const autoApprove = config.get<string>('autoApprovePermissions', 'ask');
     const rawCommand = this.extractCommand(params.toolCall);
+    const toolFp = this.extractToolFingerprint(params);
 
     const title = params.toolCall?.title || 'Permission Request';
-    log(`requestPermission: ${title} (autoApprove=${autoApprove})`);
+    log(`requestPermission: ${title} (autoApprove=${autoApprove}${toolFp ? `, tool=${toolFp}` : ''})`);
 
     // Show diff preview for edit operations
     const content = (params.toolCall as any)?.content as
@@ -433,13 +515,22 @@ export class PermissionHandler {
       }
     }
 
-    // For regular allow options in remember mode, also save the prefix
-    if (autoApprove === 'remember' && rawCommand) {
-      const selectedOption = params.options.find((o) => o.optionId === selection.optionId);
-      if (selectedOption && selectedOption.kind.startsWith('allow')) {
-        const prefix = this.extractPrefix(rawCommand);
-        this.saveAllowedCommand(prefix);
-        log(`Saved prefix "${prefix}" for future auto-approval`);
+    const selectedOption = params.options.find((o) => o.optionId === selection.optionId);
+    const isAllow = !!(selectedOption && selectedOption.kind.startsWith('allow'));
+
+    // Shell commands: remember mode saves the command prefix on any allow.
+    if (autoApprove === 'remember' && rawCommand && isAllow) {
+      const prefix = this.extractPrefix(rawCommand);
+      this.saveAllowedCommand(prefix);
+      log(`Saved prefix "${prefix}" for future auto-approval`);
+    }
+
+    // Non-command tools (Kiro subagent crew, etc.): persist on allow_always, and
+    // also on any allow in remember mode so reload does not re-prompt.
+    if (toolFp && isAllow) {
+      if (selectedOption?.kind === 'allow_always' || autoApprove === 'remember') {
+        this.saveApprovedTool(toolFp);
+        log(`Saved tool fingerprint "${toolFp}" for future auto-approval`);
       }
     }
 

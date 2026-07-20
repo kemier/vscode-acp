@@ -6128,6 +6128,27 @@ var end = displayText.length;
        if (riItem && riItem.kind === 'toolCall' && (riItem.status === 'in_progress' || riItem.status === 'running' || riItem.status === 'pending')) {
          riItem = { ...riItem, status: 'failed' };
        }
+       // Kiro crew stages: parent spawn is often already "completed" while
+       // stages were still running — coerce incomplete stages to failed.
+       if (riItem && riItem.kind === 'toolCall' && riItem.rawInput &&
+           Array.isArray(riItem.rawInput.stages) && riItem.rawInput.stages.length > 0) {
+         var _rstStages = riItem.rawInput.stages.map(function(st) {
+           if (!st || typeof st !== 'object') return st;
+           var ss = st.status;
+           if (ss === 'completed' || ss === 'done' || ss === 'success' || ss === 'terminated' ||
+               ss === 'failed' || ss === 'error') {
+             return st;
+           }
+           return Object.assign({}, st, { status: 'failed' });
+         });
+         var _rstFailed = _rstStages.some(function(st) {
+           return st && (st.status === 'failed' || st.status === 'error');
+         });
+         riItem = Object.assign({}, riItem, {
+           rawInput: Object.assign({}, riItem.rawInput, { stages: _rstStages }),
+           status: _rstFailed ? 'failed' : riItem.status,
+         });
+       }
        // Strip taskResult from restored tool calls — it contains raw
        // markdown from Kiro subagent summaries that duplicates the main
        // agent's rendered output. Old saved state may still have it.
@@ -7021,6 +7042,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          }
        }
      }
+     failInterruptedSubagentStagesInHistory();
      saveState();
      // Commit any trailing assistant turn captured during the replay.
      finalizeCurrentAssistantTurn();
@@ -7831,12 +7853,19 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         // Sticky expand only while the turn is still streaming — completed
         // turns must not stay open across promptEnd / history restore.
         body._userExpanded = !isLoadingSession && isProcessing && willExpand;
-        // Collapsing mid-stream: tuck the live bubble back into the fold in
-        // case a sticky rebuild had parked it outside as assistant-summary.
+        // Collapsing mid-stream:
+        // - Tools still running / pre-tools chatter → keep live bubble in fold
+        //   (Codex/Claude mid-turn leak fix).
+        // - Tools idle → this is the end-turn summary: lift it outside so it
+        //   stays visible in the main chat while it finishes streaming (Kiro).
         if (!willExpand && isProcessing && currentAssistantEl && turn &&
             turn.contains(currentAssistantEl) &&
             !currentAssistantEl.classList.contains('md-committed')) {
-          moveAssistantIntoFold(currentAssistantEl);
+          if (isLikelyFinalSummaryStreaming(turn)) {
+            placeSummaryAssistant(currentAssistantEl);
+          } else {
+            moveAssistantIntoFold(currentAssistantEl);
+          }
         }
         hideTcTooltip();
         var count = parseInt(summary.dataset.count || '0', 10);
@@ -7948,11 +7977,19 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         // inside the fold. ensureTurnFoldStructure used to treat unmarked
         // nodes as summary and park them outside; expand → rebuild → collapse
         // then left Codex mid-turn text visible in the panel.
-        // Exception: placeSummaryAssistant runs on promptEnd before
-        // setProcessing(false), so a just-promoted md-committed summary must
-        // stay outside even while isProcessing is briefly still true.
+        // Exceptions:
+        // - placeSummaryAssistant on promptEnd (md-committed summary)
+        // - end-turn summary after tools go idle (Kiro): keep outside so
+        //   collapsing mid-stream still shows the reply in the main chat
         if (isProcessing && !isLoadingSession &&
             !(a.classList.contains('assistant-summary') && a.classList.contains('md-committed'))) {
+          if (isLikelyFinalSummaryStreaming(turn) &&
+              (a === currentAssistantEl || a.classList.contains('assistant-summary'))) {
+            a.classList.add('assistant-summary');
+            a.classList.remove('assistant-interim');
+            summaryAssistants.push(a);
+            return;
+          }
           a.classList.add('assistant-interim');
           a.classList.remove('assistant-summary');
           interimAssistants.push(a);
@@ -8069,15 +8106,22 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         turn.appendChild(a);
       });
 
-      // Belt-and-suspenders: live streaming bubble must stay inside the fold
-      // even if a prior rebuild parked it outside as assistant-summary.
-      // Skip md-committed summaries already lifted by placeSummaryAssistant.
+      // Live streaming bubble placement while processing:
+      // - Mid-turn (tools running / no tools yet) → keep inside the fold
+      // - End-turn summary (tools idle) → keep outside as assistant-summary
       if (isProcessing && !isLoadingSession && currentAssistantEl &&
           turn.contains(currentAssistantEl) &&
           !currentAssistantEl.classList.contains('md-committed')) {
-        currentAssistantEl.classList.add('assistant-interim');
-        currentAssistantEl.classList.remove('assistant-summary');
-        body.appendChild(currentAssistantEl);
+        if (isLikelyFinalSummaryStreaming(turn)) {
+          currentAssistantEl.classList.add('assistant-summary');
+          currentAssistantEl.classList.remove('assistant-interim');
+          if (body.nextSibling) turn.insertBefore(currentAssistantEl, body.nextSibling);
+          turn.appendChild(currentAssistantEl);
+        } else {
+          currentAssistantEl.classList.add('assistant-interim');
+          currentAssistantEl.classList.remove('assistant-summary');
+          body.appendChild(currentAssistantEl);
+        }
       }
 
       // Default shut. Honor sticky expand only while a live turn is streaming
@@ -8213,7 +8257,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
 
     function turnHasRunningTools() {
       if (!currentTurnEl) return false;
-      return !!currentTurnEl.querySelector(
+      return turnElHasRunningTools(currentTurnEl);
+    }
+
+    function turnElHasRunningTools(turn) {
+      if (!turn) return false;
+      return !!turn.querySelector(
         '.tc-icon.running, .tc-icon.in_progress, .tc-icon.pending, ' +
         '.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending'
       );
@@ -8222,17 +8271,48 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     function turnHasAnyTools() {
       if (currentToolCount > 0) return true;
       if (!currentTurnEl) return false;
-      if (currentTurnEl.querySelector('.tool-call-inline, .tool-call')) return true;
-      var sum = getTurnSummaryEl(currentTurnEl);
+      return turnElHasAnyTools(currentTurnEl);
+    }
+
+    function turnElHasAnyTools(turn) {
+      if (!turn) return false;
+      if (turn.querySelector('.tool-call-inline, .tool-call')) return true;
+      var sum = getTurnSummaryEl(turn);
       return !!(sum && parseInt(sum.dataset.count || '0', 10) > 0);
     }
 
+    /**
+     * True when the live assistant bubble is the end-turn summary: the turn
+     * already ran tools and no parent tool spinners remain. Stage icons may
+     * still spin (Kiro/Claude crew) while the main agent streams the reply —
+     * those must not hide the summary when Collapse is on.
+     */
+    function isLikelyFinalSummaryStreaming(turn) {
+      var t = turn || currentTurnEl;
+      if (!isProcessing || isLoadingSession || !currentAssistantEl) return false;
+      if (!t) return false;
+      if (!turnElHasAnyTools(t)) return false;
+      // Parent tool rows only — ignore .tc-stage-icon spinners.
+      if (t.querySelector(
+        '.tool-call-inline > .tc-icon.running, .tool-call-inline > .tc-icon.in_progress, .tool-call-inline > .tc-icon.pending'
+      )) {
+        return false;
+      }
+      return true;
+    }
+
     function scheduleProvisionalSummaryPromote() {
-      // Disabled. Promoting on an idle timer leaked Claude/Codex mid-turn
-      // lines ("I'll spawn…", status chatter) into the main chat while
-      // Collapse is on. The final reply is lifted only on promptEnd via
-      // commitCurrentTextSegment → placeSummaryAssistant.
       cancelProvisionalSummaryPromote();
+      if (!isProcessing || isLoadingSession || !compactMode) return;
+      if (!isLikelyFinalSummaryStreaming(currentTurnEl)) return;
+      // Short debounce so a brief idle gap between tools does not flash the
+      // mid-turn line outside; Kiro end-turn summaries typically stream for
+      // longer than this once tools are done.
+      provisionalSummaryTimer = setTimeout(function() {
+        provisionalSummaryTimer = null;
+        if (!isLikelyFinalSummaryStreaming(currentTurnEl) || !currentAssistantEl) return;
+        placeSummaryAssistant(currentAssistantEl);
+      }, 350);
     }
 
     /** After history restore: lift the last assistant out of the fold as the reply. */
@@ -8430,12 +8510,15 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
 
     function placeAssistantInTurn(assistantEl) {
-      // Compact: keep the live bubble inside the fold for the whole turn.
-      // Mid-turn Claude/Codex lines must not appear in the main chat.
-      // promptEnd → commitCurrentTextSegment → placeSummaryAssistant lifts
-      // the final reply outside.
+      // Compact: mid-turn chatter stays inside the fold. Once tools are idle
+      // the live bubble is the end-turn summary — put it outside so Collapse
+      // still shows the streaming reply (Kiro).
       if (compactMode) {
-        moveAssistantIntoFold(assistantEl);
+        if (isLikelyFinalSummaryStreaming(currentTurnEl)) {
+          placeSummaryAssistant(assistantEl);
+        } else {
+          moveAssistantIntoFold(assistantEl);
+        }
         refreshCurrentTurnSummary();
         return;
       }
@@ -8846,6 +8929,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           depends_on: Array.isArray(stage.depends_on) ? stage.depends_on : undefined,
           // Keep enough of the prompt for restore hover (Kiro-style detail).
           prompt_template: typeof prompt === 'string' ? prompt.slice(0, 2000) : '',
+          status: stage.status || undefined,
         };
       });
     }
@@ -9293,17 +9377,21 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      } else {
        shortDesc = desc;
      }
+     var initStatus = (stageMeta && stageMeta.status) ? stageMeta.status : 'running';
+     var iconStatus = stageIconStatus(initStatus);
      stage.innerHTML =
-       '<span class="tc-stage-icon running">' + getStatusIcon('running') + '</span>' +
+       '<span class="tc-stage-icon ' + iconStatus + '">' + getStatusIcon(iconStatus === 'error' ? 'error' : iconStatus) + '</span>' +
        '<span class="tc-stage-name">' + escapeHtml(stageName) + '</span>' +
        (shortDesc ? '<div class="tc-stage-desc">' + escapeHtml(shortDesc) + '</div>' : '');
      var stageData = Object.assign({
        name: stageName,
        role: (stageMeta && stageMeta.role) || 'agent',
        prompt_template: stagePrompt || '',
+       status: iconStatus === 'error' ? 'failed' : iconStatus,
      }, stageMeta && typeof stageMeta === 'object' ? stageMeta : {});
      if (!stageData.prompt_template) stageData.prompt_template = stagePrompt || '';
      stageData.name = stageName;
+     stageData.status = iconStatus === 'error' ? 'failed' : iconStatus;
      attachStageTooltip(stage, stageData);
      return stage;
    }
@@ -9314,6 +9402,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      var rebuilt = [];
      for (var s = 0; s < stages.length; s++) {
        var data = stages[s]._stageData || {};
+       var iconEl = stages[s].querySelector('.tc-stage-icon');
+       var iconStatus = 'running';
+       if (iconEl) {
+         if (iconEl.classList.contains('completed')) iconStatus = 'completed';
+         else if (iconEl.classList.contains('error') || iconEl.classList.contains('failed')) iconStatus = 'failed';
+       }
        rebuilt.push({
          name: data.name || stages[s].getAttribute('data-stage-name') || ('Subagent ' + (s + 1)),
          role: data.role || 'agent',
@@ -9322,6 +9416,8 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          prompt_template: data.prompt_template || data.prompt || '',
          prompt: data.prompt || '',
          description: data.description || '',
+         // Persist so reload can restore check/fail instead of infinite spinners.
+         status: data.status || iconStatus,
        });
      }
      var prev = (crewEl._rawInput && typeof crewEl._rawInput === 'object') ? crewEl._rawInput : {};
@@ -9333,6 +9429,124 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          break;
        }
      }
+     // Keep chatHistory.rawInput.stages[].status in sync for vscode.setState().
+     var crewId = (crewEl.id || '').replace(/^tc-/, '');
+     if (crewId) {
+       for (var hi = chatHistory.length - 1; hi >= 0; hi--) {
+         if (chatHistory[hi].kind === 'toolCall' && chatHistory[hi].toolCallId === crewId) {
+           chatHistory[hi].rawInput = crewEl._rawInput;
+           break;
+         }
+       }
+     }
+   }
+
+   /** Map protocol/DOM stage status → icon class (running | completed | error). */
+   function stageIconStatus(status) {
+     if (status === 'completed' || status === 'done' || status === 'success' || status === 'terminated') {
+       return 'completed';
+     }
+     if (status === 'failed' || status === 'error') return 'error';
+     return 'running';
+   }
+
+   function applyStageIcon(stageEl, status) {
+     if (!stageEl) return;
+     var iconStatus = stageIconStatus(status);
+     var iconEl = stageEl.querySelector('.tc-stage-icon');
+     if (iconEl) {
+       iconEl.className = 'tc-stage-icon ' + iconStatus;
+       iconEl.textContent = getStatusIcon(iconStatus === 'error' ? 'error' : iconStatus);
+     }
+     if (!stageEl._stageData) stageEl._stageData = {};
+     stageEl._stageData.status = iconStatus === 'error' ? 'failed' : iconStatus;
+     var crew = stageEl.closest('.tool-call-inline.tc-subagent');
+     if (crew) syncCrewParentRawInput(crew);
+   }
+
+   /**
+    * After reload, any stage that never reached a terminal status will never
+    * receive list_update/terminate — mark it failed so it does not spin forever.
+    * Kiro often marks the parent spawn tool completed while stages still run,
+    * so parent status alone is not enough.
+    */
+   function failInterruptedSubagentStagesInHistory() {
+     for (var i = 0; i < chatHistory.length; i++) {
+       var item = chatHistory[i];
+       if (!item || item.kind !== 'toolCall' || !item.rawInput || typeof item.rawInput !== 'object') {
+         continue;
+       }
+       if (!Array.isArray(item.rawInput.stages) || item.rawInput.stages.length === 0) continue;
+       var stages = item.rawInput.stages.slice();
+       var anyFailed = false;
+       for (var s = 0; s < stages.length; s++) {
+         var stage = stages[s];
+         if (!stage || typeof stage !== 'object') continue;
+         var st = stage.status;
+         if (st === 'completed' || st === 'done' || st === 'success' || st === 'terminated') continue;
+         if (st === 'failed' || st === 'error') { anyFailed = true; continue; }
+         // running / pending / missing — interrupted by reload or crash.
+         stages[s] = Object.assign({}, stage, { status: 'failed' });
+         anyFailed = true;
+       }
+       if (anyFailed) {
+         item.rawInput = Object.assign({}, item.rawInput, { stages: stages });
+         item.status = 'failed';
+       }
+     }
+   }
+
+   /** Fail every still-spinning stage/crew icon in the DOM (e.g. on promptStart). */
+   function failRunningSubagentStagesInDom() {
+     var icons = document.querySelectorAll(
+       '.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending'
+     );
+     for (var i = 0; i < icons.length; i++) {
+       var stageEl = icons[i].closest('.tc-stage');
+       if (stageEl) applyStageIcon(stageEl, 'failed');
+     }
+     var parents = document.querySelectorAll(
+       '.tool-call-inline.tc-subagent > .tc-icon.running, ' +
+       '.tool-call-inline.tc-subagent > .tc-icon.in_progress, ' +
+       '.tool-call-inline.tc-subagent > .tc-icon.pending'
+     );
+     for (var p = 0; p < parents.length; p++) {
+       var crew = parents[p].parentElement;
+       var still = crew && crew.querySelector(
+         '.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending'
+       );
+       if (!still) {
+         parents[p].className = 'tc-icon failed';
+         parents[p].textContent = getStatusIcon('failed');
+       }
+     }
+     for (var h = 0; h < chatHistory.length; h++) {
+       var it = chatHistory[h];
+       if (!it || it.kind !== 'toolCall') continue;
+       if (it.status === 'in_progress' || it.status === 'running' || it.status === 'pending') {
+         it.status = 'failed';
+       }
+       if (it.rawInput && Array.isArray(it.rawInput.stages)) {
+         var stgs = it.rawInput.stages;
+         var failed = false;
+         for (var si = 0; si < stgs.length; si++) {
+           var stg = stgs[si];
+           if (!stg || typeof stg !== 'object') continue;
+           var ss = stg.status;
+           if (ss === 'completed' || ss === 'failed' || ss === 'error' ||
+               ss === 'done' || ss === 'success' || ss === 'terminated') {
+             continue;
+           }
+           stgs[si] = Object.assign({}, stg, { status: 'failed' });
+           failed = true;
+         }
+         if (failed) {
+           it.rawInput = Object.assign({}, it.rawInput, { stages: stgs });
+           it.status = 'failed';
+         }
+       }
+     }
+     saveState();
    }
 
    function updateStageFromRawInput(stageEl, rawInput, title, opts) {
@@ -9386,22 +9600,20 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      if (!toolCallId) return;
      var stage = document.querySelector('.tc-stage[data-tool-call-id="' + String(toolCallId).replace(/"/g, '') + '"]');
      if (!stage) return;
-     var iconStatus = (status === 'completed' || status === 'failed' || status === 'error')
-       ? (status === 'completed' ? 'completed' : 'error')
-       : 'running';
-     var iconEl = stage.querySelector('.tc-stage-icon');
-     if (iconEl) {
-       iconEl.className = 'tc-stage-icon ' + iconStatus;
-       iconEl.textContent = getStatusIcon(iconStatus === 'running' ? 'running' : iconStatus);
-     }
+     applyStageIcon(stage, status);
      var crew = stage.closest('.tool-call-inline.tc-subagent');
-     if (!crew || iconStatus === 'running') return;
+     if (!crew) return;
+     var iconStatus = stageIconStatus(status);
+     if (iconStatus === 'running') return;
      var running = crew.querySelectorAll('.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending');
      if (running.length === 0) {
        var parentIcon = crew.querySelector(':scope > .tc-icon');
        if (parentIcon) {
-         parentIcon.className = 'tc-icon completed';
-         parentIcon.textContent = getStatusIcon('completed');
+         var parentDone = iconStatus === 'error' ? 'failed' : 'completed';
+         // If any stage failed, prefer failed on the parent.
+         if (crew.querySelector('.tc-stage-icon.error, .tc-stage-icon.failed')) parentDone = 'failed';
+         parentIcon.className = 'tc-icon ' + parentDone;
+         parentIcon.textContent = getStatusIcon(parentDone);
        }
      }
    }
@@ -9434,6 +9646,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        var stageName = crewStageLabel(rawInput, title, idx);
        stagesWrap.appendChild(createStageElement(stageName, toolCallId, String(stagePrompt || ''), stageMeta));
        toolCalls[toolCallId] = existing;
+       syncCrewParentRawInput(existing);
        // New stage is running — ensure parent spinner is not left checked.
        var parentIcon = existing.querySelector(':scope > .tc-icon');
        if (parentIcon) {
@@ -9492,6 +9705,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        '<div class="tc-stages"></div>';
      var stagesEl = el.querySelector('.tc-stages');
      stagesEl.appendChild(createStageElement(stageName, toolCallId, String(stagePrompt || ''), stageMeta));
+     syncCrewParentRawInput(el);
      attachToolCallTooltip(el);
      if (currentToolsListEl) currentToolsListEl.appendChild(el);
      toolCalls[toolCallId] = el;
@@ -9608,7 +9822,16 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          var stageToolIdAttr = (isSubagentSpawnTitle(title) && si === 0)
            ? ' data-tool-call-id="' + escapeHtml(String(toolCallId)) + '"'
            : '';
-         stagesHtml += '<div class="tc-stage" data-stage-name="' + escapeHtml(stageName) + '"' + stageToolIdAttr + '><span class="tc-stage-icon running">' + getStatusIcon('running') + '</span><span class="tc-stage-name">' + escapeHtml(stageName) + '</span>' +
+         // Prefer persisted stage.status. Live mid-turn keeps spinning even when
+         // the parent spawn tool already flipped to completed.
+         var rowStageStatus = stage.status;
+         if (!rowStageStatus) {
+           if (status === 'failed' || status === 'error') rowStageStatus = 'failed';
+           else if (isProcessing && !isLoadingSession) rowStageStatus = 'running';
+           else rowStageStatus = (status === 'completed') ? 'completed' : 'running';
+         }
+         var stageIcon = stageIconStatus(rowStageStatus);
+         stagesHtml += '<div class="tc-stage" data-stage-name="' + escapeHtml(stageName) + '"' + stageToolIdAttr + '><span class="tc-stage-icon ' + stageIcon + '">' + getStatusIcon(stageIcon === 'error' ? 'error' : stageIcon) + '</span><span class="tc-stage-name">' + escapeHtml(stageName) + '</span>' +
            (stageRole ? '<span class="tc-stage-role">' + escapeHtml(stageRole) + '</span>' : '') +
            (depends ? '<span class="tc-stage-depends">' + escapeHtml(depends) + '</span>' : '') +
            (stageDesc ? '<div class="tc-stage-desc">' + escapeHtml(stageDesc) + '</div>' : '') +
@@ -9619,8 +9842,17 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       if (rawInput && Array.isArray(rawInput.stages)) {
         var stageDivs = el.querySelectorAll('.tc-stage[data-stage-name]');
         for (var sti = 0; sti < stageDivs.length && sti < rawInput.stages.length; sti++) {
-          attachStageTooltip(stageDivs[sti], rawInput.stages[sti]);
+          var st = rawInput.stages[sti] || {};
+          var tipStatus = stageIconStatus(st.status || (
+            (isProcessing && !isLoadingSession) ? 'running'
+              : ((status === 'failed' || status === 'error') ? 'failed'
+                : (status === 'completed' ? 'completed' : 'running'))
+          ));
+          attachStageTooltip(stageDivs[sti], Object.assign({}, st, {
+            status: tipStatus === 'error' ? 'failed' : tipStatus,
+          }));
         }
+        syncCrewParentRawInput(el);
       }
       if (isSubagentSpawnTitle(title)) {
         el.classList.add('tc-subagent');
@@ -10257,6 +10489,9 @@ sessionState = {
         setProcessing(true);
         isForceCancelled = false;
         cancelProvisionalSummaryPromote();
+        // Previous turn's Kiro/Claude stages may still be spinning after a
+        // reload or missed terminate — mark them failed before new spawns.
+        failRunningSubagentStagesInDom();
         resetClaudeCrewState();
         // Remove orphaned assistant elements from slash command responses
         // (e.g. /effort, /model) that were streamed to DOM but never committed
@@ -10323,10 +10558,14 @@ sessionState = {
             }
             // Crew stages: Claude/Codex kept these spinning during the turn
             // (tool_call "completed" only meant spawned). Flip them now.
-            var _stages = _tcEl.querySelectorAll('.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending');
+            var _stages = _tcEl.querySelectorAll('.tc-stage');
             for (var _si = 0; _si < _stages.length; _si++) {
-              _stages[_si].className = 'tc-stage-icon completed';
-              _stages[_si].textContent = getStatusIcon('completed');
+              var _stIcon = _stages[_si].querySelector('.tc-stage-icon');
+              if (_stIcon && (_stIcon.classList.contains('running') ||
+                  _stIcon.classList.contains('in_progress') ||
+                  _stIcon.classList.contains('pending'))) {
+                applyStageIcon(_stages[_si], 'completed');
+              }
             }
           }
         }
@@ -11395,6 +11634,7 @@ sessionState = {
           // DOM is rebuilt from chatHistory.
          if (!isLoadingSession) {
            scheduleStreamingRender();
+           scheduleProvisionalSummaryPromote();
          }
          autoScrollIfAtBottom();
        }
@@ -12043,8 +12283,7 @@ sessionState = {
           }
           var iconEl = stageEl.querySelector('.tc-stage-icon');
           if (iconEl) {
-            iconEl.className = 'tc-stage-icon ' + iconStatus;
-            iconEl.textContent = getStatusIcon(iconStatus === 'running' ? 'running' : iconStatus === 'completed' ? 'completed' : 'error');
+            applyStageIcon(stageEl, iconStatus === 'error' ? 'failed' : iconStatus);
           }
         }
       }
@@ -12060,9 +12299,8 @@ sessionState = {
    for (var q = 0; q < stageEls.length; q++) {
      if (stageEls[q].getAttribute('data-stage-name') === pName) {
        var pIconEl = stageEls[q].querySelector('.tc-stage-icon');
-       if (pIconEl && !pIconEl.classList.contains('completed')) {
-         pIconEl.className = 'tc-stage-icon running';
-         pIconEl.textContent = getStatusIcon('running');
+       if (pIconEl && !pIconEl.classList.contains('completed') && !pIconEl.classList.contains('error')) {
+         applyStageIcon(stageEls[q], 'running');
        }
      }
    }
@@ -12106,8 +12344,7 @@ sessionState = {
       if (sid) el.setAttribute('data-session-id', String(sid));
       var iconEl = el.querySelector('.tc-stage-icon');
       if (iconEl) {
-        iconEl.className = 'tc-stage-icon completed';
-        iconEl.textContent = getStatusIcon('completed');
+        applyStageIcon(el, 'completed');
       }
     }
     if (!matched && sid) {
