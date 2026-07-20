@@ -4024,6 +4024,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
      opacity: 0.7;
      flex-shrink: 0;
       white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      line-height: 1;
    }
     .session-banner .follow-toggle {
       display: inline-flex;
@@ -5181,6 +5185,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       border-radius: 50%;
       animation: spin 0.8s linear infinite;
       opacity: 0.6;
+      flex-shrink: 0;
+      vertical-align: middle;
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
@@ -6440,7 +6446,7 @@ var end = displayText.length;
    addMessage('user', displayText);
    // Show a loading indicator in the status bar
    if (statusEl) {
-     statusEl.innerHTML = '<span class="spinner"></span> Summarizing session...';
+     statusEl.innerHTML = '<span class="spinner"></span><span>Summarizing session...</span>';
    }
    hasSentPrompt = true;
  vscode.postMessage({ type: 'summarizeSession', sessionName: sessionName, queryText: remainingQuery });
@@ -6464,7 +6470,7 @@ var end = displayText.length;
     addMessage('user', '/compact');
     var isKiro = sessionState && /kiro/i.test(sessionState.agentName || sessionState.agentConfigKey || '');
     if (isKiro) {
-      vscode.postMessage({ type: 'executeKiroCommand', command: 'compact', args: {} });
+      vscode.postMessage({ type: 'executeKiroCommand', command: 'compact' });
     } else {
       vscode.postMessage({ type: 'sendPrompt', text: '/compact' });
     }
@@ -10641,20 +10647,24 @@ sessionState = {
       if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
       setProcessing(true);
     }
+    // Done signal — finish even if execute RPC is still outstanding.
+    // Kiro often never resolves execute on deserialize errors; status is
+    // the reliable completion path.
+    var looksDone = !!msg && /compacted/i.test(msg) && !/compacting/i.test(msg);
+    if (looksDone) {
+      handleKiroCompactDone({ message: msg });
+      return;
+    }
     if (statusEl) {
       statusEl.innerHTML = msg
-        ? '<span class="spinner"></span> ' + escapeHtml(msg)
-        : '<span class="spinner"></span> Compacting conversation...';
-    }
-    // Status text that already looks like a completion notice — buffer it.
-    if (msg && /compacted/i.test(msg)) {
-      compactedNoticeText = compactedNoticeText || msg;
+        ? '<span class="spinner"></span><span>' + escapeHtml(msg) + '</span>'
+        : '<span class="spinner"></span><span>Compacting conversation...</span>';
     }
   }
 
   /**
    * _kiro.dev/commands/execute for compact finished. Clear history and show
-   * the notice (mirrors Codex flushCompactionMessages).
+   * the notice (mirrors Codex flushCompactionMessages). Idempotent.
    */
   function handleKiroCompactDone(msg) {
     if (msg && msg.error) {
@@ -10663,7 +10673,14 @@ sessionState = {
       compactedNoticeText = '';
       if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
       if (statusEl) statusEl.innerHTML = '';
+      setProcessing(false);
+      if (msg.message) {
+        addMessage('error', String(msg.message));
+      }
       return;
+    }
+    if (!isCompacting) {
+      return; // already flushed
     }
     var notice = (msg && typeof msg.message === 'string' && msg.message.trim())
       ? msg.message.trim()
@@ -10675,6 +10692,7 @@ sessionState = {
     } else {
       scheduleCompactionFlush();
     }
+    setProcessing(false);
   }
 
   // Handle _kiro.dev/subagent/list_update notification (Kiro CLI specific).

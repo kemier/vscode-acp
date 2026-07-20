@@ -1022,6 +1022,8 @@ export class SessionManager extends EventEmitter {
    * see kirodotdev/Kiro#5763. Leading `/` is stripped from the name.
    *
    * Returns any acknowledgment message from the result (message/text/content).
+   * Rejects on timeout — compact can take a while, but must not hang forever
+   * (Kiro sometimes never replies if the payload fails to deserialize).
    */
   async executeKiroCommand(
     sessionId: string,
@@ -1037,13 +1039,27 @@ export class SessionManager extends EventEmitter {
       throw new Error(`No connection for session ${sessionId}`);
     }
     const name = commandName.replace(/^\//, '');
-    log(`executeKiroCommand: session=${sessionId}, command="${name}"`);
+    // Omit empty args — some TuiCommand unit variants reject `args: {}`.
+    const command: { command: string; args?: Record<string, string> } = { command: name };
+    if (args && Object.keys(args).length > 0) {
+      command.args = args;
+    }
+    const timeoutMs = name === 'compact' ? 180_000 : 30_000;
+    log(`executeKiroCommand: session=${sessionId}, command="${name}", timeoutMs=${timeoutMs}`);
     this.inFlightPromptSessions.add(sessionId);
+    let timer: ReturnType<typeof setTimeout> | undefined;
     try {
-      const result = await connInfo.connection.request<any, any>('_kiro.dev/commands/execute', {
-        sessionId,
-        command: { command: name, args },
-      });
+      const result = await Promise.race([
+        connInfo.connection.request<any, any>('_kiro.dev/commands/execute', {
+          sessionId,
+          command,
+        }),
+        new Promise<never>((_, reject) => {
+          timer = setTimeout(() => {
+            reject(new Error(`Kiro /${name} timed out after ${Math.round(timeoutMs / 1000)}s`));
+          }, timeoutMs);
+        }),
+      ]);
       if (!result || typeof result !== 'object') {
         return typeof result === 'string' ? result : undefined;
       }
@@ -1058,6 +1074,9 @@ export class SessionManager extends EventEmitter {
       }
       return undefined;
     } finally {
+      if (timer) {
+        clearTimeout(timer);
+      }
       this.inFlightPromptSessions.delete(sessionId);
     }
   }
@@ -1173,12 +1192,18 @@ export class SessionManager extends EventEmitter {
    * (and models with an effort suffix like glm-5.2[high]) support effort.
    */
   private modelSupportsEffort(modelId: string): boolean {
-    if (!modelId) {return false;}
+    if (!modelId) {
+      return false;
+    }
     // Models with effort suffix (e.g. "glm-5.2[high]", "qwen2.5-14b-1m[none]")
     // encode effort in the model ID — no separate /effort needed.
-    if (/\[(?:low|medium|high|xhigh|max|none)\]$/.test(modelId)) {return false;}
+    if (/\[(?:low|medium|high|xhigh|max|none)\]$/.test(modelId)) {
+      return false;
+    }
     // Claude models support effort via /effort slash command
-    if (/^claude-/i.test(modelId)) {return true;}
+    if (/^claude-/i.test(modelId)) {
+      return true;
+    }
     // All other models (minimax-*, qwen*, auto, etc.) don't support effort
     return false;
   }
@@ -1188,7 +1213,9 @@ export class SessionManager extends EventEmitter {
    * whether the current model supports effort. Called after model changes.
    */
   private updateEffortPickerVisibility(session: SessionInfo): void {
-    if (!session.configOptions) {return;}
+    if (!session.configOptions) {
+      return;
+    }
     const modelOpt = session.configOptions.find((o: any) => o.category === 'model');
     const currentModel = String(modelOpt?.currentValue || session.models?.currentModelId || '');
     const supportsEffort = this.modelSupportsEffort(currentModel);
