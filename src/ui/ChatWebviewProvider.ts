@@ -4095,6 +4095,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    .session-banner .follow-toggle .icon { font-family: monospace; line-height: 1; font-size: 1.05em; }
 
   /* Messages area */
+    .messages-wrap {
+      flex: 1;
+      min-height: 0;
+      position: relative;
+      display: flex;
+      flex-direction: column;
+    }
     .messages {
       flex: 1;
       overflow-y: auto;
@@ -4102,6 +4109,33 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       display: flex;
       flex-direction: column;
       gap: 8px;
+    }
+    .jump-latest-btn {
+      display: none;
+      position: absolute;
+      bottom: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 20;
+      align-items: center;
+      gap: 6px;
+      padding: 6px 14px;
+      border-radius: 16px;
+      border: 1px solid var(--vscode-button-border, transparent);
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      font-family: var(--vscode-font-family);
+      font-size: 0.85em;
+      cursor: pointer;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.25);
+      opacity: 0.95;
+    }
+    .jump-latest-btn.visible {
+      display: inline-flex;
+    }
+    .jump-latest-btn:hover {
+      opacity: 1;
+      filter: brightness(1.08);
     }
 
     .message {
@@ -5287,6 +5321,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   <span class="status" id="status"></span>
  </div>
 
+ <div class="messages-wrap">
  <div class="messages" id="messages">
    <div class="empty-state" id="emptyState">
      <div class="icon">🤖</div>
@@ -5299,6 +5334,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     </div>
      <div class="hint">or press <kbd>Ctrl+Shift+A</kbd> anytime</div>
    </div>
+ </div>
+ <button type="button" class="jump-latest-btn" id="jumpLatestBtn" title="Jump to latest streaming output">↓ Latest</button>
  </div>
 
 
@@ -6818,6 +6855,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         statusEl.textContent = '';
         updateSendButton();
       }
+      if (typeof updateJumpLatestBtn === 'function') updateJumpLatestBtn();
     }
 
     // --- Session/load overlay ---
@@ -7607,16 +7645,37 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    // when the user scrolls back to the bottom manually, or when a new
    // user/assistant turn starts.
    var userScrolledUp = false;
+   // Show "Jump to latest" when streaming and scrolled this far from bottom.
+   var JUMP_LATEST_THRESHOLD_PX = 180;
+   var jumpLatestBtn = document.getElementById('jumpLatestBtn');
+
+   function distanceFromBottom() {
+     return messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight;
+   }
+
+   function updateJumpLatestBtn() {
+     if (!jumpLatestBtn) return;
+     var show = isProcessing && distanceFromBottom() > JUMP_LATEST_THRESHOLD_PX;
+     jumpLatestBtn.classList.toggle('visible', show);
+   }
 
    messagesEl.addEventListener('scroll', function () {
      // Consider "at bottom" if within 50px of the bottom edge.
-     var atBottom = messagesEl.scrollHeight - messagesEl.scrollTop - messagesEl.clientHeight < 50;
+     var atBottom = distanceFromBottom() < 50;
      userScrolledUp = !atBottom;
+     updateJumpLatestBtn();
    });
+
+   if (jumpLatestBtn) {
+     jumpLatestBtn.addEventListener('click', function () {
+       scrollToBottom();
+     });
+   }
 
    function scrollToBottom() {
      userScrolledUp = false;
      messagesEl.scrollTop = messagesEl.scrollHeight;
+     updateJumpLatestBtn();
    }
 
    /** Auto-scroll only if the user hasn't scrolled away. */
@@ -7624,6 +7683,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      if (!userScrolledUp) {
        messagesEl.scrollTop = messagesEl.scrollHeight;
      }
+     updateJumpLatestBtn();
    }
 
  function getStatusIcon(status) {
