@@ -5470,6 +5470,9 @@ var pendingRenderRetries = {}; // keys of pending renderMarkdown retries
 var historyRenderGen = 0; // generation counter for history renders (invalidated on DOM rebuild)
 let isCompacting = false;  // true while /compact is running
  let isClearing = false;    // true while Kiro /clear (or clear/status) is running
+ // True only for user-typed /compact — auto-compact must not leave a sticky
+ // "Conversation compacted." banner while the agent keeps streaming.
+ let manualCompacting = false;
  let compactedWarningText = '';  // buffered warning text during compaction
  // "*Context compacted*" notice — Codex emits this BEFORE the Heads-up
  // warning (item/completed → thread/compacted → Warning). Buffer both and
@@ -6570,6 +6573,7 @@ var end = displayText.length;
     pendingImages.splice(0);
     imagePreviewStrip.innerHTML = '';
     isCompacting = true;
+    manualCompacting = true;
     compactedWarningText = '';
     compactedNoticeText = '';
     if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
@@ -6924,6 +6928,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     // A historical "Context compacted" tool_call during session/load must NOT
     // leave isCompacting stuck true — that silently blocks handleSend().
     isCompacting = false;
+    manualCompacting = false;
     isClearing = false;
     compactedWarningText = '';
     compactedNoticeText = '';
@@ -6966,6 +6971,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     isLoadingSession = false;
     // Safety: never leave compact-mode latched after a history replay.
     isCompacting = false;
+    manualCompacting = false;
     isClearing = false;
     compactedWarningText = '';
     compactedNoticeText = '';
@@ -10421,11 +10427,13 @@ sessionState = {
       hideCompactionProgress();
       var warning = compactedWarningText;
       var notice = compactedNoticeText;
+      var wasManual = manualCompacting;
       compactedWarningText = '';
       compactedNoticeText = '';
       if (!warning && !notice) {
         isCompacting = false;
-        if (statusEl) statusEl.innerHTML = '';
+        manualCompacting = false;
+        restoreProcessingStatusSpinner();
         return;
       }
       chatHistory = [];
@@ -10441,11 +10449,60 @@ sessionState = {
       toolCalls = {};
       toolCallDiffs = {};
       isCompacting = false;
-      if (statusEl) statusEl.innerHTML = '';
+      manualCompacting = false;
       hideEmpty();
       // Swallow late agent boilerplate (Codex Heads-up, Claude AbortError, …).
       suppressPostCompactNoiseUntil = Date.now() + 2500;
-      showCompactNotice();
+      // Manual /compact only — auto-compact continues streaming in the same
+      // turn, so a banner would sit on top of the resumed reply.
+      if (wasManual) {
+        showCompactNotice();
+      } else {
+        // Auto-compact: agent often resumes the same turn immediately —
+        // drop any leftover banner and restore the plain processing spinner.
+        clearCompactNotices();
+        restoreProcessingStatusSpinner();
+      }
+    }
+
+    /** Bare spinner while the turn is still running (no "Compacting…" label). */
+    function restoreProcessingStatusSpinner() {
+      if (isProcessing && statusEl && !statusEl.innerHTML) {
+        statusEl.innerHTML = '<span class="spinner"></span>';
+      } else if (!isProcessing && statusEl) {
+        statusEl.innerHTML = '';
+      }
+    }
+
+    /**
+     * Agent resumed streaming (message / thought / tool) after or during
+     * compact. Flush buffered notices if any; for auto-compact, drop compact
+     * UI so "Compacting…" does not sit on top of the live reply. Manual
+     * /compact keeps waiting until a real completion notice arrives.
+     */
+    function endCompactingOnAgentResume() {
+      clearCompactNotices();
+      if (!isCompacting) {
+        // Compact UI may have been left in statusEl after a prior soft exit.
+        if (statusEl && /compact/i.test(statusEl.textContent || '')) {
+          hideCompactionProgress();
+          restoreProcessingStatusSpinner();
+        }
+        return;
+      }
+      if (compactedWarningText || compactedNoticeText) {
+        flushCompactionMessages();
+        return;
+      }
+      // Manual /compact: keep spinner until completion notice / promptEnd.
+      if (manualCompacting) {
+        return;
+      }
+      if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+      isCompacting = false;
+      manualCompacting = false;
+      hideCompactionProgress();
+      restoreProcessingStatusSpinner();
     }
 
     function currentAgentLabel() {
@@ -10582,6 +10639,7 @@ sessionState = {
              /conversation compacted/i.test(_autoTrim) ||
              /^Compacting\\.\\.\\./i.test(_autoTrim))) {
            isCompacting = true;
+           manualCompacting = false;
            compactedWarningText = '';
            compactedNoticeText = '';
            showCompactionProgress(
@@ -10636,14 +10694,19 @@ sessionState = {
             break;
           }
           // Real post-compaction content — flush buffered notices, then stream.
-          // If we have no notice yet, keep waiting (do not abandon / stream mid-compact).
+          // Auto-compact may resume with no notice — drop compact UI and stream.
+          // Manual /compact keeps waiting for a completion signal.
           if (compactedWarningText || compactedNoticeText) {
             flushCompactionMessages();
-          } else {
+          } else if (manualCompacting) {
             break;
+          } else {
+            endCompactingOnAgentResume();
           }
        }
         if (content && content.type === 'text' && content.text) {
+          // Agent resumed after compact — drop banner / compact status.
+          endCompactingOnAgentResume();
           currentAssistantText += content.text;
                     // Flush /ps panel — assistant is producing content
                     if (currentPsEl) { currentPsEl = null; if (psPanel) psPanel.style.display = 'none'; }
@@ -10771,6 +10834,7 @@ sessionState = {
        case 'agent_thought_chunk': {
          const content = update.content;
          if (content && content.type === 'text') {
+           endCompactingOnAgentResume();
            currentThoughtText += content.text;
            // Don't mount an empty Thinking… card — it flashes then vanishes when
            // tools arrive before any real text (same idea as assistant bubbles).
@@ -10853,6 +10917,7 @@ sessionState = {
         }
         if (!isCompacting) {
           isCompacting = true;
+          manualCompacting = false;
           compactedWarningText = '';
           compactedNoticeText = '';
           if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
@@ -10862,6 +10927,7 @@ sessionState = {
         var _tcCcStatus = update.status || '';
         if (_tcCcStatus === 'failed') {
           isCompacting = false;
+          manualCompacting = false;
           compactedWarningText = '';
           compactedNoticeText = '';
           if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
@@ -10892,6 +10958,8 @@ sessionState = {
           break; // Suppress — taskResult is redundant with main agent's summary
         }
       }
+      // Non-compaction tool — agent is working again; clear compact status.
+      endCompactingOnAgentResume();
       const tc = update;
       addToolCall(
         tc.toolCallId || 'unknown',
@@ -10927,6 +10995,7 @@ sessionState = {
         }
         if (!isCompacting) {
           isCompacting = true;
+          manualCompacting = false;
           compactedWarningText = '';
           compactedNoticeText = '';
           if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
@@ -10936,6 +11005,7 @@ sessionState = {
         var _ccStatus = update.status || '';
         if (_ccStatus === 'failed') {
           isCompacting = false;
+          manualCompacting = false;
           compactedWarningText = '';
           compactedNoticeText = '';
           if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
@@ -11187,23 +11257,56 @@ sessionState = {
   /**
    * Handle _kiro.dev/compaction/status — show progress bar and enter compacting
    * mode (covers auto-compaction as well as explicit /compact).
+   *
+   * Kiro protocol shape (current):
+   *   { status: { type: "started"|"completed"|"failed" }, summary: string|null }
+   * Older builds may send a plain message string instead.
    */
   function handleKiroCompactionStatus(params) {
     if (isLoadingSession) return;
     var msg = params && typeof params.message === 'string' ? params.message : '';
+    var statusObj = params && params.status;
+    var statusType = '';
+    if (typeof statusObj === 'string') {
+      statusType = statusObj;
+    } else if (statusObj && typeof statusObj === 'object' && statusObj.type) {
+      statusType = String(statusObj.type);
+    }
+    var summary = params && typeof params.summary === 'string' ? params.summary : '';
+
     if (!isCompacting) {
       isCompacting = true;
+      // Status RPC covers auto-compaction too — not a user /compact.
+      manualCompacting = false;
       compactedWarningText = '';
       compactedNoticeText = '';
       if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
       setProcessing(true);
     }
-    // Only clear chat on a true completion signal — never on "Compacting…".
-    var looksDone = !!msg && /compacted/i.test(msg) && !/compacting/i.test(msg);
-    if (looksDone) {
-      finalizeKiroCompact(msg);
+
+    if (statusType === 'failed') {
+      if (kiroCompactWatchdog) { clearTimeout(kiroCompactWatchdog); kiroCompactWatchdog = null; }
+      isCompacting = false;
+      manualCompacting = false;
+      compactedWarningText = '';
+      compactedNoticeText = '';
+      if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+      hideCompactionProgress();
+      if (statusEl) statusEl.innerHTML = '';
+      setProcessing(false);
+      addMessage('error', msg || summary || 'Compaction failed.');
       return;
     }
+
+    // Completion: status.type === "completed" (primary) or legacy message text.
+    var looksDone = statusType === 'completed' ||
+      (!!msg && /compacted/i.test(msg) && !/compacting/i.test(msg));
+    if (looksDone) {
+      // Do not paint Kiro's summary markdown into the panel — client note only.
+      finalizeKiroCompact(msg || 'Conversation compacted.');
+      return;
+    }
+
     showCompactionProgress(msg || 'Compacting conversation...', extractStatusPercent(params));
   }
 
