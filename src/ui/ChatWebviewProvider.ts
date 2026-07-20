@@ -4378,8 +4378,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    }
    .turn-tools-list { }
    .turn-tools-list.collapsed { display: none; }
-   /* Compact mode: summary + fold wrap thought/tools only. Assistant reply stays
-      outside the fold so it streams on the chat panel while Collapse is on. */
+   /* Compact mode: summary + fold wrap thought/tools/interim. Final assistant
+      reply sits outside the fold. Fold body is HIDDEN by default when Collapse
+      is on — missing .collapsed used to leave thoughts/tools visible. */
    .turn > .turn-tools-summary { margin: 2px 0; }
    .turn-fold-body {
      display: flex;
@@ -4387,6 +4388,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
      gap: 4px;
    }
    .turn-fold-body.collapsed { display: none; }
+   /* Fail-safe: in Collapse mode, hide fold unless explicitly expanded. */
+   .messages.compact-mode .turn > .turn-fold-body { display: none; }
+   .messages.compact-mode .turn > .turn-fold-body.expanded { display: flex; }
 
    /* Compact inline tool call */
    .tool-call-inline {
@@ -6540,11 +6544,13 @@ var end = displayText.length;
   // Compact mode toggle — collapse/expand all turn folds (thought + tools + reply)
  var compactMode = true; // default: compact (collapsed)
  const compactToggleBtn = document.getElementById('compactToggle');
+ if (messagesEl) messagesEl.classList.add('compact-mode');
  if (compactToggleBtn) {
    compactToggleBtn.addEventListener('click', function() {
      compactMode = !compactMode;
      compactToggleBtn.classList.toggle('active', compactMode);
       compactToggleBtn.setAttribute('aria-pressed', compactMode ? 'true' : 'false');
+     if (messagesEl) messagesEl.classList.toggle('compact-mode', compactMode);
      applyCompactModeToAllTurns(compactMode);
     });
   }
@@ -6708,6 +6714,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      // from scratch (same pattern as restoreState) guarantees every
      // chatHistory entry has a DOM element before we batch-render markdown.
     var assistantItems = renderChatHistory();
+    // renderChatHistory clears isLoadingSession's DOM rebuild while the flag
+    // is already false — force folds shut again after promote.
+    forceCollapseTurnFolds();
     if (loadOverlay) loadOverlay.classList.remove('visible');
     if (inputArea) inputArea.classList.remove('disabled');
     updateSendButton();
@@ -7405,17 +7414,34 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
   }
 
+    function setFoldExpanded(body, expanded) {
+      if (!body) return;
+      if (expanded) {
+        body.classList.add('expanded');
+        body.classList.remove('collapsed');
+      } else {
+        body.classList.remove('expanded');
+        body.classList.add('collapsed');
+      }
+    }
+
     function attachTurnSummaryClick(summary) {
       if (summary._foldClickBound) return;
       summary._foldClickBound = true;
       summary.addEventListener('click', function() {
-        // Compact: summary's next sibling is .turn-fold-body on the turn.
-        // Non-compact: next sibling is the tools list (or legacy fold around list).
-        var body = summary.nextElementSibling;
+        var turn = summary.closest('.turn');
+        // Prefer the real fold body — nextElementSibling can be an assistant
+        // summary bubble, which made the caret lie and toggled the wrong node.
+        var body = (turn && getTurnFoldBody(turn)) || summary.nextElementSibling;
         if (!body) return;
-        body.classList.toggle('collapsed');
-        // Remember manual expand so streaming updates don't force-collapse again.
-        body._userExpanded = !body.classList.contains('collapsed');
+        // Compact-mode CSS uses .expanded as the open flag; otherwise .collapsed.
+        var willExpand = (messagesEl && messagesEl.classList.contains('compact-mode'))
+          ? !body.classList.contains('expanded')
+          : body.classList.contains('collapsed');
+        setFoldExpanded(body, willExpand);
+        // Sticky expand only while the turn is still streaming — completed
+        // turns must not stay open across promptEnd / history restore.
+        body._userExpanded = !isLoadingSession && isProcessing && willExpand;
         hideTcTooltip();
         var count = parseInt(summary.dataset.count || '0', 10);
         updateToolGroupSummary(summary, count, summary._titles || [], summary._kinds || [], summary._rawInputs || []);
@@ -7598,8 +7624,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       attachTurnSummaryClick(summary);
 
       if (!body) {
+        // Create already-collapsed so a missing class never flashes open content.
         body = document.createElement('div');
-        body.className = 'turn-fold-body';
+        body.className = collapsed ? 'turn-fold-body collapsed' : 'turn-fold-body';
       }
 
       // Rebuild into the canonical turn-level structure.
@@ -7632,14 +7659,45 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         turn.appendChild(a);
       });
 
-      // Collapse mode defaults the fold shut, but honor a manual expand so the
-      // user can keep watching thought/tools while the turn streams.
-      if (collapsed && !body._userExpanded) body.classList.add('collapsed');
-      else body.classList.remove('collapsed');
+      // Default shut. Honor sticky expand only while a live turn is streaming
+      // (isProcessing) — never during session/load or after promptEnd.
+      var allowSticky = collapsed && body._userExpanded && isProcessing && !isLoadingSession;
+      if (collapsed && !allowSticky) {
+        body._userExpanded = false;
+        setFoldExpanded(body, false);
+      } else if (allowSticky) {
+        setFoldExpanded(body, true);
+      } else if (!collapsed) {
+        body.classList.remove('collapsed');
+        body.classList.add('expanded');
+      }
 
       var count = parseInt(summary.dataset.count || '0', 10);
       updateToolGroupSummary(summary, count, summary._titles || [], summary._kinds || [], summary._rawInputs || []);
       return body;
+    }
+
+    /** Every turn fold must be shut in Collapse mode (history + promptEnd). */
+    function forceCollapseTurnFolds() {
+      if (!compactMode) return;
+      messagesEl.querySelectorAll('.turn').forEach(function(turn) {
+        // Scoop any stray thoughts/tools that escaped the fold, then shut it.
+        ensureTurnFoldStructure(turn, true);
+        var body = getTurnFoldBody(turn);
+        if (!body) return;
+        body._userExpanded = false;
+        setFoldExpanded(body, false);
+        var summary = getTurnSummaryEl(turn);
+        if (summary) {
+          updateToolGroupSummary(
+            summary,
+            parseInt(summary.dataset.count || '0', 10),
+            summary._titles || [],
+            summary._kinds || [],
+            summary._rawInputs || []
+          );
+        }
+      });
     }
 
     /**
@@ -7681,7 +7739,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       foldables.forEach(function(el) { body.appendChild(el); });
     }
 
-    /** Place the visible final assistant summary after the fold (always streams). */
+    /** Place the visible final assistant summary after the fold (after commit). */
     function placeSummaryAssistant(assistantEl) {
       if (!currentTurnEl) return;
       assistantEl.classList.add('assistant-summary');
@@ -7695,6 +7753,16 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
             currentTurnEl.querySelectorAll('.message.assistant.assistant-summary'),
             function(prev) {
               if (prev === assistantEl) return;
+              prev.classList.add('assistant-interim');
+              prev.classList.remove('assistant-summary');
+              body.appendChild(prev);
+            }
+          );
+          // Also fold any unmarked live assistants that slipped outside.
+          Array.prototype.forEach.call(
+            currentTurnEl.querySelectorAll(':scope > .message.assistant'),
+            function(prev) {
+              if (prev === assistantEl || prev.classList.contains('assistant-summary')) return;
               prev.classList.add('assistant-interim');
               prev.classList.remove('assistant-summary');
               body.appendChild(prev);
@@ -7815,14 +7883,23 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         a.classList.remove('assistant-interim');
         a.classList.remove('assistant-summary');
       });
+      var foldBody = getTurnFoldBody(turn);
+      if (foldBody) {
+        foldBody.classList.remove('collapsed');
+        foldBody.classList.remove('expanded');
+        foldBody._userExpanded = false;
+      }
     }
 
     function applyCompactModeToAllTurns(collapsed) {
+      if (messagesEl) messagesEl.classList.toggle('compact-mode', !!collapsed);
       messagesEl.querySelectorAll('.turn').forEach(function(turn) {
         if (collapsed) {
           var body = getTurnFoldBody(turn);
           if (body) body._userExpanded = false;
           ensureTurnFoldStructure(turn, true);
+          body = getTurnFoldBody(turn);
+          if (body) setFoldExpanded(body, false);
         } else {
           unwrapTurnFold(turn);
         }
@@ -7884,13 +7961,16 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
 
     function placeAssistantInTurn(assistantEl) {
-      // Compact: stream the live assistant in the panel (outside the fold) so
-      // the user can read it as it arrives. If more tools follow, interim commit
-      // tucks that segment into the fold — only placeSummaryAssistant / promptEnd
-      // leave a reply visible. Do not keep the live bubble folded for the whole
-      // turn (that delayed the final reply until streaming finished).
-      placeSummaryAssistant(assistantEl);
-      refreshCurrentTurnSummary();
+      // Compact: keep the live bubble inside the collapsed fold. Streaming it
+      // outside made mid-turn "I'll check…" text flash in the panel until the
+      // next tool call tucked it away. promptEnd / non-interim commit lifts the
+      // final reply via placeSummaryAssistant.
+      if (compactMode) {
+        moveAssistantIntoFold(assistantEl);
+        refreshCurrentTurnSummary();
+        return;
+      }
+      if (currentTurnEl) currentTurnEl.appendChild(assistantEl);
     }
 
     // Ensure the current turn has a tools container.
@@ -8118,11 +8198,15 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        return;
      }
      summaryEl.style.display = '';
-     var body = summaryEl.nextElementSibling;
-     var collapsed = !!(body && body.classList.contains('collapsed'));
+     var turnForFold = summaryEl.closest && summaryEl.closest('.turn');
+     var body = (turnForFold && getTurnFoldBody(turnForFold)) || summaryEl.nextElementSibling;
+     var isOpen = !!(body && (
+       body.classList.contains('expanded') ||
+       (body.classList.contains('collapsed') === false && !(messagesEl && messagesEl.classList.contains('compact-mode')))
+     ));
      var detail = generateToolGroupSummary(titles, kinds, rawInputs);
      if (!detail) detail = toolCount + ' tool call' + (toolCount === 1 ? '' : 's');
-     summaryEl.innerHTML = (collapsed ? '▸ ' : '▾ ') + '<span class="tc-summary-detail">' + escapeHtml(detail) + '</span>';
+     summaryEl.innerHTML = (isOpen ? '▾ ' : '▸ ') + '<span class="tc-summary-detail">' + escapeHtml(detail) + '</span>';
    }
 
     /**
@@ -8828,6 +8912,9 @@ function renderChatHistory() {
       updateToolGroupSummary(summary, parseInt(summary.dataset.count || '0', 10), summary._titles || [], summary._kinds || [], summary._rawInputs || []);
     }
   });
+  // promoteFinalAssistant / structure rebuild can leave folds open after
+  // session/load — force Collapse mode shut once the DOM is final.
+  forceCollapseTurnFolds();
    return assistantItems;
  }
 
@@ -9260,13 +9347,17 @@ sessionState = {
       }
      }
     // Auto-collapse completed turns (respect compact mode): hide thought +
-    // tools + reply behind the summary line.
+    // tools behind the summary line. Clear sticky expand — turn is done.
      if (currentTurnEl) {
         if (currentToolsCountEl) currentToolsCountEl.dataset.count = String(currentToolCount);
         var _hasSubagent = currentToolsCountEl && currentToolsCountEl._hasSubagent;
         var _shouldCollapse = compactMode || _hasSubagent || currentToolCount > 3;
         if (_shouldCollapse) {
+          var _endBody = getTurnFoldBody(currentTurnEl);
+          if (_endBody) _endBody._userExpanded = false;
           ensureTurnFoldStructure(currentTurnEl, true);
+          _endBody = getTurnFoldBody(currentTurnEl);
+          if (_endBody) setFoldExpanded(_endBody, false);
         } else if (currentToolsCountEl && currentToolsCountEl.classList.contains('turn-tools-summary')) {
           updateToolGroupSummary(currentToolsCountEl, currentToolCount, currentToolsCountEl._titles || [], currentToolsCountEl._kinds || [], currentToolsCountEl._rawInputs || []);
         }
