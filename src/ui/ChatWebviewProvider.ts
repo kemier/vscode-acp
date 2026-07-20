@@ -5393,6 +5393,7 @@ let isCompacting = false;  // true while /compact is running
  // flush Warning first so the UI matches the intended order.
  let compactedNoticeText = '';
  let compactionFlushTimer = null;
+ let kiroCompactWatchdog = null; // safety timeout while waiting for true Kiro done
 
    // --- Message queue ---
     // When the agent is generating, new messages are queued and
@@ -6474,10 +6475,21 @@ var end = displayText.length;
     compactedWarningText = '';
     compactedNoticeText = '';
     if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+    if (kiroCompactWatchdog) { clearTimeout(kiroCompactWatchdog); kiroCompactWatchdog = null; }
     setProcessing(true);
     addMessage('user', '/compact');
     var isKiro = sessionState && /kiro/i.test(sessionState.agentName || sessionState.agentConfigKey || '');
     if (isKiro) {
+      // Wait up to 3 minutes for a true compacted notice before giving up
+      // (without clearing history).
+      kiroCompactWatchdog = setTimeout(function() {
+        kiroCompactWatchdog = null;
+        if (!isCompacting) return;
+        handleKiroCompactDone({
+          error: true,
+          message: 'Kiro /compact timed out waiting for a compaction notice. Conversation was left unchanged.',
+        });
+      }, 180000);
       vscode.postMessage({ type: 'executeKiroCommand', command: 'compact' });
     } else {
       vscode.postMessage({ type: 'sendPrompt', text: '/compact' });
@@ -9426,13 +9438,19 @@ sessionState = {
 
       case 'promptEnd':
       vscode.postMessage({ type: 'debugLog', message: '[WV-PROMPTEND] promptEnd received. chatHistoryLen=' + chatHistory.length + ' currentAssistantTextLen=' + currentAssistantText.length + ' hasCurrentAssistantEl=' + !!currentAssistantEl });
-       // Safety: reset isCompacting in case compacted message was missed
+       // Compaction: only clear the conversation when we already buffered a
+       // real completion notice. Do NOT wipe history on a bare execute ack /
+       // promptEnd (Kiro returns before compaction finishes).
        if (isCompacting) {
-         flushCompactionMessages();
-         if (isCompacting) {
+         if (compactedWarningText || compactedNoticeText) {
+           flushCompactionMessages();
+         } else if (!(sessionState && /kiro/i.test(sessionState.agentName || sessionState.agentConfigKey || ''))) {
+           // Codex safety net: abandon stuck compacting with no notice.
            isCompacting = false;
            if (statusEl) statusEl.innerHTML = '';
          }
+         // Kiro: leave isCompacting true until compaction/status or
+         // "Conversation compacted" arrives.
        }
           // Finalize thought block if present (DOM+buffers — don't drop on whitespace chunk)
           if (currentThoughtEl || currentThoughtText || thoughtDomBase) {
@@ -9454,6 +9472,14 @@ sessionState = {
           }
         }
         setProcessing(false);
+       // Kiro /compact can still be running after execute's promptEnd — keep
+       // the Stop/spinner state until we get a true compacted notice.
+       if (isCompacting) {
+         setProcessing(true);
+         if (statusEl && !statusEl.innerHTML) {
+           statusEl.innerHTML = '<span class="spinner"></span><span>Compacting conversation...</span>';
+         }
+       }
        // Show interrupted notice in status bar (right upper of input box)
        // when the turn was cancelled. Don't add duplicate system message to chat.
      if (msg.stopReason === 'cancelled') {
@@ -10120,6 +10146,7 @@ sessionState = {
      */
     function flushCompactionMessages() {
       if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+      if (kiroCompactWatchdog) { clearTimeout(kiroCompactWatchdog); kiroCompactWatchdog = null; }
       var warning = compactedWarningText;
       var notice = compactedNoticeText;
       compactedWarningText = '';
@@ -10655,12 +10682,10 @@ sessionState = {
       if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
       setProcessing(true);
     }
-    // Done signal — finish even if execute RPC is still outstanding.
-    // Kiro often never resolves execute on deserialize errors; status is
-    // the reliable completion path.
+    // Only clear chat on a true completion signal — never on "Compacting…".
     var looksDone = !!msg && /compacted/i.test(msg) && !/compacting/i.test(msg);
     if (looksDone) {
-      handleKiroCompactDone({ message: msg });
+      finalizeKiroCompact(msg);
       return;
     }
     if (statusEl) {
@@ -10671,11 +10696,28 @@ sessionState = {
   }
 
   /**
-   * _kiro.dev/commands/execute for compact finished. Clear history and show
-   * the notice (mirrors Codex flushCompactionMessages). Idempotent.
+   * True completion for Kiro compact — clear history only here (or from
+   * agent_message "Conversation compacted"), never on a bare execute ack.
+   */
+  function finalizeKiroCompact(notice) {
+    if (!isCompacting) return;
+    if (kiroCompactWatchdog) { clearTimeout(kiroCompactWatchdog); kiroCompactWatchdog = null; }
+    compactedNoticeText = String(notice || '').trim() || '*Conversation compacted.*';
+    if (!compactedWarningText) {
+      flushCompactionMessages();
+    } else {
+      scheduleCompactionFlush();
+    }
+    setProcessing(false);
+  }
+
+  /**
+   * _kiro.dev/commands/execute returned. An empty/early ack must NOT clear
+   * the conversation — wait for compaction/status or agent message.
    */
   function handleKiroCompactDone(msg) {
     if (msg && msg.error) {
+      if (kiroCompactWatchdog) { clearTimeout(kiroCompactWatchdog); kiroCompactWatchdog = null; }
       isCompacting = false;
       compactedWarningText = '';
       compactedNoticeText = '';
@@ -10688,19 +10730,24 @@ sessionState = {
       return;
     }
     if (!isCompacting) {
-      return; // already flushed
+      return;
     }
-    var notice = (msg && typeof msg.message === 'string' && msg.message.trim())
-      ? msg.message.trim()
-      : (compactedNoticeText || '*Conversation compacted.*');
-    compactedNoticeText = notice;
-    if (!compactedWarningText) {
-      // No Heads-up from Kiro — flush immediately with the notice alone.
-      flushCompactionMessages();
-    } else {
-      scheduleCompactionFlush();
+    var fromRpc = (msg && typeof msg.message === 'string') ? msg.message.trim() : '';
+    var looksDone = !!fromRpc && /compacted/i.test(fromRpc) && !/compacting/i.test(fromRpc);
+    if (looksDone) {
+      finalizeKiroCompact(fromRpc);
+      return;
     }
-    setProcessing(false);
+    // Already got a done notice via status/agent chunk while RPC was pending.
+    if (compactedNoticeText && /compacted/i.test(compactedNoticeText) && !/compacting/i.test(compactedNoticeText)) {
+      finalizeKiroCompact(compactedNoticeText);
+      return;
+    }
+    // Keep conversation; show waiting status until true completion.
+    if (statusEl) {
+      statusEl.innerHTML = '<span class="spinner"></span><span>Compacting conversation...</span>';
+    }
+    setProcessing(true);
   }
 
   // Handle _kiro.dev/subagent/list_update notification (Kiro CLI specific).
