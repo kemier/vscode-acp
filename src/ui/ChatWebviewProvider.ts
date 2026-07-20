@@ -9627,18 +9627,17 @@ sessionState = {
 
       case 'promptEnd':
       vscode.postMessage({ type: 'debugLog', message: '[WV-PROMPTEND] promptEnd received. chatHistoryLen=' + chatHistory.length + ' currentAssistantTextLen=' + currentAssistantText.length + ' hasCurrentAssistantEl=' + !!currentAssistantEl });
-       // Compaction: only clear the conversation when we already buffered a
-       // real completion notice. Do NOT wipe history on a bare execute ack /
-       // promptEnd (Kiro returns before compaction finishes; Codex often
-       // finishes the prompt turn before thread/compacted / contextCompaction
-       // completed arrives — keep waiting).
+       // Compaction: clear when we already buffered a completion notice.
+       // Claude ACP often finishes /compact with only usage_update + end_turn
+       // (no "Compacting completed." text) — treat that silent promptEnd as success.
+       // Codex/Kiro: keep waiting for contextCompaction / status / notice.
        if (isCompacting) {
          if (compactedWarningText || compactedNoticeText) {
            flushCompactionMessages();
+         } else if (isClaudeAgent()) {
+           compactedNoticeText = 'Compacting completed.';
+           flushCompactionMessages();
          }
-         // Leave isCompacting true until notice / contextCompaction completed /
-         // Kiro compaction status. A stuck spinner is cleared by Stop or the
-         // Kiro/Codex compact watchdogs.
        }
           // Finalize thought block if present (DOM+buffers — don't drop on whitespace chunk)
           if (currentThoughtEl || currentThoughtText || thoughtDomBase) {
@@ -9791,6 +9790,19 @@ sessionState = {
          break;
 
         case 'error':
+          // Claude ACP may surface "AbortError: Compaction canceled." as an
+          // error after a successful /compact — do not paint it.
+          if (isCompacting || Date.now() < suppressPostCompactNoiseUntil) {
+            var _errMsg = String(msg.message || '');
+            if (/AbortError:\\s*Compaction cancel/i.test(_errMsg) ||
+                /Compaction cancel(l)?ed/i.test(_errMsg)) {
+              if (isCompacting && (compactedWarningText || compactedNoticeText || isClaudeAgent())) {
+                if (!compactedNoticeText) compactedNoticeText = 'Compacting completed.';
+                flushCompactionMessages();
+              }
+              break;
+            }
+          }
           addMessage('error', msg.message || 'An error occurred');
           break;
 
@@ -10359,10 +10371,9 @@ sessionState = {
     const STREAMING_RENDER_INTERVAL = 80; // ms
 
     /**
-     * Clear the chat after compaction. Codex emits "Warning: Heads up…" and
-     * "*Context compacted…*" from codex-core / codex-acp — do not re-paint
-     * those into the panel (status spinner already covered progress).
-     * Show a short client-owned system note instead.
+     * Clear the chat after compaction. Agent-emitted boilerplate (Codex Heads-up,
+     * Claude "Compacting completed.", AbortError) is not re-painted — status
+     * spinner already covered progress. Show a short client-owned note instead.
      */
     function flushCompactionMessages() {
       if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
@@ -10392,17 +10403,31 @@ sessionState = {
       isCompacting = false;
       if (statusEl) statusEl.innerHTML = '';
       hideEmpty();
-      // Swallow late Codex Heads-up / Context-compacted agent_message chunks.
+      // Swallow late agent boilerplate (Codex Heads-up, Claude AbortError, …).
       suppressPostCompactNoiseUntil = Date.now() + 2500;
       addMessage('system', 'Conversation compacted.');
     }
 
-    function isCodexPostCompactBoilerplate(text) {
+    function currentAgentLabel() {
+      return (sessionState && (sessionState.agentName || sessionState.agentConfigKey || '')) || '';
+    }
+
+    function isClaudeAgent() {
+      return /claude/i.test(currentAgentLabel());
+    }
+
+    /** Agent post-compact noise that must not land in the chat panel. */
+    function isPostCompactBoilerplate(text) {
       var t = String(text || '').trim();
       if (!t) return false;
       if (t.indexOf('*Context compacted') === 0) return true;
       if (/^Warning:\\s*Heads up/i.test(t)) return true;
       if (/conversation compacted/i.test(t) && t.length < 200) return true;
+      // In-progress only — "Compacting completed/failed" drives state separately.
+      if (/^Compacting\\.\\.\\./i.test(t)) return true;
+      // Claude ACP often emits this after a successful /compact as the turn aborts.
+      if (/AbortError:\\s*Compaction cancel/i.test(t)) return true;
+      if (/Compaction cancel(l)?ed/i.test(t) && t.length < 120) return true;
       return false;
     }
 
@@ -10479,10 +10504,15 @@ sessionState = {
           content.text.trim().startsWith('Effort configuration is currently not available')) {
         break;
       }
-      // Drop late Codex post-compact boilerplate so it never lands in the panel.
-      if (!isCompacting && !isLoadingSession && content && content.type === 'text' &&
-          Date.now() < suppressPostCompactNoiseUntil &&
-          isCodexPostCompactBoilerplate(content.text)) {
+      // Drop late post-compact boilerplate so it never lands in the panel.
+      if (!isLoadingSession && content && content.type === 'text' &&
+          isPostCompactBoilerplate(content.text) &&
+          (isCompacting || Date.now() < suppressPostCompactNoiseUntil)) {
+        // Still drive Claude progress from "Compacting..." while mid-flight.
+        var _noiseTrim = content.text.trim();
+        if (isCompacting && /^Compacting\\.\\.\\./i.test(_noiseTrim)) {
+          showCompactionProgress('Compacting...', null);
+        }
         break;
       }
       // Detect auto-compaction: if the agent sends "*Context compacted*" text
@@ -10492,6 +10522,21 @@ sessionState = {
       // Skip during session/load — that text is historical, not a live /compact.
        if (!isLoadingSession && content && content.type === 'text') {
          var _autoTrim = content.text.trim();
+         // Claude ACP: AbortError after compact must not clear or pollute chat.
+         if (/AbortError:\\s*Compaction cancel/i.test(_autoTrim) ||
+             (/Compaction cancel(l)?ed/i.test(_autoTrim) && _autoTrim.length < 120)) {
+           if (isCompacting && (compactedWarningText || compactedNoticeText)) {
+             flushCompactionMessages();
+           } else if (isCompacting) {
+             // Spurious cancel with no success notice yet — drop compacting state.
+             isCompacting = false;
+             if (kiroCompactWatchdog) { clearTimeout(kiroCompactWatchdog); kiroCompactWatchdog = null; }
+             hideCompactionProgress();
+             if (statusEl) statusEl.innerHTML = '';
+             setProcessing(false);
+           }
+           break;
+         }
          if (!isCompacting && (
              _autoTrim.indexOf('*Context compacted') === 0 ||
              /conversation compacted/i.test(_autoTrim) ||
@@ -10500,7 +10545,7 @@ sessionState = {
            compactedWarningText = '';
            compactedNoticeText = '';
            showCompactionProgress(
-             /^Compacting/i.test(_autoTrim) ? _autoTrim : 'Compacting conversation...',
+             /^Compacting/i.test(_autoTrim) ? 'Compacting...' : 'Compacting conversation...',
              null,
            );
            setProcessing(true);
@@ -10509,10 +10554,11 @@ sessionState = {
          if (isCompacting && /^Compacting (completed|failed)/i.test(_autoTrim)) {
            if (/failed/i.test(_autoTrim)) {
              isCompacting = false;
+             if (kiroCompactWatchdog) { clearTimeout(kiroCompactWatchdog); kiroCompactWatchdog = null; }
              hideCompactionProgress();
              if (statusEl) statusEl.innerHTML = '';
              setProcessing(false);
-             addMessage('error', _autoTrim);
+             addMessage('error', 'Compaction failed.');
              break;
            }
            finalizeKiroCompact(_autoTrim);
