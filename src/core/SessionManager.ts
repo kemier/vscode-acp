@@ -1779,6 +1779,14 @@ export class SessionManager extends EventEmitter {
       placeholder.models = (response as any).models ?? null;
       placeholder.configOptions = (response as any).configOptions ?? null;
 
+      // Emit config-options-changed so the webview picks up the model/mode
+      // from the loaded session. Without this, the picker still shows the
+      // defaults from the connectToAgent → newSession call (which created a
+      // fresh session with the default model before loadSession overwrote it).
+      if (placeholder.configOptions && placeholder.configOptions.length > 0) {
+        this.applyConfigOptions(sessionId, placeholder.configOptions);
+      }
+
       // If the agent didn't return configOptions, probe for them.
       if (!placeholder.configOptions || placeholder.configOptions.length === 0) {
         void this.probeOrSynthesizeConfigOptions(sessionId);
@@ -1904,6 +1912,12 @@ export class SessionManager extends EventEmitter {
     this.activeSessionId = sessionId;
     this.emit('agent-connected', agentName);
     this.emit('active-session-changed', sessionId);
+
+    // Emit config-options-changed so the webview picks up the model/mode
+    // from the resumed session (same fix as loadSession).
+    if (sessionInfo.configOptions && sessionInfo.configOptions.length > 0) {
+      this.applyConfigOptions(sessionId, sessionInfo.configOptions);
+    }
 
     this.historyStore?.touch(agentName, sessionId);
     // Restore saved config options (mode/model/reasoning_effort).
