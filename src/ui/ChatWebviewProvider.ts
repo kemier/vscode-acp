@@ -6307,13 +6307,12 @@ var end = displayText.length;
     if (atMatch) {
         const query = atMatch[1].toLowerCase();
       const mentions = [
-         { name: 'terminal', description: 'Attach last terminal output' },
-         { name: 'file', description: 'Attach a file' },
-         { name: 'folder', description: 'Attach folder listing' },
-         { name: 'problems', description: 'Attach workspace diagnostics' },
-         { name: 'rename', description: 'Rename the current conversation' },
-         { name: 'session', description: 'Add a past session summary as context' },
-       ];
+        { name: 'terminal', description: 'Attach last terminal output' },
+        { name: 'file', description: 'Attach a file' },
+        { name: 'folder', description: 'Attach folder listing' },
+        { name: 'problems', description: 'Attach workspace diagnostics' },
+        { name: 'rename', description: 'Rename the current conversation' },
+      ];
         // Dedupe by name in case a future merge path injects duplicates.
         var seenMention = {};
         const filtered = mentions.filter(function(m) {
@@ -7371,16 +7370,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          return;
        }
       if (cmd.name === 'file' || cmd.name === 'folder') {
-         // Ask extension to pick a file/folder and return the path
-         promptInput.value = promptInput.value.slice(0, -atMatch[0].length);
-         vscode.postMessage({ type: 'pickContext', contextType: cmd.name });
-       } else if (cmd.name === 'session') {
-         // Ask extension to pick a session to summarize as context
-         promptInput.value = promptInput.value.slice(0, -atMatch[0].length);
-         vscode.postMessage({ type: 'pickContext', contextType: cmd.name });
-       } else {
-         promptInput.value = promptInput.value.slice(0, -atMatch[0].length) + '@' + cmd.name + ' ';
-       }
+        // Ask extension to pick a file/folder and return the path
+        promptInput.value = promptInput.value.slice(0, -atMatch[0].length);
+        vscode.postMessage({ type: 'pickContext', contextType: cmd.name });
+      } else {
+        promptInput.value = promptInput.value.slice(0, -atMatch[0].length) + '@' + cmd.name + ' ';
+      }
         promptInput.focus();
         return;
       }
