@@ -8126,7 +8126,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       // Keep finalized cards even if content was briefly empty.
       var sum = el.querySelector('summary');
       var sumText = (sum && sum.textContent) || '';
-      return /Thought\b/i.test(sumText);
+      return /Thought\\b/i.test(sumText);
     }
 
     /** Full thought text from DOM + in-progress buffers (never drop mid-turn). */
@@ -8606,7 +8606,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       if (!t) return false;
       if (/^\[Request interrupted by user\]/i.test(t)) return true;
       if (/^Request interrupted by user\.?$/i.test(t)) return true;
-      if (/^—?\s*Conversation interrupted\s*—?$/i.test(t)) return true;
+      if (/^—?\\s*Conversation interrupted\\s*—?$/i.test(t)) return true;
       return false;
     }
 
@@ -9547,7 +9547,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         if (tk.skills) taskLines.push('Skills: ' + (Array.isArray(tk.skills) ? tk.skills.join(', ') : tk.skills));
         if (tk.task) { taskLines.push(''); taskLines.push('Prompt:'); taskLines.push(tk.task); }
       }
-      result = taskLines.join('\n');
+      result = taskLines.join('\\n');
     }
     // Generic: pretty-print as JSON (skip empty-object case already handled)
     else {
@@ -13127,8 +13127,8 @@ sessionState = {
     var p = String((params && params.prompt) || '').toLowerCase();
     if (/provide your complete/.test(p)) return true;
     if (/complete final summary/.test(p) || /final summary now/.test(p)) return true;
-    if (/\bget\b/.test(d) && /finding/.test(d)) return true;
-    if (/^get\s/.test(d)) return true;
+    if (/\\bget\\b/.test(d) && /finding/.test(d)) return true;
+    if (/^get\\s/.test(d)) return true;
     return false;
   }
 
