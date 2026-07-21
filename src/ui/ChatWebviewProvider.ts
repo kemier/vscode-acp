@@ -10459,7 +10459,15 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           // Never replace the tool title with a JSON blob (Kiro operation payloads).
           if (firstLine && firstLine !== displayTitle &&
               firstLine.charAt(0) !== '{' && firstLine.charAt(0) !== '[') {
-            displayTitle = firstLine.length > 80 ? firstLine.substring(0, 77) + '...' : firstLine;
+            // Don't override the title if it already contains the detail
+            // (e.g. title="Reading /path/file.ts" vs rawInput.path="/path/file.ts").
+            // This preserves the action verb from the agent's buildToolTitle
+            // instead of replacing it with just the bare path/query.
+            var titleLower = displayTitle.toLowerCase();
+            var firstLineLower = firstLine.toLowerCase();
+            if (titleLower.indexOf(firstLineLower) < 0 && firstLineLower.indexOf(titleLower) < 0) {
+              displayTitle = firstLine.length > 80 ? firstLine.substring(0, 77) + '...' : firstLine;
+            }
           }
         }
       }

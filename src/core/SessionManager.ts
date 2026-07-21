@@ -742,7 +742,9 @@ export class SessionManager extends EventEmitter {
    */
   forceKillAgentForSession(sessionId: string): void {
     const session = this.sessions.get(sessionId);
-    if (!session) return;
+    if (!session) {
+      return;
+    }
     log(
       `forceKillAgentForSession: killing agent ${session.agentId} for session ${sessionId} (did not acknowledge cancel)`,
     );
