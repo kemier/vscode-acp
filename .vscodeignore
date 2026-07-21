@@ -21,4 +21,5 @@ out/**
 .DS_Store
 .github/**
 .codex/**
+AGENTS.md
 *.vsix
