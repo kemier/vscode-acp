@@ -51,9 +51,11 @@ The LLM must emit links that work in both editors. There is one primary format.
  | Repo | Path | Description |
  |---|---|---|
  | **codex-acp** | `~/projects/codex-acp` | ACP adapter for Codex CLI (`@agentclientprotocol/codex-acp`). The agent binary spawned by this extension. Key files: `src/CodexAcpServer.ts` (ACP server — session/cancel, prompt, turn/interrupt), `src/CodexAcpClient.ts` (Codex app-server client), `src/CodexAppServerClient.ts` (JSON-RPC transport to Codex core). |
- | **codex** | `../codex` | Codex CLI core (Rust). The actual agent engine. Key crate: `codex-rs/app-server/` (app-server protocol, turn/interrupt handling in `src/request_processors/turn_processor.rs`). |
- 
- When debugging agent-side issues (cancel not working, turn not interrupting, etc.), inspect the codex-acp source first — it is the bridge between this extension's JSON-RPC notifications and the Codex core's internal `Op::Interrupt`.
+| **codex** | `../codex` | Codex CLI core (Rust). The actual agent engine. Key crate: `codex-rs/app-server/` (app-server protocol, turn/interrupt handling in `src/request_processors/turn_processor.rs`). |
+| **ericli** | `../ericli` | EricAI CLI — a Codex CLI alternative that talks to EricAI's vLLM backend. Provides the `ericli acp` command for ACP stdio. Key files: `src/acp/acp-server.ts` (ACP server — prompt/cancel/newSession), `src/core/tool-executor.ts` (tool flow + streaming LLM calls), `src/agents/agent-runtime.ts` (subagent execution + model fallback), `src/ericai/client.ts` (vLLM streaming client). Install: `bash scripts/install-acp.sh --local` → `/workspace/git/ezennin/.local/bin/ericli-acp`. |
+| **ericai-proxy** | `../ericai-proxy` | Rust proxy translating OpenAI Responses API ↔ Chat Completions API for EricAI's vLLM backend (GLM-5.2, Qwen3, etc.). Used by codex-acp AND ericli. Key files: `src/translate_response.rs` (SSE translation, reasoning block lifecycle), `src/translate_request.rs` (request translation), `src/main.rs` (HTTP/WS routes). Build & install: `make install` → `/workspace/git/ezennin/.local/share/ericai-proxy/`. |
+
+When debugging agent-side issues (cancel not working, turn not interrupting, etc.), inspect the codex-acp source first — it is the bridge between this extension's JSON-RPC notifications and the Codex core's internal `Op::Interrupt`.
  
  ### Cancel flow
  
