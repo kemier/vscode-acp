@@ -732,6 +732,28 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
+   * Force-kill the agent process for a session that ignored session/cancel.
+   * Used by the cancel fallback when the agent didn't acknowledge within the
+   * timeout — the agent is still running an in-flight LLM call (backpressure
+   * retries, sidecar timeout, etc.) and won't stop on its own. Killing the
+   * process ensures the user's Stop button actually stops everything, instead
+   * of leaving the agent burning CPU/tokens in the background for 30+ seconds.
+   * The agent will be respawned on the next sendPrompt().
+   */
+  forceKillAgentForSession(sessionId: string): void {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    log(
+      `forceKillAgentForSession: killing agent ${session.agentId} for session ${sessionId} (did not acknowledge cancel)`,
+    );
+    try {
+      this.agentManager.killAgent(session.agentId);
+    } catch (e) {
+      logError(`forceKillAgentForSession: kill failed for ${session.agentId}`, e);
+    }
+  }
+
+  /**
    * Set the session mode (e.g., plan mode, code mode).
    *
    * If the active session uses `configOptions`, this is transparently

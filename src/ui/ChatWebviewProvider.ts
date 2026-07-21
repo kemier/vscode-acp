@@ -2474,21 +2474,21 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         this._cancelFallbackTimer = null;
       }
       this._pendingPromptSessionId = null;
-     logError('Prompt failed', e);
-     const errMsg = e.data ? `${e.message}: ${e.data}` : e.message || 'Prompt failed';
+      logError('Prompt failed', e);
+      const errMsg = e.data ? `${e.message}: ${e.data}` : e.message || 'Prompt failed';
       // Suppress the error if the connection was closed because the user
-     // started a new conversation or switched sessions — the old session's
-     // in-flight prompt is expected to fail during teardown.
-     if (/connection closed/i.test(errMsg) && this.sessionManager.getActiveSessionId() !== activeId) {
+      // started a new conversation or switched sessions — the old session's
+      // in-flight prompt is expected to fail during teardown.
+      if (/connection closed/i.test(errMsg) && this.sessionManager.getActiveSessionId() !== activeId) {
         this.streamCoalescer.flush(activeId);
         this.postMessage({ type: 'promptEnd', stopReason: 'cancelled' });
         return;
       }
-     // Detect context length errors and provide actionable guidance
-     this.postMessage({
-       type: 'error',
-       message: errMsg,
-     });
+      // Detect context length errors and provide actionable guidance
+      this.postMessage({
+        type: 'error',
+        message: errMsg,
+      });
       this.streamCoalescer.flush(activeId);
       this.postMessage({ type: 'promptEnd', stopReason: 'error' });
     }
@@ -2505,18 +2505,21 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       } catch (e) {
         logError('Cancel failed', e);
       }
-      // Fallback: if the agent doesn't acknowledge the cancel within 10s
-      // (some agents ignore session/cancel or don't respond to the prompt
-      // with stopReason=cancelled), force the webview out of processing
-      // mode so the Stop button becomes a Send button again.
+      // Fallback: if the agent doesn't acknowledge the cancel within 5s
+      // (some agents ignore session/cancel, or are stuck inside an in-flight
+      // HTTP call / backpressure retry loop that doesn't check the abort
+      // signal), force the webview out of processing mode AND kill the agent
+      // process so it stops burning CPU/tokens in the background. The agent
+      // is respawned fresh on the next sendPrompt().
       if (this._cancelFallbackTimer) {
         clearTimeout(this._cancelFallbackTimer);
       }
       this._cancelFallbackTimer = setTimeout(() => {
         if (this._pendingPromptSessionId === activeId) {
-          log('Cancel fallback: agent did not acknowledge within 5s, forcing promptEnd');
+          log('Cancel fallback: agent did not acknowledge within 5s, forcing promptEnd + killing agent process');
           this.streamCoalescer.flush(activeId);
           this.sessionManager.forceAbortPrompt(activeId);
+          this.sessionManager.forceKillAgentForSession(activeId);
           this.postMessage({ type: 'promptEnd', stopReason: 'cancelled' });
           this._pendingPromptSessionId = null;
         }
@@ -9531,6 +9534,20 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     else if (rawInput.operation && typeof rawInput.operation === 'object') {
       result = rawInput.operation.type || rawInput.operation.name ||
         rawInput.operation.kind || 'operation';
+    }
+    // ericli spawn_parallel: rawInput = { tasks: [{ type, task, skills }] }
+    // Show each sub-agent's type and prompt (mirrors the stages format above).
+    else if (Array.isArray(rawInput.tasks) && rawInput.tasks.length > 0) {
+      var taskLines = [];
+      for (var ti = 0; ti < rawInput.tasks.length; ti++) {
+        var tk = rawInput.tasks[ti] || {};
+        if (ti > 0) taskLines.push('');
+        taskLines.push('Name: ' + (tk.type || ('Subagent ' + (ti + 1))) + '-' + (ti + 1));
+        taskLines.push('Role: ' + (tk.type || 'agent'));
+        if (tk.skills) taskLines.push('Skills: ' + (Array.isArray(tk.skills) ? tk.skills.join(', ') : tk.skills));
+        if (tk.task) { taskLines.push(''); taskLines.push('Prompt:'); taskLines.push(tk.task); }
+      }
+      result = taskLines.join('\n');
     }
     // Generic: pretty-print as JSON (skip empty-object case already handled)
     else {
