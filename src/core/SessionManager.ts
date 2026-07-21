@@ -356,12 +356,22 @@ export class SessionManager extends EventEmitter {
     // agent can abort gracefully. session/close implies cancellation per
     // the spec, but sending the notification explicitly is more robust
     // for agents that may not implement the implicit cancel.
-    if (connInfo && this.inFlightPromptSessions.has(sessionId)) {
-      try {
-        log(`disconnectAgent: cancelling in-flight prompt for ${sessionId}`);
-        await connInfo.connection.cancel({ sessionId });
-      } catch (e: any) {
-        log(`disconnectAgent: session/cancel error (non-fatal): ${e?.message || e}`);
+    // Also cancel any other in-flight prompts on the same agent connection
+    // (e.g. a previous session whose prompt never completed before a
+    // session switch). Without this, those dangling sendPrompt promises
+    // reject with "ACP connection closed" when the agent process is killed.
+    if (connInfo) {
+      const sessionsToCancel = [sessionId, ...Array.from(this.inFlightPromptSessions).filter((id) => id !== sessionId)];
+      for (const sid of sessionsToCancel) {
+        if (this.inFlightPromptSessions.has(sid)) {
+          try {
+            log(`disconnectAgent: cancelling in-flight prompt for ${sid}`);
+            await connInfo.connection.cancel({ sessionId: sid });
+          } catch (e: any) {
+            log(`disconnectAgent: session/cancel error for ${sid} (non-fatal): ${e?.message || e}`);
+          }
+          this.inFlightPromptSessions.delete(sid);
+        }
       }
     }
 
@@ -1718,6 +1728,21 @@ export class SessionManager extends EventEmitter {
     if (previouslyActive && previouslyActive !== sessionId) {
       const prevSession = this.sessions.get(previouslyActive);
       if (prevSession) {
+        // Cancel any in-flight prompt on the previous session so its
+        // sendPrompt promise doesn't reject with "ACP connection closed"
+        // later when the agent is disconnected or the session is deleted.
+        if (this.inFlightPromptSessions.has(previouslyActive)) {
+          const prevConn = this.connectionManager.getConnection(prevSession.agentId);
+          if (prevConn) {
+            try {
+              log(`loadSession: cancelling in-flight prompt for previous session ${previouslyActive}`);
+              await prevConn.connection.cancel({ sessionId: previouslyActive });
+            } catch (e: any) {
+              log(`loadSession: session/cancel error for ${previouslyActive} (non-fatal): ${e?.message || e}`);
+            }
+          }
+          this.inFlightPromptSessions.delete(previouslyActive);
+        }
         this.agentSessions.delete(prevSession.agentName);
       }
       this.sessions.delete(previouslyActive);

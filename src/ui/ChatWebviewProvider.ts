@@ -2474,13 +2474,21 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         this._cancelFallbackTimer = null;
       }
       this._pendingPromptSessionId = null;
-      logError('Prompt failed', e);
-      const errMsg = e.data ? `${e.message}: ${e.data}` : e.message || 'Prompt failed';
-      // Detect context length errors and provide actionable guidance
-      this.postMessage({
-        type: 'error',
-        message: errMsg,
-      });
+     logError('Prompt failed', e);
+     const errMsg = e.data ? `${e.message}: ${e.data}` : e.message || 'Prompt failed';
+      // Suppress the error if the connection was closed because the user
+     // started a new conversation or switched sessions — the old session's
+     // in-flight prompt is expected to fail during teardown.
+     if (/connection closed/i.test(errMsg) && this.sessionManager.getActiveSessionId() !== activeId) {
+        this.streamCoalescer.flush(activeId);
+        this.postMessage({ type: 'promptEnd', stopReason: 'cancelled' });
+        return;
+      }
+     // Detect context length errors and provide actionable guidance
+     this.postMessage({
+       type: 'error',
+       message: errMsg,
+     });
       this.streamCoalescer.flush(activeId);
       this.postMessage({ type: 'promptEnd', stopReason: 'error' });
     }
