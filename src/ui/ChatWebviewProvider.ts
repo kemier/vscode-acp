@@ -7126,6 +7126,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       var haveIds = {};
       var loadedToolCount = 0;
       var insertAt = chatHistory.length;
+      // Collect assistant message texts already present in the loaded
+      // chatHistory (after the matched user message) so we can skip
+      // them in the snapshot — prevents duplicate assistant summaries
+      // when session/load replay already delivered agent_message_chunk.
+      var loadedAssistantTexts = {};
       for (var k = loadedLastUserIdx + 1; k < chatHistory.length; k++) {
         var cur = chatHistory[k];
         if (!cur) continue;
@@ -7137,6 +7142,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           loadedToolCount++;
           if (cur.toolCallId) haveIds[cur.toolCallId] = true;
         }
+        if (cur.kind === 'message' && cur.role === 'assistant' && cur.text) {
+          loadedAssistantTexts[String(cur.text).trim()] = true;
+        }
       }
 
       var missing = collectSnapTurn(false).filter(function(item) {
@@ -7147,7 +7155,15 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         if (item.kind === 'message' && item.role === 'user' && isSessionInterruptNotice(item.text)) {
           return false;
         }
-        return item.kind === 'thought' || (item.kind === 'message' && item.role === 'assistant');
+        if (item.kind === 'thought') return true;
+        if (item.kind === 'message' && item.role === 'assistant') {
+          // Skip if this assistant text is already in the loaded chatHistory
+          // (session/load replay delivered the agent_message_chunk).
+          var snapText = String(item.text || '').trim();
+          if (snapText && loadedAssistantTexts[snapText]) return false;
+          return true;
+        }
+        return false;
       });
       if (!missing.length) return false;
       var missingTools = missing.filter(function(x) { return x.kind === 'toolCall'; });
