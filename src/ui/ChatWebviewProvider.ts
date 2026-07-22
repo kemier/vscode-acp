@@ -2266,6 +2266,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // without starting an LLM turn. Skip context gathering and send
     // the text directly so the agent can intercept it.
     if (text.startsWith('/')) {
+      // Send promptStart so the webview sets isProcessing=true. Without this,
+      // agent_message_chunk notifications from slash commands (e.g. /index build,
+      // /tools, /stats) are dropped by the "After promptEnd the turn is closed"
+      // guard in the webview's sessionUpdate handler.
+      this.postMessage({ type: 'promptStart' });
       try {
         // Kiro does not intercept `/compact` as a prompt — it requires
         // `_kiro.dev/commands/execute` (see kiro.dev ACP extensions).
