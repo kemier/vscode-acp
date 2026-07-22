@@ -7084,7 +7084,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
             continue;
           }
           if (item.kind === 'message' && item.role === 'assistant') {
-            items.push(Object.assign({}, item, { interrupted: true }));
+            // Only mark as interrupted if the original snapshot item was
+            // already interrupted — don't fabricate interruption for a
+            // completed turn that just wasn't fully replayed.
+            items.push(Object.assign({}, item, { interrupted: item.interrupted || false }));
           }
         }
         return items;
@@ -7104,10 +7107,18 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           prefix.push(ch);
         }
         chatHistory = prefix.concat(restored);
-        markSessionInterrupted();
+        // Only mark as interrupted if the restored turn has no assistant
+        // reply or has running/in-flight tools. A finished turn (with
+        // assistant reply and only completed/failed tools) is NOT interrupted.
+        var _restoredHasAssistant = restored.some(function(x) {
+          return x.kind === 'message' && x.role === 'assistant' && !x.interrupted;
+        });
+        if (!_restoredHasAssistant) {
+          markSessionInterrupted();
+        }
         vscode.postMessage({
           type: 'debugLog',
-          message: '[WV-MERGE] restored full interrupted turn from snapshot (incl. user prompt), items=' + restored.length,
+          message: '[WV-MERGE] restored full turn from snapshot (incl. user prompt), items=' + restored.length + ' interrupted=' + (!_restoredHasAssistant),
         });
         return true;
       }
@@ -7152,10 +7163,19 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         return false;
       }
       Array.prototype.splice.apply(chatHistory, [insertAt, 0].concat(missing));
-      markSessionInterrupted();
+      // Only mark interrupted if the merged items include an interrupted
+      // assistant or running tools. Merging a completed assistant from
+      // snapshot is NOT an interruption.
+      var _mergeHasInterrupted = missing.some(function(x) {
+        return (x.kind === 'message' && x.role === 'assistant' && x.interrupted) ||
+               (x.kind === 'toolCall' && (x.status === 'running' || x.status === 'in_progress' || x.status === 'pending'));
+      });
+      if (_mergeHasInterrupted) {
+        markSessionInterrupted();
+      }
       vscode.postMessage({
         type: 'debugLog',
-        message: '[WV-MERGE] restored ' + missing.length + ' pre-load item(s) into interrupted turn (tools=' + missingTools.length + ')',
+        message: '[WV-MERGE] restored ' + missing.length + ' pre-load item(s) into turn (tools=' + missingTools.length + ' interrupted=' + _mergeHasInterrupted + ')',
       });
       return true;
     }
@@ -8672,8 +8692,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         }
         if (item.kind === 'toolCall') {
           var st = item.status;
-          if (st === 'failed' || st === 'error' || st === 'pending' ||
-              st === 'running' || st === 'in_progress') {
+          // Failed tools do NOT prevent a turn from looking finished —
+          // the agent completed its turn (end_turn) even if some tools failed.
+          // Only in-flight tools indicate the turn was interrupted.
+          if (st === 'pending' || st === 'running' || st === 'in_progress') {
             return false;
           }
         }
@@ -8690,12 +8712,21 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       }
       if (failedAnyTool) markSessionInterrupted();
     }
-
-    /** True when a restored/live turn still has failed or unfinished tools. */
     function turnLooksInterrupted(turn) {
       if (!turn) return false;
       if (turn.getAttribute('data-turn-interrupted') === '1') return true;
       if (turn.querySelector('.message.assistant[data-interrupted="1"]')) return true;
+      // If the turn has a non-interrupted assistant reply, failed tools alone
+      // do NOT make it look interrupted — the agent finished its turn despite
+      // some tool failures. Only running/in-flight tools indicate interruption.
+      if (turn.querySelector('.message.assistant:not([data-interrupted="1"])')) {
+        return !!(
+          turn.querySelector(
+            '.tc-icon.running, .tc-icon.in_progress, .tc-icon.pending, ' +
+            '.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending'
+          )
+        );
+      }
       return !!(
         turn.querySelector(
           '.tc-icon.failed, .tc-icon.error, .tc-stage-icon.error, .tc-stage-icon.failed'
@@ -8707,15 +8738,14 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       );
     }
 
-    /** True when a turn has a final reply and no failed/in-flight tools. */
+    /** True when a turn has a final reply and no in-flight tools.
+     *  Failed tool calls do NOT prevent a turn from looking finished —
+     *  the agent completed its turn (end_turn) even if some tools failed. */
     function turnLooksFinished(turn) {
       if (!turn) return false;
       if (!turn.querySelector('.message.assistant')) return false;
       if (turn.getAttribute('data-turn-interrupted') === '1') return false;
       if (turn.querySelector('.message.assistant[data-interrupted="1"]')) return false;
-      if (turn.querySelector(
-        '.tc-icon.failed, .tc-icon.error, .tc-stage-icon.error, .tc-stage-icon.failed'
-      )) return false;
       if (turnElHasRunningTools(turn)) return false;
       return true;
     }
@@ -11303,18 +11333,24 @@ sessionState = {
            showStatusBanner('clear', 'Clearing conversation...', null);
          }
        }
-       // Show interrupted notice in status bar (right upper of input box)
-       // when the turn was cancelled. Don't add duplicate system message to chat.
+      // Show interrupted notice in status bar (right upper of input box)
+      // when the turn was cancelled. Don't add duplicate system message to chat.
      if (msg.stopReason === 'cancelled') {
        // During session/load replay, don't show the interrupted notice —
        // it's a historical event, not a live cancellation.
        if (!isLoadingSession) {
          isForceCancelled = true; // drop further chunks from the unresponsive agent
+         // Show "Conversation interrupted" in the main chat (outside the
+         // collapsed turn fold), not just in the status bar. In compact /
+         // collapsed mode the partial reply is folded away, so the only
+         // visible indication of the interruption should not be hidden
+         // inside the fold or limited to the transient status bar text.
+         addMessage('system', '— Conversation interrupted —');
        }
-      if (!isLoadingSession && statusEl) {
-          statusEl.textContent = '— Conversation interrupted —';
-          setTimeout(() => { if (statusEl.textContent === '— Conversation interrupted —') { statusEl.textContent = ''; } }, 5000);
-      }
+       if (!isLoadingSession && statusEl) {
+           statusEl.textContent = '— Conversation interrupted —';
+           setTimeout(() => { if (statusEl.textContent === '— Conversation interrupted —') { statusEl.textContent = ''; } }, 5000);
+       }
      }
     // Auto-collapse completed turns (respect compact mode): hide thought +
     // tools behind the summary line. Clear sticky expand — turn is done.
