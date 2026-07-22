@@ -323,15 +323,7 @@
         "acp.agents": {
           "type": "object",
           "description": "Agent configurations. Each key is the agent name, value has command, args, and env.",
-          "default": {
-            "EricCLI": {
-              "command": "ericli",
-              "args": [
-                "acp"
-              ],
-              "env": {}
-            }
-          }
+          "default": {}
         },
         "acp.autoApprovePermissions": {
           "type": "string",
