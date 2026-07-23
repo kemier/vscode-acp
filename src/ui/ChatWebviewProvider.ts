@@ -7543,14 +7543,15 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
 
     // --- ACP Session Config Options ---
 
-    function iconForCategory(cat) {
-      switch (cat) {
-        case 'mode': return '⚡';
-        case 'model': return '🧠';
-        case 'thought_level': return '💭';
-        default: return '⚙';
-      }
-    }
+   function iconForCategory(cat) {
+     switch (cat) {
+       case 'mode': return '⚡';
+       case 'collaboration_mode': return '📋';
+       case 'model': return '🧠';
+       case 'thought_level': return '💭';
+       default: return '⚙';
+     }
+   }
 
     function isGroupedOptions(opt) {
       const arr = opt && opt.options;
