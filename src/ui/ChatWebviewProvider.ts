@@ -8091,6 +8091,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      var atBottom = distanceFromBottom() < 50;
      userScrolledUp = !atBottom;
      updateJumpLatestBtn();
+     // Hide any visible tool-call tooltip so it doesn't float at a stale
+     // position while the underlying element scrolls away.
+     hideTcTooltip();
    });
 
    if (jumpLatestBtn) {
@@ -9687,6 +9690,15 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     */
   var tcTooltipEl = null;
   var TC_TOOLTIP_MAX_CHARS = 2000;
+
+  // Global fallback: hide tooltip on window blur or visibility change
+  // (e.g. Alt-Tab, clicking outside the webview). The per-element
+  // pointerleave handler covers normal mouse-out, but these events
+  // catch focus-stealing scenarios where pointerleave never fires.
+  window.addEventListener('blur', hideTcTooltip);
+  document.addEventListener('visibilitychange', function() {
+    if (document.hidden) hideTcTooltip();
+  });
 
   function ensureTcTooltipEl() {
     if (!tcTooltipEl) {
