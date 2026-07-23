@@ -11467,12 +11467,17 @@ sessionState = {
            updateWelcomeButton();
          }
          if (sessionBanner) sessionBanner.classList.remove('visible');
-         if (inputArea) inputArea.classList.add('disabled');
-         modePickerWrap.classList.add('hidden');
-         modelPickerWrap.classList.add('hidden');
-         setConfigOptionsState([]);
-         setProcessing(false);
-         break;
+        if (inputArea) inputArea.classList.add('disabled');
+        modePickerWrap.classList.add('hidden');
+        modelPickerWrap.classList.add('hidden');
+        setConfigOptionsState([]);
+        setProcessing(false);
+        // Hide resume bar immediately — new conversation means no session
+        // to resume. Without this, the resume button from startup/previous
+        // session lingers until the new agent connects.
+        hasActiveSession = false;
+        updateResumeBar();
+        break;
 
         case 'error':
           // Claude ACP may surface "AbortError: Compaction canceled." as an
