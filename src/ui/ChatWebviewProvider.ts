@@ -2513,18 +2513,21 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // Fallback: if the agent doesn't acknowledge the cancel within 5s
       // (some agents ignore session/cancel, or are stuck inside an in-flight
       // HTTP call / backpressure retry loop that doesn't check the abort
-      // signal), force the webview out of processing mode AND kill the agent
-      // process so it stops burning CPU/tokens in the background. The agent
-      // is respawned fresh on the next sendPrompt().
+      // signal), force the webview out of processing mode so the user can
+      // type a new prompt (steering). We do NOT kill the agent process -
+      // killing the process terminates the entire session, losing all
+      // context. The agent's in-flight request will eventually time out
+      // or complete on its own; the user can continue the conversation
+      // once the webview is unblocked. This matches codex-acp behavior
+      // (turn interrupt without process kill).
       if (this._cancelFallbackTimer) {
         clearTimeout(this._cancelFallbackTimer);
       }
       this._cancelFallbackTimer = setTimeout(() => {
         if (this._pendingPromptSessionId === activeId) {
-          log('Cancel fallback: agent did not acknowledge within 5s, forcing promptEnd + killing agent process');
+          log('Cancel fallback: agent did not acknowledge within 5s, forcing promptEnd (session kept alive)');
           this.streamCoalescer.flush(activeId);
           this.sessionManager.forceAbortPrompt(activeId);
-          this.sessionManager.forceKillAgentForSession(activeId);
           this.postMessage({ type: 'promptEnd', stopReason: 'cancelled' });
           this._pendingPromptSessionId = null;
         }
