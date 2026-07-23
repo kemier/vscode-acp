@@ -106,13 +106,11 @@ export function activate(context: vscode.ExtensionContext): void {
   context.subscriptions.push({ dispose: () => kiroDiscovery.removeAllListeners() });
   context.subscriptions.push({ dispose: () => historyStore.dispose() });
 
-  // Seed the last-connected agent from the history store AND on-disk session
-  // files so the webview can offer "Resume <agent>" on the very first restart
-  // after installing this feature (before any active-session-changed event
-  // has fired).  We check three sources in order of reliability:
-  //   1. SessionHistoryStore (sessions created via this extension)
-  //   2. Kiro on-disk sessions  (~/.kiro/sessions/)
-  //   3. Codex on-disk sessions (~/.codex/sessions/)
+  // Seed the last-connected agent from the history store so the webview can
+  // offer "Resume <agent>" on the very first restart. Only the
+  // SessionHistoryStore is used because it is workspace-scoped (filters
+  // by cwd). Global on-disk sessions belong to other workspaces and
+  // should not seed the resume button on a new project.
   if (!context.workspaceState.get('acp.lastConnectedAgent')) {
     const agentNames = getAgentNames();
     let best: { agent: string; sessionId: string; lastActiveAt: string } | undefined;
@@ -128,61 +126,13 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     }
 
-    // 2. Kiro on-disk sessions
-    if ((!best || best.lastActiveAt === '') && kiroDiscovery.isAvailable()) {
-      const kiroSessions = kiroDiscovery.discover({ force: true });
-      if (kiroSessions.length > 0) {
-        const top = kiroSessions[0]; // already sorted desc by lastActiveAt
-        const ts = top.lastActiveAt || '';
-        if (!best || ts > best.lastActiveAt) {
-          best = { agent: 'Kiro CLI', sessionId: top.sessionId, lastActiveAt: ts };
-        }
-      }
-    }
-
-    // 3. Codex on-disk sessions (~/.codex/sessions/**/*.jsonl)
-    if (!best || best.lastActiveAt === '') {
-      try {
-        const codexHome = path.join(os.homedir(), '.codex', 'sessions');
-        if (fs.existsSync(codexHome)) {
-          const sessionFiles: { sessionId: string; mtime: number }[] = [];
-          const walk = (dir: string) => {
-            const entries = fs.readdirSync(dir, { withFileTypes: true });
-            for (const entry of entries) {
-              const fullPath = path.join(dir, entry.name);
-              if (entry.isDirectory()) {
-                walk(fullPath);
-              } else if (entry.name.endsWith('.jsonl')) {
-                const match = entry.name.match(/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/i);
-                if (match) {
-                  const stat = fs.statSync(fullPath);
-                  sessionFiles.push({ sessionId: match[1], mtime: stat.mtimeMs });
-                }
-              }
-            }
-          };
-          walk(codexHome);
-          sessionFiles.sort((a, b) => b.mtime - a.mtime);
-          if (sessionFiles.length > 0) {
-            const top = sessionFiles[0];
-            const ts = new Date(top.mtime).toISOString();
-            if (!best || ts > best.lastActiveAt) {
-              best = { agent: 'Codex CLI', sessionId: top.sessionId, lastActiveAt: ts };
-            }
-          }
-        }
-      } catch (e: any) {
-        logError('Failed to scan Codex sessions for seeding: ' + (e?.message || String(e)));
-      }
-    }
-
     if (best) {
       context.workspaceState.update('acp.lastConnectedAgent', best.agent);
       context.workspaceState.update('acp.lastConnectedAgentDisplay', best.agent);
       context.workspaceState.update('acp.lastConnectedSessionId', best.sessionId);
       log(`Seeded last agent from disk: ${best.agent} (session ${best.sessionId})`);
     } else {
-      log('No sessions found on disk or in history for seeding');
+      log('No sessions found in history for seeding');
     }
   }
 
