@@ -12579,13 +12579,23 @@ sessionState = {
                 messagesEl.appendChild(currentTurnEl);
                 hideEmpty();
               }
-              // Only resume a still-streaming thought block. After a thought is
-              // finalized (tools arrived), the next thought segment must become
-              // a NEW block so older thoughts are not overwritten.
+              // Resume a streaming thought block if one exists. If the previous
+              // thought was finalized (summary/tools arrived between thinking
+              // blocks), resume the LAST committed thought block in this turn
+              // so thinking blocks from the same turn merge into one —
+              // matching how codex renders reasoning (one continuous block per
+              // turn, even when interrupted by content/summary chunks).
               var streamingThoughts = currentTurnEl.querySelectorAll('.thought-block.streaming');
               var existingThought = streamingThoughts.length
                 ? streamingThoughts[streamingThoughts.length - 1]
                 : null;
+              if (!existingThought) {
+                // No streaming block — check for the last committed thought in this turn.
+                var committedThoughts = currentTurnEl.querySelectorAll('.thought-block');
+                if (committedThoughts.length) {
+                  existingThought = committedThoughts[committedThoughts.length - 1];
+                }
+              }
               if (existingThought) {
                 currentThoughtEl = existingThought;
                 currentThoughtTextEl = existingThought.querySelector('.thought-content');
