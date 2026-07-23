@@ -7636,7 +7636,6 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       item.className = 'picker-dropdown-item' + (selected ? ' selected' : '');
       item.dataset.value = v.value;
       item.dataset.desc = v.description || '';
-      if (v.description) item.title = v.description;
       item.innerHTML =
         '<span class="check">' + (selected ? '✓' : '') + '</span>' +
         '<span class="item-label"></span>';
