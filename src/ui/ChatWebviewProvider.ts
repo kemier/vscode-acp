@@ -5777,6 +5777,17 @@ const builtinCommands = [
     // (interrupted mid-turn often replays only the user prompt) can restore
     // tools/thoughts that were already in the webview / vscode.setState.
     let preLoadChatHistorySnapshot = null;
+    // Track which session the snapshot was taken from. The merge logic in
+    // handleLoadSessionEnd should ONLY restore items from the snapshot when
+    // we're loading the SAME session that was displayed when the snapshot
+    // was taken. Without this guard, switching from session A to session B
+    // causes session A's chatHistory to be merged into session B's replay.
+    // Note: sessionState.sessionId is already the NEW session by the time
+    // handleLoadSessionStart runs (active-session-changed fires first), so
+    // we capture the PREVIOUS session ID in showSessionConnected before
+    // overwriting sessionState.
+    let preLoadSnapshotSessionId = null;
+    let previousSessionId = null;
 
     /**
      * Strip injected context blocks from user message text.
@@ -7225,6 +7236,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       // snapshot (and without saveState of the empty array) the collapse block
       // permanently disappears after VS Code restart.
       preLoadChatHistorySnapshot = chatHistory.slice();
+      // Label the snapshot with the PREVIOUS session ID (the one whose
+      // chatHistory we're capturing). sessionState.sessionId is already
+      // the NEW session because active-session-changed fires before
+      // loadSessionStart. previousSessionId was captured in
+      // showSessionConnected before the overwrite.
+      preLoadSnapshotSessionId = previousSessionId;
       // Reset all chat state; behaves like clearChat but keeps the session
       // banner / input area structure intact.
       chatHistory = [];
@@ -7268,10 +7285,18 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     hideCompactionProgress();
     // Claude interrupted mid-turn: merge tools/thoughts from webview snapshot
     // when session/load only returned the user prompt.
-    if (preLoadChatHistorySnapshot && preLoadChatHistorySnapshot.length) {
+    // ONLY merge if we're loading the SAME session that the snapshot was
+    // taken from. When switching between sessions, the snapshot contains
+    // the OTHER session's history and must NOT be merged — otherwise
+    // messages leak across sessions.
+    var _currentLoadSessionId = (sessionState && sessionState.sessionId) || null;
+    if (preLoadChatHistorySnapshot && preLoadChatHistorySnapshot.length &&
+        preLoadSnapshotSessionId && _currentLoadSessionId &&
+        preLoadSnapshotSessionId === _currentLoadSessionId) {
       mergePreLoadInterruptedTurn(preLoadChatHistorySnapshot);
     }
     preLoadChatHistorySnapshot = null;
+    preLoadSnapshotSessionId = null;
     // If history was replayed, there were prior prompts — mark as sent
     // so the context usage ring can appear when metadata arrives.
     if (chatHistory.length > 0) hasSentPrompt = true;
@@ -11057,6 +11082,10 @@ function renderChatHistory() {
      }
     hasActiveSession = true;
     hasSentPrompt = false;
+    // Capture the session ID that was active BEFORE this switch so
+    // handleLoadSessionStart can label its chatHistory snapshot correctly.
+    // sessionState is overwritten below, so we must grab the old value first.
+    previousSessionId = (sessionState && sessionState.sessionId) || null;
 sessionState = {
   sessionId: session.sessionId,
   agentName: session.agentName,
