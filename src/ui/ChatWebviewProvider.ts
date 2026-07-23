@@ -11361,21 +11361,35 @@ sessionState = {
           }
         }
         if (_wasCancelled) {
-          markSessionInterrupted();
-          // Mirror failed status into chatHistory so restore/load heuristics match.
-          for (var _hi = 0; _hi < chatHistory.length; _hi++) {
-            var _hItem = chatHistory[_hi];
-            if (_hItem && _hItem.kind === 'toolCall' &&
-                (_hItem.status === 'in_progress' || _hItem.status === 'running' || _hItem.status === 'pending')) {
-              _hItem.status = 'failed';
-            }
-          }
-          saveState();
-          if (currentTurnEl) currentTurnEl.setAttribute('data-turn-interrupted', '1');
-        } else if (!isLoadingSession) {
-          clearSessionInterrupted();
-        }
-        setProcessing(false);
+         markSessionInterrupted();
+         // Mirror failed status into chatHistory so restore/load heuristics match.
+         for (var _hi = 0; _hi < chatHistory.length; _hi++) {
+           var _hItem = chatHistory[_hi];
+           if (_hItem && _hItem.kind === 'toolCall' &&
+               (_hItem.status === 'in_progress' || _hItem.status === 'running' || _hItem.status === 'pending')) {
+             _hItem.status = 'failed';
+           }
+         }
+         saveState();
+         if (currentTurnEl) currentTurnEl.setAttribute('data-turn-interrupted', '1');
+       } else if (!isLoadingSession) {
+         clearSessionInterrupted();
+         // Mirror completed status into chatHistory so that re-renders
+         // (auto-collapse, session switch, webview reload) don't bring back
+         // spinning icons for tools that finished during the turn. Codex
+         // never sends status:"completed" for individual tool calls — it
+         // only sends "in_progress" then moves on, so without this sync
+         // chatHistory retains "running" forever.
+         for (var _hi2 = 0; _hi2 < chatHistory.length; _hi2++) {
+           var _hItem2 = chatHistory[_hi2];
+           if (_hItem2 && _hItem2.kind === 'toolCall' &&
+               (_hItem2.status === 'in_progress' || _hItem2.status === 'running' || _hItem2.status === 'pending')) {
+             _hItem2.status = 'completed';
+           }
+         }
+         saveState();
+       }
+       setProcessing(false);
         // Interrupted: keep partial reply folded and refresh the ▸ header
         // (thought-only / Claude cancel often had toolCount 0 → header hidden).
         if (_wasCancelled && currentTurnEl && compactMode) {
