@@ -4561,10 +4561,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    .messages.compact-mode .turn > .turn-fold-body:not(.expanded) .tc-stage-desc {
      display: none !important;
    }
-   /* Cursor/ACP todos belong with turn details; hide plan-bar dump while Collapse is on. */
-   .messages.compact-mode ~ .plan-bar.cursor-todos-outside {
-     display: none !important;
-   }
 
    /* Compact inline tool call */
    .tool-call-inline {
@@ -6933,11 +6929,7 @@ var end = displayText.length;
       compactToggleBtn.setAttribute('aria-pressed', compactMode ? 'true' : 'false');
      if (messagesEl) messagesEl.classList.toggle('compact-mode', compactMode);
      applyCompactModeToAllTurns(compactMode);
-     // Collapse hides outside dumps (Cursor todos plan-bar). Clear when turning on.
-     if (compactMode && planBar && planBar.classList.contains('cursor-todos-outside')) {
-       planBar.classList.remove('cursor-todos-outside');
-       planBar.innerHTML = '';
-     }
+     // Compact mode toggle — todos remain visible in plan bar.
    });
   }
 
@@ -13307,15 +13299,13 @@ sessionState = {
   /** Cursor cursor/update_todos — only surface outside when Collapse is off. */
   function handleCursorUpdateTodos(params) {
     if (!params || !Array.isArray(params.todos) || !planBar) return;
-    // Collapse mode: do not dump todos into the always-visible plan bar
-    // (that sits outside the turn fold). Keep a one-line status hint instead.
+    // Render todos in the plan bar above the chat input in all modes.
+    // In compact mode the plan bar is still visible (it sits outside the
+    // message list fold), so the user always sees the current task board.
     if (compactMode) {
-      planBar.classList.remove('cursor-todos-outside');
-      planBar.innerHTML = '';
       if (statusEl && params.todos.length) {
         statusEl.textContent = params.todos.length + ' todo' + (params.todos.length > 1 ? 's' : '') + ' updated';
       }
-      return;
     }
     var todos = params.todos;
     if (!todos.length) {
