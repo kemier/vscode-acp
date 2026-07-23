@@ -5791,7 +5791,16 @@ const builtinCommands = [
     // we capture the PREVIOUS session ID in showSessionConnected before
     // overwriting sessionState.
     let preLoadSnapshotSessionId = null;
-    let previousSessionId = null;
+   let previousSessionId = null;
+   // Tracks the session ID that the current chatHistory was built for.
+   // Set in restoreState (from saved state) and in showSessionConnected
+   // (when chatHistory is cleared/rebuilt for a new live session).
+   // Used by handleLoadSessionStart to correctly label the snapshot:
+   // when resuming after restart, previousSessionId is a temp session
+   // from connectToAgent, but the chatHistory belongs to the session
+   // being loaded (sessionState.sessionId). Without this, the merge
+   // in handleLoadSessionEnd is skipped because the IDs don't match.
+   let chatHistoryOriginSessionId = null;
 
     /**
      * Strip injected context blocks from user message text.
@@ -6225,9 +6234,11 @@ var end = displayText.length;
        chatHistory.push(riItem);
      }
     saveState();
-    sessionState = saved.sessionState || null;
-    // Clean title from saved state — it may contain raw context links
-    // from a previous version that didn't clean at the source.
+   sessionState = saved.sessionState || null;
+   // The restored chatHistory belongs to the saved session.
+   chatHistoryOriginSessionId = (sessionState && sessionState.sessionId) || null;
+   // Clean title from saved state — it may contain raw context links
+   // from a previous version that didn't clean at the source.
     if (sessionState && sessionState.title) {
       sessionState.title = cleanUserMessage(sessionState.title) || undefined;
     }
@@ -6778,12 +6789,14 @@ var end = displayText.length;
       toolCalls = {};
       toolCallDiffs = {};
       saveState();
-      vscode.postMessage({ type: 'sendPrompt', text: '/clear' });
-    }
-    return true;
-  }
-  // /ps — list background terminal processes (client-side, like codex TUI)
-  if (text === '/ps') {
+     vscode.postMessage({ type: 'sendPrompt', text: '/clear' });
+     // After /clear, chatHistory belongs to current session.
+     chatHistoryOriginSessionId = (sessionState && sessionState.sessionId) || null;
+   }
+   return true;
+ }
+ // /ps — list background terminal processes (client-side, like codex TUI)
+ if (text === '/ps') {
     promptInput.value = '';
     updateSendButton();
     pendingImages.splice(0);
@@ -7254,19 +7267,23 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      hasSentPrompt = false;
      if (tokenUsageRing) tokenUsageRing.classList.remove('visible');
       // Keep a copy of the restored webview history. Claude session/load for an
-      // interrupted mid-turn often only replays the user prompt — without this
-      // snapshot (and without saveState of the empty array) the collapse block
-      // permanently disappears after VS Code restart.
-      preLoadChatHistorySnapshot = chatHistory.slice();
-      // Label the snapshot with the PREVIOUS session ID (the one whose
-      // chatHistory we're capturing). sessionState.sessionId is already
-      // the NEW session because active-session-changed fires before
-      // loadSessionStart. previousSessionId was captured in
-      // showSessionConnected before the overwrite.
-      preLoadSnapshotSessionId = previousSessionId;
-      // Reset all chat state; behaves like clearChat but keeps the session
-      // banner / input area structure intact.
-      chatHistory = [];
+     // interrupted mid-turn often only replays the user prompt — without this
+     // snapshot (and without saveState of the empty array) the collapse block
+     // permanently disappears after VS Code restart.
+     preLoadChatHistorySnapshot = chatHistory.slice();
+    // Label the snapshot with the session ID that the chatHistory belongs to.
+    // chatHistoryOriginSessionId tracks the session whose chatHistory was
+    // either restored from saveState (resume after restart) or built live
+    // (switching between sessions). This correctly handles:
+    // - Resume after restart: chatHistoryOriginSessionId = the saved session
+    //   (from restoreState), even though previousSessionId is a temp session
+    //   created by connectToAgent.
+    // - Session switch (A→B): chatHistoryOriginSessionId = A (the previously
+    //   displayed session), which won't match B — merge is correctly skipped.
+    preLoadSnapshotSessionId = chatHistoryOriginSessionId || previousSessionId || null;
+    // Reset all chat state; behaves like clearChat but keeps the session
+    // banner / input area structure intact.
+    chatHistory = [];
       // Do NOT saveState() here — persisting [] would erase tools that Claude
       // will not replay. saveState runs after loadSessionEnd merge instead.
       currentAssistantEl = null;
@@ -7295,9 +7312,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
 
   function handleLoadSessionEnd(ok) {
-    hideEmpty();
-    isLoadingSession = false;
-    // Safety: never leave compact-mode latched after a history replay.
+   hideEmpty();
+   isLoadingSession = false;
+   // After replay, chatHistory belongs to the loaded session.
+   chatHistoryOriginSessionId = (sessionState && sessionState.sessionId) || null;
+   // Safety: never leave compact-mode latched after a history replay.
     isCompacting = false;
     manualCompacting = false;
     isClearing = false;
@@ -11106,20 +11125,25 @@ function renderChatHistory() {
     scrollToBottom();
   }
 
-   function showSessionConnected(session) {
-     // If a load overlay is still visible (e.g. stale session was
-     // replaced by a new session), dismiss it now as a safety net.
-     if (isLoadingSession) {
-       isLoadingSession = false;
-       if (loadOverlay) loadOverlay.classList.remove('visible');
-       if (inputArea) inputArea.classList.remove('disabled');
-     }
-    hasActiveSession = true;
-    hasSentPrompt = false;
-    // Capture the session ID that was active BEFORE this switch so
-    // handleLoadSessionStart can label its chatHistory snapshot correctly.
-    // sessionState is overwritten below, so we must grab the old value first.
-    previousSessionId = (sessionState && sessionState.sessionId) || null;
+  function showSessionConnected(session) {
+   // If a load overlay is still visible (e.g. stale session was
+   // replaced by a new session), dismiss it now as a safety net.
+   if (isLoadingSession) {
+     isLoadingSession = false;
+     if (loadOverlay) loadOverlay.classList.remove('visible');
+     if (inputArea) inputArea.classList.remove('disabled');
+   }
+   hasActiveSession = true;
+   hasSentPrompt = false;
+   // Capture the session ID that was active BEFORE this switch so
+   // handleLoadSessionStart can label its chatHistory snapshot correctly.
+   // sessionState is overwritten below, so we must grab the old value first.
+   previousSessionId = (sessionState && sessionState.sessionId) || null;
+   // If this is a brand-new session (e.g. temp session from connectToAgent),
+   // the chatHistory hasn't changed — it still belongs to the previous
+   // chatHistoryOriginSessionId (likely from restoreState). Don't overwrite
+   // chatHistoryOriginSessionId here; it's only updated when chatHistory is
+   // actually cleared/rebuilt (in handleLoadSessionEnd or clearChat).
 sessionState = {
   sessionId: session.sessionId,
   agentName: session.agentName,
@@ -11289,9 +11313,11 @@ sessionState = {
           break;
 
       case 'promptStart':
-        setProcessing(true);
-        isForceCancelled = false;
-        cancelProvisionalSummaryPromote();
+       setProcessing(true);
+       isForceCancelled = false;
+       // Chat history is being built for the current session.
+       chatHistoryOriginSessionId = (sessionState && sessionState.sessionId) || null;
+       cancelProvisionalSummaryPromote();
         // Previous turn's Kiro/Claude stages may still be spinning after a
         // reload or missed terminate — mark them failed before new spawns.
         failRunningSubagentStagesInDom();
@@ -11512,9 +11538,10 @@ sessionState = {
              currentPsEl = null;
               if (psPanel) psPanel.style.display = 'none';
         chatHistory = [];
-        sessionState = null;
-        hasSentPrompt = false;
-        saveState();
+       sessionState = null;
+       chatHistoryOriginSessionId = null;
+       hasSentPrompt = false;
+       saveState();
          currentAssistantEl = null;
          currentAssistantText = '';
          toolCalls = {};
@@ -12165,16 +12192,18 @@ sessionState = {
         return;
       }
       chatHistory = [];
-      messagesEl.innerHTML = '';
-      historyRenderGen++;
-      for (var _cmpRk in pendingRenderRetries) { delete pendingRenderRetries[_cmpRk]; }
-      currentTurnEl = null;
-      currentAssistantEl = null;
-      currentAssistantText = '';
-      currentToolsListEl = null;
-      currentToolsCountEl = null;
-      currentToolCount = 0;
-      toolCalls = {};
+     messagesEl.innerHTML = '';
+     historyRenderGen++;
+     for (var _cmpRk in pendingRenderRetries) { delete pendingRenderRetries[_cmpRk]; }
+     currentTurnEl = null;
+     currentAssistantEl = null;
+     currentAssistantText = '';
+     currentToolsListEl = null;
+     currentToolsCountEl = null;
+     currentToolCount = 0;
+     toolCalls = {};
+     // After compaction clear, chatHistory (now empty) belongs to current session.
+     chatHistoryOriginSessionId = (sessionState && sessionState.sessionId) || null;
       toolCallDiffs = {};
       isCompacting = false;
       manualCompacting = false;
@@ -12994,15 +13023,17 @@ sessionState = {
     currentToolsCountEl = null;
     currentToolCount = 0;
     toolCalls = {};
-    toolCallDiffs = {};
-    if (statusEl) statusEl.innerHTML = '';
-    setProcessing(false);
-    saveState();
-    hideEmpty();
-    if (notice && String(notice).trim()) {
-      addMessage('system', String(notice).trim());
-    }
-  }
+   toolCallDiffs = {};
+   if (statusEl) statusEl.innerHTML = '';
+   setProcessing(false);
+   saveState();
+   // After Kiro clear, chatHistory belongs to current session.
+   chatHistoryOriginSessionId = (sessionState && sessionState.sessionId) || null;
+   hideEmpty();
+   if (notice && String(notice).trim()) {
+     addMessage('system', String(notice).trim());
+   }
+ }
 
   /**
    * Handle _kiro.dev/clear/status — show progress banner; clear UI when done.
