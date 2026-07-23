@@ -5642,28 +5642,29 @@ let isCompacting = false;  // true while /compact is running
      renderQueue();
 
      if (isProcessing) {
-       // Set the pending message; it will be sent once promptEnd fires
-       // after the cancel completes.
-       pendingSendAfterCancel = entry;
-       vscode.postMessage({ type: 'cancelTurn' });
-     } else {
-       // Not processing — send directly
-       addMessage('user', entry.text || '(image)');
-       hasSentPrompt = true;
-       vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
-     }
+      // Set the pending message; it will be sent once promptEnd fires
+      // after the cancel completes.
+      pendingSendAfterCancel = entry;
+      vscode.postMessage({ type: 'cancelTurn' });
+    } else {
+      // Not processing — send directly. The user message was already
+      // shown when it was queued (in handleQueue), so just send the prompt.
+      hasSentPrompt = true;
+      vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
+    }
    }
 
    function drainQueue() {
-     if (messageQueue.length === 0) return false;
-     const entry = messageQueue.shift();
-     renderQueue();
-     // Send the queued message as if the user typed it
-     addMessage('user', entry.text || '(image)');
-     hasSentPrompt = true;
-     vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
-     return true;
-   }
+    if (messageQueue.length === 0) return false;
+    const entry = messageQueue.shift();
+    renderQueue();
+    // The user message was already shown in the chat when it was queued
+    // (in handleQueue). Just send the prompt to the agent — don't re-add
+    // the message to avoid duplicate user bubbles.
+    hasSentPrompt = true;
+    vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
+    return true;
+  }
 
     // Modes / models state (legacy fallback path)
     let availableModes = [];
@@ -6549,14 +6550,32 @@ var end = displayText.length;
  });
 
     function handleQueue() {
-      const text = promptInput.value.trim();
-      if (!text && pendingImages.length === 0) return;
-      const images = pendingImages.splice(0);
-      imagePreviewStrip.innerHTML = '';
-      promptInput.value = '';
-      updateSendButton();
-      queueMessage(text, images);
-    }
+     const text = promptInput.value.trim();
+     if (!text && pendingImages.length === 0) return;
+     const images = pendingImages.splice(0);
+     imagePreviewStrip.innerHTML = '';
+     promptInput.value = '';
+     updateSendButton();
+     // Show the queued message as a user bubble in the chat immediately,
+     // even though it won't be sent to the agent until the current turn
+     // finishes. This mirrors Codex CLI's behavior where steering messages
+     // appear in the conversation history right away, giving the user
+     // visual context while the agent works.
+     addMessage('user', text || '(image)');
+     // Show the queued message as a user bubble in the chat immediately,
+     // even though it won't be sent to the agent until the current turn
+     // finishes. This mirrors Codex CLI's behavior where steering messages
+     // appear in the conversation history right away, giving the user
+     // visual context while the agent works.
+     //
+     // Use addMessageDOM directly (not addMessage) to avoid resetting
+     // currentTurnEl — the agent is still streaming into the current turn
+     // and resetting it would split the response into two visual turns.
+     chatHistory.push({ kind: 'message', role: 'user', text: text || '(image)' });
+     saveState();
+     addMessageDOM('user', text || '(image)');
+     queueMessage(text, images);
+   }
 
   /**
    * Handle client-side slash commands that should execute immediately,
@@ -11464,17 +11483,17 @@ sessionState = {
         // Uses a microtask delay so the UI fully settles before the next
         // turn starts.
         if (pendingSendAfterCancel) {
-          // A "Send Now" was requested while processing — send that
-          // message immediately after the cancel completes.
-          var entry = pendingSendAfterCancel;
-          pendingSendAfterCancel = null;
-          setTimeout(() => {
-            if (!isProcessing) {
-              addMessage('user', entry.text || '(image)');
-              hasSentPrompt = true;
-              vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
-            }
-          }, 0);
+         // A "Send Now" was requested while processing — send that
+         // message immediately after the cancel completes.
+         var entry = pendingSendAfterCancel;
+         pendingSendAfterCancel = null;
+         setTimeout(() => {
+           if (!isProcessing) {
+             // Message was already shown when queued (in handleQueue).
+             hasSentPrompt = true;
+             vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
+           }
+         }, 0);
         } else if (messageQueue.length > 0) {
           setTimeout(() => {
             if (!isProcessing && messageQueue.length > 0) {
