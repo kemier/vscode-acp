@@ -6561,32 +6561,26 @@ var end = displayText.length;
  });
 
     function handleQueue() {
-     const text = promptInput.value.trim();
-     if (!text && pendingImages.length === 0) return;
-     const images = pendingImages.splice(0);
-     imagePreviewStrip.innerHTML = '';
-     promptInput.value = '';
-     updateSendButton();
-     // Show the queued message as a user bubble in the chat immediately,
-     // even though it won't be sent to the agent until the current turn
-     // finishes. This mirrors Codex CLI's behavior where steering messages
-     // appear in the conversation history right away, giving the user
-     // visual context while the agent works.
-     addMessage('user', text || '(image)');
-     // Show the queued message as a user bubble in the chat immediately,
-     // even though it won't be sent to the agent until the current turn
-     // finishes. This mirrors Codex CLI's behavior where steering messages
-     // appear in the conversation history right away, giving the user
-     // visual context while the agent works.
-     //
-     // Use addMessageDOM directly (not addMessage) to avoid resetting
-     // currentTurnEl — the agent is still streaming into the current turn
-     // and resetting it would split the response into two visual turns.
-     chatHistory.push({ kind: 'message', role: 'user', text: text || '(image)' });
-     saveState();
-     addMessageDOM('user', text || '(image)');
-     queueMessage(text, images);
-   }
+    const text = promptInput.value.trim();
+    if (!text && pendingImages.length === 0) return;
+    const images = pendingImages.splice(0);
+    imagePreviewStrip.innerHTML = '';
+    promptInput.value = '';
+    updateSendButton();
+    // Show the queued message as a user bubble in the chat immediately,
+    // even though it won't be sent to the agent until the current turn
+    // finishes. This mirrors Codex CLI's behavior where steering messages
+    // appear in the conversation history right away, giving the user
+    // visual context while the agent works.
+    //
+    // Use addMessageDOM directly (not addMessage) to avoid resetting
+    // currentTurnEl — the agent is still streaming into the current turn
+    // and resetting it would split the response into two visual turns.
+    chatHistory.push({ kind: 'message', role: 'user', text: text || '(image)' });
+    saveState();
+    addMessageDOM('user', text || '(image)');
+    queueMessage(text, images);
+  }
 
   /**
    * Handle client-side slash commands that should execute immediately,
