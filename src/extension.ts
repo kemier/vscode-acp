@@ -111,6 +111,11 @@ export function activate(context: vscode.ExtensionContext): void {
   // SessionHistoryStore is used because it is workspace-scoped (filters
   // by cwd). Global on-disk sessions belong to other workspaces and
   // should not seed the resume button on a new project.
+  //
+  // Also validate any existing workspaceState value — if the stored
+  // session does not exist in the history store for this workspace,
+  // clear it so a stale value from another workspace doesn't show a
+  // bogus "Resume" button.
   if (!context.workspaceState.get('acp.lastConnectedAgent')) {
     const agentNames = getAgentNames();
     let best: { agent: string; sessionId: string; lastActiveAt: string } | undefined;
@@ -133,6 +138,26 @@ export function activate(context: vscode.ExtensionContext): void {
       log(`Seeded last agent from disk: ${best.agent} (session ${best.sessionId})`);
     } else {
       log('No sessions found in history for seeding');
+    }
+  } else {
+    // Validate the existing workspaceState value — make sure the stored
+    // agent has at least one session in the history store for THIS workspace.
+    // If not, clear it (stale value from old seeding or another workspace).
+    const storedAgent = context.workspaceState.get<string>('acp.lastConnectedAgent');
+    let hasHistory = false;
+    if (storedAgent) {
+      for (const name of getAgentNames()) {
+        if (historyStore.list(name).length > 0) {
+          hasHistory = true;
+          break;
+        }
+      }
+    }
+    if (!hasHistory) {
+      log(`Clearing stale lastConnectedAgent '${storedAgent}' — no sessions in history for this workspace`);
+      context.workspaceState.update('acp.lastConnectedAgent', undefined);
+      context.workspaceState.update('acp.lastConnectedAgentDisplay', undefined);
+      context.workspaceState.update('acp.lastConnectedSessionId', undefined);
     }
   }
 

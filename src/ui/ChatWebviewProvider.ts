@@ -6112,12 +6112,18 @@ var end = displayText.length;
     if (!saved) return;
     // Debug: log restoreState entry
     vscode.postMessage({ type: 'debugLog', message: 'restoreState START: saved.chatHistory.length=' + (saved.chatHistory ? saved.chatHistory.length : 0) });
-    // Restore the last connected agent so the welcome button can offer
-    // "Resume <agent>" even after showNoSession cleared sessionState.
-    lastConnectedAgent = saved.lastConnectedAgent || null;
-    lastConnectedAgentDisplay = saved.lastConnectedAgentDisplay || null;
-    lastConnectedSessionId = saved.lastConnectedSessionId || null;
-    interruptedSessionIds = (saved.interruptedSessionIds && typeof saved.interruptedSessionIds === 'object')
+   // Restore the last connected agent so the welcome button can offer
+   // "Resume <agent>" even after showNoSession cleared sessionState.
+   // Only restore if there is chat history — on a new project with no
+   // sessions, the saved lastConnectedAgent may be stale (seeded from
+   // global on-disk sessions in older versions). The extension host's
+   // 'state' message will set the correct value shortly.
+   if (saved.chatHistory && saved.chatHistory.length > 0) {
+     lastConnectedAgent = saved.lastConnectedAgent || null;
+     lastConnectedAgentDisplay = saved.lastConnectedAgentDisplay || null;
+     lastConnectedSessionId = saved.lastConnectedSessionId || null;
+   }
+   interruptedSessionIds = (saved.interruptedSessionIds && typeof saved.interruptedSessionIds === 'object')
       ? saved.interruptedSessionIds
       : {};
     updateWelcomeButton();
