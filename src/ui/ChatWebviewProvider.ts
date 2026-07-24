@@ -6654,8 +6654,16 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       });
       if (!missing.length) return false;
       var missingTools = missing.filter(function(x) { return x.kind === 'toolCall'; });
-      if (loadedToolCount > 0 && missingTools.length === 0) return false;
-      if (loadedToolCount > 0 && missingTools.length > 0 &&
+      // Codex session/load only replays tool_calls + user_messages — not
+      // agent_thought_chunk or agent_message_chunk. So even when all tools
+      // are already loaded, we must still merge missing thoughts and
+      // assistant messages from the snapshot. Only skip when there's truly
+      // nothing missing.
+      if (loadedToolCount > 0 && missingTools.length === 0 &&
+          !missing.some(function(x) {
+            return x.kind === 'thought' || (x.kind === 'message' && x.role === 'assistant');
+          })) return false;
+     if (loadedToolCount > 0 && missingTools.length > 0 &&
           missingTools.every(function(t) { return t.toolCallId && haveIds[t.toolCallId]; })) {
         return false;
       }
