@@ -7826,14 +7826,18 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           a.classList.remove('assistant-summary');
         });
       }
-      // Do NOT auto-promote the last interim to summary here. Mid-turn commits
-      // clear currentAssistantEl; promoting then made each segment flash in the
-      // panel until the next one arrived and demoted it. Only placeSummaryAssistant
-      // (promptEnd) may lift a reply out.
-      summaryAssistants.forEach(function(a) {
-        a.classList.add('assistant-summary');
-        a.classList.remove('assistant-interim');
-      });
+     // Do NOT auto-promote the last interim to summary here. Mid-turn commits
+     // clear currentAssistantEl; promoting then made each segment flash in the
+     // panel until the next one arrived and demoted it. Only placeSummaryAssistant
+     // (promptEnd) may lift a reply out.
+     // During renderChatHistory (suppressFoldOrdering), skip promotion —
+     // promoteFinalAssistantForTurn at the end of renderChatHistory handles it.
+     if (!suppressFoldOrdering) {
+       summaryAssistants.forEach(function(a) {
+         a.classList.add('assistant-summary');
+         a.classList.remove('assistant-interim');
+       });
+     }
 
       // Count meaningful thoughts for the summary flag. Never delete thought
       // nodes here — removing "empty" blocks during fold rebuild made later
@@ -7919,11 +7923,16 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       // before all tools — that made newer blocks look like they overwrote older ones).
       orderCompactFoldContents(body);
 
-      // Final summary assistant(s) always sit after the fold (visible while collapsed).
-      summaryAssistants.forEach(function(a) {
-        if (body.nextSibling) turn.insertBefore(a, body.nextSibling);
-        turn.appendChild(a);
-      });
+     // Final summary assistant(s) always sit after the fold (visible while collapsed).
+     // During renderChatHistory (suppressFoldOrdering), skip — leave all
+     // assistants inside the fold. promoteFinalAssistantForTurn at the end
+     // of renderChatHistory will handle promotion correctly.
+     if (!suppressFoldOrdering) {
+       summaryAssistants.forEach(function(a) {
+         if (body.nextSibling) turn.insertBefore(a, body.nextSibling);
+         turn.appendChild(a);
+       });
+     }
 
       // Live streaming bubble stays inside the fold while processing.
       // Manual collapse during end-turn summary may have lifted it; only
