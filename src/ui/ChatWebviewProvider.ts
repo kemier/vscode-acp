@@ -5550,11 +5550,29 @@ var end = displayText.length;
         if (riItem && riItem.kind === 'message' && riItem.role === 'user' && typeof riItem.text === 'string') {
           riItem = { kind: 'message', role: 'user', text: cleanUserMessage(riItem.text) };
         }
-       // Force any interrupted tool calls to 'failed' status.
+       // Sync in-progress tool calls to a terminal status.
        // When a session is closed abruptly, in_progress/running tool calls
-       // will never complete — they should show as failed, not spinning forever.
+       // will never receive a completion update. However, Codex often only
+       // sends tool_call with 'in_progress' and never sends tool_call_update
+       // with 'completed' — the completion is implicit in promptEnd.
+       // So: if there is an assistant message AFTER this tool call (the turn
+       // finished), mark it 'completed'. Only force 'failed' when the turn
+       // was truly interrupted (no assistant message follows).
        if (riItem && riItem.kind === 'toolCall' && (riItem.status === 'in_progress' || riItem.status === 'running' || riItem.status === 'pending')) {
-         riItem = { ...riItem, status: 'failed' };
+         var _hasFollowingAssistant = false;
+         for (var _fa = ri + 1; _fa < rawHistory.length; _fa++) {
+           var _faItem = rawHistory[_fa];
+           if (_faItem && _faItem.kind === 'message' && _faItem.role === 'assistant' && !(_faItem.interrupted)) {
+             _hasFollowingAssistant = true;
+             break;
+           }
+           // A new user message means the turn ended — tools before it completed.
+           if (_faItem && _faItem.kind === 'message' && _faItem.role === 'user' && !isSessionInterruptNotice(_faItem.text)) {
+             _hasFollowingAssistant = true;
+             break;
+           }
+         }
+         riItem = { ...riItem, status: _hasFollowingAssistant ? 'completed' : 'failed' };
        }
        // Drop Kiro Summarizing/summary tool rows — redundant with the main
        // agent_message summary and used to reappear as a wrapped tool block.
@@ -6730,38 +6748,56 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       mergePreLoadInterruptedTurn(preLoadChatHistorySnapshot);
     }
     preLoadChatHistorySnapshot = null;
-    preLoadSnapshotSessionId = null;
-    // If history was replayed, there were prior prompts — mark as sent
-    // so the context usage ring can appear when metadata arrives.
-    if (chatHistory.length > 0) hasSentPrompt = true;
-    // Force any interrupted tool calls to 'failed' status.
-     // After session replay, any tool calls still in 'in_progress'/'running'/'pending'
-     // state will never receive a completion update — they were interrupted.
-     var _failedAnyTool = false;
-     for (let i = 0; i < chatHistory.length; i++) {
-       const item = chatHistory[i];
-       if (item && item.kind === 'toolCall' &&
-           (item.status === 'in_progress' || item.status === 'running' || item.status === 'pending')) {
-         item.status = 'failed';
-         _failedAnyTool = true;
-         const el = toolCalls[item.toolCallId] || document.getElementById('tc-' + item.toolCallId);
-         if (el) {
-           const iconEl = el.querySelector('.tc-icon');
-           if (iconEl) { iconEl.className = 'tc-icon failed'; iconEl.textContent = getStatusIcon('failed'); }
-           const badge = el.querySelector('.status-badge');
-           if (badge) { badge.className = 'status-badge failed'; badge.textContent = 'failed'; }
-           // Codex/Claude crew parents synthesized as running during load.
-           if (el.classList.contains('tc-subagent')) {
-             var _stSpin = el.querySelectorAll('.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending');
-             for (var _ssi = 0; _ssi < _stSpin.length; _ssi++) {
-               var _stEl = _stSpin[_ssi].closest('.tc-stage');
-               if (_stEl) applyStageIcon(_stEl, 'failed');
-             }
-             markSubagentCrewStale(el);
-           }
-         }
-       }
-     }
+   preLoadSnapshotSessionId = null;
+   // If history was replayed, there were prior prompts — mark as sent
+   // so the context usage ring can appear when metadata arrives.
+   if (chatHistory.length > 0) hasSentPrompt = true;
+    // Sync in-progress tool calls to a terminal status.
+    // Codex often sends tool_call with 'in_progress' and never sends
+    // tool_call_update with 'completed' — the completion is implicit in
+    // promptEnd.  So: if there is an assistant message or a new user message
+    // after this tool call (the turn finished), mark it 'completed'.  Only
+    // force 'failed' when the turn was truly interrupted.
+    var _failedAnyTool = false;
+    for (let i = 0; i < chatHistory.length; i++) {
+      const item = chatHistory[i];
+      if (item && item.kind === 'toolCall' &&
+          (item.status === 'in_progress' || item.status === 'running' || item.status === 'pending')) {
+        // Check forward in chatHistory for a following non-interrupted
+        // assistant message or a new user message (excluding interrupt notices).
+        var _hasFollowingAssistant = false;
+        for (var _fa = i + 1; _fa < chatHistory.length; _fa++) {
+          var _faItem = chatHistory[_fa];
+          if (_faItem && _faItem.kind === 'message' && _faItem.role === 'assistant' && !(_faItem.interrupted)) {
+            _hasFollowingAssistant = true;
+            break;
+          }
+          if (_faItem && _faItem.kind === 'message' && _faItem.role === 'user' && !isSessionInterruptNotice(_faItem.text)) {
+            _hasFollowingAssistant = true;
+            break;
+          }
+        }
+        var _newStatus = _hasFollowingAssistant ? 'completed' : 'failed';
+        item.status = _newStatus;
+        if (_newStatus === 'failed') _failedAnyTool = true;
+        const el = toolCalls[item.toolCallId] || document.getElementById('tc-' + item.toolCallId);
+        if (el) {
+          const iconEl = el.querySelector('.tc-icon');
+          if (iconEl) { iconEl.className = 'tc-icon ' + _newStatus; iconEl.textContent = getStatusIcon(_newStatus); }
+          const badge = el.querySelector('.status-badge');
+          if (badge) { badge.className = 'status-badge ' + _newStatus; badge.textContent = _newStatus; }
+          // Codex/Claude crew parents synthesized as running during load.
+          if (_newStatus === 'failed' && el.classList.contains('tc-subagent')) {
+            var _stSpin = el.querySelectorAll('.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending');
+            for (var _ssi = 0; _ssi < _stSpin.length; _ssi++) {
+              var _stEl = _stSpin[_ssi].closest('.tc-stage');
+              if (_stEl) applyStageIcon(_stEl, 'failed');
+            }
+            markSubagentCrewStale(el);
+          }
+        }
+      }
+    }
      // Do not fail completed→failed until we know the session actually ended
      // interrupted (finished resumes must keep green checks + promote summary).
      reconcileInterruptedSessionFlag(_failedAnyTool);
