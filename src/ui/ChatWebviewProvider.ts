@@ -4871,10 +4871,12 @@ let isCompacting = false;  // true while /compact is running
       msgQueueEl.innerHTML = '';
       if (messageQueue.length === 0) {
         msgQueueLabelEl.style.display = 'none';
+        msgQueueEl.style.display = 'none';
         return;
       }
       msgQueueLabelEl.style.display = 'block';
-     messageQueue.forEach((entry, index) => {
+      msgQueueEl.style.display = 'block';
+      messageQueue.forEach((entry, index) => {
        const chip = document.createElement('div');
        chip.className = 'msg-queue-item';
        const textSpan = document.createElement('span');
@@ -5929,11 +5931,11 @@ var end = displayText.length;
     // the agent works — matching Codex TUI's behavior where steering
     // messages appear in the conversation history right away.
     //
-    // The queue chip is hidden because the message is already visible as a
-    // user bubble — showing both creates a confusing duplicate. The queue
-    // chip is only shown when there are messages that haven't been bubbled
-    // yet (which never happens in this flow, but the chip remains available
-    // for future use cases).
+    // The queue chip is kept visible so the user can click "Send Now" to
+    // interrupt the current turn and deal with the queued message
+    // immediately. The user bubble provides visual context; the queue chip
+    // provides control — they serve different purposes and are not
+    // redundant.
     //
     // Use addMessageDOM directly (not addMessage) to avoid resetting
     // currentTurnEl — the agent is still streaming into the current turn
@@ -5942,11 +5944,9 @@ var end = displayText.length;
     saveState();
     addMessageDOM('user', text || '(image)');
     queueMessage(text, images);
-    // Hide the queue chip — the message is already shown as a user bubble.
-    // The queue data structure is still used for "Send Now" and auto-drain
-    // when the turn finishes, but the visual chip is redundant.
-    if (msgQueueEl) msgQueueEl.style.display = 'none';
-    if (msgQueueLabelEl) msgQueueLabelEl.style.display = 'none';
+    // Keep the queue chip visible so the user can click "Send Now" to
+    // interrupt the current turn and deal with this queued message.
+    // renderQueue() is called inside queueMessage() and handles display.
   }
 
   /**
