@@ -6020,15 +6020,30 @@ var end = displayText.length;
   // Codex (via codex-acp turn/steer), Claude Code (via claude-code-acp
   // steer queue + drain). All three handle the _ericli/session/steer
   // notification — the message is injected mid-turn without cancelling.
-  var _supportsSteer = /ericli|codex|claude/i.test(_agentName);
-  if (_supportsSteer) {
-     chatHistory.push({ kind: 'message', role: 'user', text: text || '(image)' });
-     saveState();
-     addMessageDOM('user', text || '(image)');
-    vscode.postMessage({ type: 'steerPrompt', text: text });
-  } else {
-    queueMessage(text, images);
-  }
+ var _supportsSteer = /ericli|codex|claude/i.test(_agentName);
+ if (_supportsSteer) {
+    // Commit any in-progress assistant text as an interim segment in the
+    // current turn before resetting. This ensures the text before the steer
+    // stays in the old turn's fold, and the next streaming chunk after the
+    // steer starts a NEW turn under the steering user bubble.
+    if (currentAssistantEl && currentAssistantText) {
+      commitCurrentTextSegment({ interim: true });
+    }
+    currentAssistantEl = null;
+    currentAssistantText = '';
+    chatHistory.push({ kind: 'message', role: 'user', text: text || '(image)' });
+    saveState();
+    addMessageDOM('user', text || '(image)');
+    // Reset turn + tool state so the next agent_message_chunk / tool_call
+    // creates a NEW turn container under the steering user bubble.
+    currentTurnEl = null;
+    currentToolsListEl = null;
+    currentToolsCountEl = null;
+    currentToolCount = 0;
+   vscode.postMessage({ type: 'steerPrompt', text: text });
+ } else {
+   queueMessage(text, images);
+ }
   }
 
   /**
@@ -8032,18 +8047,20 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      // During renderChatHistory (suppressFoldOrdering), skip — leave all
      // assistants inside the fold. promoteFinalAssistantForTurn at the end
      // of renderChatHistory will handle promotion correctly.
-     if (!suppressFoldOrdering && !keepAssistantsInFold) {
-       summaryAssistants.forEach(function(a) {
-         if (body.nextSibling) turn.insertBefore(a, body.nextSibling);
-         turn.appendChild(a);
-       });
-     } else if (keepAssistantsInFold && body) {
-       summaryAssistants.forEach(function(a) {
-         a.classList.add('assistant-interim');
-         a.classList.remove('assistant-summary');
-         body.appendChild(a);
-       });
-     }
+    if (!suppressFoldOrdering && !keepAssistantsInFold) {
+      summaryAssistants.forEach(function(a) {
+        if (body.nextSibling) turn.insertBefore(a, body.nextSibling);
+        turn.appendChild(a);
+      });
+    } else if (keepAssistantsInFold && body) {
+      summaryAssistants.forEach(function(a) {
+        a.classList.add('assistant-interim');
+        a.classList.remove('assistant-summary');
+        // Only move if outside the body — preserve interleaved order
+        // when already inside (rendering loop places items in order).
+        if (!body.contains(a)) body.appendChild(a);
+      });
+    }
 
       // Live streaming bubble stays inside the fold while processing.
       // Manual collapse during end-turn summary may have lifted it; only
@@ -10497,6 +10514,20 @@ function renderChatHistory() {
   currentToolsListEl = null;
   currentToolsCountEl = null;
   currentToolCount = 0;
+ // Re-enable assistant promotion and fold ordering BEFORE the post-render
+ // loop. The keepAssistantsInFold flag was needed DURING the rendering loop
+ // to prevent ensureTurnFoldStructure from yanking assistants out of their
+ // interleaved positions mid-render. By the time we reach here, all items
+ // are in the DOM in correct order, so it's safe to turn off. This allows:
+ // 1. promoteFinalAssistantForTurn (in the loop below) to actually promote
+ //    the last assistant outside the fold (it returns early if
+ //    keepAssistantsInFold is true — that was hiding the summary).
+ // 2. ensureTurnFoldStructure (in the loop + forceCollapseTurnFolds) to use
+ //    the normal path instead of the keepAssistantsInFold branch that dumps
+ //    ALL assistants at the end of the fold body (breaking interleaved order
+ //    and creating duplicate summaries on expand).
+ keepAssistantsInFold = false;
+ suppressFoldOrdering = false;
  // Collect tool titles from every tools group, then (in compact mode) fold.
  messagesEl.querySelectorAll('.turn').forEach(function(turn) {
    var lists = turn.querySelectorAll('.turn-tools-list');
@@ -10524,27 +10555,25 @@ function renderChatHistory() {
      summary._hasSubagent = hasSubagent;
      summary.dataset.count = String(titles.length);
    }
-   if (compactMode) {
-     // Still suppress ordering — items are already in correct append order
-     // from the rendering loop. ensureTurnFoldStructure only needs to
-     // set up the fold shell + summary, not re-sort.
-     ensureTurnFoldStructure(turn, true);
-     promoteFinalAssistantForTurn(turn);
-   } else if (lists.length && summary) {
-     updateToolGroupSummary(summary, parseInt(summary.dataset.count || '0', 10), summary._titles || [], summary._kinds || [], summary._rawInputs || []);
-   }
- });
- // Re-enable fold ordering for live streaming / manual toggle after render.
- suppressFoldOrdering = false;
+ if (compactMode) {
+    // Items are already in correct append order from the rendering loop.
+    // ensureTurnFoldStructure sets up the fold shell + summary, and
+    // orderCompactFoldContents runs a stable sort by document position
+    // (preserves interleaved order, just scoops strays into the body).
+    // promoteFinalAssistantForTurn lifts the last assistant outside the
+    // fold as the visible summary.
+    ensureTurnFoldStructure(turn, true);
+    promoteFinalAssistantForTurn(turn);
+  } else if (lists.length && summary) {
+    updateToolGroupSummary(summary, parseInt(summary.dataset.count || '0', 10), summary._titles || [], summary._kinds || [], summary._rawInputs || []);
+  }
+});
  // promoteFinalAssistant / structure rebuild can leave folds open after
-  // session/load — force Collapse mode shut once the DOM is final.
-  forceCollapseTurnFolds();
-  // Now that forceCollapseTurnFolds has run (which calls ensureTurnFoldStructure),
-  // re-enable assistant promotion for live streaming.
-  keepAssistantsInFold = false;
-  // Codex/Claude interrupted crews often still have running icons after rebuild.
-  failRunningSubagentStagesInDom();
-  failCompletedCrewsInInterruptedTurn();
+ // session/load — force Collapse mode shut once the DOM is final.
+ forceCollapseTurnFolds();
+ // Codex/Claude interrupted crews often still have running icons after rebuild.
+ failRunningSubagentStagesInDom();
+ failCompletedCrewsInInterruptedTurn();
   // Interrupted crews stay failed — ignore later list_update by name.
   markFailedCrewsStale(messagesEl);
    return assistantItems;
