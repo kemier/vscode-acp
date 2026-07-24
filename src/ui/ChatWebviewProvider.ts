@@ -6534,13 +6534,16 @@ var end = displayText.length;
         }
       }
 
-   if (e.key === 'Enter' && !e.shiftKey) {
-     e.preventDefault();
-     // While a turn is streaming, Enter queues the message instead of
-     // blocking. Queued messages auto-send when the current turn finishes.
-     // Fast-track: if the editor is empty and there are queued messages,
-     // pressing Enter sends the first queued message immediately (like Zed).
-     var fastTrackText = promptInput.value.trim();
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    // While a turn is streaming, Enter queues the message instead of
+    // blocking. Queued messages auto-send when the current turn finishes.
+    // Fast-track: if the editor is empty and there are queued messages,
+    // pressing Enter sends the first queued message immediately (like Zed).
+    // While a turn is streaming, Enter queues the message and shows it as
+    // a user bubble immediately (mirrors Codex TUI steering). The message
+    // is sent when the turn finishes or when the user presses ESC / Send Now.
+    var fastTrackText = promptInput.value.trim();
      if (!fastTrackText && pendingImages.length === 0 && messageQueue.length > 0) {
        sendQueuedMessageNow(0);
        return;
@@ -6567,11 +6570,20 @@ var end = displayText.length;
     imagePreviewStrip.innerHTML = '';
     promptInput.value = '';
     updateSendButton();
-    // Show the queued message as a user bubble in the chat immediately,
-    // even though it won't be sent to the agent until the current turn
-    // finishes. This mirrors Codex CLI's behavior where steering messages
-    // appear in the conversation history right away, giving the user
-    // visual context while the agent works.
+    // Queue the message and show it as a user bubble immediately.
+    //
+    // Codex CLI uses turn/steer to inject the message mid-turn without
+    // cancelling. ACP doesn't have an equivalent, so we queue the message
+    // and send it when the current turn finishes (or when the user presses
+    // ESC / clicks "Send Now"). The user bubble gives visual context while
+    // the agent works — matching Codex TUI's behavior where steering
+    // messages appear in the conversation history right away.
+    //
+    // The queue chip is hidden because the message is already visible as a
+    // user bubble — showing both creates a confusing duplicate. The queue
+    // chip is only shown when there are messages that haven't been bubbled
+    // yet (which never happens in this flow, but the chip remains available
+    // for future use cases).
     //
     // Use addMessageDOM directly (not addMessage) to avoid resetting
     // currentTurnEl — the agent is still streaming into the current turn
@@ -6580,6 +6592,11 @@ var end = displayText.length;
     saveState();
     addMessageDOM('user', text || '(image)');
     queueMessage(text, images);
+    // Hide the queue chip — the message is already shown as a user bubble.
+    // The queue data structure is still used for "Send Now" and auto-drain
+    // when the turn finishes, but the visual chip is redundant.
+    if (msgQueueEl) msgQueueEl.style.display = 'none';
+    if (msgQueueLabelEl) msgQueueLabelEl.style.display = 'none';
   }
 
   /**
