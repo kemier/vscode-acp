@@ -722,8 +722,10 @@ export class SessionManager extends EventEmitter {
    * Send a steering message to the agent mid-turn without cancelling.
    * Uses a custom `_ericli/session/steer` notification that EricCLI's
    * ACP server handles by queuing the message and injecting it at the
-   * next tool-execution iteration boundary (like Codex's turn/steer).
-   * For agents that don't support this notification, it's silently ignored.
+   * next tool-execution iteration boundary. Codex-acp translates it to
+   * a native turn/steer RPC call. Claude-code-acp queues it and drains
+   * after the current turn finishes. For agents that don't support this
+   * notification, it's silently ignored.
    */
   async steerPrompt(sessionId: string, text: string): Promise<void> {
     const session = this.sessions.get(sessionId);

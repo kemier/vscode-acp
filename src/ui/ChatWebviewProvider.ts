@@ -26,7 +26,7 @@ const execFileAsync = promisify(execFile);
 // Set to true to enable verbose [DEBUG-WV] / [DEBUG-MD] / [DEBUG-SUBAGENT] logs
 // in the ACP Client output channel. Keep false in normal use — the per-chunk
 // logging floods the channel during streaming.
-const DEBUG = false;
+const DEBUG = true;
 
 /**
  * WebviewViewProvider for the ACP chat sidebar.
@@ -6007,23 +6007,28 @@ var end = displayText.length;
     // The user bubble is shown immediately because the message is
     // delivered right away (steered into the active turn).
    //
-   // For agents that do NOT support steering (Codex, Kiro, Claude, etc.),
-   // queue the message — it is auto-drained when the turn finishes. Only
-   // the FIRST queued message is sent as a new prompt; the rest remain
-    // queued until that turn finishes. The message is NOT shown as a
-    // chat bubble while queued — it only appears when actually sent
-    // (via drainQueue or "Send Now"). The queue chip with "Send Now"
-    // lets the user interrupt the current turn to deal with it sooner.
-   var _agentName = (sessionState && (sessionState.agentName || sessionState.agentConfigKey)) || '';
-   var _isEricli = /ericli/i.test(_agentName);
-   if (_isEricli) {
-      chatHistory.push({ kind: 'message', role: 'user', text: text || '(image)' });
-      saveState();
-      addMessageDOM('user', text || '(image)');
-     vscode.postMessage({ type: 'steerPrompt', text: text });
-   } else {
-     queueMessage(text, images);
-   }
+  // For agents that do NOT support steering (Codex, Kiro, Claude, etc.),
+  // queue the message — it is auto-drained when the turn finishes. Only
+  // the FIRST queued message is sent as a new prompt; the rest remain
+   // queued until that turn finishes. The message is NOT shown as a
+   // chat bubble while queued — it only appears when actually sent
+   // (via drainQueue or "Send Now"). The queue chip with "Send Now"
+   // lets the user interrupt the current turn to deal with it sooner.
+  var _agentName = (sessionState && (sessionState.agentName || sessionState.agentConfigKey)) || '';
+  var _isEricli = /ericli/i.test(_agentName);
+  // Agents that support _ericli/session/steer: EricCLI (native),
+  // Codex (via codex-acp turn/steer), Claude Code (via claude-code-acp
+  // steer queue + drain). All three handle the _ericli/session/steer
+  // notification — the message is injected mid-turn without cancelling.
+  var _supportsSteer = /ericli|codex|claude/i.test(_agentName);
+  if (_supportsSteer) {
+     chatHistory.push({ kind: 'message', role: 'user', text: text || '(image)' });
+     saveState();
+     addMessageDOM('user', text || '(image)');
+    vscode.postMessage({ type: 'steerPrompt', text: text });
+  } else {
+    queueMessage(text, images);
+  }
   }
 
   /**
@@ -6406,6 +6411,7 @@ var end = displayText.length;
  // When true, promoteFinalAssistantForTurn keeps interrupted-turn assistants
  // inside the fold (webview crash restore + session/load resume).
  var foldInterruptedAssistantsOnPromote = false;
+ var keepAssistantsInFold = false;
  // sessionId → true after a cancelled turn; cleared on a successful end_turn.
  // Survives restart via vscode.setState so Codex/Kiro resume can keep the
  // partial reply folded even when agent history marks tools completed.
@@ -6760,6 +6766,20 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
   function handleLoadSessionEnd(ok) {
    hideEmpty();
    isLoadingSession = false;
+   // DIAG: log merge diagnostics
+   var _diagSnapLen = preLoadChatHistorySnapshot ? preLoadChatHistorySnapshot.length : 0;
+   var _diagLoadedLen = chatHistory.length;
+   var _diagSnapId = preLoadSnapshotSessionId;
+   var _diagCurId = (sessionState && sessionState.sessionId) || null;
+   var _diagSnapHasAssistant = preLoadChatHistorySnapshot && preLoadChatHistorySnapshot.some(function(x) { return x && x.kind === 'message' && x.role === 'assistant'; });
+   var _diagSnapHasThought = preLoadChatHistorySnapshot && preLoadChatHistorySnapshot.some(function(x) { return x && x.kind === 'thought'; });
+   var _diagLoadedHasAssistant = chatHistory.some(function(x) { return x && x.kind === 'message' && x.role === 'assistant'; });
+   var _diagLoadedHasThought = chatHistory.some(function(x) { return x && x.kind === 'thought'; });
+   var _diagSnapKinds = {};
+   if (preLoadChatHistorySnapshot) { for (var _dk = 0; _dk < preLoadChatHistorySnapshot.length; _dk++) { var _di = preLoadChatHistorySnapshot[_dk]; if (_di) { var _k = _di.kind + (_di.role ? ':' + _di.role : ''); _diagSnapKinds[_k] = (_diagSnapKinds[_k] || 0) + 1; } } }
+   var _diagLoadedKinds = {};
+   for (var _dlk = 0; _dlk < chatHistory.length; _dlk++) { var _dli = chatHistory[_dlk]; if (_dli) { var _lk = _dli.kind + (_dli.role ? ':' + _dli.role : ''); _diagLoadedKinds[_lk] = (_diagLoadedKinds[_lk] || 0) + 1; } }
+   vscode.postMessage({ type: 'debugLog', message: '[WV-DIAG] handleLoadSessionEnd: snapLen=' + _diagSnapLen + ' loadedLen=' + _diagLoadedLen + ' snapId=' + _diagSnapId + ' curId=' + _diagCurId + ' match=' + (_diagSnapId === _diagCurId) + ' snapHasAsst=' + _diagSnapHasAssistant + ' snapHasThought=' + _diagSnapHasThought + ' loadedHasAsst=' + _diagLoadedHasAssistant + ' loadedHasThought=' + _diagLoadedHasThought + ' snapKinds=' + JSON.stringify(_diagSnapKinds) + ' loadedKinds=' + JSON.stringify(_diagLoadedKinds) });
    // After replay, chatHistory belongs to the loaded session.
    chatHistoryOriginSessionId = (sessionState && sessionState.sessionId) || null;
    // Safety: never leave compact-mode latched after a history replay.
@@ -6785,20 +6805,31 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      // If the loaded chatHistory has tool_calls but no assistant messages,
      // the snapshot is more complete — merge ALL turns from the snapshot,
      // updating tool call statuses from the replay.
-     var _loadedHasAssistant = chatHistory.some(function(x) {
+     var _loadedAssistantCount = chatHistory.filter(function(x) {
        return x && x.kind === 'message' && x.role === 'assistant';
-     });
-     var _loadedHasThoughts = chatHistory.some(function(x) {
-       return x && x.kind === 'thought';
-     });
-     var _snapHasAssistant = preLoadChatHistorySnapshot.some(function(x) {
+     }).length;
+     var _loadedToolCount = chatHistory.filter(function(x) {
+       return x && x.kind === 'toolCall';
+     }).length;
+     var _snapAssistantCount = preLoadChatHistorySnapshot.filter(function(x) {
        return x && x.kind === 'message' && x.role === 'assistant';
-     });
+     }).length;
+     var _snapToolCount = preLoadChatHistorySnapshot.filter(function(x) {
+       return x && x.kind === 'toolCall';
+     }).length;
+     var _snapHasAssistant = _snapAssistantCount > 0;
      var _snapHasThoughts = preLoadChatHistorySnapshot.some(function(x) {
        return x && x.kind === 'thought';
      });
-     if (!_loadedHasAssistant && !_loadedHasThoughts &&
-         (_snapHasAssistant || _snapHasThoughts)) {
+     // Codex session/load often replays only a SUBSET of the history
+     // (e.g. 3 assistants + 1 tool_call when the snapshot has 28 assistants
+     // + 78 tool_calls). The full snapshot merge should trigger whenever
+     // the snapshot is significantly more complete than the loaded history.
+     var _loadedHasAssistant = _loadedAssistantCount > 0;
+     var _loadedHasThoughts = chatHistory.some(function(x) { return x && x.kind === 'thought'; });
+     var _snapshotMoreComplete = (_snapAssistantCount > _loadedAssistantCount) ||
+                                  (_snapToolCount > _loadedToolCount);
+     if (_snapshotMoreComplete && (_snapHasAssistant || _snapHasThoughts)) {
        // Codex replay: build a status map from loaded tool_calls, then
        // use the snapshot as the chatHistory (it has thoughts + assistants).
        var _statusMap = {};
@@ -6817,22 +6848,22 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
            _loadedToolIds[_ltc.toolCallId] = true;
          }
        }
-       // Use snapshot as base, update tool statuses from replay
+       // Use snapshot as base, UPDATE tool statuses from replay in-place.
+       // Do NOT skip tool_calls that are in both — that would move them to
+       // the end and break the interleaved order (thought → tool → assistant).
        var _merged = [];
        for (var _mi = 0; _mi < preLoadChatHistorySnapshot.length; _mi++) {
          var _snapItem = preLoadChatHistorySnapshot[_mi];
          if (!_snapItem) continue;
          if (_snapItem.kind === 'toolCall' && _snapItem.toolCallId) {
-           // Skip tools already in loaded history (they have fresh status)
-           if (_loadedToolIds[_snapItem.toolCallId]) continue;
-           // Update status from replay if available
+           // Update status from replay if available (keep position in order)
            if (_statusMap[_snapItem.toolCallId]) {
              _snapItem = Object.assign({}, _snapItem, { status: _statusMap[_snapItem.toolCallId] });
            }
          }
          _merged.push(_snapItem);
        }
-       // Append any loaded tool_calls not in the snapshot
+       // Append any loaded tool_calls not in the snapshot (truly new tools)
        for (var _ai = 0; _ai < chatHistory.length; _ai++) {
          var _atc = chatHistory[_ai];
          if (_atc && _atc.kind === 'toolCall' && _atc.toolCallId &&
@@ -6841,7 +6872,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          }
        }
        chatHistory = _merged;
-       vscode.postMessage({ type: 'debugLog', message: '[WV-MERGE] full snapshot merge: ' + _merged.length + ' items (snap=' + preLoadChatHistorySnapshot.length + ' loaded=' + chatHistory.length + ')' });
+       vscode.postMessage({ type: 'debugLog', message: '[WV-MERGE] full snapshot merge: ' + _merged.length + ' items (snap=' + preLoadChatHistorySnapshot.length + ' loaded=' + _diagLoadedLen + ')' });
      } else {
        mergePreLoadInterruptedTurn(preLoadChatHistorySnapshot);
      }
@@ -7904,7 +7935,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      // (promptEnd) may lift a reply out.
      // During renderChatHistory (suppressFoldOrdering), skip promotion —
      // promoteFinalAssistantForTurn at the end of renderChatHistory handles it.
-     if (!suppressFoldOrdering) {
+     if (!suppressFoldOrdering && !keepAssistantsInFold) {
        summaryAssistants.forEach(function(a) {
          a.classList.add('assistant-summary');
          a.classList.remove('assistant-interim');
@@ -8001,10 +8032,16 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      // During renderChatHistory (suppressFoldOrdering), skip — leave all
      // assistants inside the fold. promoteFinalAssistantForTurn at the end
      // of renderChatHistory will handle promotion correctly.
-     if (!suppressFoldOrdering) {
+     if (!suppressFoldOrdering && !keepAssistantsInFold) {
        summaryAssistants.forEach(function(a) {
          if (body.nextSibling) turn.insertBefore(a, body.nextSibling);
          turn.appendChild(a);
+       });
+     } else if (keepAssistantsInFold && body) {
+       summaryAssistants.forEach(function(a) {
+         a.classList.add('assistant-interim');
+         a.classList.remove('assistant-summary');
+         body.appendChild(a);
        });
      }
 
@@ -8208,6 +8245,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     /** After history restore: lift the last assistant out of the fold as the reply. */
     function promoteFinalAssistantForTurn(turn) {
       if (!turn || !compactMode) return;
+      if (keepAssistantsInFold) return;
       var assistants = Array.prototype.slice.call(turn.querySelectorAll('.message.assistant'));
       if (!assistants.length) return;
       var body = getTurnFoldBody(turn) || ensureTurnFoldStructure(turn, true, true);
@@ -10306,6 +10344,7 @@ function renderChatHistory() {
  // The final ensureTurnFoldStructure at the end of this function will
  // order correctly once all items are in place.
  suppressFoldOrdering = true;
+ keepAssistantsInFold = true;
  var assistantItems = [];
   // Buffer thoughts only until we can attach them to a turn; each thought
   // renders as its own block (in history order) — never merge/overwrite.
@@ -10500,6 +10539,9 @@ function renderChatHistory() {
  // promoteFinalAssistant / structure rebuild can leave folds open after
   // session/load — force Collapse mode shut once the DOM is final.
   forceCollapseTurnFolds();
+  // Now that forceCollapseTurnFolds has run (which calls ensureTurnFoldStructure),
+  // re-enable assistant promotion for live streaming.
+  keepAssistantsInFold = false;
   // Codex/Claude interrupted crews often still have running icons after rebuild.
   failRunningSubagentStagesInDom();
   failCompletedCrewsInInterruptedTurn();
@@ -12247,41 +12289,34 @@ sessionState = {
                 messagesEl.appendChild(currentTurnEl);
                 hideEmpty();
               }
-              // Resume a streaming thought block if one exists. If the previous
-              // thought was finalized (summary/tools arrived between thinking
-              // blocks), resume the LAST committed thought block in this turn
-              // so thinking blocks from the same turn merge into one —
-              // matching how codex renders reasoning (one continuous block per
-              // turn, even when interrupted by content/summary chunks).
+              // Each LLM thinking phase gets its own separate block.
+              // Only resume a thought block if it is still actively streaming
+              // (safety net for split chunks arriving with no gap). When tools
+              // or assistant text arrived between thinking phases, create a NEW
+              // block so the interleaved order (thought → tools → thought) is
+              // preserved visually — each reasoning phase is distinct.
               var streamingThoughts = currentTurnEl.querySelectorAll('.thought-block.streaming');
               var existingThought = streamingThoughts.length
                 ? streamingThoughts[streamingThoughts.length - 1]
                 : null;
-              if (!existingThought) {
-                // No streaming block — check for the last committed thought in this turn.
-                var committedThoughts = currentTurnEl.querySelectorAll('.thought-block');
-                if (committedThoughts.length) {
-                  existingThought = committedThoughts[committedThoughts.length - 1];
-                }
-              }
-             if (existingThought) {
-               currentThoughtEl = existingThought;
-               currentThoughtTextEl = existingThought.querySelector('.thought-content');
-               thoughtDomBase = (currentThoughtTextEl && currentThoughtTextEl.textContent) || '';
-               if (thoughtDomBase && !/\\n$/.test(thoughtDomBase)) thoughtDomBase += '\\n\\n';
-               // Keep the just-received chunk in currentThoughtText; don't wipe it.
-               thoughtEndTime = null;
-               currentThoughtEl.classList.add('streaming');
-               currentThoughtEl._thoughtCommitted = false;
-               // _historyIndex is preserved from the prior commit so that
-               // commitOrDiscardCurrentThought updates the existing entry
-               // instead of pushing a duplicate thought to chatHistory.
-               var existingSummary = currentThoughtEl.querySelector('summary');
-                if (existingSummary) {
-                  existingSummary.innerHTML = '<span class="thought-indicator"></span> Thinking\u2026';
-                }
-                if (!thoughtStartTime) thoughtStartTime = Date.now();
-              } else {
+            if (existingThought) {
+              currentThoughtEl = existingThought;
+              currentThoughtTextEl = existingThought.querySelector('.thought-content');
+              thoughtDomBase = (currentThoughtTextEl && currentThoughtTextEl.textContent) || '';
+              if (thoughtDomBase && !/\\n$/.test(thoughtDomBase)) thoughtDomBase += '\\n\\n';
+              // Keep the just-received chunk in currentThoughtText; don't wipe it.
+              thoughtEndTime = null;
+              currentThoughtEl.classList.add('streaming');
+              currentThoughtEl._thoughtCommitted = false;
+              // _historyIndex is preserved from the prior commit so that
+              // commitOrDiscardCurrentThought updates the existing entry
+              // instead of pushing a duplicate thought to chatHistory.
+              var existingSummary = currentThoughtEl.querySelector('summary');
+               if (existingSummary) {
+                 existingSummary.innerHTML = '<span class="thought-indicator"></span> Thinking\u2026';
+               }
+               if (!thoughtStartTime) thoughtStartTime = Date.now();
+             } else {
                 currentThoughtEl = document.createElement('details');
                 currentThoughtEl.className = 'thought-block streaming';
                 currentThoughtEl.open = false;
