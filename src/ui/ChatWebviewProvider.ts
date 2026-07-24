@@ -6777,11 +6777,75 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     // the OTHER session's history and must NOT be merged — otherwise
     // messages leak across sessions.
     var _currentLoadSessionId = (sessionState && sessionState.sessionId) || null;
-    if (preLoadChatHistorySnapshot && preLoadChatHistorySnapshot.length &&
-        preLoadSnapshotSessionId && _currentLoadSessionId &&
-        preLoadSnapshotSessionId === _currentLoadSessionId) {
-      mergePreLoadInterruptedTurn(preLoadChatHistorySnapshot);
-    }
+   if (preLoadChatHistorySnapshot && preLoadChatHistorySnapshot.length &&
+       preLoadSnapshotSessionId && _currentLoadSessionId &&
+       preLoadSnapshotSessionId === _currentLoadSessionId) {
+     // Codex session/load only replays tool_call + user_message_chunk —
+     // it does NOT replay agent_message_chunk or agent_thought_chunk.
+     // If the loaded chatHistory has tool_calls but no assistant messages,
+     // the snapshot is more complete — merge ALL turns from the snapshot,
+     // updating tool call statuses from the replay.
+     var _loadedHasAssistant = chatHistory.some(function(x) {
+       return x && x.kind === 'message' && x.role === 'assistant';
+     });
+     var _loadedHasThoughts = chatHistory.some(function(x) {
+       return x && x.kind === 'thought';
+     });
+     var _snapHasAssistant = preLoadChatHistorySnapshot.some(function(x) {
+       return x && x.kind === 'message' && x.role === 'assistant';
+     });
+     var _snapHasThoughts = preLoadChatHistorySnapshot.some(function(x) {
+       return x && x.kind === 'thought';
+     });
+     if (!_loadedHasAssistant && !_loadedHasThoughts &&
+         (_snapHasAssistant || _snapHasThoughts)) {
+       // Codex replay: build a status map from loaded tool_calls, then
+       // use the snapshot as the chatHistory (it has thoughts + assistants).
+       var _statusMap = {};
+       for (var _si = 0; _si < chatHistory.length; _si++) {
+         var _tc = chatHistory[_si];
+         if (_tc && _tc.kind === 'toolCall' && _tc.toolCallId) {
+           _statusMap[_tc.toolCallId] = _tc.status;
+         }
+       }
+       // Also build a set of loaded tool_call IDs to skip duplicate tools
+       // from the snapshot that are already in the loaded history.
+       var _loadedToolIds = {};
+       for (var _li = 0; _li < chatHistory.length; _li++) {
+         var _ltc = chatHistory[_li];
+         if (_ltc && _ltc.kind === 'toolCall' && _ltc.toolCallId) {
+           _loadedToolIds[_ltc.toolCallId] = true;
+         }
+       }
+       // Use snapshot as base, update tool statuses from replay
+       var _merged = [];
+       for (var _mi = 0; _mi < preLoadChatHistorySnapshot.length; _mi++) {
+         var _snapItem = preLoadChatHistorySnapshot[_mi];
+         if (!_snapItem) continue;
+         if (_snapItem.kind === 'toolCall' && _snapItem.toolCallId) {
+           // Skip tools already in loaded history (they have fresh status)
+           if (_loadedToolIds[_snapItem.toolCallId]) continue;
+           // Update status from replay if available
+           if (_statusMap[_snapItem.toolCallId]) {
+             _snapItem = Object.assign({}, _snapItem, { status: _statusMap[_snapItem.toolCallId] });
+           }
+         }
+         _merged.push(_snapItem);
+       }
+       // Append any loaded tool_calls not in the snapshot
+       for (var _ai = 0; _ai < chatHistory.length; _ai++) {
+         var _atc = chatHistory[_ai];
+         if (_atc && _atc.kind === 'toolCall' && _atc.toolCallId &&
+             !_merged.some(function(x) { return x && x.kind === 'toolCall' && x.toolCallId === _atc.toolCallId; })) {
+           _merged.push(_atc);
+         }
+       }
+       chatHistory = _merged;
+       vscode.postMessage({ type: 'debugLog', message: '[WV-MERGE] full snapshot merge: ' + _merged.length + ' items (snap=' + preLoadChatHistorySnapshot.length + ' loaded=' + chatHistory.length + ')' });
+     } else {
+       mergePreLoadInterruptedTurn(preLoadChatHistorySnapshot);
+     }
+   }
     preLoadChatHistorySnapshot = null;
    preLoadSnapshotSessionId = null;
    // If history was replayed, there were prior prompts — mark as sent
