@@ -10842,10 +10842,14 @@ sessionState = {
         if (planBar) { planBar.innerHTML = ''; }
         break;
 
-      case 'promptEnd':
-      vscode.postMessage({ type: 'debugLog', message: '[WV-PROMPTEND] promptEnd received. chatHistoryLen=' + chatHistory.length + ' currentAssistantTextLen=' + currentAssistantText.length + ' hasCurrentAssistantEl=' + !!currentAssistantEl });
-       cancelProvisionalSummaryPromote();
-       // Compaction: clear when we already buffered a completion notice.
+     case 'promptEnd':
+     vscode.postMessage({ type: 'debugLog', message: '[WV-PROMPTEND] promptEnd received. chatHistoryLen=' + chatHistory.length + ' currentAssistantTextLen=' + currentAssistantText.length + ' hasCurrentAssistantEl=' + !!currentAssistantEl });
+      // Capture whether this promptEnd is for a compaction cycle — if so,
+      // the turn is NOT actually finished (auto-compact resumes the same
+      // turn) and we must NOT drain the message queue.
+      var _wasCompacting = isCompacting;
+      cancelProvisionalSummaryPromote();
+      // Compaction: clear when we already buffered a completion notice.
        // Claude ACP often finishes /compact with only usage_update + end_turn
        // (no "Compacting completed." text) — treat that silent promptEnd as success.
        // Codex/Kiro: keep waiting for contextCompaction / status / notice.
@@ -10994,28 +10998,30 @@ sessionState = {
         currentTurnEl = null;
         currentAssistantEl = null;
         currentAssistantText = '';
-        // Auto-send next queued message (if any) after the turn completes.
-        // Uses a microtask delay so the UI fully settles before the next
-        // turn starts.
-       if (pendingSendAfterCancel) {
-        // A "Send Now" was requested while processing — send that
-        // message immediately after the cancel completes.
-        var entry = pendingSendAfterCancel;
-        pendingSendAfterCancel = null;
-        setTimeout(() => {
-          if (!isProcessing) {
-            // Message was already shown in sendQueuedMessageNow.
-            hasSentPrompt = true;
-            vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
-          }
-        }, 0);
-        } else if (messageQueue.length > 0) {
-          setTimeout(() => {
-            if (!isProcessing && messageQueue.length > 0) {
-              drainQueue();
-            }
-          }, 0);
-        }
+       // Auto-send next queued message (if any) after the turn completes.
+       // Uses a microtask delay so the UI fully settles before the next
+       // turn starts.
+       // Skip drain when this promptEnd was a compaction cycle — the turn
+       // is still running (auto-compact resumes in the same turn).
+      if (pendingSendAfterCancel) {
+       // A "Send Now" was requested while processing — send that
+       // message immediately after the cancel completes.
+       var entry = pendingSendAfterCancel;
+       pendingSendAfterCancel = null;
+       setTimeout(() => {
+         if (!isProcessing) {
+           // Message was already shown in sendQueuedMessageNow.
+           hasSentPrompt = true;
+           vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
+         }
+       }, 0);
+        } else if (!_wasCompacting && messageQueue.length > 0) {
+         setTimeout(() => {
+           if (!isProcessing && messageQueue.length > 0) {
+             drainQueue();
+           }
+         }, 0);
+       }
         break;
 
      case 'clearChat':
