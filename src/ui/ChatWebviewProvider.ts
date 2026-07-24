@@ -1891,13 +1891,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
   /**
    * Steer the active turn by sending a user message mid-turn without
-   * cancelling. Uses _ericli/session/steer notification (EricCLI only).
+   * cancelling. Uses session/steer notification (EricCLI, Codex, Claude Code).
    * For agents that don't support it, the notification is silently ignored
    * and the message is only queued for the next turn (via handleQueue).
    */
   private async handleSteerPrompt(text: string): Promise<void> {
     const activeId = this.sessionManager.getActiveSessionId();
-    if (!activeId) return;
+    if (!activeId) { return; }
     try {
       await this.sessionManager.steerPrompt(activeId, text);
     } catch (e) {
@@ -4855,9 +4855,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
  let lastConnectedAgent = null;
   let lastConnectedAgentDisplay = null;
  let lastConnectedSessionId = null;
- let isProcessing = false;
+let isProcessing = false;
 let isForceCancelled = false; // true after cancel fallback forces promptEnd
 let hasSentPrompt = false;
+// Track whether we've already sent a steer notification during the current
+// turn. The FIRST message typed while a turn is streaming gets steered into
+// the active turn (shown as a user bubble + session/steer). Any
+// subsequent messages are queued and drained after the turn ends.
+let hasSteeredThisTurn = false;
 var pendingRenderRetries = {}; // keys of pending renderMarkdown retries
 var historyRenderGen = 0; // generation counter for history renders (invalidated on DOM rebuild)
 var suppressFoldOrdering = false; // true during renderChatHistory to skip intermediate re-ordering
@@ -5013,13 +5018,13 @@ let isCompacting = false;  // true while /compact is running
     messageQueue.splice(index, 1);
     renderQueue();
 
-    if (isProcessing) {
-      // Show the user message now (it was queued, not yet displayed).
-      chatHistory.push({ kind: 'message', role: 'user', text: entry.text || '(image)' });
-      saveState();
-      addMessageDOM('user', entry.text || '(image)');
-     // Set the pending message; it will be sent once promptEnd fires
-     // after the cancel completes.
+   if (isProcessing) {
+     // Show the user message now (it was queued, not yet displayed).
+     chatHistory.push({ kind: 'message', role: 'user', text: entry.text || '(image)' });
+     saveState();
+     addMessageDOM('user', entry.text || '(image)');
+    // Set the pending message; it will be sent once promptEnd fires
+    // after the cancel completes.
      pendingSendAfterCancel = entry;
      vscode.postMessage({ type: 'cancelTurn' });
    } else {
@@ -5027,24 +5032,47 @@ let isCompacting = false;  // true while /compact is running
       chatHistory.push({ kind: 'message', role: 'user', text: entry.text || '(image)' });
       saveState();
       addMessageDOM('user', entry.text || '(image)');
-     hasSentPrompt = true;
+     // Route slash commands through handleLocalSlashCommand so local UI
+     // (compaction progress, clear, etc.) is triggered properly.
+     if (entry.text && entry.text.startsWith('/') && handleLocalSlashCommand(entry.text)) {
+       // Local slash command handled it.
+     } else {
+       hasSentPrompt = true;
+       vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
+     }
+   }
+ }
+
+ function drainQueue() {
+  if (messageQueue.length === 0) return false;
+  const entry = messageQueue.shift();
+  renderQueue();
+   // Show the user message now — it was queued (not shown) during the
+   // active turn. Only display it when actually being sent.
+   chatHistory.push({ kind: 'message', role: 'user', text: entry.text || '(image)' });
+   saveState();
+   addMessageDOM('user', entry.text || '(image)');
+  hasSentPrompt = true;
+   // If the drained message is a slash command that has local handling
+   // (e.g. /compact), route it through handleLocalSlashCommand so the
+   // proper UI (compaction progress, etc.) is triggered. Otherwise send
+   // directly as a prompt.
+   if (entry.text && entry.text.startsWith('/') && handleLocalSlashCommandText(entry.text)) {
+     // Local slash command handled it — don't send as prompt.
+   } else {
      vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
    }
-  }
-
-  function drainQueue() {
-   if (messageQueue.length === 0) return false;
-   const entry = messageQueue.shift();
-   renderQueue();
-    // Show the user message now — it was queued (not shown) during the
-    // active turn. Only display it when actually being sent.
-    chatHistory.push({ kind: 'message', role: 'user', text: entry.text || '(image)' });
-    saveState();
-    addMessageDOM('user', entry.text || '(image)');
-   hasSentPrompt = true;
-   vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
-   return true;
- }
+   // If the drained message is a slash command that has local handling
+   // (e.g. /compact), route it through handleLocalSlashCommand so the
+   // proper UI (compaction progress, etc.) is triggered. Otherwise send
+   // directly as a prompt.
+   if (entry.text && entry.text.startsWith('/') && handleLocalSlashCommand(entry.text)) {
+     // Local slash command handled it — don't send as prompt.
+   } else {
+     vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
+   }
+  return true;
+}
 
     // Modes / models state (legacy fallback path)
     let availableModes = [];
@@ -5960,17 +5988,31 @@ var end = displayText.length;
        sendQueuedMessageNow(0);
        return;
      }
-     if (isProcessing) {
-       // /rename works even during streaming (like Claude Code's immediate commands)
-       if (handleLocalSlashCommand()) { return; }
-       // Allow slash commands through during streaming — the agent
-       // handles read-only commands (e.g. /ps, /status) without
-       // interrupting the in-progress LLM turn.
-       var slashText = promptInput.value.trim();
-       if (slashText.startsWith('/')) { handleSend(); return; }
-       handleQueue();
-       return;
-     }
+    if (isProcessing) {
+      // /rename works even during streaming (like Claude Code's immediate commands)
+      if (handleLocalSlashCommand()) { return; }
+      // Slash commands that are safe to send during streaming (read-only,
+      // non-mutating) bypass the queue — the agent handles them as side-channels
+      // without starting an LLM turn. This mirrors codex TUI where /ps, /status,
+      // etc. are dispatched immediately regardless of whether a turn is running.
+      // BUT mutating commands (/compact, /clear, /index build, etc.) must be
+      // queued — sending session/prompt while a turn is in-flight causes a race
+      // condition. handleLocalSlashCommand returns false for these during
+      // streaming, so we detect them here and queue instead of sending.
+      var slashText = promptInput.value.trim();
+      // Mutating slash commands that must be queued during streaming:
+      // /compact, /summarize, /compress (context compaction)
+      // /clear (conversation wipe)
+      // /index build|rebuild|refresh|update|embed|clear|delete (index mutation)
+      var _isMutatingSlash = slashText.startsWith('/') && (
+        /^\\/(compact|summarize|compress)\\b/i.test(slashText) ||
+        /^\\/clear\\b/i.test(slashText) ||
+        /^\\/index\\s+(build|rebuild|refresh|update|embed|clear|delete)\\b/i.test(slashText)
+      );
+      if (slashText.startsWith('/') && !_isMutatingSlash) { handleSend(); return; }
+      handleQueue();
+      return;
+    }
      handleSend();
    }
  });
@@ -6000,7 +6042,7 @@ var end = displayText.length;
    // Use addMessageDOM directly (not addMessage) to avoid resetting
    // currentTurnEl — the agent is still streaming into the current turn
    // and resetting it would split the response into two visual turns.
-   // For agents that support _ericli/session/steer (EricCLI), send the
+   // For agents that support session/steer (EricCLI), send the
    // message as a steer notification immediately — the LLM sees it at the
    // next tool-execution iteration boundary without cancelling the turn.
    // No queue chip is needed since the message is already delivered.
@@ -6014,32 +6056,39 @@ var end = displayText.length;
    // chat bubble while queued — it only appears when actually sent
    // (via drainQueue or "Send Now"). The queue chip with "Send Now"
    // lets the user interrupt the current turn to deal with it sooner.
-  var _agentName = (sessionState && (sessionState.agentName || sessionState.agentConfigKey)) || '';
-  var _isEricli = /ericli/i.test(_agentName);
-  // Agents that support _ericli/session/steer: EricCLI (native),
+ var _agentName = (sessionState && (sessionState.agentName || sessionState.agentConfigKey)) || '';
+ // Agents that support session/steer: EricCLI (native),
   // Codex (via codex-acp turn/steer), Claude Code (via claude-code-acp
-  // steer queue + drain). All three handle the _ericli/session/steer
+  // steer queue + drain). All three handle the session/steer
   // notification — the message is injected mid-turn without cancelling.
- var _supportsSteer = /ericli|codex|claude/i.test(_agentName);
- if (_supportsSteer) {
-    // Commit any in-progress assistant text as an interim segment in the
-    // current turn before resetting. This ensures the text before the steer
-    // stays in the old turn's fold, and the next streaming chunk after the
-    // steer starts a NEW turn under the steering user bubble.
-    if (currentAssistantEl && currentAssistantText) {
-      commitCurrentTextSegment({ interim: true });
-    }
-    currentAssistantEl = null;
-    currentAssistantText = '';
-    chatHistory.push({ kind: 'message', role: 'user', text: text || '(image)' });
-    saveState();
-    addMessageDOM('user', text || '(image)');
-    // Reset turn + tool state so the next agent_message_chunk / tool_call
-    // creates a NEW turn container under the steering user bubble.
-    currentTurnEl = null;
-    currentToolsListEl = null;
-    currentToolsCountEl = null;
-    currentToolCount = 0;
+var _supportsSteer = /ericli|codex|claude/i.test(_agentName);
+ // Mutating slash commands (/compact, /clear, /index build, etc.) must never
+ // be steered — they need to be sent as a full session/prompt after the current
+ // turn ends, not injected mid-turn. Read-only commands (/ps, /status, /tools)
+ // are already handled by handleSend before reaching handleQueue.
+ var _isMutatingCmd = /^\\/(compact|summarize|compress)\\b/i.test(text) ||
+   /^\\/clear\\b/i.test(text) ||
+   /^\\/index\\s+(build|rebuild|refresh|update|embed|clear|delete)\\b/i.test(text);
+ if (_supportsSteer && !hasSteeredThisTurn && !_isMutatingCmd) {
+  // Commit any in-progress assistant text as an interim segment in the
+   // current turn before resetting. This ensures the text before the steer
+   // stays in the old turn's fold, and the next streaming chunk after the
+   // steer starts a NEW turn under the steering user bubble.
+   if (currentAssistantEl && currentAssistantText) {
+     commitCurrentTextSegment({ interim: true });
+   }
+   currentAssistantEl = null;
+   currentAssistantText = '';
+   chatHistory.push({ kind: 'message', role: 'user', text: text || '(image)' });
+   saveState();
+   addMessageDOM('user', text || '(image)');
+   // Reset turn + tool state so the next agent_message_chunk / tool_call
+   // creates a NEW turn container under the steering user bubble.
+   currentTurnEl = null;
+   currentToolsListEl = null;
+   currentToolsCountEl = null;
+   currentToolCount = 0;
+   hasSteeredThisTurn = true;
    vscode.postMessage({ type: 'steerPrompt', text: text });
  } else {
    queueMessage(text, images);
@@ -6051,8 +6100,8 @@ var end = displayText.length;
    * even during streaming (like Claude Code's immediate:true commands).
    * Returns true if the command was handled (caller should stop).
    */
- function handleLocalSlashCommand() {
-   var text = promptInput.value.trim();
+ function handleLocalSlashCommand(cmdText) {
+   var text = (cmdText !== undefined) ? cmdText.trim() : promptInput.value.trim();
    if (!text.startsWith('/')) { return false; }
    // /rename <name> — set session title locally
     var renameMatch = text.match(/^\\/rename\\s+(.+)$/);
@@ -6150,14 +6199,19 @@ var end = displayText.length;
  vscode.postMessage({ type: 'summarizeSession', sessionName: sessionName, queryText: remainingQuery });
  return true;
 }
-  // /compact|/summarize|/compress — context compaction where the agent
-  // supports it. Kiro: _kiro.dev/commands/execute. Codex/Claude: session/prompt.
-  // Cursor Agent has no compact slash command (its available_commands_update
-  // never advertises one) — do not fake /summarize or send a dead prompt.
-  var compactMatch = text.match(/^\\/(compact|summarize|compress)\\b(.*)$/i);
-  if (compactMatch) {
-    if (isCompacting) { return true; }
-    var agentLabel = (sessionState && (sessionState.agentName || sessionState.agentConfigKey || '')) || '';
+ // /compact|/summarize|/compress — context compaction where the agent
+ // supports it. Kiro: _kiro.dev/commands/execute. Codex/Claude: session/prompt.
+ // Cursor Agent has no compact slash command (its available_commands_update
+ // never advertises one) — do not fake /summarize or send a dead prompt.
+ var compactMatch = text.match(/^\\/(compact|summarize|compress)\\b(.*)$/i);
+ if (compactMatch) {
+   // During an active turn, /compact must be queued — sending session/prompt
+   // while a turn is in-flight causes a race condition. The queued /compact
+   // is drained after the current turn ends (promptEnd), at which point
+   // handleLocalSlashCommand runs again with isProcessing=false.
+   if (isProcessing) { return false; }
+   if (isCompacting) { return true; }
+   var agentLabel = (sessionState && (sessionState.agentName || sessionState.agentConfigKey || '')) || '';
     var isCursorAgent = /cursor/i.test(agentLabel);
     if (isCursorAgent) {
       promptInput.value = '';
@@ -6217,8 +6271,12 @@ var end = displayText.length;
   // /clear — wipe conversation history.
   // Kiro: _kiro.dev/commands/execute + _kiro.dev/clear/status progress.
   // Other agents: send as a prompt (or local clear if unknown).
-  if (text === '/clear') {
-    if (isClearing || isCompacting) { return true; }
+ if (text === '/clear') {
+   // During an active turn, /clear must be queued — wiping conversation
+   // state while the LLM is mid-turn causes corruption. The queued /clear
+   // is drained after the current turn ends.
+   if (isProcessing) { return false; }
+   if (isClearing || isCompacting) { return true; }
     promptInput.value = '';
     updateSendButton();
     pendingImages.splice(0);
@@ -6475,9 +6533,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
  updateWelcomeButton();
 
    // --- Send/Stop toggle ---
-    function setProcessing(processing) {
-      isProcessing = processing;
-      if (processing) {
+   function setProcessing(processing) {
+     isProcessing = processing;
+     if (!processing) { hasSteeredThisTurn = false; }
+     if (processing) {
         sendStopBtn.className = 'send-stop-btn stop';
         sendStopBtn.textContent = '■ Stop';
         sendStopBtn.disabled = false;
@@ -6732,7 +6791,8 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     hideCompactionProgress();
     tokenUsage = null;
      hasSentPrompt = false;
-     if (tokenUsageRing) tokenUsageRing.classList.remove('visible');
+     hasSteeredThisTurn = false;
+    if (tokenUsageRing) tokenUsageRing.classList.remove('visible');
       // Keep a copy of the restored webview history. Claude session/load for an
      // interrupted mid-turn often only replays the user prompt — without this
      // snapshot (and without saveState of the empty array) the collapse block
@@ -10804,9 +10864,10 @@ function renderChatHistory() {
      if (loadOverlay) loadOverlay.classList.remove('visible');
      if (inputArea) inputArea.classList.remove('disabled');
    }
-   hasActiveSession = true;
-   hasSentPrompt = false;
-   // Capture the session ID that was active BEFORE this switch so
+  hasActiveSession = true;
+  hasSentPrompt = false;
+  hasSteeredThisTurn = false;
+  // Capture the session ID that was active BEFORE this switch so
    // handleLoadSessionStart can label its chatHistory snapshot correctly.
    // sessionState is overwritten below, so we must grab the old value first.
    previousSessionId = (sessionState && sessionState.sessionId) || null;
@@ -10888,9 +10949,10 @@ sessionState = {
 
    function showNoSession() {
      if (isLoadingSession) return;
-     hasActiveSession = false;
-     hasSentPrompt = false;
-     sessionState = null;
+    hasActiveSession = false;
+    hasSentPrompt = false;
+    hasSteeredThisTurn = false;
+    sessionState = null;
      saveState();
       tokenUsage = null;
       if (tokenUsageRing) tokenUsageRing.classList.remove('visible');
@@ -11188,15 +11250,20 @@ sessionState = {
       if (pendingSendAfterCancel) {
        // A "Send Now" was requested while processing — send that
        // message immediately after the cancel completes.
-       var entry = pendingSendAfterCancel;
-       pendingSendAfterCancel = null;
-       setTimeout(() => {
-         if (!isProcessing) {
-           // Message was already shown in sendQueuedMessageNow.
-           hasSentPrompt = true;
-           vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
-         }
-       }, 0);
+      var entry = pendingSendAfterCancel;
+      pendingSendAfterCancel = null;
+      setTimeout(() => {
+        if (!isProcessing) {
+          // Message was already shown in sendQueuedMessageNow. Route slash
+          // commands through handleLocalSlashCommand so local UI is triggered.
+          if (entry.text && entry.text.startsWith('/') && handleLocalSlashCommand(entry.text)) {
+            // Local slash command handled it.
+          } else {
+            hasSentPrompt = true;
+            vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
+          }
+        }
+      }, 0);
         } else if (!_wasCompacting && messageQueue.length > 0) {
          setTimeout(() => {
            if (!isProcessing && messageQueue.length > 0) {
@@ -11216,8 +11283,9 @@ sessionState = {
               if (psPanel) psPanel.style.display = 'none';
         chatHistory = [];
        sessionState = null;
-       chatHistoryOriginSessionId = null;
+      chatHistoryOriginSessionId = null;
        hasSentPrompt = false;
+      hasSteeredThisTurn = false;
        saveState();
          currentAssistantEl = null;
          currentAssistantText = '';
