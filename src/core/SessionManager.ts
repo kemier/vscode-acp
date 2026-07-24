@@ -715,8 +715,8 @@ export class SessionManager extends EventEmitter {
     }
 
     log(`Cancelling turn for session ${sessionId}`);
-   await connInfo.connection.cancel({ sessionId });
- }
+    await connInfo.connection.cancel({ sessionId });
+  }
 
   /**
    * Send a steering message to the agent mid-turn without cancelling.
@@ -729,9 +729,13 @@ export class SessionManager extends EventEmitter {
    */
   async steerPrompt(sessionId: string, text: string): Promise<void> {
     const session = this.sessions.get(sessionId);
-    if (!session) { return; }
+    if (!session) {
+      return;
+    }
     const connInfo = this.connectionManager.getConnection(session.agentId);
-    if (!connInfo) { return; }
+    if (!connInfo) {
+      return;
+    }
     try {
       await connInfo.connection.notify('session/steer', { sessionId, text });
       log(`Steered session ${sessionId}: ${text.substring(0, 80)}...`);

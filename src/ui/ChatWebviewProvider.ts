@@ -26,7 +26,7 @@ const execFileAsync = promisify(execFile);
 // Set to true to enable verbose [DEBUG-WV] / [DEBUG-MD] / [DEBUG-SUBAGENT] logs
 // in the ACP Client output channel. Keep false in normal use — the per-chunk
 // logging floods the channel during streaming.
-const DEBUG = true;
+const DEBUG = false;
 
 /**
  * WebviewViewProvider for the ACP chat sidebar.
@@ -1897,7 +1897,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    */
   private async handleSteerPrompt(text: string): Promise<void> {
     const activeId = this.sessionManager.getActiveSessionId();
-    if (!activeId) { return; }
+    if (!activeId) {
+      return;
+    }
     try {
       await this.sessionManager.steerPrompt(activeId, text);
     } catch (e) {
@@ -4808,7 +4810,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    // Re-declare DEBUG inside the webview iframe (separate JS context from the
    // extension host). The host's DEBUG flag is not visible here, so without
    // this the replay trace (trace()) would stay silent.
-   const DEBUG = true;
+   const DEBUG = false;
   const messagesEl = document.getElementById('messages');
   const psPanel = document.getElementById('psPanel');
   const resumeBar = document.getElementById('resumeBar');
@@ -5053,25 +5055,12 @@ let isCompacting = false;  // true while /compact is running
    saveState();
    addMessageDOM('user', entry.text || '(image)');
   hasSentPrompt = true;
-   // If the drained message is a slash command that has local handling
-   // (e.g. /compact), route it through handleLocalSlashCommand so the
-   // proper UI (compaction progress, etc.) is triggered. Otherwise send
-   // directly as a prompt.
-   if (entry.text && entry.text.startsWith('/') && handleLocalSlashCommandText(entry.text)) {
-     // Local slash command handled it — don't send as prompt.
-   } else {
-     vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
-   }
-   // If the drained message is a slash command that has local handling
-   // (e.g. /compact), route it through handleLocalSlashCommand so the
-   // proper UI (compaction progress, etc.) is triggered. Otherwise send
-   // directly as a prompt.
-   if (entry.text && entry.text.startsWith('/') && handleLocalSlashCommand(entry.text)) {
-     // Local slash command handled it — don't send as prompt.
-   } else {
-     vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
-   }
-  return true;
+  if (entry.text && entry.text.startsWith('/') && handleLocalSlashCommand(entry.text)) {
+    // Local slash command handled it — don't send as prompt.
+  } else {
+    vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
+  }
+ return true;
 }
 
     // Modes / models state (legacy fallback path)
@@ -7976,23 +7965,23 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       var thoughts = Array.prototype.slice.call(turn.querySelectorAll('.thought-block'));
       var allAssistants = Array.prototype.slice.call(turn.querySelectorAll('.message.assistant'));
       // Mid-turn assistant segments go in the fold; the last/summary stays outside.
-      var interimAssistants = [];
-      var summaryAssistants = [];
-      allAssistants.forEach(function(a) {
-        // While the turn is still streaming, keep live/uncommitted assistants
-        // inside the fold. ensureTurnFoldStructure used to treat unmarked
-        // nodes as summary and park them outside; expand → rebuild → collapse
-        // then left Codex mid-turn text visible in the panel.
-        // Exception: placeSummaryAssistant on promptEnd (md-committed) or when
-        // the user manually collapses during end-turn summary.
-        if (isProcessing && !isLoadingSession &&
-            !(a.classList.contains('assistant-summary') && a.classList.contains('md-committed'))) {
-          a.classList.add('assistant-interim');
-          a.classList.remove('assistant-summary');
-          interimAssistants.push(a);
-          return;
-        }
-        if (a.classList.contains('assistant-interim')) interimAssistants.push(a);
+     var interimAssistants = [];
+     var summaryAssistants = [];
+     allAssistants.forEach(function(a) {
+       // While the turn is still streaming, keep live/uncommitted assistants
+       // inside the fold. ensureTurnFoldStructure used to treat unmarked
+       // nodes as summary and park them outside; expand → rebuild → collapse
+       // then left Codex mid-turn text visible in the panel.
+       // Exception: placeSummaryAssistant on promptEnd (md-committed) or when
+       // the user manually collapses during end-turn summary.
+       if (isProcessing && !isLoadingSession &&
+           !(a.classList.contains('assistant-summary') && a.classList.contains('md-committed'))) {
+         a.classList.add('assistant-interim');
+         a.classList.remove('assistant-summary');
+         interimAssistants.push(a);
+         return;
+       }
+       if (a.classList.contains('assistant-interim')) interimAssistants.push(a);
         else summaryAssistants.push(a);
       });
       // If nothing is classified yet, treat all but the last as interim.
@@ -8179,42 +8168,42 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      * Scoop foldable nodes into the fold body preserving document order:
      * thought / tools / interim assistant segments as they occurred in the turn.
      */
-  function orderCompactFoldContents(body) {
-    if (!body) return;
-      var turn = body.parentElement;
-      if (!turn || !turn.classList.contains('turn')) return;
+ function orderCompactFoldContents(body) {
+   if (!body) return;
+     var turn = body.parentElement;
+     if (!turn || !turn.classList.contains('turn')) return;
 
-      var foldables = [];
-      function consider(el) {
-        if (!el || foldables.indexOf(el) >= 0) return;
-        if (el.classList.contains('thought-block')) { foldables.push(el); return; }
-        if (el.classList.contains('turn-tools')) { foldables.push(el); return; }
-        if (el.classList.contains('message') && el.classList.contains('assistant') &&
-            el.classList.contains('assistant-interim')) {
-          foldables.push(el);
-        }
-      }
-      // Prefer current body order, then any strays still on the turn.
-      Array.prototype.forEach.call(body.children, consider);
-      Array.prototype.forEach.call(turn.children, function(child) {
-        if (child === body || child.classList.contains('turn-tools-summary')) return;
-        consider(child);
-        if (child.classList.contains('turn-fold-body') && child !== body) {
-          Array.prototype.forEach.call(child.children, consider);
-        }
-      });
-     // Stable document order
-     foldables.sort(function(a, b) {
-       if (a === b) return 0;
-       var pos = a.compareDocumentPosition(b);
-       if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
-       if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
-       return 0;
+     var foldables = [];
+     function consider(el) {
+       if (!el || foldables.indexOf(el) >= 0) return;
+       if (el.classList.contains('thought-block')) { foldables.push(el); return; }
+       if (el.classList.contains('turn-tools')) { foldables.push(el); return; }
+       if (el.classList.contains('message') && el.classList.contains('assistant') &&
+           el.classList.contains('assistant-interim')) {
+         foldables.push(el);
+       }
+     }
+     // Prefer current body order, then any strays still on the turn.
+     Array.prototype.forEach.call(body.children, consider);
+     Array.prototype.forEach.call(turn.children, function(child) {
+       if (child === body || child.classList.contains('turn-tools-summary')) return;
+       consider(child);
+       if (child.classList.contains('turn-fold-body') && child !== body) {
+         Array.prototype.forEach.call(child.children, consider);
+       }
      });
-     // Append sorted (stable) — preserves interleaved order:
-     // thought → tools → thought → tools → assistant.
-     foldables.forEach(function(el) { body.appendChild(el); });
-   }
+    // Stable document order
+    foldables.sort(function(a, b) {
+      if (a === b) return 0;
+      var pos = a.compareDocumentPosition(b);
+      if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+      if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+      return 0;
+    });
+    // Append sorted (stable) — preserves interleaved order:
+    // thought → tools → thought → tools → assistant.
+    foldables.forEach(function(el) { body.appendChild(el); });
+  }
 
     /** Place the visible final assistant summary after the fold (after commit). */
     function placeSummaryAssistant(assistantEl) {
@@ -8363,11 +8352,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         }
         return;
       }
-      assistants.forEach(function(a, idx) {
-        if (idx === assistants.length - 1) {
-          a.classList.add('assistant-summary');
-          a.classList.remove('assistant-interim');
-          turn.appendChild(a);
+    assistants.forEach(function(a, idx) {
+      if (idx === assistants.length - 1) {
+         a.classList.add('assistant-summary');
+         a.classList.remove('assistant-interim');
+         turn.appendChild(a);
         } else {
           a.classList.add('assistant-interim');
           a.classList.remove('assistant-summary');
@@ -8557,16 +8546,16 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
 
     /** Move a committed mid-turn assistant segment into the collapsed fold. */
-    function moveAssistantIntoFold(assistantEl) {
-      if (!assistantEl || !currentTurnEl || !compactMode) return;
-      assistantEl.classList.add('assistant-interim');
-      assistantEl.classList.remove('assistant-summary');
-      var body = ensureCurrentTurnFold();
-      if (body) {
-        // Append after existing fold contents so multiple interim msgs stay in order.
-        body.appendChild(assistantEl);
-      }
-    }
+   function moveAssistantIntoFold(assistantEl) {
+     if (!assistantEl || !currentTurnEl || !compactMode) return;
+     assistantEl.classList.add('assistant-interim');
+     assistantEl.classList.remove('assistant-summary');
+     var body = ensureCurrentTurnFold();
+     if (body) {
+       // Append after existing fold contents so multiple interim msgs stay in order.
+       body.appendChild(assistantEl);
+     }
+   }
 
     /** Prefer the original protocol title over the rewritten .tc-title display. */
     function getToolCallOriginalTitle(tc) {
@@ -10397,9 +10386,29 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    * Returns the list of assistant message indices that need markdown rendering.
    */
 function renderChatHistory() {
-  trace('renderChatHistory START: chatHistory.length=' + chatHistory.length);
-  traceHistorySnapshot();
-  // Increment generation counter to invalidate any in-flight markdownRendered
+ trace('renderChatHistory START: chatHistory.length=' + chatHistory.length);
+ traceHistorySnapshot();
+ // Clean up duplicate assistant entries from older sessions (before the
+ // dedup guard was added). If two consecutive assistant messages have the
+ // exact same text, remove the second one. This fixes persisted state that
+ // already contains duplicates.
+ var _deduped = false;
+ for (var _di = chatHistory.length - 1; _di > 0; _di--) {
+   var _cur = chatHistory[_di];
+   var _prev = chatHistory[_di - 1];
+   if (_cur && _prev &&
+       _cur.kind === 'message' && _cur.role === 'assistant' &&
+       _prev.kind === 'message' && _prev.role === 'assistant' &&
+       _cur.text === _prev.text && _cur.text) {
+     chatHistory.splice(_di, 1);
+     _deduped = true;
+   }
+ }
+ if (_deduped) {
+   vscode.postMessage({ type: 'debugLog', message: '[WV-DEDUP] renderChatHistory: removed duplicate assistant entries' });
+   saveState();
+ }
+ // Increment generation counter to invalidate any in-flight markdownRendered
   // responses from a previous DOM build. Stale responses would update the
   // wrong elements or skip needed updates after a DOM rebuild.
  historyRenderGen++;
@@ -10501,17 +10510,24 @@ function renderChatHistory() {
              currentToolsListEl = null;
              currentToolsCountEl = null;
              currentToolCount = 0;
-           } else if (turnHasAssistant && turnHasTools) {
-             // Prior assistant segments in this turn become interim (folded).
-             Array.prototype.forEach.call(
-               currentTurnEl.querySelectorAll('.message.assistant'),
-               function(a) {
-                 a.classList.add('assistant-interim');
-                 a.classList.remove('assistant-summary');
-               }
-             );
-             trace('  -> assistant: same turn after tools, prior assistants marked interim');
-           }
+          } else if (turnHasAssistant && turnHasTools) {
+            // Prior assistant segments in this turn become interim (folded).
+            Array.prototype.forEach.call(
+              currentTurnEl.querySelectorAll('.message.assistant'),
+              function(a) {
+                a.classList.add('assistant-interim');
+                a.classList.remove('assistant-summary');
+              }
+            );
+            // Reset the tools list so the NEXT tool call creates a NEW
+            // turn-tools wrapper (appended after this assistant in the fold
+            // body). Without this, the next tool reuses the OLD wrapper
+            // which sits BEFORE the assistant — grouping all tools together
+            // and breaking the interleaved order: thought → tools → assistant
+            // → tools → assistant.
+            currentToolsListEl = null;
+            trace('  -> assistant: same turn after tools, prior assistants marked interim');
+          }
            if (!currentTurnEl) {
              currentTurnEl = document.createElement('div');
              currentTurnEl.className = 'turn';
@@ -10630,8 +10646,8 @@ function renderChatHistory() {
 });
  // promoteFinalAssistant / structure rebuild can leave folds open after
  // session/load — force Collapse mode shut once the DOM is final.
- forceCollapseTurnFolds();
- // Codex/Claude interrupted crews often still have running icons after rebuild.
+forceCollapseTurnFolds();
+// Codex/Claude interrupted crews often still have running icons after rebuild.
  failRunningSubagentStagesInDom();
  failCompletedCrewsInInterruptedTurn();
   // Interrupted crews stay failed — ignore later list_update by name.
@@ -10812,10 +10828,21 @@ function renderChatHistory() {
       if (currentThoughtEl || currentThoughtText || thoughtDomBase) {
         commitOrDiscardCurrentThought();
       }
-      if (currentAssistantText) {
-        chatHistory.push({ kind: 'message', role: 'assistant', text: currentAssistantText });
-        saveState();
-      }
+     if (currentAssistantText) {
+       // Dedup guard: if the last chatHistory entry is an assistant message
+       // with the exact same text, don't push a duplicate. This can happen
+       // when promptEnd fires during isLoadingSession (committing the text)
+       // and then loadSessionEnd → finalizeCurrentAssistantTurn runs and
+       // the same text is still in currentAssistantText (e.g. from a late
+       // coalescer flush that re-set it after commitCurrentTextSegment cleared it).
+       var _last = chatHistory[chatHistory.length - 1];
+       if (_last && _last.kind === 'message' && _last.role === 'assistant' && _last.text === currentAssistantText) {
+         vscode.postMessage({ type: 'debugLog', message: '[WV-DEDUP] finalizeCurrentAssistantTurn: skipping duplicate assistant push (textLen=' + currentAssistantText.length + ')' });
+       } else {
+       chatHistory.push({ kind: 'message', role: 'assistant', text: currentAssistantText });
+       saveState();
+       }
+     }
       currentAssistantEl = null;
       currentAssistantText = '';
       currentTurnEl = null;
@@ -11109,11 +11136,16 @@ sessionState = {
           if (currentThoughtEl || currentThoughtText || thoughtDomBase) {
             commitOrDiscardCurrentThought();
           }
-        // Interrupted turns: keep the partial reply inside the fold so resume
-        // / restore do not promote it into the main chat.
-        var _wasCancelled = msg.stopReason === 'cancelled';
-        commitCurrentTextSegment(_wasCancelled ? { interim: true, interrupted: true } : undefined);
-        // On cancel: mark in-flight tools failed (not completed). Codex was
+       // Interrupted turns: keep the partial reply inside the fold so resume
+       // / restore do not promote it into the main chat.
+       var _wasCancelled = msg.stopReason === 'cancelled';
+       // During session/load replay, don't commit here — finalizeCurrentAssistantTurn
+       // at loadSessionEnd handles the final push. Committing here AND there
+       // creates duplicate chatHistory entries (same text pushed twice).
+       if (!isLoadingSession) {
+         commitCurrentTextSegment(_wasCancelled ? { interim: true, interrupted: true } : undefined);
+       }
+       // On cancel: mark in-flight tools failed (not completed). Codex was
         // marking them completed which made turnLooksInterrupted false and
         // promoted the partial assistant into the main chat on resume.
         // On normal end_turn: complete remaining spinners (Kiro crew, etc.).
@@ -11192,37 +11224,42 @@ sessionState = {
            showStatusBanner('clear', 'Clearing conversation...', null);
          }
        }
-      // Show interrupted notice in status bar (right upper of input box)
-      // when the turn was cancelled. Don't add duplicate system message to chat.
-     if (msg.stopReason === 'cancelled') {
-       // During session/load replay, don't show the interrupted notice —
-       // it's a historical event, not a live cancellation.
-       if (!isLoadingSession) {
-         isForceCancelled = true; // drop further chunks from the unresponsive agent
-         // Show "Conversation interrupted" in the main chat (outside the
-         // collapsed turn fold), not just in the status bar. In compact /
-         // collapsed mode the partial reply is folded away, so the only
-         // visible indication of the interruption should not be hidden
-         // inside the fold or limited to the transient status bar text.
-         addMessage('system', '— Conversation interrupted —');
-       }
-       if (!isLoadingSession && statusEl) {
-           statusEl.textContent = '— Conversation interrupted —';
-           setTimeout(() => { if (statusEl.textContent === '— Conversation interrupted —') { statusEl.textContent = ''; } }, 5000);
-       }
+     // Show interrupted notice in status bar (right upper of input box)
+    // when the turn was cancelled. Don't add duplicate system message to chat.
+   if (msg.stopReason === 'cancelled') {
+     // During session/load replay, don't show the interrupted notice —
+     // it's a historical event, not a live cancellation.
+     // When pendingSendAfterCancel is set, the cancel was intentional
+     // (user clicked "Send Now" on a queued message). Suppress the
+     // "Conversation interrupted" notice — it's not a real interruption.
+     if (!isLoadingSession) {
+       isForceCancelled = true; // drop further chunks from the unresponsive agent
      }
-    // Auto-collapse completed turns (respect compact mode): hide thought +
-    // tools behind the summary line. Clear sticky expand — turn is done.
-     if (currentTurnEl) {
-        if (currentToolsCountEl) currentToolsCountEl.dataset.count = String(currentToolCount);
-        var _hasSubagent = currentToolsCountEl && currentToolsCountEl._hasSubagent;
-        var _shouldCollapse = compactMode || _hasSubagent || currentToolCount > 3;
-        if (_shouldCollapse) {
-          var _endBody = getTurnFoldBody(currentTurnEl);
-          if (_endBody) _endBody._userExpanded = false;
-          ensureTurnFoldStructure(currentTurnEl, true);
-          _endBody = getTurnFoldBody(currentTurnEl);
-          if (_endBody) setFoldExpanded(_endBody, false);
+     if (!isLoadingSession && !pendingSendAfterCancel) {
+       // Show "Conversation interrupted" in the main chat (outside the
+       // collapsed turn fold), not just in the status bar. In compact /
+       // collapsed mode the partial reply is folded away, so the only
+       // visible indication of the interruption should not be hidden
+       // inside the fold or limited to the transient status bar text.
+       addMessage('system', '— Conversation interrupted —');
+     }
+     if (!isLoadingSession && !pendingSendAfterCancel && statusEl) {
+         statusEl.textContent = '— Conversation interrupted —';
+         setTimeout(() => { if (statusEl.textContent === '— Conversation interrupted —') { statusEl.textContent = ''; } }, 5000);
+     }
+   }
+  // Auto-collapse completed turns (respect compact mode): hide thought +
+  // tools behind the summary line. Clear sticky expand — turn is done.
+   if (currentTurnEl) {
+       if (currentToolsCountEl) currentToolsCountEl.dataset.count = String(currentToolCount);
+       var _hasSubagent = currentToolsCountEl && currentToolsCountEl._hasSubagent;
+       var _shouldCollapse = compactMode || _hasSubagent || currentToolCount > 3;
+       if (_shouldCollapse) {
+         var _endBody = getTurnFoldBody(currentTurnEl);
+         if (_endBody) _endBody._userExpanded = false;
+         ensureTurnFoldStructure(currentTurnEl, true);
+         _endBody = getTurnFoldBody(currentTurnEl);
+         if (_endBody) setFoldExpanded(_endBody, false);
         } else if (currentToolsCountEl && currentToolsCountEl.classList.contains('turn-tools-summary')) {
           updateToolGroupSummary(currentToolsCountEl, currentToolCount, currentToolsCountEl._titles || [], currentToolsCountEl._kinds || [], currentToolsCountEl._rawInputs || []);
         }
@@ -11955,17 +11992,31 @@ sessionState = {
       hideEmpty();
       // Swallow late agent boilerplate (Codex Heads-up, Claude AbortError, …).
       suppressPostCompactNoiseUntil = Date.now() + 2500;
-      // Manual /compact only — auto-compact continues streaming in the same
-      // turn, so a banner would sit on top of the resumed reply.
-      if (wasManual) {
-        showCompactNotice();
-      } else {
-        // Auto-compact: agent often resumes the same turn immediately —
-        // drop any leftover banner and restore the plain processing spinner.
-        clearCompactNotices();
-        restoreProcessingStatusSpinner();
-      }
-    }
+     // Manual /compact only — auto-compact continues streaming in the same
+     // turn, so a banner would sit on top of the resumed reply.
+     if (wasManual) {
+       showCompactNotice();
+     } else {
+       // Auto-compact: agent often resumes the same turn immediately —
+       // drop any leftover banner and restore the plain processing spinner.
+       clearCompactNotices();
+       restoreProcessingStatusSpinner();
+     }
+    // For auto-compact, also surface a compact notice in the chat so the
+    // user can see that compaction happened (history was cleared). Without
+    // this, the chat just continues with tool calls and the user has no
+    // indication that earlier context was compacted away.
+   if (!wasManual && notice) {
+     // Show the actual compaction notice text (e.g. "*Context compacted to
+     // fit the model's context window.*") as a system message in the chat.
+     // This persists to chatHistory so it survives re-renders and resume.
+     clearCompactNotices();
+     chatHistory.push({ kind: 'message', role: 'system', text: notice });
+     saveState();
+     var _autoNoticeEl = addMessageDOM('system', notice);
+     if (_autoNoticeEl) _autoNoticeEl.classList.add('compact-notice');
+   }
+  }
 
     /** Bare spinner while the turn is still running (no "Compacting…" label). */
     function restoreProcessingStatusSpinner() {

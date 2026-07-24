@@ -23,7 +23,6 @@ try {
 
 import * as vscode from 'vscode';
 
-
 import { AgentManager } from './core/AgentManager';
 import { ConnectionManager } from './core/ConnectionManager';
 import { SessionManager } from './core/SessionManager';
