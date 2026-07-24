@@ -5005,37 +5005,45 @@ let isCompacting = false;  // true while /compact is running
    // then sends the message. After the cancel completes and promptEnd
    // fires, the message is sent via a one-shot flag.
    var pendingSendAfterCancel = null;
-   function sendQueuedMessageNow(index) {
-     if (index < 0 || index >= messageQueue.length) return;
-     const entry = messageQueue[index];
-     // Remove from queue immediately
-     messageQueue.splice(index, 1);
-     renderQueue();
-
-     if (isProcessing) {
-      // Set the pending message; it will be sent once promptEnd fires
-      // after the cancel completes.
-      pendingSendAfterCancel = entry;
-      vscode.postMessage({ type: 'cancelTurn' });
-    } else {
-      // Not processing — send directly. The user message was already
-      // shown when it was queued (in handleQueue), so just send the prompt.
-      hasSentPrompt = true;
-      vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
-    }
-   }
-
-   function drainQueue() {
-    if (messageQueue.length === 0) return false;
-    const entry = messageQueue.shift();
+  function sendQueuedMessageNow(index) {
+    if (index < 0 || index >= messageQueue.length) return;
+    const entry = messageQueue[index];
+    // Remove from queue immediately
+    messageQueue.splice(index, 1);
     renderQueue();
-    // The user message was already shown in the chat when it was queued
-    // (in handleQueue). Just send the prompt to the agent — don't re-add
-    // the message to avoid duplicate user bubbles.
-    hasSentPrompt = true;
-    vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
-    return true;
+
+    if (isProcessing) {
+      // Show the user message now (it was queued, not yet displayed).
+      chatHistory.push({ kind: 'message', role: 'user', text: entry.text || '(image)' });
+      saveState();
+      addMessageDOM('user', entry.text || '(image)');
+     // Set the pending message; it will be sent once promptEnd fires
+     // after the cancel completes.
+     pendingSendAfterCancel = entry;
+     vscode.postMessage({ type: 'cancelTurn' });
+   } else {
+      // Not processing — send directly and show the user message now.
+      chatHistory.push({ kind: 'message', role: 'user', text: entry.text || '(image)' });
+      saveState();
+      addMessageDOM('user', entry.text || '(image)');
+     hasSentPrompt = true;
+     vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
+   }
   }
+
+  function drainQueue() {
+   if (messageQueue.length === 0) return false;
+   const entry = messageQueue.shift();
+   renderQueue();
+    // Show the user message now — it was queued (not shown) during the
+    // active turn. Only display it when actually being sent.
+    chatHistory.push({ kind: 'message', role: 'user', text: entry.text || '(image)' });
+    saveState();
+    addMessageDOM('user', entry.text || '(image)');
+   hasSentPrompt = true;
+   vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
+   return true;
+ }
 
     // Modes / models state (legacy fallback path)
     let availableModes = [];
@@ -5988,29 +5996,33 @@ var end = displayText.length;
     // provides control — they serve different purposes and are not
     // redundant.
     //
-    // Use addMessageDOM directly (not addMessage) to avoid resetting
-    // currentTurnEl — the agent is still streaming into the current turn
-    // and resetting it would split the response into two visual turns.
-    chatHistory.push({ kind: 'message', role: 'user', text: text || '(image)' });
-    saveState();
-    addMessageDOM('user', text || '(image)');
-    // For agents that support _ericli/session/steer (EricCLI), send the
-    // message as a steer notification immediately — the LLM sees it at the
-    // next tool-execution iteration boundary without cancelling the turn.
-    // No queue chip is needed since the message is already delivered.
-    //
-    // For agents that do NOT support steering (Codex, Kiro, Claude, etc.),
-    // queue the message — it is auto-drained when the turn finishes. Only
-    // the FIRST queued message is sent as a new prompt; the rest remain
-    // queued until that turn finishes. The queue chip with "Send Now"
+   // Use addMessageDOM directly (not addMessage) to avoid resetting
+   // currentTurnEl — the agent is still streaming into the current turn
+   // and resetting it would split the response into two visual turns.
+   // For agents that support _ericli/session/steer (EricCLI), send the
+   // message as a steer notification immediately — the LLM sees it at the
+   // next tool-execution iteration boundary without cancelling the turn.
+   // No queue chip is needed since the message is already delivered.
+    // The user bubble is shown immediately because the message is
+    // delivered right away (steered into the active turn).
+   //
+   // For agents that do NOT support steering (Codex, Kiro, Claude, etc.),
+   // queue the message — it is auto-drained when the turn finishes. Only
+   // the FIRST queued message is sent as a new prompt; the rest remain
+    // queued until that turn finishes. The message is NOT shown as a
+    // chat bubble while queued — it only appears when actually sent
+    // (via drainQueue or "Send Now"). The queue chip with "Send Now"
     // lets the user interrupt the current turn to deal with it sooner.
-    var _agentName = (sessionState && (sessionState.agentName || sessionState.agentConfigKey)) || '';
-    var _isEricli = /ericli/i.test(_agentName);
-    if (_isEricli) {
-      vscode.postMessage({ type: 'steerPrompt', text: text });
-    } else {
-      queueMessage(text, images);
-    }
+   var _agentName = (sessionState && (sessionState.agentName || sessionState.agentConfigKey)) || '';
+   var _isEricli = /ericli/i.test(_agentName);
+   if (_isEricli) {
+      chatHistory.push({ kind: 'message', role: 'user', text: text || '(image)' });
+      saveState();
+      addMessageDOM('user', text || '(image)');
+     vscode.postMessage({ type: 'steerPrompt', text: text });
+   } else {
+     queueMessage(text, images);
+   }
   }
 
   /**
@@ -10985,18 +10997,18 @@ sessionState = {
         // Auto-send next queued message (if any) after the turn completes.
         // Uses a microtask delay so the UI fully settles before the next
         // turn starts.
-        if (pendingSendAfterCancel) {
-         // A "Send Now" was requested while processing — send that
-         // message immediately after the cancel completes.
-         var entry = pendingSendAfterCancel;
-         pendingSendAfterCancel = null;
-         setTimeout(() => {
-           if (!isProcessing) {
-             // Message was already shown when queued (in handleQueue).
-             hasSentPrompt = true;
-             vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
-           }
-         }, 0);
+       if (pendingSendAfterCancel) {
+        // A "Send Now" was requested while processing — send that
+        // message immediately after the cancel completes.
+        var entry = pendingSendAfterCancel;
+        pendingSendAfterCancel = null;
+        setTimeout(() => {
+          if (!isProcessing) {
+            // Message was already shown in sendQueuedMessageNow.
+            hasSentPrompt = true;
+            vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
+          }
+        }, 0);
         } else if (messageQueue.length > 0) {
           setTimeout(() => {
             if (!isProcessing && messageQueue.length > 0) {
