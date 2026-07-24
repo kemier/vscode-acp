@@ -8966,12 +8966,14 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
   function isSubagentToolCall(title, toolKind, rawInput, toolName) {
     // Concrete ACP file/command kinds are never collab-agent controls — even
     // when the title/path is literally "close_agent" / "wait" / etc.
+    // EXCEPTION: Claude Code's "Agent" tool sends kind=execute with
+    // subagent_type in rawInput — check for that first before rejecting.
+    if (looksLikeClaudeAgentSpawn(title, rawInput, toolName)) return true;
     if (toolKind === 'read' || toolKind === 'edit' || toolKind === 'delete' ||
         toolKind === 'move' || toolKind === 'search' || toolKind === 'fetch' ||
         toolKind === 'execute') {
       return false;
     }
-    if (looksLikeClaudeAgentSpawn(title, rawInput, toolName)) return true;
     var t = (title || '').trim();
     if (!t) return false;
     // Paths / filenames (e.g. reading src/close_agent.rs) are not agent ops.
