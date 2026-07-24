@@ -5574,12 +5574,26 @@ var end = displayText.length;
          }
          riItem = { ...riItem, status: _hasFollowingAssistant ? 'completed' : 'failed' };
        }
-       // Drop Kiro Summarizing/summary tool rows — redundant with the main
-       // agent_message summary and used to reappear as a wrapped tool block.
-       if (riItem && riItem.kind === 'toolCall' && isKiroSummaryToolTitle(riItem.title)) {
-         continue;
-       }
-       // Kiro crew stages: only fail explicitly in-flight statuses. Missing
+      // Drop Kiro Summarizing/summary tool rows — redundant with the main
+      // agent_message summary and used to reappear as a wrapped tool block.
+      if (riItem && riItem.kind === 'toolCall' && isKiroSummaryToolTitle(riItem.title)) {
+        continue;
+      }
+      // Deduplicate consecutive thought entries where a later one is a
+      // superset of an earlier one (resume artifact: the merge logic used
+      // to push a new entry with old+new text instead of updating the old one).
+      if (riItem && riItem.kind === 'thought' && chatHistory.length > 0) {
+        var _prevThought = chatHistory[chatHistory.length - 1];
+        if (_prevThought && _prevThought.kind === 'thought' &&
+            typeof riItem.text === 'string' && typeof _prevThought.text === 'string' &&
+            riItem.text.startsWith(_prevThought.text)) {
+          // Replace the previous entry with the merged (longer) text.
+          _prevThought.text = riItem.text;
+          if (riItem.durationSec) _prevThought.durationSec = riItem.durationSec;
+          continue;
+        }
+      }
+      // Kiro crew stages: only fail explicitly in-flight statuses. Missing
        // status on a completed parent is a finished historical crew — keep
        // completed so the final summary stays outside the fold after restart.
        if (riItem && riItem.kind === 'toolCall' && riItem.rawInput &&
@@ -6751,8 +6765,24 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    preLoadSnapshotSessionId = null;
    // If history was replayed, there were prior prompts — mark as sent
    // so the context usage ring can appear when metadata arrives.
-   if (chatHistory.length > 0) hasSentPrompt = true;
-    // Sync in-progress tool calls to a terminal status.
+  if (chatHistory.length > 0) hasSentPrompt = true;
+    // Deduplicate consecutive thought entries where a later one is a
+    // superset of an earlier one (resume artifact: the merge logic used
+    // to push a new entry with old+new text instead of updating the old one).
+    for (let _di = 1; _di < chatHistory.length; _di++) {
+      var _dPrev = chatHistory[_di - 1];
+      var _dCur = chatHistory[_di];
+      if (_dPrev && _dCur && _dPrev.kind === 'thought' && _dCur.kind === 'thought' &&
+          typeof _dCur.text === 'string' && typeof _dPrev.text === 'string' &&
+          _dCur.text.startsWith(_dPrev.text)) {
+        _dPrev.text = _dCur.text;
+        if (_dCur.durationSec) _dPrev.durationSec = _dCur.durationSec;
+        chatHistory.splice(_di, 1);
+        _di--;
+      }
+    }
+    saveState();
+   // Sync in-progress tool calls to a terminal status.
     // Codex often sends tool_call with 'in_progress' and never sends
     // tool_call_update with 'completed' — the completion is implicit in
     // promptEnd.  So: if there is an assistant message or a new user message
@@ -7689,17 +7719,33 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         if (currentThoughtEl && currentThoughtTextEl && !currentThoughtTextEl.textContent.trim()) {
           currentThoughtTextEl.textContent = historyText;
         }
-        // Avoid duplicate history entries when assistant-start already finalized
-        // and tools/promptEnd commit the same block again.
-        if (!currentThoughtEl || !currentThoughtEl._thoughtCommitted) {
-          chatHistory.push({
-            kind: 'thought',
-            text: historyText,
-            durationSec: thoughtStartTime ? Math.round(((thoughtEndTime || Date.now()) - thoughtStartTime) / 1000) : 0,
-          });
-          saveState();
-          if (currentThoughtEl) currentThoughtEl._thoughtCommitted = true;
-        }
+       // Avoid duplicate history entries when assistant-start already finalized
+       // and tools/promptEnd commit the same block again.
+       if (!currentThoughtEl || !currentThoughtEl._thoughtCommitted) {
+         // If this thought was resumed from a previously committed block,
+         // update the existing chatHistory entry instead of pushing a duplicate.
+         if (currentThoughtEl && typeof currentThoughtEl._historyIndex === 'number' &&
+             currentThoughtEl._historyIndex >= 0 && currentThoughtEl._historyIndex < chatHistory.length &&
+             chatHistory[currentThoughtEl._historyIndex] &&
+             chatHistory[currentThoughtEl._historyIndex].kind === 'thought') {
+           chatHistory[currentThoughtEl._historyIndex].text = historyText;
+           chatHistory[currentThoughtEl._historyIndex].durationSec =
+             thoughtStartTime ? Math.round(((thoughtEndTime || Date.now()) - thoughtStartTime) / 1000) : 0;
+           saveState();
+           if (currentThoughtEl) currentThoughtEl._thoughtCommitted = true;
+         } else {
+           chatHistory.push({
+             kind: 'thought',
+             text: historyText,
+             durationSec: thoughtStartTime ? Math.round(((thoughtEndTime || Date.now()) - thoughtStartTime) / 1000) : 0,
+           });
+           saveState();
+           if (currentThoughtEl) {
+             currentThoughtEl._thoughtCommitted = true;
+             currentThoughtEl._historyIndex = chatHistory.length - 1;
+           }
+         }
+       }
         if (currentTurnEl) {
           var sumEl = getTurnSummaryEl(currentTurnEl);
           if (sumEl) sumEl._hasThought = true;
@@ -10156,10 +10202,10 @@ function renderChatHistory() {
       messagesEl.appendChild(currentTurnEl);
       hideEmpty();
     }
-    pending.forEach(function (t) {
-      if (!t.text || !String(t.text).trim()) return;
-      addThoughtDOM(t.text, t.durationSec || 0);
-    });
+   pending.forEach(function (t) {
+     if (!t.text || !String(t.text).trim()) return;
+      addThoughtDOM(t.text, t.durationSec || 0, t.historyIndex);
+   });
     trace('flushTurnThought: rendered ' + pending.length + ' separate thought block(s)');
   }
   for (var i = 0; i < chatHistory.length; i++) {
@@ -10261,19 +10307,19 @@ function renderChatHistory() {
           assistantItems[assistantItems.length - 1].hgen = historyRenderGen;
          }
          break;
-        case 'thought':
-          // Render each thought as its own block in history order (do not merge).
-          if (item.text && String(item.text).trim()) {
-            if (!currentTurnEl) {
-              currentTurnEl = document.createElement('div');
-              currentTurnEl.className = 'turn';
-              messagesEl.appendChild(currentTurnEl);
-              hideEmpty();
-            }
-            addThoughtDOM(item.text, item.durationSec || 0);
-            trace('  -> thought: rendered block (textLen=' + item.text.length + ',dur=' + (item.durationSec || 0) + 's)');
-          }
-          break;
+       case 'thought':
+         // Render each thought as its own block in history order (do not merge).
+         if (item.text && String(item.text).trim()) {
+           if (!currentTurnEl) {
+             currentTurnEl = document.createElement('div');
+             currentTurnEl.className = 'turn';
+             messagesEl.appendChild(currentTurnEl);
+             hideEmpty();
+           }
+            addThoughtDOM(item.text, item.durationSec || 0, i);
+           trace('  -> thought: rendered block (textLen=' + item.text.length + ',dur=' + (item.durationSec || 0) + 's)');
+         }
+         break;
        case 'toolCall':
          addToolCallInline(item.toolCallId, item.title, item.status,
            item.rawInput && item.rawInput.taskResult
@@ -10530,11 +10576,13 @@ function renderChatHistory() {
       thoughtEndTime = null;
     }
 
-  function addThoughtDOM(text, durationSec) {
+  function addThoughtDOM(text, durationSec, historyIndex) {
     hideEmpty();
     const el = document.createElement('details');
     el.className = 'thought-block';
-     el.innerHTML =
+    if (typeof historyIndex === 'number') el._historyIndex = historyIndex;
+    el._thoughtCommitted = true;
+    el.innerHTML =
         '<summary>' + (durationSec > 0 ? 'Thought for ' + durationSec + 's' : (durationSec === 0 ? 'Thought for &lt;1s' : 'Thought')) + '</summary>' +
        '<div class="thought-content">' + escapeHtml(text.trim().replace(/\\n{3,}/g, '\\n\\n')) + '</div>';
     // Attach into the current turn so the thought groups with its assistant
@@ -12087,16 +12135,19 @@ sessionState = {
                   existingThought = committedThoughts[committedThoughts.length - 1];
                 }
               }
-              if (existingThought) {
-                currentThoughtEl = existingThought;
-                currentThoughtTextEl = existingThought.querySelector('.thought-content');
-                thoughtDomBase = (currentThoughtTextEl && currentThoughtTextEl.textContent) || '';
-                if (thoughtDomBase && !/\\n$/.test(thoughtDomBase)) thoughtDomBase += '\\n\\n';
-                // Keep the just-received chunk in currentThoughtText; don't wipe it.
-                thoughtEndTime = null;
-                currentThoughtEl.classList.add('streaming');
-                currentThoughtEl._thoughtCommitted = false;
-                var existingSummary = currentThoughtEl.querySelector('summary');
+             if (existingThought) {
+               currentThoughtEl = existingThought;
+               currentThoughtTextEl = existingThought.querySelector('.thought-content');
+               thoughtDomBase = (currentThoughtTextEl && currentThoughtTextEl.textContent) || '';
+               if (thoughtDomBase && !/\\n$/.test(thoughtDomBase)) thoughtDomBase += '\\n\\n';
+               // Keep the just-received chunk in currentThoughtText; don't wipe it.
+               thoughtEndTime = null;
+               currentThoughtEl.classList.add('streaming');
+               currentThoughtEl._thoughtCommitted = false;
+               // _historyIndex is preserved from the prior commit so that
+               // commitOrDiscardCurrentThought updates the existing entry
+               // instead of pushing a duplicate thought to chatHistory.
+               var existingSummary = currentThoughtEl.querySelector('summary');
                 if (existingSummary) {
                   existingSummary.innerHTML = '<span class="thought-indicator"></span> Thinking\u2026';
                 }
