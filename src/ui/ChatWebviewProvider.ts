@@ -7921,6 +7921,8 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
 
       // Keep fold contents in document/turn order (do not regroup all thoughts
       // before all tools — that made newer blocks look like they overwrote older ones).
+      // Skip during renderChatHistory — items are already in append order.
+      if (!suppressFoldOrdering)
       orderCompactFoldContents(body);
 
      // Final summary assistant(s) always sit after the fold (visible while collapsed).
@@ -7991,9 +7993,8 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      * Scoop foldable nodes into the fold body preserving document order:
      * thought / tools / interim assistant segments as they occurred in the turn.
      */
-   function orderCompactFoldContents(body) {
-     if (suppressFoldOrdering) return;
-     if (!body) return;
+  function orderCompactFoldContents(body) {
+    if (!body) return;
       var turn = body.parentElement;
       if (!turn || !turn.classList.contains('turn')) return;
 
@@ -8155,11 +8156,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           a.classList.remove('assistant-summary');
           a.setAttribute('data-interrupted', '1');
         });
-        // Do NOT body.appendChild here — that dumps every assistant at the
-        // fold bottom and breaks thought → tools → reply order on Kiro
-        // interrupted resume. Mark interim, then scoop strays in document order.
-        if (body) orderCompactFoldContents(body);
-        if (turn) turn.setAttribute('data-turn-interrupted', '1');
+       // Do NOT body.appendChild here — that dumps every assistant at the
+       // fold bottom and breaks thought → tools → reply order on Kiro
+       // interrupted resume. Mark interim, then scoop strays in document order.
+       if (body && !suppressFoldOrdering) orderCompactFoldContents(body);
+       if (turn) turn.setAttribute('data-turn-interrupted', '1');
         // Ensure the ▸ header is visible — interrupted turns often have only
         // thoughts / interim reply (Claude after cancel + VS Code restart).
         var foldSummary = getTurnSummaryEl(turn);
@@ -8185,9 +8186,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           a.classList.remove('assistant-summary');
         }
       });
-      // Re-home interim segments in document order (avoid append-to-bottom).
-      if (body) orderCompactFoldContents(body);
-    }
+     // Re-home interim segments in document order (avoid append-to-bottom).
+     if (body && !suppressFoldOrdering) orderCompactFoldContents(body);
+   }
 
     function sessionMarkedInterrupted() {
       var sid = sessionState && sessionState.sessionId;
@@ -10385,44 +10386,46 @@ function renderChatHistory() {
   currentToolsListEl = null;
   currentToolsCountEl = null;
   currentToolCount = 0;
-  // Re-enable fold ordering — all items are now in the DOM. The
-  // ensureTurnFoldStructure calls below will sort correctly.
-  suppressFoldOrdering = false;
  // Collect tool titles from every tools group, then (in compact mode) fold.
-  messagesEl.querySelectorAll('.turn').forEach(function(turn) {
-    var lists = turn.querySelectorAll('.turn-tools-list');
-    var summary = getTurnSummaryEl(turn);
-    if (lists.length && summary) {
-      var titles = [];
-      var kinds = [];
-      var rawInputs = [];
-      var hasSubagent = false;
-      lists.forEach(function(list) {
-        list.querySelectorAll('.tool-call-inline').forEach(function(tc) {
-          if (tc.getAttribute('data-parent-tool')) return;
-          var tcTitle = getToolCallOriginalTitle(tc);
-          var tcKind = tc.dataset.toolKind || null;
-          var tcRaw = tc._rawInput || null;
-          titles.push(tcTitle);
-          kinds.push(tcKind);
-          rawInputs.push(tcRaw);
-          if (isSubagentToolCall(tcTitle, tcKind, tcRaw)) hasSubagent = true;
-        });
-      });
-      summary._titles = titles;
-      summary._kinds = kinds;
-      summary._rawInputs = rawInputs;
-      summary._hasSubagent = hasSubagent;
-      summary.dataset.count = String(titles.length);
-    }
-    if (compactMode) {
-      ensureTurnFoldStructure(turn, true);
-      promoteFinalAssistantForTurn(turn);
-    } else if (lists.length && summary) {
-      updateToolGroupSummary(summary, parseInt(summary.dataset.count || '0', 10), summary._titles || [], summary._kinds || [], summary._rawInputs || []);
-    }
-  });
-  // promoteFinalAssistant / structure rebuild can leave folds open after
+ messagesEl.querySelectorAll('.turn').forEach(function(turn) {
+   var lists = turn.querySelectorAll('.turn-tools-list');
+   var summary = getTurnSummaryEl(turn);
+   if (lists.length && summary) {
+     var titles = [];
+     var kinds = [];
+     var rawInputs = [];
+     var hasSubagent = false;
+     lists.forEach(function(list) {
+       list.querySelectorAll('.tool-call-inline').forEach(function(tc) {
+         if (tc.getAttribute('data-parent-tool')) return;
+         var tcTitle = getToolCallOriginalTitle(tc);
+         var tcKind = tc.dataset.toolKind || null;
+         var tcRaw = tc._rawInput || null;
+         titles.push(tcTitle);
+         kinds.push(tcKind);
+         rawInputs.push(tcRaw);
+         if (isSubagentToolCall(tcTitle, tcKind, tcRaw)) hasSubagent = true;
+       });
+     });
+     summary._titles = titles;
+     summary._kinds = kinds;
+     summary._rawInputs = rawInputs;
+     summary._hasSubagent = hasSubagent;
+     summary.dataset.count = String(titles.length);
+   }
+   if (compactMode) {
+     // Still suppress ordering — items are already in correct append order
+     // from the rendering loop. ensureTurnFoldStructure only needs to
+     // set up the fold shell + summary, not re-sort.
+     ensureTurnFoldStructure(turn, true);
+     promoteFinalAssistantForTurn(turn);
+   } else if (lists.length && summary) {
+     updateToolGroupSummary(summary, parseInt(summary.dataset.count || '0', 10), summary._titles || [], summary._kinds || [], summary._rawInputs || []);
+   }
+ });
+ // Re-enable fold ordering for live streaming / manual toggle after render.
+ suppressFoldOrdering = false;
+ // promoteFinalAssistant / structure rebuild can leave folds open after
   // session/load — force Collapse mode shut once the DOM is final.
   forceCollapseTurnFolds();
   // Codex/Claude interrupted crews often still have running icons after rebuild.
