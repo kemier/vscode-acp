@@ -8816,6 +8816,8 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         } else {
           agentOpCount++;
         }
+      } else if (isWebSearchToolCall(titles[i], ri)) {
+        cat = 'web_search';
       } else if (kind && kind !== 'other' && kind !== 'think') {
         cat = acpKindToCategory(kind);
       } else if (kind) {
@@ -8832,6 +8834,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     if (agentOpCount > 0) parts.push(agentOpCount + ' subagent op' + (agentOpCount > 1 ? 's' : ''));
     if (counts.read) parts.push(counts.read + ' read' + (counts.read > 1 ? 's' : ''));
     if (counts.edit) parts.push(counts.edit + ' edit' + (counts.edit > 1 ? 's' : ''));
+    if (counts.web_search) parts.push(counts.web_search + ' web search' + (counts.web_search > 1 ? 'es' : ''));
     if (counts.search) parts.push(counts.search + ' search' + (counts.search > 1 ? 'es' : ''));
     if (counts.command) parts.push(counts.command + ' command' + (counts.command > 1 ? 's' : ''));
     if (counts.plan) parts.push(counts.plan + ' plan update' + (counts.plan > 1 ? 's' : ''));
@@ -8840,6 +8843,40 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     return parts.join(', ');
   }
  
+  // Web-search tool names across agents (ericli, Codex, Claude, Kiro, MCP).
+  // These are detected before the generic kind/title heuristics so that
+  // collapsed summaries show "N web search(es)" instead of "N other".
+  var webSearchToolNames = new Set([
+    'web_search',
+    'brave_web_search',
+    'brave_local_search',
+    'tavily_search',
+    'exa_search',
+    'google_search',
+    'serper_search',
+    'serpapi_search',
+    'perplexity_search',
+    'duckduckgo_search',
+    'bing_search',
+  ]);
+
+  // Detect web-search tool calls by title or rawInput.toolName.
+  // ericli sends 'web_search' as the tool title (mapToolKind returns undefined,
+  // so no ACP kind is set). Other agents / MCP servers use variants like
+  // 'brave_web_search', 'tavily_search', etc. Matching the raw tool name is
+  // more reliable than title heuristics because titles can be human-readable.
+  function isWebSearchToolCall(title, rawInput) {
+    var t = String(title || '').trim().toLowerCase();
+    if (webSearchToolNames.has(t)) return true;
+    if (rawInput && typeof rawInput === 'object') {
+      var tn = String(rawInput._toolName || rawInput.toolName || '').trim().toLowerCase();
+      if (webSearchToolNames.has(tn)) return true;
+    }
+    // Human-readable title fallback for agents that send descriptive titles.
+    if (t.indexOf('web search') >= 0 || t.indexOf('web_search') >= 0) return true;
+    return false;
+  }
+
    function categorizeToolCall(title) {
      var t = (title || '').toLowerCase().trim();
      // Extract the first word (command name) for matching, since full titles
