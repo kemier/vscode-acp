@@ -373,24 +373,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     'uint32',
     'uint64',
     // === Rust keywords (doc.rust-lang.org/reference/keywords.html) ===
-    'Self',
     // === Rust reserved keywords ===
     'macro_rules',
     // === Rust std types and functions ===
-    'String',
-    'Vec',
-    'Option',
-    'Some',
-    'None',
-    'Result',
-    'Ok',
-    'Err',
-    'Box',
-    'Rc',
-    'Arc',
     'RefCell',
-    'Cell',
-    'Mutex',
     'RwLock',
     'HashMap',
     'HashSet',
@@ -398,9 +384,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     'BTreeSet',
     // === TypeScript/JavaScript keywords ===
     // === Python keywords (docs.python.org/3/library/keyword.html) ===
-    'False',
-    'None',
-    'True',
     // === Python builtins (docs.python.org/3/library/builtins.html) ===
     // === Codex/agent tool names — must NOT be linkified as symbols ===
     'apply_patch',
