@@ -1403,7 +1403,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         }
         case 'debugLog':
           // Forward webview debug logs to the ACP Client output channel
-          if (DEBUG) {
+          // DRAIN-DBG logs always pass through for queue drain debugging
+          if (DEBUG || (message.message && message.message.indexOf('[DRAIN-DBG]') === 0)) {
             log('[DEBUG-WV] ' + (message.message || '(empty)'));
           }
           break;
@@ -5045,22 +5046,25 @@ let isCompacting = false;  // true while /compact is running
    }
  }
 
- function drainQueue() {
-  if (messageQueue.length === 0) return false;
-  const entry = messageQueue.shift();
-  renderQueue();
-   // Show the user message now — it was queued (not shown) during the
-   // active turn. Only display it when actually being sent.
-   chatHistory.push({ kind: 'message', role: 'user', text: entry.text || '(image)' });
-   saveState();
-   addMessageDOM('user', entry.text || '(image)');
-  hasSentPrompt = true;
-  if (entry.text && entry.text.startsWith('/') && handleLocalSlashCommand(entry.text)) {
-    // Local slash command handled it — don't send as prompt.
-  } else {
-    vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
-  }
- return true;
+function drainQueue() {
+ if (messageQueue.length === 0) return false;
+ vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drainQueue: dequeuing, remaining=' + (messageQueue.length - 1) + ' isProcessing=' + isProcessing });
+ const entry = messageQueue.shift();
+ renderQueue();
+  // Show the user message now — it was queued (not shown) during the
+  // active turn. Only display it when actually being sent.
+  chatHistory.push({ kind: 'message', role: 'user', text: entry.text || '(image)' });
+  saveState();
+  addMessageDOM('user', entry.text || '(image)');
+ hasSentPrompt = true;
+ if (entry.text && entry.text.startsWith('/') && handleLocalSlashCommand(entry.text)) {
+   vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drainQueue: handled as local slash command' });
+   // Local slash command handled it — don't send as prompt.
+ } else {
+   vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drainQueue: sending as sendPrompt' });
+   vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
+ }
+return true;
 }
 
     // Modes / models state (legacy fallback path)
@@ -6087,11 +6091,13 @@ var _supportsSteer = /ericli|codex|claude/i.test(_agentName);
    currentToolsListEl = null;
    currentToolsCountEl = null;
    currentToolCount = 0;
-   hasSteeredThisTurn = true;
-   vscode.postMessage({ type: 'steerPrompt', text: text });
- } else {
-   queueMessage(text, images);
- }
+  hasSteeredThisTurn = true;
+  vscode.postMessage({ type: 'steerPrompt', text: text });
+  vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] handleQueue: STEERED msg, hasSteeredThisTurn=true' });
+} else {
+  vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] handleQueue: QUEUED msg (not steered), _supportsSteer=' + _supportsSteer + ' hasSteeredThisTurn=' + hasSteeredThisTurn + ' _isMutatingCmd=' + _isMutatingCmd + ' messageQueue.length=' + (messageQueue.length + 1) });
+  queueMessage(text, images);
+}
   }
 
   /**
@@ -6532,9 +6538,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
  updateWelcomeButton();
 
    // --- Send/Stop toggle ---
-   function setProcessing(processing) {
-     isProcessing = processing;
-     if (!processing) { hasSteeredThisTurn = false; }
+  function setProcessing(processing) {
+    if (isProcessing !== processing) {
+      vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] setProcessing: ' + isProcessing + ' → ' + processing + ' messageQueue.length=' + messageQueue.length + ' hasSteeredThisTurn=' + hasSteeredThisTurn });
+    }
+    isProcessing = processing;
+    if (!processing) { hasSteeredThisTurn = false; }
      if (processing) {
         sendStopBtn.className = 'send-stop-btn stop';
         sendStopBtn.textContent = '■ Stop';
@@ -11167,8 +11176,9 @@ sessionState = {
       // Capture whether this promptEnd is for a compaction cycle — if so,
       // the turn is NOT actually finished (auto-compact resumes the same
       // turn) and we must NOT drain the message queue.
-      var _wasCompacting = isCompacting;
-      cancelProvisionalSummaryPromote();
+     var _wasCompacting = isCompacting;
+     vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] promptEnd: stopReason=' + msg.stopReason + ' isCompacting=' + isCompacting + ' isProcessing=' + isProcessing + ' isLoadingSession=' + isLoadingSession + ' messageQueue.length=' + messageQueue.length + ' pendingSendAfterCancel=' + !!pendingSendAfterCancel + ' hasSteeredThisTurn=' + hasSteeredThisTurn });
+     cancelProvisionalSummaryPromote();
       // Compaction: clear when we already buffered a completion notice.
        // Claude ACP often finishes /compact with only usage_update + end_turn
        // (no "Compacting completed." text) — treat that silent promptEnd as success.
@@ -11252,8 +11262,9 @@ sessionState = {
          }
          saveState();
        }
-       setProcessing(false);
-        // Interrupted: keep partial reply folded and refresh the ▸ header
+      setProcessing(false);
+      vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] after setProcessing(false): isProcessing=' + isProcessing + ' isCompacting=' + isCompacting + ' messageQueue.length=' + messageQueue.length + ' pendingSendAfterCancel=' + !!pendingSendAfterCancel });
+       // Interrupted: keep partial reply folded and refresh the ▸ header
         // (thought-only / Claude cancel often had toolCount 0 → header hidden).
         if (_wasCancelled && currentTurnEl && compactMode) {
           foldInterruptedAssistantsOnPromote = true;
@@ -11350,14 +11361,23 @@ sessionState = {
           }
         }
       }, 0);
-        } else if (!_wasCompacting && messageQueue.length > 0) {
-         setTimeout(() => {
-           if (!isProcessing && messageQueue.length > 0) {
-             drainQueue();
-           }
-         }, 0);
-       }
-        break;
+       } else if (!_wasCompacting && messageQueue.length > 0) {
+        vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] scheduling drain: _wasCompacting=' + _wasCompacting + ' messageQueue.length=' + messageQueue.length + ' isProcessing=' + isProcessing });
+        setTimeout(() => {
+          vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drain setTimeout fired: isProcessing=' + isProcessing + ' messageQueue.length=' + messageQueue.length });
+          if (!isProcessing && messageQueue.length > 0) {
+            vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] calling drainQueue()' });
+            drainQueue();
+          }
+        }, 0);
+      }
+      if (_wasCompacting && messageQueue.length > 0) {
+        vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] SKIPPED drain because _wasCompacting=true, messageQueue.length=' + messageQueue.length });
+      }
+      if (!_wasCompacting && messageQueue.length === 0 && !pendingSendAfterCancel) {
+        vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] no drain needed: queue empty' });
+      }
+       break;
 
      case 'clearChat':
              isCompacting = false;
