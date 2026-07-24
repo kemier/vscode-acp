@@ -4860,6 +4860,7 @@ let isForceCancelled = false; // true after cancel fallback forces promptEnd
 let hasSentPrompt = false;
 var pendingRenderRetries = {}; // keys of pending renderMarkdown retries
 var historyRenderGen = 0; // generation counter for history renders (invalidated on DOM rebuild)
+var suppressFoldOrdering = false; // true during renderChatHistory to skip intermediate re-ordering
 let isCompacting = false;  // true while /compact is running
  let isClearing = false;    // true while Kiro /clear (or clear/status) is running
  // True only for user-typed /compact — auto-compact must not leave a sticky
@@ -7981,8 +7982,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      * Scoop foldable nodes into the fold body preserving document order:
      * thought / tools / interim assistant segments as they occurred in the turn.
      */
-    function orderCompactFoldContents(body) {
-      if (!body) return;
+   function orderCompactFoldContents(body) {
+     if (suppressFoldOrdering) return;
+     if (!body) return;
       var turn = body.parentElement;
       if (!turn || !turn.classList.contains('turn')) return;
 
@@ -8005,16 +8007,18 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           Array.prototype.forEach.call(child.children, consider);
         }
       });
-      // Stable document order
-      foldables.sort(function(a, b) {
-        if (a === b) return 0;
-        var pos = a.compareDocumentPosition(b);
-        if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
-        if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
-        return 0;
-      });
-      foldables.forEach(function(el) { body.appendChild(el); });
-    }
+     // Stable document order
+     foldables.sort(function(a, b) {
+       if (a === b) return 0;
+       var pos = a.compareDocumentPosition(b);
+       if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
+       if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
+       return 0;
+     });
+     // Append sorted (stable) — preserves interleaved order:
+     // thought → tools → thought → tools → assistant.
+     foldables.forEach(function(el) { body.appendChild(el); });
+   }
 
     /** Place the visible final assistant summary after the fold (after commit). */
     function placeSummaryAssistant(assistantEl) {
@@ -10201,18 +10205,26 @@ function renderChatHistory() {
   // Increment generation counter to invalidate any in-flight markdownRendered
   // responses from a previous DOM build. Stale responses would update the
   // wrong elements or skip needed updates after a DOM rebuild.
-  historyRenderGen++;
-  messagesEl.innerHTML = '';
-  toolCalls = {};
-  toolCallDiffs = {};
-  resetClaudeCrewState();
-  currentPlanEl = null;
-  if (planBar) { planBar.innerHTML = ''; }
-  currentTurnEl = null;
-  currentToolsListEl = null;
-  currentToolsCountEl = null;
-  currentToolCount = 0;
-  var assistantItems = [];
+ historyRenderGen++;
+ messagesEl.innerHTML = '';
+ toolCalls = {};
+ toolCallDiffs = {};
+ resetClaudeCrewState();
+ currentPlanEl = null;
+ if (planBar) { planBar.innerHTML = ''; }
+ currentTurnEl = null;
+ currentToolsListEl = null;
+ currentToolsCountEl = null;
+ currentToolCount = 0;
+ // Suppress intermediate fold re-ordering during renderChatHistory.
+ // Each addThoughtDOM / ensureTurnTools call internally triggers
+ // ensureTurnFoldStructure → orderCompactFoldContents, which sorts by
+ // current document position. During rendering, not all items are in the
+ // DOM yet, so intermediate sorts scramble the interleaved order.
+ // The final ensureTurnFoldStructure at the end of this function will
+ // order correctly once all items are in place.
+ suppressFoldOrdering = true;
+ var assistantItems = [];
   // Buffer thoughts only until we can attach them to a turn; each thought
   // renders as its own block (in history order) — never merge/overwrite.
   var turnThoughts = [];
@@ -10358,13 +10370,16 @@ function renderChatHistory() {
           break;
       }
     }
-    // Flush any thought(s) still buffered for the final turn.
-    flushTurnThought();
-    currentTurnEl = null;
-   currentToolsListEl = null;
-   currentToolsCountEl = null;
-   currentToolCount = 0;
-  // Collect tool titles from every tools group, then (in compact mode) fold.
+   // Flush any thought(s) still buffered for the final turn.
+   flushTurnThought();
+   currentTurnEl = null;
+  currentToolsListEl = null;
+  currentToolsCountEl = null;
+  currentToolCount = 0;
+  // Re-enable fold ordering — all items are now in the DOM. The
+  // ensureTurnFoldStructure calls below will sort correctly.
+  suppressFoldOrdering = false;
+ // Collect tool titles from every tools group, then (in compact mode) fold.
   messagesEl.querySelectorAll('.turn').forEach(function(turn) {
     var lists = turn.querySelectorAll('.turn-tools-list');
     var summary = getTurnSummaryEl(turn);
