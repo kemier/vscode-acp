@@ -5933,37 +5933,47 @@ var end = displayText.length;
        }
      }
      // Slash popup navigation
-     if (slashPopup.classList.contains('open')) {
-        if (e.key === 'ArrowDown') {
-          e.preventDefault();
-          slashPopupSelectedIdx = Math.min(slashPopupSelectedIdx + 1, slashFilteredCommands.length - 1);
-          highlightSlashItem(slashPopupSelectedIdx);
-          return;
-        }
-        if (e.key === 'ArrowUp') {
-          e.preventDefault();
-          slashPopupSelectedIdx = Math.max(slashPopupSelectedIdx - 1, 0);
-          highlightSlashItem(slashPopupSelectedIdx);
-          return;
-        }
-        if (e.key === 'Tab') {
-          e.preventDefault();
-          selectSlashCommand(slashFilteredCommands[slashPopupSelectedIdx]);
-          return;
-        }
-        if (e.key === 'Enter' && !e.shiftKey) {
-          e.preventDefault();
-          selectSlashCommand(slashFilteredCommands[slashPopupSelectedIdx]);
-          return;
-        }
-        if (e.key === 'Escape') {
-          e.preventDefault();
-          slashPopup.classList.remove('open');
-          return;
-        }
-      }
+    if (slashPopup.classList.contains('open')) {
+       // If the user has already typed past the command name (has a space),
+       // Enter should submit the prompt, not re-select the command from the
+       // popup. This fixes /session <name>, /rename <name>, etc. being
+       // swallowed by the popup when Enter is pressed.
+       var hasCmdArgs = promptInput.value.indexOf(' ') >= 0;
+       if (hasCmdArgs && e.key === 'Enter' && !e.shiftKey) {
+         slashPopup.classList.remove('open');
+         // Fall through to handleSend() below
+       } else {
+       if (e.key === 'ArrowDown') {
+         e.preventDefault();
+         slashPopupSelectedIdx = Math.min(slashPopupSelectedIdx + 1, slashFilteredCommands.length - 1);
+         highlightSlashItem(slashPopupSelectedIdx);
+         return;
+       }
+       if (e.key === 'ArrowUp') {
+         e.preventDefault();
+         slashPopupSelectedIdx = Math.max(slashPopupSelectedIdx - 1, 0);
+         highlightSlashItem(slashPopupSelectedIdx);
+         return;
+       }
+       if (e.key === 'Tab') {
+         e.preventDefault();
+         selectSlashCommand(slashFilteredCommands[slashPopupSelectedIdx]);
+         return;
+       }
+       if (e.key === 'Enter' && !e.shiftKey) {
+         e.preventDefault();
+         selectSlashCommand(slashFilteredCommands[slashPopupSelectedIdx]);
+         return;
+       }
+       if (e.key === 'Escape') {
+         e.preventDefault();
+         slashPopup.classList.remove('open');
+         return;
+       }
+       }
+     }
 
-  if (e.key === 'Enter' && !e.shiftKey) {
+ if (e.key === 'Enter' && !e.shiftKey) {
     e.preventDefault();
     // While a turn is streaming, Enter queues the message instead of
     // blocking. Queued messages auto-send when the current turn finishes.
