@@ -9632,10 +9632,16 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
            stages[s] = Object.assign({}, stage, { status: 'completed' });
          }
        }
-       if (anyFailed || sessionInterrupted) {
-         item.rawInput = Object.assign({}, item.rawInput, { stages: stages });
-         item.status = 'failed';
-       } else {
+      if (anyFailed || sessionInterrupted) {
+        item.rawInput = Object.assign({}, item.rawInput, { stages: stages });
+        // Only override to failed when the parent tool was NOT already
+        // marked completed by the restoreState/handleLoadSessionEnd fix
+        // (which checked for a following assistant message). A completed
+        // parent means the turn finished normally — don't re-fail it.
+        if (item.status !== 'completed') {
+          item.status = 'failed';
+        }
+      } else {
          item.rawInput = Object.assign({}, item.rawInput, { stages: stages });
        }
      }
@@ -9662,9 +9668,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        if (!item || item.kind !== 'toolCall') continue;
        var isCrew = (item.rawInput && Array.isArray(item.rawInput.stages) && item.rawInput.stages.length > 0) ||
          isSubagentSpawnTitle(item.title, item.rawInput);
-       if (!isCrew) continue;
-       item.status = 'failed';
-       if (item.rawInput && Array.isArray(item.rawInput.stages)) {
+      if (!isCrew) continue;
+      // Don't re-fail tools already marked completed by the restoreState
+      // fix (they had a following assistant message — the turn finished).
+      if (item.status === 'completed') continue;
+      item.status = 'failed';
+      if (item.rawInput && Array.isArray(item.rawInput.stages)) {
          item.rawInput = Object.assign({}, item.rawInput, {
            stages: item.rawInput.stages.map(function(st) {
              if (!st || typeof st !== 'object') return st;
@@ -9689,12 +9698,15 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      if (!force) return;
      var crews = lastTurn.querySelectorAll('.tool-call-inline.tc-subagent');
      for (var c = 0; c < crews.length; c++) {
-       var crew = crews[c];
-       var parentIcon = crew.querySelector(':scope > .tc-icon');
-       if (parentIcon && (parentIcon.classList.contains('completed') ||
-           parentIcon.classList.contains('running') ||
-           parentIcon.classList.contains('in_progress') ||
-           parentIcon.classList.contains('pending'))) {
+      var crew = crews[c];
+      var parentIcon = crew.querySelector(':scope > .tc-icon');
+      // Skip crews already marked completed — the restoreState fix verified
+      // the turn finished (following assistant message exists).
+      if (parentIcon && parentIcon.classList.contains('completed')) continue;
+      if (parentIcon && (parentIcon.classList.contains('completed') ||
+          parentIcon.classList.contains('running') ||
+          parentIcon.classList.contains('in_progress') ||
+          parentIcon.classList.contains('pending'))) {
          parentIcon.className = 'tc-icon failed';
          parentIcon.textContent = getStatusIcon('failed');
        }
