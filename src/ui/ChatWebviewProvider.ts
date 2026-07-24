@@ -1322,6 +1322,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         case 'cancelTurn':
           await this.handleCancelTurn();
           break;
+        case 'steerPrompt':
+          await this.handleSteerPrompt(message.text);
+          break;
         case 'setMode':
           await this.handleSetMode(message.modeId);
           break;
@@ -1883,6 +1886,22 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         }
         this._cancelFallbackTimer = null;
       }, 5_000);
+    }
+  }
+
+  /**
+   * Steer the active turn by sending a user message mid-turn without
+   * cancelling. Uses _ericli/session/steer notification (EricCLI only).
+   * For agents that don't support it, the notification is silently ignored
+   * and the message is only queued for the next turn (via handleQueue).
+   */
+  private async handleSteerPrompt(text: string): Promise<void> {
+    const activeId = this.sessionManager.getActiveSessionId();
+    if (!activeId) return;
+    try {
+      await this.sessionManager.steerPrompt(activeId, text);
+    } catch (e) {
+      logError('Steer failed', e);
     }
   }
 
@@ -5943,10 +5962,23 @@ var end = displayText.length;
     chatHistory.push({ kind: 'message', role: 'user', text: text || '(image)' });
     saveState();
     addMessageDOM('user', text || '(image)');
-    queueMessage(text, images);
-    // Keep the queue chip visible so the user can click "Send Now" to
-    // interrupt the current turn and deal with this queued message.
-    // renderQueue() is called inside queueMessage() and handles display.
+    // For agents that support _ericli/session/steer (EricCLI), send the
+    // message as a steer notification immediately — the LLM sees it at the
+    // next tool-execution iteration boundary without cancelling the turn.
+    // No queue chip is needed since the message is already delivered.
+    //
+    // For agents that do NOT support steering (Codex, Kiro, Claude, etc.),
+    // queue the message — it is auto-drained when the turn finishes. Only
+    // the FIRST queued message is sent as a new prompt; the rest remain
+    // queued until that turn finishes. The queue chip with "Send Now"
+    // lets the user interrupt the current turn to deal with it sooner.
+    var _agentName = (sessionState && (sessionState.agentName || sessionState.agentConfigKey)) || '';
+    var _isEricli = /ericli/i.test(_agentName);
+    if (_isEricli) {
+      vscode.postMessage({ type: 'steerPrompt', text: text });
+    } else {
+      queueMessage(text, images);
+    }
   }
 
   /**

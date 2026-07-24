@@ -715,7 +715,27 @@ export class SessionManager extends EventEmitter {
     }
 
     log(`Cancelling turn for session ${sessionId}`);
-    await connInfo.connection.cancel({ sessionId });
+   await connInfo.connection.cancel({ sessionId });
+ }
+
+  /**
+   * Send a steering message to the agent mid-turn without cancelling.
+   * Uses a custom `_ericli/session/steer` notification that EricCLI's
+   * ACP server handles by queuing the message and injecting it at the
+   * next tool-execution iteration boundary (like Codex's turn/steer).
+   * For agents that don't support this notification, it's silently ignored.
+   */
+  async steerPrompt(sessionId: string, text: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) return;
+    const connInfo = this.connectionManager.getConnection(session.agentId);
+    if (!connInfo) return;
+    try {
+      await connInfo.connection.notify('_ericli/session/steer', { sessionId, text });
+      log(`Steered session ${sessionId}: ${text.substring(0, 80)}...`);
+    } catch (e: any) {
+      log(`steerPrompt: agent does not support _ericli/session/steer (non-fatal): ${e?.message || e}`);
+    }
   }
 
   /**
