@@ -8822,6 +8822,14 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     if (counts.search) parts.push(counts.search + ' search' + (counts.search > 1 ? 'es' : ''));
     if (counts.command) parts.push(counts.command + ' command' + (counts.command > 1 ? 's' : ''));
     if (counts.plan) parts.push(counts.plan + ' plan update' + (counts.plan > 1 ? 's' : ''));
+    if (counts.todo) parts.push(counts.todo + ' todo' + (counts.todo > 1 ? 's' : ''));
+    if (counts.skill_load) parts.push('load ' + counts.skill_load + ' skill' + (counts.skill_load > 1 ? 's' : ''));
+    if (counts.skill_read) parts.push('read ' + counts.skill_read + ' skill' + (counts.skill_read > 1 ? 's' : ''));
+    if (counts.skill_search) parts.push('search ' + counts.skill_search + ' skill' + (counts.skill_search > 1 ? 's' : ''));
+    if (counts.skill_create) parts.push('create ' + counts.skill_create + ' skill' + (counts.skill_create > 1 ? 's' : ''));
+    if (counts.skill_update) parts.push('update ' + counts.skill_update + ' skill' + (counts.skill_update > 1 ? 's' : ''));
+    if (counts.skill_delete) parts.push('delete ' + counts.skill_delete + ' skill' + (counts.skill_delete > 1 ? 's' : ''));
+    if (counts.skill_other) parts.push(counts.skill_other + ' skill op' + (counts.skill_other > 1 ? 's' : ''));
     if (counts.other) parts.push(counts.other + ' other');
     if (parts.length === 0) return total + ' tool call' + (total !== 1 ? 's' : '');
     return parts.join(', ');
@@ -8869,6 +8877,17 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      // Also check the full title for keywords like "read file" or "search for"
      // but only match word-boundary keywords, not substrings inside paths.
      var kw = ' ' + t + ' ';
+     // Skill management (ericli manage_skills) — checked first because
+     // "Read skill:" / "Search skills:" start with read/search keywords.
+     // Returns sub-categories so the summary shows "read 1 skill" not "1 skill".
+     if (firstWord === 'load' || kw.indexOf(' load skill') >= 0) return 'skill_load';
+     if (t.indexOf('read skill:') === 0 || t.indexOf('read skill ') === 0) return 'skill_read';
+     if (t.indexOf('search skills:') === 0 || t.indexOf('search skills ') === 0) return 'skill_search';
+     if (t.indexOf('create skill:') === 0 || t.indexOf('create skill ') === 0) return 'skill_create';
+     if (t.indexOf('update skill:') === 0 || t.indexOf('update skill ') === 0) return 'skill_update';
+     if (t.indexOf('delete skill:') === 0 || t.indexOf('delete skill ') === 0) return 'skill_delete';
+     if (firstWord === 'manage_skills' || kw.indexOf(' validate skill ') >= 0 ||
+         kw.indexOf(' skill info:') >= 0 || kw.indexOf(' skill info ') >= 0) return 'skill_other';
      if (firstWord === 'read' || firstWord === 'read_file' || firstWord === 'fs_read' ||
          firstWord.indexOf('read_') === 0 || firstWord === 'cat' || firstWord === 'view' ||
          kw.indexOf(' read ') >= 0 || kw.indexOf(' view ') >= 0 || kw.indexOf(' read_file ') >= 0) {
@@ -8882,6 +8901,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      if (firstWord === 'search' || firstWord === 'grep' || firstWord === 'find' || firstWord === 'glob' || firstWord === 'rg' || kw.indexOf(' search ') >= 0 || kw.indexOf(' grep ') >= 0 || kw.indexOf(' find ') >= 0) return 'search';
      if (firstWord === 'ls' || firstWord === 'command' || firstWord === 'exec' || firstWord === 'shell' || firstWord === 'run' || firstWord === 'cd' || kw.indexOf(' command ') >= 0 || kw.indexOf(' exec ') >= 0 || kw.indexOf(' run ') >= 0) return 'command';
      if (firstWord === 'plan' || firstWord === 'todo' || kw.indexOf(' plan ') >= 0 || kw.indexOf(' todo ') >= 0) return 'plan';
+     // Task tracking tools (ericli task_create/task_update/task_list)
+     if (firstWord === 'task_create' || firstWord === 'task_update' || firstWord === 'task_list' ||
+         firstWord === 'create:' || firstWord === 'update' && kw.indexOf(' → ') >= 0 ||
+         kw.indexOf(' task_create ') >= 0 || kw.indexOf(' task_update ') >= 0 || kw.indexOf(' task_list ') >= 0 ||
+         kw.indexOf(' create task ') >= 0 || kw.indexOf(' update task ') >= 0 || kw.indexOf(' list tasks ') >= 0) return 'todo';
      return 'other';
    }
 
