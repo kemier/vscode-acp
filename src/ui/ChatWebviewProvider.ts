@@ -1313,13 +1313,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           this._hasChatContent = true;
           await this.handleExecuteKiroCommandFromWebview(message.command, message.args);
           break;
-        case 'renameSession':
-          this.handleRenameSession(message.title);
-          break;
-        case 'renameSessionInput':
-          await this.handleRenameSessionInput();
-          break;
-        case 'cancelTurn':
+       case 'renameSession':
+         this.handleRenameSession(message.title);
+         break;
+       case 'cancelTurn':
           await this.handleCancelTurn();
           break;
         case 'steerPrompt':
@@ -1962,42 +1959,18 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Handle /rename command from webview — sets session title locally. */
-  private handleRenameSession(title: string): void {
-    const activeId = this.sessionManager.getActiveSessionId();
-    if (!activeId || !title) {
-      return;
-    }
-    this.sessionManager.renameSession(activeId, title);
-    this.notifySessionInfoUpdate(title);
-  }
+ /** Handle /rename command from webview — sets session title locally. */
+ private handleRenameSession(title: string): void {
+   const activeId = this.sessionManager.getActiveSessionId();
+   if (!activeId || !title) {
+     return;
+   }
+   this.sessionManager.renameSession(activeId, title);
+   this.notifySessionInfoUpdate(title);
+ }
 
-  /** Handle @rename — show VS Code input box for the new session title. */
-  private async handleRenameSessionInput(): Promise<void> {
-    const activeId = this.sessionManager.getActiveSessionId();
-    if (!activeId) {
-      return;
-    }
-    const session = this.sessionManager.getActiveSession();
-    const currentTitle = session?.title || '';
-    const title = await vscode.window.showInputBox({
-      prompt: 'Enter a new name for this conversation',
-      value: currentTitle,
-      placeHolder: 'Session name...',
-    });
-    if (title === undefined) {
-      return;
-    } // user cancelled
-    const trimmed = title.trim();
-    if (!trimmed) {
-      return;
-    }
-    this.sessionManager.renameSession(activeId, trimmed);
-    this.notifySessionInfoUpdate(trimmed);
-  }
-
-  /**
-   * Handle mode change from webview picker.
+ /**
+  * Handle mode change from webview picker.
    */
   private async handleSetMode(modeId: string): Promise<void> {
     const activeId = this.sessionManager.getActiveSessionId();
@@ -5787,9 +5760,8 @@ var end = displayText.length;
         { name: 'terminal', description: 'Attach last terminal output' },
         { name: 'file', description: 'Attach a file' },
         { name: 'folder', description: 'Attach folder listing' },
-        { name: 'problems', description: 'Attach workspace diagnostics' },
-        { name: 'rename', description: 'Rename the current conversation' },
-      ];
+       { name: 'problems', description: 'Attach workspace diagnostics' },
+     ];
         // Dedupe by name in case a future merge path injects duplicates.
         var seenMention = {};
         const filtered = mentions.filter(function(m) {
@@ -7134,16 +7106,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       if (!cmd) return;
 
    // @mention context item — replace the partial @query with @name
-   const atMatch = promptInput.value.match(/@(\\w*)$/);
-   if (atMatch) {
-       if (cmd.name === 'rename') {
-         // @rename — ask extension to show an input box for the new title
-         promptInput.value = promptInput.value.slice(0, -atMatch[0].length);
-         vscode.postMessage({ type: 'renameSessionInput' });
-         promptInput.focus();
-         return;
-       }
-      if (cmd.name === 'file' || cmd.name === 'folder') {
+  const atMatch = promptInput.value.match(/@(\\w*)$/);
+  if (atMatch) {
+     if (cmd.name === 'file' || cmd.name === 'folder') {
         // Ask extension to pick a file/folder and return the path
         promptInput.value = promptInput.value.slice(0, -atMatch[0].length);
         vscode.postMessage({ type: 'pickContext', contextType: cmd.name });
