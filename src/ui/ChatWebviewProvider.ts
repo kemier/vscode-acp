@@ -1313,10 +1313,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           this._hasChatContent = true;
           await this.handleExecuteKiroCommandFromWebview(message.command, message.args);
           break;
-       case 'renameSession':
-         this.handleRenameSession(message.title);
-         break;
-       case 'cancelTurn':
+        case 'renameSession':
+          this.handleRenameSession(message.title);
+          break;
+        case 'cancelTurn':
           await this.handleCancelTurn();
           break;
         case 'steerPrompt':
@@ -1959,18 +1959,18 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     }
   }
 
- /** Handle /rename command from webview — sets session title locally. */
- private handleRenameSession(title: string): void {
-   const activeId = this.sessionManager.getActiveSessionId();
-   if (!activeId || !title) {
-     return;
-   }
-   this.sessionManager.renameSession(activeId, title);
-   this.notifySessionInfoUpdate(title);
- }
+  /** Handle /rename command from webview — sets session title locally. */
+  private handleRenameSession(title: string): void {
+    const activeId = this.sessionManager.getActiveSessionId();
+    if (!activeId || !title) {
+      return;
+    }
+    this.sessionManager.renameSession(activeId, title);
+    this.notifySessionInfoUpdate(title);
+  }
 
- /**
-  * Handle mode change from webview picker.
+  /**
+   * Handle mode change from webview picker.
    */
   private async handleSetMode(modeId: string): Promise<void> {
     const activeId = this.sessionManager.getActiveSessionId();
