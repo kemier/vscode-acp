@@ -5078,6 +5078,7 @@ return true;
 const builtinCommands = [
   { name: 'rename', description: 'Rename the current conversation' },
   { name: 'session', description: 'Add a past session summary as context' },
+  { name: 'stop', description: 'Kill all running background processes spawned in this session' },
 ];
 
    /** Merge built-in commands with agent-provided ones (dedupe by name; builtin wins). */
