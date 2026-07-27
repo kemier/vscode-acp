@@ -161,6 +161,16 @@ export class SessionManager extends EventEmitter {
   /** Set of session IDs with an in-flight `session/prompt` request. */
   private inFlightPromptSessions: Set<string> = new Set();
 
+  /**
+   * Returns true if the given session has an in-flight `session/prompt`
+   * request (the agent is actively processing a turn). Used by the webview
+   * to restore the Stop-button state after a webview dispose/recreate cycle
+   * (e.g. switching to Copilot Chat and back).
+   */
+  isPromptInFlight(sessionId: string): boolean {
+    return this.inFlightPromptSessions.has(sessionId);
+  }
+
   /** Client-side session history (optional — only used for tier-2 tree). */
   private historyStore: SessionHistoryStore | null = null;
 

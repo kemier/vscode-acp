@@ -1402,12 +1402,19 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           break;
         }
         case 'debugLog':
-         // Forward webview debug logs to the ACP Client output channel
-         // DRAIN-DBG logs always pass through for queue drain debugging
-          if (DEBUG || (message.message && (message.message.indexOf('[DRAIN-DBG]') === 0 || message.message.indexOf('[WV-DIAG]') === 0 || message.message.indexOf('[WV-MERGE]') === 0 || message.message.indexOf('[WV-UPDATE]') === 0))) {
-           log('[DEBUG-WV] ' + (message.message || '(empty)'));
-         }
-         break;
+          // Forward webview debug logs to the ACP Client output channel
+          // DRAIN-DBG logs always pass through for queue drain debugging
+          if (
+            DEBUG ||
+            (message.message &&
+              (message.message.indexOf('[DRAIN-DBG]') === 0 ||
+                message.message.indexOf('[WV-DIAG]') === 0 ||
+                message.message.indexOf('[WV-MERGE]') === 0 ||
+                message.message.indexOf('[WV-UPDATE]') === 0))
+          ) {
+            log('[DEBUG-WV] ' + (message.message || '(empty)'));
+          }
+          break;
       }
     });
 
@@ -3161,6 +3168,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       lastAgentDisplay: lastAgentDisplay || undefined,
       lastSessionId: lastSessionId || undefined,
       isFollowing: this._isFollowing,
+      // If the active session has an in-flight prompt, signal the webview to
+      // restore isProcessing=true. When the webview is disposed/recreated
+      // (e.g. user switches to Copilot Chat and back), its module-level
+      // isProcessing resets to false, so the Send button shows instead of
+      // Stop even though the agent is still streaming. This re-establishes
+      // the correct processing state on webview ready.
+      isPromptInFlight: !!(activeId && this.sessionManager.isPromptInFlight(activeId)),
     });
   }
 
@@ -11291,6 +11305,13 @@ sessionState = {
         }
         updateWelcomeButton();
          setFollowingUI(!!msg.isFollowing);
+         // Restore processing state if the agent is mid-turn. The webview's
+         // module-level isProcessing resets to false on dispose/recreate
+         // (e.g. switching to Copilot Chat and back), so we must re-establish
+         // it here to keep the Stop button active while streaming continues.
+         if (msg.isPromptInFlight) {
+           setProcessing(true);
+         }
          break;
 
         case 'followStateChanged':
