@@ -8431,26 +8431,35 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           return false;
         }
       }
-      var hasAssistant = false;
-      for (var k = lastUser + 1; k < chatHistory.length; k++) {
-        var item = chatHistory[k];
-        if (!item) continue;
-        if (item.kind === 'message' && item.role === 'assistant') {
-          if (item.interrupted) return false;
-          hasAssistant = true;
-        }
-        if (item.kind === 'toolCall') {
-          var st = item.status;
-          // Failed tools do NOT prevent a turn from looking finished —
-          // the agent completed its turn (end_turn) even if some tools failed.
-          // Only in-flight tools indicate the turn was interrupted.
-          if (st === 'pending' || st === 'running' || st === 'in_progress') {
-            return false;
-          }
-        }
-      }
-      return hasAssistant;
-    }
+     var hasAssistant = false;
+     var hasCompletedTool = false;
+     for (var k = lastUser + 1; k < chatHistory.length; k++) {
+       var item = chatHistory[k];
+       if (!item) continue;
+       if (item.kind === 'message' && item.role === 'assistant') {
+         if (item.interrupted) return false;
+         hasAssistant = true;
+       }
+       if (item.kind === 'toolCall') {
+         var st = item.status;
+         // Failed tools do NOT prevent a turn from looking finished —
+         // the agent completed its turn (end_turn) even if some tools failed.
+         // Only in-flight tools indicate the turn was interrupted.
+         if (st === 'pending' || st === 'running' || st === 'in_progress') {
+           return false;
+         }
+         if (st === 'completed') hasCompletedTool = true;
+       }
+     }
+     // A turn is finished when the agent either replied with text
+     // (hasAssistant) OR completed all tool calls without any in-flight
+     // ones. EricCLI's session/load replay may omit the final
+     // agent_message_chunk when the assistant content was empty (the
+     // model only called tools and produced no summary text). In that
+     // case, a completed spawn_parallel tool_call IS the turn's result —
+     // treating it as interrupted would mark all subagent stages as failed.
+     return hasAssistant || hasCompletedTool;
+   }
 
     /** Clear stale interrupted flag when the loaded history ended successfully. */
     function reconcileInterruptedSessionFlag(failedAnyTool) {
@@ -9846,44 +9855,82 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     * When the session was interrupted, also rewrite completed spawn stages —
     * Codex/Claude mark spawnAgent/Agent as completed once launched even though
     * the subagent work was cut off (would otherwise show a green check).
-    */
-   function failInterruptedSubagentStagesInHistory() {
-     var sessionInterrupted = sessionMarkedInterrupted();
-     for (var i = 0; i < chatHistory.length; i++) {
-       var item = chatHistory[i];
-       if (!item || item.kind !== 'toolCall' || !item.rawInput || typeof item.rawInput !== 'object') {
-         continue;
-       }
-       if (!Array.isArray(item.rawInput.stages) || item.rawInput.stages.length === 0) continue;
-       var stages = item.rawInput.stages.slice();
-       var anyFailed = false;
-       var parentDone = item.status === 'completed';
-       for (var s = 0; s < stages.length; s++) {
-         var stage = stages[s];
-         if (!stage || typeof stage !== 'object') continue;
-         var st = stage.status;
-         if (sessionInterrupted &&
-             (st === 'completed' || st === 'done' || st === 'success' || st === 'terminated')) {
-           stages[s] = Object.assign({}, stage, { status: 'failed' });
-           anyFailed = true;
-           continue;
-         }
-         if (st === 'completed' || st === 'done' || st === 'success' || st === 'terminated') continue;
-         if (st === 'failed' || st === 'error') { anyFailed = true; continue; }
-         if (st === 'running' || st === 'in_progress' || st === 'pending' || st === 'working') {
-           stages[s] = Object.assign({}, stage, { status: 'failed' });
-           anyFailed = true;
-           continue;
-         }
-         // Missing status: interrupted or incomplete parent → failed;
-         // completed parent on a finished session → completed.
-         if (sessionInterrupted || !parentDone) {
-           stages[s] = Object.assign({}, stage, { status: 'failed' });
-           anyFailed = true;
-         } else {
-           stages[s] = Object.assign({}, stage, { status: 'completed' });
-         }
-       }
+   */
+  function failInterruptedSubagentStagesInHistory() {
+    // Only process tool calls that belong to the LAST user turn — a session
+    // interrupted on a later turn should not retroactively fail subagent
+    // stages from earlier, completed turns (the parent tool_call succeeded,
+    // the assistant replied, and the user moved on). Without this guard,
+    // resuming a session where the last turn was interrupted would mark
+    // ALL prior spawn_parallel stages as failed (red ❌) even though those
+    // subagents completed successfully.
+    var lastUserIdx = -1;
+    for (var lu = chatHistory.length - 1; lu >= 0; lu--) {
+      var luItem = chatHistory[lu];
+      if (luItem && luItem.kind === 'message' && luItem.role === 'user' && !isSessionInterruptNotice(luItem.text)) {
+        lastUserIdx = lu;
+        break;
+      }
+    }
+    var sessionInterrupted = sessionMarkedInterrupted();
+    for (var i = (lastUserIdx >= 0 ? lastUserIdx + 1 : 0); i < chatHistory.length; i++) {
+      var item = chatHistory[i];
+      if (!item || item.kind !== 'toolCall' || !item.rawInput || typeof item.rawInput !== 'object') {
+        continue;
+      }
+      if (!Array.isArray(item.rawInput.stages) || item.rawInput.stages.length === 0) continue;
+      var stages = item.rawInput.stages.slice();
+      var anyFailed = false;
+      var parentDone = item.status === 'completed';
+      // A completed parent tool_call means the spawn_parallel returned
+      // successfully — the subagents finished. Even when the session is
+      // marked interrupted (because a LATER turn was interrupted), these
+      // stages must remain completed. Only fail stages when the parent
+      // itself didn't complete (interrupted mid-execution).
+      if (parentDone) {
+        // Parent completed — stages should be completed too. Only fix up
+        // stages that are in a running/pending state (interrupted children
+        // that didn't get a final status update before the parent finished).
+        for (var s = 0; s < stages.length; s++) {
+          var stage = stages[s];
+          if (!stage || typeof stage !== 'object') continue;
+          var st = stage.status;
+          if (st === 'running' || st === 'in_progress' || st === 'pending' || st === 'working') {
+            stages[s] = Object.assign({}, stage, { status: 'failed' });
+            anyFailed = true;
+          }
+        }
+        if (anyFailed) {
+          item.rawInput = Object.assign({}, item.rawInput, { stages: stages });
+        }
+        continue;
+      }
+      for (var s = 0; s < stages.length; s++) {
+        var stage = stages[s];
+        if (!stage || typeof stage !== 'object') continue;
+        var st = stage.status;
+        if (sessionInterrupted &&
+            (st === 'completed' || st === 'done' || st === 'success' || st === 'terminated')) {
+          stages[s] = Object.assign({}, stage, { status: 'failed' });
+          anyFailed = true;
+          continue;
+        }
+        if (st === 'completed' || st === 'done' || st === 'success' || st === 'terminated') continue;
+        if (st === 'failed' || st === 'error') { anyFailed = true; continue; }
+        if (st === 'running' || st === 'in_progress' || st === 'pending' || st === 'working') {
+          stages[s] = Object.assign({}, stage, { status: 'failed' });
+          anyFailed = true;
+          continue;
+        }
+        // Missing status: interrupted or incomplete parent → failed;
+        // completed parent on a finished session → completed.
+        if (sessionInterrupted || !parentDone) {
+          stages[s] = Object.assign({}, stage, { status: 'failed' });
+          anyFailed = true;
+        } else {
+          stages[s] = Object.assign({}, stage, { status: 'completed' });
+        }
+      }
       if (anyFailed || sessionInterrupted) {
         item.rawInput = Object.assign({}, item.rawInput, { stages: stages });
         // Only override to failed when the parent tool was NOT already
