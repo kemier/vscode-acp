@@ -8635,20 +8635,35 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       }
     }
 
-    function applyCompactModeToAllTurns(collapsed) {
-      if (messagesEl) messagesEl.classList.toggle('compact-mode', !!collapsed);
-      messagesEl.querySelectorAll('.turn').forEach(function(turn) {
-        if (collapsed) {
-          var body = getTurnFoldBody(turn);
-          if (body) body._userExpanded = false;
-          ensureTurnFoldStructure(turn, true);
-          body = getTurnFoldBody(turn);
-          if (body) setFoldExpanded(body, false);
-        } else {
-          unwrapTurnFold(turn);
-        }
-      });
-    }
+   function applyCompactModeToAllTurns(collapsed) {
+     if (messagesEl) messagesEl.classList.toggle('compact-mode', !!collapsed);
+     messagesEl.querySelectorAll('.turn').forEach(function(turn) {
+       if (collapsed) {
+         // Capture per-turn expand state BEFORE rebuilding the fold.
+         // ensureTurnFoldStructure creates a fresh body, so _userExpanded
+         // on the old body is lost. We read it here and re-apply after.
+         var prevBody = getTurnFoldBody(turn);
+         var wasExpanded = !!(prevBody && (prevBody._userExpanded ||
+                       prevBody.classList.contains('expanded')));
+         var body = getTurnFoldBody(turn);
+         ensureTurnFoldStructure(turn, true);
+         body = getTurnFoldBody(turn);
+         if (body) {
+           // Preserve user-expanded state: turns the user manually opened
+           // stay open when re-enabling compact mode (OFF → ON toggle).
+           if (wasExpanded) {
+             body._userExpanded = true;
+             setFoldExpanded(body, true);
+           } else {
+             body._userExpanded = false;
+             setFoldExpanded(body, false);
+           }
+         }
+       } else {
+         unwrapTurnFold(turn);
+       }
+     });
+   }
 
     /** Compact-mode fold for the live turn; returns .turn-fold-body. */
     function ensureCurrentTurnFold() {
