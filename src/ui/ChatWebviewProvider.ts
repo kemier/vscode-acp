@@ -10298,7 +10298,14 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     */
    function addOrExtendSubagentCrew(toolCallId, title, status, rawInput, toolKind, locations) {
      hideEmpty();
-     var stagePrompt = crewStageFullPrompt(rawInput);
+     // ericli spawn_parallel: rawInput = { tasks: [{ type, task, skills }] }.
+     // Expand each task into its own stage upfront so tooltips show the correct
+     // per-subagent prompt from the start, before any tool_call_update arrives.
+     // Without this, all stages inherit the parent's title ("Spawn N subagents")
+     // and empty prompt until per-subagent updates fill them in.
+     var spawnParallelTasks = (rawInput && typeof rawInput === 'object' && Array.isArray(rawInput.tasks))
+       ? rawInput.tasks : null;
+     var stagePrompt = spawnParallelTasks ? '' : crewStageFullPrompt(rawInput);
      // On resume/load, interrupted Claude/Codex Agent tools often arrive as
      // status=completed (spawn succeeded) even though subagents never finished.
      // Default new stages to failed when the session was interrupted; only keep
@@ -10352,17 +10359,39 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        return;
      }
 
-     var stageName = crewStageLabel(rawInput, title, 1);
-     var synthRaw = Object.assign({}, (rawInput && typeof rawInput === 'object') ? rawInput : {}, {
-       stages: [{
+     // ericli spawn_parallel: expand tasks[] into individual stages so each
+     // subagent gets its own name, role, and prompt from the start.
+     var stagesArray;
+     if (spawnParallelTasks && spawnParallelTasks.length > 0) {
+       stagesArray = spawnParallelTasks.map(function(tk, i) {
+         var taskPrompt = (typeof tk.task === 'string') ? tk.task : '';
+         var taskRole = (typeof tk.type === 'string') ? tk.type : 'agent';
+         var taskName = taskRole + '-' + (i + 1);
+         return {
+           name: taskName,
+           role: taskRole,
+           prompt_template: taskPrompt,
+           prompt: taskPrompt,
+           description: '',
+           status: stageInitStatus,
+         };
+       });
+     } else {
+       var stageName = crewStageLabel(rawInput, title, 1);
+       stagesArray = [{
          name: stageName,
          role: stageMeta.role || 'agent',
          prompt_template: String(stagePrompt || ''),
          prompt: stageMeta.prompt || '',
          description: stageMeta.description || '',
          status: stageInitStatus,
-       }],
+       }];
+     }
+     var synthRaw = Object.assign({}, (rawInput && typeof rawInput === 'object') ? rawInput : {}, {
+       stages: stagesArray,
      });
+     // Mark crew as ericli spawn_parallel so completion overrides don't apply.
+     if (spawnParallelTasks) synthRaw._isSpawnParallel = true;
      var spawnTitle = 'Task';
      // Keep Codex/Kiro protocol spawn titles; Claude description titles → Task.
      if (isSubagentSpawnTitle(title) && !looksLikeClaudeAgentSpawn(title, null)) {
@@ -10404,10 +10433,18 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      el._toolTitle = spawnTitle;
      el.innerHTML =
        '<span class="tc-icon ' + parentStatus + '">' + getStatusIcon(parentStatus) + '</span>' +
-       '<span class="tc-title">spawned 1 subagent</span>' +
+       '<span class="tc-title">spawned ' + (spawnParallelTasks ? spawnParallelTasks.length : 1) + ' subagent' + ((spawnParallelTasks ? spawnParallelTasks.length : 1) > 1 ? 's' : '') + '</span>' +
        '<div class="tc-stages"></div>';
      var stagesEl = el.querySelector('.tc-stages');
-     stagesEl.appendChild(createStageElement(stageName, toolCallId, String(stagePrompt || ''), stageMeta));
+     // ericli spawn_parallel: append all expanded stages.
+     if (spawnParallelTasks && stagesArray.length > 0) {
+       for (var si = 0; si < stagesArray.length; si++) {
+         var s = stagesArray[si];
+         stagesEl.appendChild(createStageElement(s.name, toolCallId + '-' + si, s.prompt_template, s));
+       }
+     } else {
+       stagesEl.appendChild(createStageElement(stagesArray[0].name, toolCallId, String(stagesArray[0].prompt_template || ''), stagesArray[0]));
+     }
      syncCrewParentRawInput(el);
      if (parentStatus === 'failed' || parentStatus === 'error') markSubagentCrewStale(el);
      attachToolCallTooltip(el);
@@ -10910,13 +10947,42 @@ forceCollapseTurnFolds();
       // to the first stage at render time), pass keepName=true so the stage's
       // original name (e.g. "explore-1") isn't overwritten with the parent's
       // task description (e.g. "Spawn 2 subagents").
-      if (rawInput) updateStageFromRawInput(stageForId, rawInput, title, { keepName: true });
+      //
+      // For ericli spawn_parallel: the parent crew's rawInput contains
+      // { tasks: [...] } — the aggregate spawn request. We must NOT let it
+      // overwrite the per-subagent prompt that was already set from the
+      // individual task at render time. Only apply the update if the
+      // rawInput looks like a per-subagent update (has a single task/prompt,
+      // not a tasks[] array).
+      var crewElForUpdate = stageForId.closest('.tool-call-inline.tc-subagent');
+      var isEricliParallelForUpdate = crewElForUpdate && crewElForUpdate._rawInput && crewElForUpdate._rawInput._isSpawnParallel;
+      var isAggregateSpawnInput = rawInput && Array.isArray(rawInput.tasks);
+      if (rawInput && !(isEricliParallelForUpdate && isAggregateSpawnInput)) {
+        updateStageFromRawInput(stageForId, rawInput, title, { keepName: true });
+      }
       // Claude Agent Task / Codex spawn often flip tool_call to "completed"
       // when the subagent is only *started* (nested child tools still run).
       // Keep the stage spinning until promptEnd (or a real failure).
+      // BUT: ericli spawn_parallel sends per-subagent completion as a REAL
+      // signal — that subagent is done. Don't override to 'running'.
+      var crewEl = stageForId.closest('.tool-call-inline.tc-subagent');
+      var isEricliParallel = crewEl && crewEl._rawInput && crewEl._rawInput._isSpawnParallel;
       var stageStatus = status || 'running';
-      if (stageStatus === 'completed' && isProcessing && !isLoadingSession) {
+      if (stageStatus === 'completed' && isProcessing && !isLoadingSession && !isEricliParallel) {
         stageStatus = 'running';
+      }
+      // ericli spawn_parallel: a subagent that completed with "No output"
+      // (empty summary) still sent a real completion signal. Mark it as
+      // a terminal state so the spinner stops — don't keep it spinning
+      // just because the summary is empty.
+      if (isEricliParallel && stageStatus === 'completed') {
+        // Check if the stage already has a 'completed' or 'failed' icon —
+        // if so, it was already finalized by a per-subagent completion
+        // event and we don't need to re-set it.
+        var existingIcon = stageForId.querySelector('.tc-stage-icon');
+        if (existingIcon && (existingIcon.classList.contains('completed') || existingIcon.classList.contains('failed') || existingIcon.classList.contains('error'))) {
+          return;
+        }
       }
       setSubagentStageStatus(toolCallId, stageStatus);
       return;
