@@ -1319,10 +1319,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         case 'cancelTurn':
           await this.handleCancelTurn();
           break;
-        case 'steerPrompt':
-          await this.handleSteerPrompt(message.text);
-          break;
-        case 'setMode':
+       case 'steerPrompt':
+         await this.handleSteerPrompt(message.text);
+         break;
+       case 'stopProcesses':
+         await this.handleStopProcesses();
+         break;
+       case 'setMode':
           await this.handleSetMode(message.modeId);
           break;
         case 'setModel':
@@ -1893,15 +1896,27 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * For agents that don't support it, the notification is silently ignored
    * and the message is only queued for the next turn (via handleQueue).
    */
-  private async handleSteerPrompt(text: string): Promise<void> {
+ private async handleSteerPrompt(text: string): Promise<void> {
+   const activeId = this.sessionManager.getActiveSessionId();
+   if (!activeId) {
+     return;
+   }
+   try {
+     await this.sessionManager.steerPrompt(activeId, text);
+   } catch (e) {
+     logError('Steer failed', e);
+   }
+ }
+
+  private async handleStopProcesses(): Promise<void> {
     const activeId = this.sessionManager.getActiveSessionId();
     if (!activeId) {
       return;
     }
     try {
-      await this.sessionManager.steerPrompt(activeId, text);
+      await this.sessionManager.stopProcesses(activeId);
     } catch (e) {
-      logError('Steer failed', e);
+      logError('Stop processes failed', e);
     }
   }
 
@@ -6078,10 +6093,20 @@ var _supportsSteer = /ericli|codex|claude/i.test(_agentName);
    * even during streaming (like Claude Code's immediate:true commands).
    * Returns true if the command was handled (caller should stop).
    */
- function handleLocalSlashCommand(cmdText) {
-   var text = (cmdText !== undefined) ? cmdText.trim() : promptInput.value.trim();
-   if (!text.startsWith('/')) { return false; }
-   // /rename <name> — set session title locally
+function handleLocalSlashCommand(cmdText) {
+  var text = (cmdText !== undefined) ? cmdText.trim() : promptInput.value.trim();
+  if (!text.startsWith('/')) { return false; }
+  // /stop — kill all running background processes spawned in this session.
+  // Sent as a custom notification (not a prompt) so it doesn't start a new
+  // turn or interrupt the active turn's streaming.
+  if (text === '/stop') {
+    promptInput.value = '';
+    updateSendButton();
+    showTransientNotice('Stopping all running processes...');
+    vscode.postMessage({ type: 'stopProcesses' });
+    return true;
+  }
+  // /rename <name> — set session title locally
     var renameMatch = text.match(/^\\/rename\\s+(.+)$/);
     if (renameMatch) {
       var title = renameMatch[1].trim();

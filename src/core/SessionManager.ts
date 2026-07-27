@@ -745,6 +745,30 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
+   * Kill all running background processes spawned in this session.
+   * Sends a custom `session/stop` notification that EricCLI and Codex-ACP
+   * handle to terminate spawned processes without interrupting the active
+   * turn. For agents that don't support this notification, it's silently
+   * ignored.
+   */
+  async stopProcesses(sessionId: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return;
+    }
+    const connInfo = this.connectionManager.getConnection(session.agentId);
+    if (!connInfo) {
+      return;
+    }
+    try {
+      await connInfo.connection.notify('session/stop', { sessionId });
+      log(`Stop processes for session ${sessionId}`);
+    } catch (e: any) {
+      log(`stopProcesses: agent does not support session/stop (non-fatal): ${e?.message || e}`);
+    }
+  }
+
+  /**
    * Force-abort an in-flight prompt without waiting for the agent to
    * acknowledge.  This removes the session from the in-flight set so
    * the next sendPrompt() is not blocked.  Used by the cancel fallback
