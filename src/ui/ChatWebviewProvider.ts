@@ -3466,14 +3466,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       display: flex;
       flex-direction: column;
     }
-    .messages {
-      flex: 1;
-      overflow-y: auto;
-      padding: var(--container-padding);
-      display: flex;
-      flex-direction: column;
-      gap: 8px;
-    }
+   .messages {
+     flex: 1;
+     overflow-y: auto;
+     padding: var(--container-padding);
+     display: flex;
+     flex-direction: column;
+     gap: 4px;
+   }
     .jump-latest-btn {
       display: none;
       position: absolute;
@@ -3857,24 +3857,24 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
 
 
-   /* Turn container — groups assistant text + tool calls */
-    .turn {
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-      align-self: flex-start;
-      max-width: 95%;
-    }
+  /* Turn container — groups assistant text + tool calls */
+   .turn {
+     display: flex;
+     flex-direction: column;
+     gap: 2px;
+     align-self: flex-start;
+     max-width: 95%;
+   }
 
-    /* Tool calls group inside a turn */
-    .turn-tools {
-      display: flex;
-      flex-direction: column;
-      gap: 2px;
-      padding-left: 10px;
-      border-left: 2px solid var(--vscode-panel-border);
-      margin: 2px 0;
-    }
+   /* Tool calls group inside a turn */
+   .turn-tools {
+     display: flex;
+     flex-direction: column;
+     gap: 2px;
+     padding-left: 10px;
+     border-left: 2px solid var(--vscode-panel-border);
+     margin: 1px 0;
+   }
     .turn-tools-summary {
      font-size: 0.8em;
      opacity: 0.6;
@@ -3945,16 +3945,16 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    .tool-call-inline.tc-subagent { border-left: 2px solid var(--vscode-symbolIcon-iconForeground); padding-left: 6px; }
    .tool-call-inline.tc-subagent .tc-icon { color: var(--vscode-symbolIcon-iconForeground); }
    .tool-call-inline.tc-subagent .tc-title { font-weight: 600; }
-   .tc-nested {
-     margin: 2px 0 2px 10px;
-     padding-left: 8px;
-     border-left: 1px solid var(--vscode-widget-border);
-     display: flex;
-     flex-direction: column;
-     gap: 1px;
-   }
-   /* Subagent stages (Kiro crew) */
-   .tool-call-inline .tc-stages { margin-top: 4px; margin-left: 20px; }
+  .tc-nested {
+    margin: 1px 0 1px 10px;
+    padding-left: 8px;
+    border-left: 1px solid var(--vscode-widget-border);
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  /* Subagent stages (Kiro crew) */
+  .tool-call-inline .tc-stages { margin-top: 2px; margin-left: 20px; }
    .tool-call-inline .tc-stage { padding: 2px 0; font-size: 0.9em; opacity: 0.85; }
   .tool-call-inline .tc-stage-icon { color: var(--vscode-symbolIcon-iconForeground); margin-right: 4px; display: inline-block; }
   .tool-call-inline .tc-stage-name { font-weight: 500; }
