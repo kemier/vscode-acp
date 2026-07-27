@@ -1319,13 +1319,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         case 'cancelTurn':
           await this.handleCancelTurn();
           break;
-       case 'steerPrompt':
-         await this.handleSteerPrompt(message.text);
-         break;
-       case 'stopProcesses':
-         await this.handleStopProcesses();
-         break;
-       case 'setMode':
+        case 'steerPrompt':
+          await this.handleSteerPrompt(message.text);
+          break;
+        case 'stopProcesses':
+          await this.handleStopProcesses();
+          break;
+        case 'setMode':
           await this.handleSetMode(message.modeId);
           break;
         case 'setModel':
@@ -1896,17 +1896,17 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * For agents that don't support it, the notification is silently ignored
    * and the message is only queued for the next turn (via handleQueue).
    */
- private async handleSteerPrompt(text: string): Promise<void> {
-   const activeId = this.sessionManager.getActiveSessionId();
-   if (!activeId) {
-     return;
-   }
-   try {
-     await this.sessionManager.steerPrompt(activeId, text);
-   } catch (e) {
-     logError('Steer failed', e);
-   }
- }
+  private async handleSteerPrompt(text: string): Promise<void> {
+    const activeId = this.sessionManager.getActiveSessionId();
+    if (!activeId) {
+      return;
+    }
+    try {
+      await this.sessionManager.steerPrompt(activeId, text);
+    } catch (e) {
+      logError('Steer failed', e);
+    }
+  }
 
   private async handleStopProcesses(): Promise<void> {
     const activeId = this.sessionManager.getActiveSessionId();
@@ -4849,6 +4849,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 let isProcessing = false;
 let isForceCancelled = false; // true after cancel fallback forces promptEnd
 let hasSentPrompt = false;
+// Track whether the last sent prompt was a slash command (e.g. /ps, /stats).
+// Used to delay queue draining after slash command output so the result
+// stays visible for at least 3 seconds before the next turn starts.
+let lastPromptWasSlash = false;
 // Track whether we've already sent a steer notification during the current
 // turn. The FIRST message typed while a turn is streaming gets steered into
 // the active turn (shown as a user bubble + session/steer). Any
@@ -5039,6 +5043,8 @@ function drainQueue() {
  vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drainQueue: dequeuing, remaining=' + (messageQueue.length - 1) + ' isProcessing=' + isProcessing });
  const entry = messageQueue.shift();
  renderQueue();
+  // Dismiss /ps panel (respecting min display window) — a new turn is starting.
+  dismissPsPanel(false);
   // Show the user message now — it was queued (not shown) during the
   // active turn. Only display it when actually being sent.
   chatHistory.push({ kind: 'message', role: 'user', text: entry.text || '(image)' });
@@ -5732,6 +5738,36 @@ var end = displayText.length;
     let toolCalls = {};
     let toolCallDiffs = {};
 
+   // --- /ps panel minimum display timer ---
+   // When /ps is shown, keep it visible for at least 3 seconds even if a
+   // quick turn (tool call, assistant text) arrives immediately.
+   let psMinDisplayUntil = 0;
+   let psHideTimer = null;
+   /**
+    * Dismiss the /ps panel. If force=false (default), respects the minimum
+    * display window — if we are still within it, schedules a deferred hide
+    * instead of hiding immediately. Use force=true for full DOM resets
+    * (session load, clearChat).
+    */
+   function dismissPsPanel(force) {
+     if (!currentPsEl && (!psPanel || psPanel.style.display === "none")) return;
+     if (!force && psMinDisplayUntil > 0 && Date.now() < psMinDisplayUntil) {
+       if (psHideTimer) clearTimeout(psHideTimer);
+       var remaining = psMinDisplayUntil - Date.now();
+       psHideTimer = setTimeout(function() {
+         psHideTimer = null;
+         psMinDisplayUntil = 0;
+         currentPsEl = null;
+         if (psPanel) psPanel.style.display = "none";
+       }, remaining);
+       return;
+     }
+     if (psHideTimer) { clearTimeout(psHideTimer); psHideTimer = null; }
+     psMinDisplayUntil = 0;
+     currentPsEl = null;
+     if (psPanel) psPanel.style.display = "none";
+   }
+
     // --- Resize handle ---
     let inputAreaHeight = 140;
     const MIN_INPUT_HEIGHT = 90;
@@ -6363,6 +6399,9 @@ function handleLocalSlashCommand(cmdText) {
       }
     }
     currentPsEl = psPanel;
+    // Keep /ps visible for at least 3 seconds, even if a quick turn arrives.
+    psMinDisplayUntil = Date.now() + 3000;
+    if (psHideTimer) { clearTimeout(psHideTimer); psHideTimer = null; }
     // Auto-scroll messages to bottom so latest streamed content stays visible
     // even when the ps panel takes vertical space on small chat panels.
     scrollToBottom();
@@ -6399,9 +6438,10 @@ function handleLocalSlashCommand(cmdText) {
     const images = pendingImages.splice(0);
     imagePreviewStrip.innerHTML = '';
     updateSendButton();
-    hasSentPrompt = true;
-    vscode.postMessage({ type: 'sendPrompt', text: text || ' ', images });
-  }
+  hasSentPrompt = true;
+  lastPromptWasSlash = !!(text && text.startsWith('/') && !text.startsWith('/rename') && !text.startsWith('/session'));
+  vscode.postMessage({ type: 'sendPrompt', text: text || ' ', images });
+ }
 
     function handleCancel() {
       vscode.postMessage({ type: 'cancelTurn' });
@@ -6783,8 +6823,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    // about to be wiped and rebuilt, so stale renderMarkdown requests
    // would target wrong elements.
    for (var _rk in pendingRenderRetries) { delete pendingRenderRetries[_rk]; }
-   currentPsEl = null;
-    if (psPanel) psPanel.style.display = 'none';
+   dismissPsPanel(true);
     isLoadingSession = true;
     // A historical "Context compacted" tool_call during session/load must NOT
     // leave isCompacting stuck true — that silently blocks handleSend().
@@ -9210,7 +9249,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    }
 
     function addToolCall(toolCallId, title, status, content, rawInput, toolKind, locations, parentToolUseId) {
-      if (currentPsEl) { currentPsEl = null; if (psPanel) psPanel.style.display = 'none'; }
+      dismissPsPanel(false);
       // Cursor stub tool_call ({_toolName:"task"}) — rich UI comes from cursor/task.
       if (isCursorTaskPlaceholder(title, rawInput)) {
         return;
@@ -11466,8 +11505,7 @@ sessionState = {
              hideCompactionProgress();
              // Cancel any pending render retries — DOM is being wiped.
              for (var _crk in pendingRenderRetries) { delete pendingRenderRetries[_crk]; }
-             currentPsEl = null;
-              if (psPanel) psPanel.style.display = 'none';
+             dismissPsPanel(true);
         chatHistory = [];
        sessionState = null;
       chatHistoryOriginSessionId = null;
@@ -12417,7 +12455,7 @@ sessionState = {
           endCompactingOnAgentResume();
           currentAssistantText += content.text;
                     // Flush /ps panel — assistant is producing content
-                    if (currentPsEl) { currentPsEl = null; if (psPanel) psPanel.style.display = 'none'; }
+                    dismissPsPanel(false);
           // Don't create visible element until there's non-whitespace content
           if (!currentAssistantEl && !currentAssistantText.trim()) {
             break;
