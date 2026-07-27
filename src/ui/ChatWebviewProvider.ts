@@ -6900,8 +6900,29 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    var _diagLoadedKinds = {};
    for (var _dlk = 0; _dlk < chatHistory.length; _dlk++) { var _dli = chatHistory[_dlk]; if (_dli) { var _lk = _dli.kind + (_dli.role ? ':' + _dli.role : ''); _diagLoadedKinds[_lk] = (_diagLoadedKinds[_lk] || 0) + 1; } }
    vscode.postMessage({ type: 'debugLog', message: '[WV-DIAG] handleLoadSessionEnd: snapLen=' + _diagSnapLen + ' loadedLen=' + _diagLoadedLen + ' snapId=' + _diagSnapId + ' curId=' + _diagCurId + ' match=' + (_diagSnapId === _diagCurId) + ' snapHasAsst=' + _diagSnapHasAssistant + ' snapHasThought=' + _diagSnapHasThought + ' loadedHasAsst=' + _diagLoadedHasAssistant + ' loadedHasThought=' + _diagLoadedHasThought + ' snapKinds=' + JSON.stringify(_diagSnapKinds) + ' loadedKinds=' + JSON.stringify(_diagLoadedKinds) });
-   // After replay, chatHistory belongs to the loaded session.
-   chatHistoryOriginSessionId = (sessionState && sessionState.sessionId) || null;
+  // If session/load returned nothing (loadedLen === 0), the session was
+  // not found on the agent side — the extension created a fresh session.
+  // In this case, do NOT try to merge the stale snapshot (it may contain
+  // an incomplete turn from before the reload). Clear the interrupted flag
+  // and start with an empty chat — the user gets a fresh session.
+  if (_diagLoadedLen === 0 && (!preLoadChatHistorySnapshot || !preLoadChatHistorySnapshot.some(function(x) { return x && x.kind === 'message' && x.role === 'assistant'; }))) {
+    vscode.postMessage({ type: 'debugLog', message: '[WV-DIAG] session/load returned empty + snapshot has no assistant — clearing stale state (session not found on agent side)' });
+    chatHistory = [];
+    preLoadChatHistorySnapshot = null;
+    preLoadSnapshotSessionId = null;
+    clearSessionInterrupted();
+    saveState();
+    hasSentPrompt = false;
+    hasSteeredThisTurn = false;
+    if (loadOverlay) loadOverlay.classList.remove('visible');
+    if (inputArea) inputArea.classList.remove('disabled');
+    updateSendButton();
+    messagesEl.innerHTML = '';
+    if (emptyState) { messagesEl.appendChild(emptyState); emptyState.style.display = ''; }
+    return;
+  }
+  // After replay, chatHistory belongs to the loaded session.
+  chatHistoryOriginSessionId = (sessionState && sessionState.sessionId) || null;
    // Safety: never leave compact-mode latched after a history replay.
     isCompacting = false;
     manualCompacting = false;
