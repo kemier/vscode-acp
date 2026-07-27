@@ -1402,12 +1402,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           break;
         }
         case 'debugLog':
-          // Forward webview debug logs to the ACP Client output channel
-          // DRAIN-DBG logs always pass through for queue drain debugging
-          if (DEBUG || (message.message && message.message.indexOf('[DRAIN-DBG]') === 0)) {
-            log('[DEBUG-WV] ' + (message.message || '(empty)'));
-          }
-          break;
+         // Forward webview debug logs to the ACP Client output channel
+         // DRAIN-DBG logs always pass through for queue drain debugging
+          if (DEBUG || (message.message && (message.message.indexOf('[DRAIN-DBG]') === 0 || message.message.indexOf('[WV-DIAG]') === 0 || message.message.indexOf('[WV-MERGE]') === 0 || message.message.indexOf('[WV-UPDATE]') === 0))) {
+           log('[DEBUG-WV] ' + (message.message || '(empty)'));
+         }
+         break;
       }
     });
 
@@ -7070,9 +7070,18 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      failInterruptedSpawnToolsInHistory();
      failInterruptedSubagentStagesInHistory();
      saveState();
-     // Commit any trailing assistant turn captured during the replay.
-     finalizeCurrentAssistantTurn();
-     // Rebuild the entire messages DOM from chatHistory.  During replay,
+    // Commit any trailing assistant turn captured during the replay.
+    finalizeCurrentAssistantTurn();
+    // Log post-finalize state for debugging merge/interrupt issues.
+    {
+      var _pfAssistant = chatHistory.filter(function(x) { return x && x.kind === 'message' && x.role === 'assistant'; }).length;
+      var _pfTools = chatHistory.filter(function(x) { return x && x.kind === 'toolCall'; }).length;
+      var _pfUsers = chatHistory.filter(function(x) { return x && x.kind === 'message' && x.role === 'user'; }).length;
+      var _pfInterruptNotices = chatHistory.filter(function(x) { return x && x.kind === 'message' && x.role === 'user' && isSessionInterruptNotice(x.text); }).length;
+      var _pfSessionInterrupted = sessionMarkedInterrupted();
+      vscode.postMessage({ type: 'debugLog', message: '[WV-DIAG] post-finalize: assistants=' + _pfAssistant + ' tools=' + _pfTools + ' users=' + _pfUsers + ' interruptNotices=' + _pfInterruptNotices + ' sessionInterrupted=' + _pfSessionInterrupted + ' chatHistoryLen=' + chatHistory.length });
+    }
+    // Rebuild the entire messages DOM from chatHistory.  During replay,
      // the agent_message_chunk / tool_call handlers build DOM piecemeal,
      // but race conditions (coalescer delays, interleaved user_message_chunk
      // calls to finalizeCurrentAssistantTurn) can leave the DOM out of sync
