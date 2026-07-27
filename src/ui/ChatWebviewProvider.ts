@@ -10731,35 +10731,39 @@ forceCollapseTurnFolds();
 
      // Crew stage: update spinner + fill tooltip from late rawInput (Claude/Codex
      // often send empty rawInput first, then prompt/description on update).
-     var stageForId = document.querySelector('.tc-stage[data-tool-call-id="' + String(toolCallId).replace(/"/g, '') + '"]');
-     if (stageForId) {
-       if (rawInput) updateStageFromRawInput(stageForId, rawInput, title);
-       // Claude Agent Task / Codex spawn often flip tool_call to "completed"
-       // when the subagent is only *started* (nested child tools still run).
-       // Keep the stage spinning until promptEnd (or a real failure).
-       var stageStatus = status || 'running';
-       if (stageStatus === 'completed' && isProcessing && !isLoadingSession) {
-         stageStatus = 'running';
-       }
-       setSubagentStageStatus(toolCallId, stageStatus);
-       return;
-     }
+    var stageForId = document.querySelector('.tc-stage[data-tool-call-id="' + String(toolCallId).replace(/"/g, '') + '"]');
+    if (stageForId) {
+      // When the tool_call_update is for the parent crew's toolCallId (assigned
+      // to the first stage at render time), pass keepName=true so the stage's
+      // original name (e.g. "explore-1") isn't overwritten with the parent's
+      // task description (e.g. "Spawn 2 subagents").
+      if (rawInput) updateStageFromRawInput(stageForId, rawInput, title, { keepName: true });
+      // Claude Agent Task / Codex spawn often flip tool_call to "completed"
+      // when the subagent is only *started* (nested child tools still run).
+      // Keep the stage spinning until promptEnd (or a real failure).
+      var stageStatus = status || 'running';
+      if (stageStatus === 'completed' && isProcessing && !isLoadingSession) {
+        stageStatus = 'running';
+      }
+      setSubagentStageStatus(toolCallId, stageStatus);
+      return;
+    }
 
      const el = toolCalls[toolCallId] || document.getElementById('tc-' + toolCallId);
      if (!el) return;
 
      // Attach tooltip if rawInput arrived in an update (not present on
      // the initial tool_call event).
-     if (rawInput) {
-       if (el.getAttribute('data-subagent-crew') || el.getAttribute('data-claude-crew') ||
-           el.querySelector(':scope > .tc-stages')) {
-         // Parent crew card: merge late rawInput into the matching stage.
-         var stageOnCrew = el.querySelector('.tc-stage[data-tool-call-id="' + String(toolCallId).replace(/"/g, '') + '"]') ||
-           el.querySelector(':scope > .tc-stages > .tc-stage');
-         if (stageOnCrew) updateStageFromRawInput(stageOnCrew, rawInput, title);
-         else {
-           el._rawInput = Object.assign({}, el._rawInput || {}, rawInput);
-         }
+    if (rawInput) {
+      if (el.getAttribute('data-subagent-crew') || el.getAttribute('data-claude-crew') ||
+          el.querySelector(':scope > .tc-stages')) {
+        // Parent crew card: merge late rawInput into the matching stage.
+        var stageOnCrew = el.querySelector('.tc-stage[data-tool-call-id="' + String(toolCallId).replace(/"/g, '') + '"]') ||
+          el.querySelector(':scope > .tc-stages > .tc-stage');
+        if (stageOnCrew) updateStageFromRawInput(stageOnCrew, rawInput, title, { keepName: true });
+        else {
+          el._rawInput = Object.assign({}, el._rawInput || {}, rawInput);
+        }
        } else {
          el._rawInput = rawInput;
          if (!el.dataset.tcTooltip) attachToolCallTooltip(el);
