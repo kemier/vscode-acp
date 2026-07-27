@@ -5680,43 +5680,60 @@ var end = displayText.length;
    updateWelcomeButton();
 
     if (hasActiveSession && sessionState) {
-      showSessionConnectedFromState(sessionState);
-    }
+     showSessionConnectedFromState(sessionState);
+   }
 
-    // Render chat history using compact turn-based inline layout
-    // (groups tool calls into collapsible containers instead of standalone cards)
-    reconcileInterruptedSessionFlag(false);
-    failInterruptedSpawnToolsInHistory();
-    failInterruptedSubagentStagesInHistory();
-    foldInterruptedAssistantsOnPromote = true;
-    var assistantItems = renderChatHistory();
-    foldInterruptedAssistantsOnPromote = false;
-    failRunningSubagentStagesInDom();
-    failCompletedCrewsInInterruptedTurn();
-    forceCollapseTurnFolds();
-    failRunningSubagentStagesInDom();
-    failCompletedCrewsInInterruptedTurn();
-    if (assistantItems.length > 0) {
-      vscode.postMessage({ type: 'debugLog', message: 'restoreState: sending renderMarkdown for ' + assistantItems.length + ' assistant items' });
-      vscode.postMessage({ type: 'renderMarkdown', items: assistantItems });
-      vscode.postMessage({ type: 'debugLog', message: 'restoreState: renderMarkdown sent' });
-      // Retry mechanism: if the extension host doesn't respond within 2s,
-      // re-send the renderMarkdown request. This handles a race condition
-      // where the initial postMessage is lost during webview initialization.
-     var _retryItems = assistantItems.slice();
-     var _retryCount = 0;
-    var _retryKey = 'restore_' + Date.now();
-    pendingRenderRetries[_retryKey] = true;
-   var _retryFn = function() {
-     if (pendingRenderRetries[_retryKey] && _retryCount < 3) {
-       _retryCount++;
-       vscode.postMessage({ type: 'debugLog', message: 'restoreState: RETRY ' + _retryCount + ' sending renderMarkdown for ' + _retryItems.length + ' items' });
-       vscode.postMessage({ type: 'renderMarkdown', items: _retryItems });
-       setTimeout(_retryFn, 2000);
+   // Only render chat history on restore if the session was NOT interrupted.
+   // If the session was interrupted (turn was in-progress when VS Code closed),
+   // skip rendering — the session/load flow will either replay the full history
+   // (if the session exists on the agent side) or clear it (if not found).
+   // Rendering the stale partial state first causes a flash of "Conversation
+   // interrupted" + unfinished tool calls that disappears after load.
+   var _skipRestoreRender = sessionMarkedInterrupted();
+   if (_skipRestoreRender) {
+     vscode.postMessage({ type: 'debugLog', message: 'restoreState: skipping render — session was interrupted, waiting for session/load' });
+   }
+   if (!_skipRestoreRender) {
+     // Render chat history using compact turn-based inline layout
+     // (groups tool calls into collapsible containers instead of standalone cards)
+     reconcileInterruptedSessionFlag(false);
+     failInterruptedSpawnToolsInHistory();
+     failInterruptedSubagentStagesInHistory();
+     foldInterruptedAssistantsOnPromote = true;
+     var assistantItems = renderChatHistory();
+     foldInterruptedAssistantsOnPromote = false;
+     failRunningSubagentStagesInDom();
+     failCompletedCrewsInInterruptedTurn();
+     forceCollapseTurnFolds();
+     failRunningSubagentStagesInDom();
+     failCompletedCrewsInInterruptedTurn();
+     if (assistantItems.length > 0) {
+        vscode.postMessage({ type: 'debugLog', message: 'restoreState: sending renderMarkdown for ' + assistantItems.length + ' assistant items' });
+        vscode.postMessage({ type: 'renderMarkdown', items: assistantItems });
+        vscode.postMessage({ type: 'debugLog', message: 'restoreState: renderMarkdown sent' });
+        // Retry mechanism: if the extension host doesn't respond within 2s,
+        // re-send the renderMarkdown request. This handles a race condition
+        // where the initial postMessage is lost during webview initialization.
+       var _retryItems = assistantItems.slice();
+       var _retryCount = 0;
+      var _retryKey = 'restore_' + Date.now();
+      pendingRenderRetries[_retryKey] = true;
+     var _retryFn = function() {
+       if (pendingRenderRetries[_retryKey] && _retryCount < 3) {
+         _retryCount++;
+         vscode.postMessage({ type: 'debugLog', message: 'restoreState: RETRY ' + _retryCount + ' sending renderMarkdown for ' + _retryItems.length + ' items' });
+         vscode.postMessage({ type: 'renderMarkdown', items: _retryItems });
+         setTimeout(_retryFn, 2000);
+       }
+     };
+     setTimeout(_retryFn, 2000);
      }
-   };
-   setTimeout(_retryFn, 2000);
- }
+   } else {
+     // Still reconcile interrupt flags so the state is clean for session/load.
+     reconcileInterruptedSessionFlag(false);
+     failInterruptedSpawnToolsInHistory();
+     failInterruptedSubagentStagesInHistory();
+   }
 
   // If there's chat history but no active session, show a prominent
     // resume button in the fixed resume bar (always visible, no scroll needed).
