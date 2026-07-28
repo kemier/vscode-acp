@@ -7732,16 +7732,23 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      for (var i = 0; i < nodes.length; i++) {
        if (nodes[i].parentNode) nodes[i].parentNode.removeChild(nodes[i]);
      }
-     // Also strip any persisted copy from an older build that saved it to history.
-     var kept = [];
-     var changed = false;
-     for (var j = 0; j < chatHistory.length; j++) {
-       var it = chatHistory[j];
-       if (it && it.kind === 'message' && it.role === 'system' &&
-           String(it.text || '').trim() === 'Conversation compacted.') {
-         changed = true;
-         continue;
-       }
+    // Also strip any persisted copy from an older build that saved it to history.
+    var kept = [];
+    var changed = false;
+    for (var j = 0; j < chatHistory.length; j++) {
+      var it = chatHistory[j];
+      if (it && it.kind === 'message' && it.role === 'system' && (
+          // Manual /compact notice.
+          String(it.text || '').trim() === 'Conversation compacted.' ||
+          // Auto-compact notice (e.g. "*Context compacted to fit the
+          // model's context window.*"). Older builds persisted this to
+          // chatHistory — strip it so it doesn't survive resume.
+          String(it.text || '').trim().indexOf('*Context compacted') === 0 ||
+          /conversation compacted/i.test(String(it.text || '').trim())
+      )) {
+        changed = true;
+        continue;
+      }
        kept.push(it);
      }
      if (changed) {
@@ -10723,11 +10730,30 @@ function renderChatHistory() {
      _deduped = true;
    }
  }
- if (_deduped) {
-   vscode.postMessage({ type: 'debugLog', message: '[WV-DEDUP] renderChatHistory: removed duplicate assistant entries' });
-   saveState();
+if (_deduped) {
+  vscode.postMessage({ type: 'debugLog', message: '[WV-DEDUP] renderChatHistory: removed duplicate assistant entries' });
+  saveState();
+}
+ // Strip persisted compaction notices from older builds that saved them to
+ // chatHistory. These are transient DOM-only notices now — they must not
+ // survive resume or appear after tool calls and assistant messages.
+ var _strippedCompact = false;
+ for (var _sci = chatHistory.length - 1; _sci >= 0; _sci--) {
+   var _scItem = chatHistory[_sci];
+   if (_scItem && _scItem.kind === 'message' && _scItem.role === 'system' && (
+       String(_scItem.text || '').trim() === 'Conversation compacted.' ||
+       String(_scItem.text || '').trim().indexOf('*Context compacted') === 0 ||
+       /conversation compacted/i.test(String(_scItem.text || '').trim())
+   )) {
+     chatHistory.splice(_sci, 1);
+     _strippedCompact = true;
+   }
  }
- // Increment generation counter to invalidate any in-flight markdownRendered
+ if (_strippedCompact) {
+   saveState();
+   vscode.postMessage({ type: 'debugLog', message: '[WV-COMPACT] renderChatHistory: stripped persisted compaction notices' });
+ }
+// Increment generation counter to invalidate any in-flight markdownRendered
   // responses from a previous DOM build. Stale responses would update the
   // wrong elements or skip needed updates after a DOM rebuild.
  historyRenderGen++;
@@ -12462,11 +12488,12 @@ sessionState = {
     // indication that earlier context was compacted away.
    if (!wasManual && notice) {
      // Show the actual compaction notice text (e.g. "*Context compacted to
-     // fit the model's context window.*") as a system message in the chat.
-     // This persists to chatHistory so it survives re-renders and resume.
+     // fit the model's context window.*") as a DOM-only system message.
+     // Do NOT persist to chatHistory — otherwise it survives resume and
+     // re-appears as a stale notice after tool calls and assistant messages
+     // have already been rendered. The notice is transient: it shows once
+     // after compaction and is cleared when the next user message arrives.
      clearCompactNotices();
-     chatHistory.push({ kind: 'message', role: 'system', text: notice });
-     saveState();
      var _autoNoticeEl = addMessageDOM('system', notice);
      if (_autoNoticeEl) _autoNoticeEl.classList.add('compact-notice');
    }
