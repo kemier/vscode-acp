@@ -7964,11 +7964,21 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         var willExpand = (messagesEl && messagesEl.classList.contains('compact-mode'))
           ? !body.classList.contains('expanded')
           : body.classList.contains('collapsed');
-        setFoldExpanded(body, willExpand);
-        // Sticky expand only while the turn is still streaming — completed
-        // turns must not stay open across promptEnd / history restore.
-        body._userExpanded = !isLoadingSession && isProcessing && willExpand;
-        // Collapsing mid-stream:
+       setFoldExpanded(body, willExpand);
+       // Sticky expand only while the turn is still streaming — completed
+       // turns must not stay open across promptEnd / history restore.
+       body._userExpanded = !isLoadingSession && isProcessing && willExpand;
+       // When expanding a fold during streaming, the content grows via CSS
+       // (no scroll event fires), so userScrolledUp stays false. The next
+       // streaming chunk's autoScrollIfAtBottom() then yanks the user back
+       // to the bottom, away from the expanded content they wanted to read.
+       // Treat a manual expand as "user wants to read above" — disable
+       // auto-scroll until the user scrolls back to the bottom themselves.
+       if (willExpand && isProcessing && !isLoadingSession) {
+         userScrolledUp = true;
+         updateJumpLatestBtn();
+       }
+       // Collapsing mid-stream:
         // - Tools still running / pre-tools chatter → keep live bubble in fold
         //   (Codex/Claude mid-turn leak fix).
         // - Tools idle → this is the end-turn summary: lift it outside so it
