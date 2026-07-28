@@ -12656,27 +12656,36 @@ sessionState = {
       // Also recognize Kiro CLI "Conversation compacted" notices and Claude's
       // "Compacting..." / "Compacting completed." progress text.
       // Skip during session/load — that text is historical, not a live /compact.
-       if (!isLoadingSession && content && content.type === 'text') {
-         var _autoTrim = content.text.trim();
-         // Claude ACP: AbortError after compact must not clear or pollute chat.
-         if (/AbortError:\\s*Compaction cancel/i.test(_autoTrim) ||
-             (/Compaction cancel(l)?ed/i.test(_autoTrim) && _autoTrim.length < 120)) {
-           if (isCompacting && (compactedWarningText || compactedNoticeText)) {
-             flushCompactionMessages();
-           } else if (isCompacting) {
-             // Spurious cancel with no success notice yet — drop compacting state.
-             isCompacting = false;
-             if (kiroCompactWatchdog) { clearTimeout(kiroCompactWatchdog); kiroCompactWatchdog = null; }
-             hideCompactionProgress();
-             if (statusEl) statusEl.innerHTML = '';
-             setProcessing(false);
-           }
-           break;
-         }
-         if (!isCompacting && (
-             _autoTrim.indexOf('*Context compacted') === 0 ||
-             /conversation compacted/i.test(_autoTrim) ||
-             /^Compacting\\.\\.\\./i.test(_autoTrim))) {
+      if (!isLoadingSession && content && content.type === 'text') {
+        var _autoTrim = content.text.trim();
+        // CRITICAL: only treat agent_message_chunk text as a compaction
+        // notice when it is a SHORT STANDALONE message (not part of a
+        // longer assistant reply). When the LLM writes ABOUT compaction
+        // (e.g. commit messages mentioning "Conversation compacted."),
+        // the streaming text accumulates into currentAssistantText and
+        // must NOT trigger compaction — otherwise flushCompactionMessages()
+        // wipes the entire chatHistory, destroying the conversation.
+        var _isStandaloneNotice = currentAssistantText.trim().length === 0 &&
+          _autoTrim.length < 200;
+        // Claude ACP: AbortError after compact must not clear or pollute chat.
+        if (/AbortError:\\s*Compaction cancel/i.test(_autoTrim) ||
+            (/Compaction cancel(l)?ed/i.test(_autoTrim) && _autoTrim.length < 120)) {
+          if (isCompacting && (compactedWarningText || compactedNoticeText)) {
+            flushCompactionMessages();
+          } else if (isCompacting) {
+            // Spurious cancel with no success notice yet — drop compacting state.
+            isCompacting = false;
+            if (kiroCompactWatchdog) { clearTimeout(kiroCompactWatchdog); kiroCompactWatchdog = null; }
+            hideCompactionProgress();
+            if (statusEl) statusEl.innerHTML = '';
+            setProcessing(false);
+          }
+          break;
+        }
+        if (!isCompacting && _isStandaloneNotice && (
+            _autoTrim.indexOf('*Context compacted') === 0 ||
+            /conversation compacted/i.test(_autoTrim) ||
+            /^Compacting\\.\\.\\./i.test(_autoTrim))) {
            isCompacting = true;
            manualCompacting = false;
            compactedWarningText = '';
@@ -12705,19 +12714,26 @@ sessionState = {
        // During compaction: Codex emits "*Context compacted*" then
        // "Warning: Heads up…". Kiro emits "Conversation compacted…".
        // Buffer notices and flush Warning-first when present.
-       if (isCompacting) {
-          var chunkText = content && content.type === 'text' ? content.text : '';
-          var trimmedChunk = chunkText.trim();
-          // Don't buffer Claude's in-progress "Compacting..." as a notice.
-          if (/^Compacting\\.\\.\\./i.test(trimmedChunk)) {
-            showCompactionProgress(trimmedChunk, null);
-            break;
-          }
-          var isWarning = trimmedChunk.indexOf('Warning:') === 0;
-          var isCompactNotice = trimmedChunk.indexOf('*Context compacted') === 0 ||
-            /conversation compacted/i.test(trimmedChunk) ||
-            /^Compacting completed/i.test(trimmedChunk);
-          if (isWarning) {
+      if (isCompacting) {
+         var chunkText = content && content.type === 'text' ? content.text : '';
+         var trimmedChunk = chunkText.trim();
+         // Only buffer short standalone chunks as compaction notices.
+         // When currentAssistantText already has content, the LLM is
+         // streaming a normal reply that merely mentions compaction.
+         var _bufferIsStandalone = currentAssistantText.trim().length === 0 &&
+           trimmedChunk.length < 200;
+         // Don't buffer Claude's in-progress "Compacting..." as a notice.
+         if (/^Compacting\\.\\.\\./i.test(trimmedChunk)) {
+           showCompactionProgress(trimmedChunk, null);
+           break;
+         }
+         var isWarning = trimmedChunk.indexOf('Warning:') === 0;
+         var isCompactNotice = _bufferIsStandalone && (
+           trimmedChunk.indexOf('*Context compacted') === 0 ||
+           /conversation compacted/i.test(trimmedChunk) ||
+           /^Compacting completed/i.test(trimmedChunk)
+         );
+         if (isWarning) {
             compactedWarningText += chunkText;
             // Notice usually arrived first — flush now that we have both.
             if (compactedNoticeText) {
