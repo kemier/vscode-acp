@@ -7024,10 +7024,19 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        // Do NOT skip tool_calls that are in both — that would move them to
        // the end and break the interleaved order (thought → tool → assistant).
        var _merged = [];
-       for (var _mi = 0; _mi < preLoadChatHistorySnapshot.length; _mi++) {
-         var _snapItem = preLoadChatHistorySnapshot[_mi];
-         if (!_snapItem) continue;
-         if (_snapItem.kind === 'toolCall' && _snapItem.toolCallId) {
+      for (var _mi = 0; _mi < preLoadChatHistorySnapshot.length; _mi++) {
+        var _snapItem = preLoadChatHistorySnapshot[_mi];
+        if (!_snapItem) continue;
+        // Skip interrupt notices from the snapshot — they are live-only
+        // artifacts of promptEnd(stopReason=cancelled) and should NOT
+        // be merged into the loaded history. The loaded history from
+        // session/load is the source of truth; if the turn was truly
+        // interrupted, reconcileInterruptedSessionFlag will handle it.
+        if (_snapItem.kind === 'message' && (_snapItem.role === 'system' || _snapItem.role === 'user') &&
+            isSessionInterruptNotice(_snapItem.text)) {
+          continue;
+        }
+        if (_snapItem.kind === 'toolCall' && _snapItem.toolCallId) {
            // Update status from replay if available (keep position in order)
            if (_statusMap[_snapItem.toolCallId]) {
              _snapItem = Object.assign({}, _snapItem, { status: _statusMap[_snapItem.toolCallId] });
