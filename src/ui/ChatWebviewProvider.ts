@@ -1925,6 +1925,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     } catch (e) {
       logError('Stop processes failed', e);
     }
+    // Notify the webview so it can locally mark the killed tool calls as
+    // 'failed' and dismiss/refresh the /ps panel. Without this, the /ps
+    // panel keeps showing stale "running" processes because codex-acp's
+    // stopProcesses() clears its internal backgroundProcesses map but never
+    // emits tool_call_update notifications for the killed processes.
+    this.postMessage({ type: 'processesStopped' });
   }
 
   /**
@@ -11770,11 +11776,42 @@ sessionState = {
         // Hide resume bar immediately — new conversation means no session
         // to resume. Without this, the resume button from startup/previous
         // session lingers until the new agent connects.
-        hasActiveSession = false;
-        updateResumeBar();
-        break;
+       hasActiveSession = false;
+       updateResumeBar();
+       break;
 
-        case 'error':
+       case 'processesStopped': {
+         // /stop completed on the agent side. The agent clears its internal
+         // background-process map but does NOT emit tool_call_update
+         // notifications for the killed processes. Mark ALL currently-running
+         // tool calls as 'failed' locally so /ps no longer shows stale
+         // processes and the tool icons reflect the kill.
+         var _killed = 0;
+         for (var _ki = 0; _ki < chatHistory.length; _ki++) {
+           var _kItem = chatHistory[_ki];
+           if (_kItem && _kItem.kind === 'toolCall' &&
+               (_kItem.status === 'in_progress' || _kItem.status === 'running' || _kItem.status === 'pending')) {
+             _kItem.status = 'failed';
+             _killed++;
+             var _kEl = toolCalls[_kItem.toolCallId] || document.getElementById('tc-' + _kItem.toolCallId);
+             if (_kEl) {
+               var _kIcon = _kEl.querySelector('.tc-icon');
+               if (_kIcon) { _kIcon.className = 'tc-icon failed'; _kIcon.textContent = getStatusIcon('failed'); }
+               var _kBadge = _kEl.querySelector('.status-badge');
+               if (_kBadge) { _kBadge.className = 'status-badge failed'; _kBadge.textContent = 'failed'; }
+             }
+           }
+         }
+         if (_killed > 0) saveState();
+         // Force-dismiss the /ps panel (bypass the 3s min-display window)
+         // and show a confirmation. If /ps is re-run it will now show
+         // "No background terminals running".
+         dismissPsPanel(true);
+         showTransientNotice('Killed ' + _killed + ' running process' + (_killed === 1 ? '' : 'es') + '.');
+         break;
+       }
+
+       case 'error':
           // Claude ACP may surface "AbortError: Compaction canceled." as an
           // error after a successful /compact — do not paint it.
           if (isCompacting || Date.now() < suppressPostCompactNoiseUntil) {
