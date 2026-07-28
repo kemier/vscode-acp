@@ -9052,10 +9052,16 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      if (firstWord === 'ls' || firstWord === 'command' || firstWord === 'exec' || firstWord === 'shell' || firstWord === 'run' || firstWord === 'cd' || kw.indexOf(' command ') >= 0 || kw.indexOf(' exec ') >= 0 || kw.indexOf(' run ') >= 0) return 'command';
      if (firstWord === 'plan' || firstWord === 'todo' || kw.indexOf(' plan ') >= 0 || kw.indexOf(' todo ') >= 0) return 'plan';
      // Task tracking tools (ericli task_create/task_update/task_list)
-     if (firstWord === 'task_create' || firstWord === 'task_update' || firstWord === 'task_list' ||
+     // Only task_create counts as a 'todo' in the collapsed summary —
+     // task_update and task_list are operations on existing todos, not
+     // new todos. Showing "8 todos" when 3 were created and 5 were updated
+     // is misleading.
+     if (firstWord === 'task_create' ||
+         kw.indexOf(' task_create ') >= 0 || kw.indexOf(' create task ') >= 0) return 'todo';
+     if (firstWord === 'task_update' || firstWord === 'task_list' ||
          firstWord === 'create:' || firstWord === 'update' && kw.indexOf(' → ') >= 0 ||
-         kw.indexOf(' task_create ') >= 0 || kw.indexOf(' task_update ') >= 0 || kw.indexOf(' task_list ') >= 0 ||
-         kw.indexOf(' create task ') >= 0 || kw.indexOf(' update task ') >= 0 || kw.indexOf(' list tasks ') >= 0) return 'todo';
+         kw.indexOf(' task_update ') >= 0 || kw.indexOf(' task_list ') >= 0 ||
+         kw.indexOf(' update task ') >= 0 || kw.indexOf(' list tasks ') >= 0) return 'other';
      return 'other';
    }
 
