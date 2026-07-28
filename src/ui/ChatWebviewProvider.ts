@@ -8027,6 +8027,23 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         || turn.querySelector(':scope > .turn-tools > .turn-fold-body');
     }
 
+    /**
+     * Track user scroll position inside a thought-content element. When the
+     * user scrolls up to read earlier reasoning, streaming chunks must NOT
+     * yank them back to the top (or bottom). The _userScrolledUp flag is
+     * checked by the agent_message_chunk (thought) handler before forcing
+     * scrollTop. It resets when the user scrolls back near the bottom.
+     */
+    function attachThoughtContentScrollTracker(el) {
+      if (!el || el._scrollTrackerBound) return;
+      el._scrollTrackerBound = true;
+      el._userScrolledUp = false;
+      el.addEventListener('scroll', function() {
+        var atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+        el._userScrolledUp = !atBottom;
+      });
+    }
+
     function isMeaningfulThought(el) {
       if (!el) return false;
       if (el === currentThoughtEl) return true;
@@ -12986,6 +13003,7 @@ sessionState = {
             if (existingThought) {
               currentThoughtEl = existingThought;
               currentThoughtTextEl = existingThought.querySelector('.thought-content');
+              attachThoughtContentScrollTracker(currentThoughtTextEl);
               thoughtDomBase = (currentThoughtTextEl && currentThoughtTextEl.textContent) || '';
               if (thoughtDomBase && !/\\n$/.test(thoughtDomBase)) thoughtDomBase += '\\n\\n';
               // Keep the just-received chunk in currentThoughtText; don't wipe it.
@@ -13008,6 +13026,10 @@ sessionState = {
                    '<summary><span class="thought-indicator"></span> Thinking\u2026</summary>' +
                    '<div class="thought-content"></div>';
                 currentThoughtTextEl = currentThoughtEl.querySelector('.thought-content');
+                // Track user scroll within the thought content so streaming
+                // chunks don't yank the user back to the top when they've
+                // scrolled down to read.
+                attachThoughtContentScrollTracker(currentThoughtTextEl);
                 // Append in turn order inside the fold (do not replace prior thoughts).
                 placeThoughtInTurn(currentThoughtEl);
                 if (!thoughtStartTime) thoughtStartTime = Date.now();
@@ -13016,10 +13038,16 @@ sessionState = {
             }
            var displayThought = (thoughtDomBase + currentThoughtText).replace(/^\\s+/, '').replace(/\\n{3,}/g, '\\n\\n');
            if (currentThoughtTextEl) currentThoughtTextEl.textContent = displayThought;
-           // Auto-scroll the thought content to top when expanded, so the
-           // streaming text stays aligned to the top of the block.
+           // Auto-scroll the thought content to bottom when expanded, so the
+           // streaming text stays visible. BUT only if the user hasn't scrolled
+           // up to read earlier content — respect their scroll position.
           if (currentThoughtEl && currentThoughtEl.open && currentThoughtTextEl) {
-            currentThoughtTextEl.scrollTop = 0;
+            // _userScrolledUp is set by the thought-content scroll listener
+            // (attached when the block is created). If the user scrolled up,
+            // don't yank them back down — let them read in peace.
+            if (!currentThoughtTextEl._userScrolledUp) {
+              currentThoughtTextEl.scrollTop = currentThoughtTextEl.scrollHeight;
+            }
           }
           autoScrollIfAtBottom();
          }
