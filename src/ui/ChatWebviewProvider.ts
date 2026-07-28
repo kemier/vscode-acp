@@ -5026,30 +5026,25 @@ let isCompacting = false;  // true while /compact is running
    // then sends the message. After the cancel completes and promptEnd
    // fires, the message is sent via a one-shot flag.
    var pendingSendAfterCancel = null;
-  function sendQueuedMessageNow(index) {
-    if (index < 0 || index >= messageQueue.length) return;
-    const entry = messageQueue[index];
-    // Remove from queue immediately
-    messageQueue.splice(index, 1);
-    renderQueue();
+ function sendQueuedMessageNow(index) {
+   if (index < 0 || index >= messageQueue.length) return;
+   const entry = messageQueue[index];
+   // Remove from queue immediately
+   messageQueue.splice(index, 1);
+   renderQueue();
 
-   if (isProcessing) {
-     // Show the user message now (it was queued, not yet displayed).
-     chatHistory.push({ kind: 'message', role: 'user', text: entry.text || '(image)' });
-     saveState();
-     addMessageDOM('user', entry.text || '(image)');
-    // Set the pending message; it will be sent once promptEnd fires
-    // after the cancel completes.
-     pendingSendAfterCancel = entry;
-     vscode.postMessage({ type: 'cancelTurn' });
-   } else {
-      // Not processing — send directly and show the user message now.
-      chatHistory.push({ kind: 'message', role: 'user', text: entry.text || '(image)' });
-      saveState();
-      addMessageDOM('user', entry.text || '(image)');
-     // Route slash commands through handleLocalSlashCommand so local UI
-     // (compaction progress, clear, etc.) is triggered properly.
-     if (entry.text && entry.text.startsWith('/') && handleLocalSlashCommand(entry.text)) {
+  // The user message was already shown as a bubble when it was queued
+  // (handleQueue adds it to chatHistory + DOM immediately). Don't re-add.
+  if (isProcessing) {
+   // Set the pending message; it will be sent once promptEnd fires
+   // after the cancel completes.
+    pendingSendAfterCancel = entry;
+    vscode.postMessage({ type: 'cancelTurn' });
+  } else {
+     // Not processing — send directly. The user bubble is already shown.
+    // Route slash commands through handleLocalSlashCommand so local UI
+    // (compaction progress, clear, etc.) is triggered properly.
+    if (entry.text && entry.text.startsWith('/') && handleLocalSlashCommand(entry.text)) {
        // Local slash command handled it.
      } else {
        hasSentPrompt = true;
@@ -5061,16 +5056,14 @@ let isCompacting = false;  // true while /compact is running
 function drainQueue() {
  if (messageQueue.length === 0) return false;
  vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drainQueue: dequeuing, remaining=' + (messageQueue.length - 1) + ' isProcessing=' + isProcessing });
- const entry = messageQueue.shift();
- renderQueue();
-  // Dismiss /ps panel (respecting min display window) — a new turn is starting.
-  dismissPsPanel(false);
-  // Show the user message now — it was queued (not shown) during the
-  // active turn. Only display it when actually being sent.
-  chatHistory.push({ kind: 'message', role: 'user', text: entry.text || '(image)' });
-  saveState();
-  addMessageDOM('user', entry.text || '(image)');
- hasSentPrompt = true;
+const entry = messageQueue.shift();
+renderQueue();
+ // Dismiss /ps panel (respecting min display window) — a new turn is starting.
+ dismissPsPanel(false);
+ // The user message was already shown as a bubble when it was queued
+ // (handleQueue adds it to chatHistory + DOM immediately). Just send
+ // the prompt to the agent — don't re-add the bubble.
+hasSentPrompt = true;
  if (entry.text && entry.text.startsWith('/') && handleLocalSlashCommand(entry.text)) {
    vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drainQueue: handled as local slash command' });
    // Local slash command handled it — don't send as prompt.
@@ -6156,10 +6149,17 @@ var _supportsSteer = /ericli|codex|claude/i.test(_agentName);
   vscode.postMessage({ type: 'steerPrompt', text: text });
   vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] handleQueue: STEERED msg, hasSteeredThisTurn=true' });
 } else {
-  vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] handleQueue: QUEUED msg (not steered), _supportsSteer=' + _supportsSteer + ' hasSteeredThisTurn=' + hasSteeredThisTurn + ' _isMutatingCmd=' + _isMutatingCmd + ' messageQueue.length=' + (messageQueue.length + 1) });
-  queueMessage(text, images);
+ vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] handleQueue: QUEUED msg (not steered), _supportsSteer=' + _supportsSteer + ' hasSteeredThisTurn=' + hasSteeredThisTurn + ' _isMutatingCmd=' + _isMutatingCmd + ' messageQueue.length=' + (messageQueue.length + 1) });
+ // Show the message as a normal user bubble in the main chat panel
+ // immediately — it will be dealt with as the next turn when the current
+ // turn finishes. drainQueue() will NOT re-add it (the bubble is already
+ // visible); it only sends the prompt to the agent.
+ chatHistory.push({ kind: 'message', role: 'user', text: text || '(image)' });
+ saveState();
+ addMessageDOM('user', text || '(image)');
+ queueMessage(text, images);
 }
-  }
+ }
 
   /**
    * Handle client-side slash commands that should execute immediately,
