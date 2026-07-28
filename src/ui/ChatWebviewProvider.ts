@@ -11011,12 +11011,48 @@ forceCollapseTurnFolds();
     if (rawInput) {
       if (el.getAttribute('data-subagent-crew') || el.getAttribute('data-claude-crew') ||
           el.querySelector(':scope > .tc-stages')) {
-        // Parent crew card: merge late rawInput into the matching stage.
-        var stageOnCrew = el.querySelector('.tc-stage[data-tool-call-id="' + String(toolCallId).replace(/"/g, '') + '"]') ||
-          el.querySelector(':scope > .tc-stages > .tc-stage');
-        if (stageOnCrew) updateStageFromRawInput(stageOnCrew, rawInput, title, { keepName: true });
-        else {
-          el._rawInput = Object.assign({}, el._rawInput || {}, rawInput);
+        // ericli spawn_parallel: the tool_call_update carries updated
+        // rawInput.stages[] with per-stage status fields. Iterate through
+        // all stages and update their icons individually so the UI shows
+        // ✓/✗ per subagent as they complete, instead of spinning until
+        // the entire spawn_parallel returns.
+        var incomingStages = Array.isArray(rawInput.stages) ? rawInput.stages : null;
+        if (incomingStages && incomingStages.length > 0) {
+          // Merge the rawInput into the crew's _rawInput first.
+          el._rawInput = Object.assign({}, el._rawInput || {}, { stages: incomingStages });
+          var stageEls = el.querySelectorAll(':scope > .tc-stages > .tc-stage');
+          for (var se = 0; se < stageEls.length && se < incomingStages.length; se++) {
+            var stg = incomingStages[se];
+            if (stg && typeof stg === 'object' && stg.status) {
+              applyStageIcon(stageEls[se], stg.status);
+            }
+          }
+          // Update parent icon: if all stages are terminal, flip parent.
+          var allDone = true;
+          for (var si = 0; si < stageEls.length; si++) {
+            var icn = stageEls[si].querySelector('.tc-stage-icon');
+            if (icn && !icn.classList.contains('completed') && !icn.classList.contains('failed') && !icn.classList.contains('error')) {
+              allDone = false;
+              break;
+            }
+          }
+          if (allDone) {
+            var parentIc = el.querySelector(':scope > .tc-icon');
+            if (parentIc) {
+              var anyFailed = el.querySelector('.tc-stage-icon.failed, .tc-stage-icon.error');
+              var pStatus = anyFailed ? 'failed' : 'completed';
+              parentIc.className = 'tc-icon ' + pStatus;
+              parentIc.textContent = getStatusIcon(pStatus);
+            }
+          }
+        } else {
+          // No per-stage status: merge late rawInput into the matching stage.
+          var stageOnCrew = el.querySelector('.tc-stage[data-tool-call-id="' + String(toolCallId).replace(/"/g, '') + '"]') ||
+            el.querySelector(':scope > .tc-stages > .tc-stage');
+          if (stageOnCrew) updateStageFromRawInput(stageOnCrew, rawInput, title, { keepName: true });
+          else {
+            el._rawInput = Object.assign({}, el._rawInput || {}, rawInput);
+          }
         }
        } else {
          el._rawInput = rawInput;
