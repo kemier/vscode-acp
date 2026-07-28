@@ -6463,9 +6463,14 @@ function handleLocalSlashCommand(cmdText) {
    // BUT allow local slash commands (e.g. /ps, /rename) that don't
    // interact with the agent.
    if (isCompacting || isClearing) {
-     if (text.startsWith('/')) {
-       if (handleLocalSlashCommand()) { return; }
-     }
+     // Local slash commands (e.g. /ps, /rename) execute immediately even
+     // during compaction — they don't interact with the agent.
+     if (text.startsWith('/') && handleLocalSlashCommand()) { return; }
+     // Non-local commands (e.g. /goal, regular prompts) must NOT be
+     // dropped — queue them so they are sent after compaction finishes.
+     // handleQueue shows the user bubble immediately and queues it for
+     // draining when compaction completes.
+     handleQueue();
      return;
    }
    // /rename works immediately, even during streaming
@@ -11742,8 +11747,11 @@ sessionState = {
           }
         }
       }, 0);
-       } else if (!_wasCompacting && messageQueue.length > 0) {
-        vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] scheduling drain: _wasCompacting=' + _wasCompacting + ' messageQueue.length=' + messageQueue.length + ' isProcessing=' + isProcessing });
+       } else if (!isCompacting && messageQueue.length > 0) {
+        // Use current isCompacting (not _wasCompacting) — flushCompactionMessages
+        // may have already cleared it during this promptEnd, meaning compaction
+        // truly finished and queued messages should be drained now.
+        vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] scheduling drain: _wasCompacting=' + _wasCompacting + ' isCompacting=' + isCompacting + ' messageQueue.length=' + messageQueue.length + ' isProcessing=' + isProcessing });
         setTimeout(() => {
           vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drain setTimeout fired: isProcessing=' + isProcessing + ' messageQueue.length=' + messageQueue.length });
           if (!isProcessing && messageQueue.length > 0) {
@@ -11752,10 +11760,10 @@ sessionState = {
           }
         }, 0);
       }
-      if (_wasCompacting && messageQueue.length > 0) {
-        vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] SKIPPED drain because _wasCompacting=true, messageQueue.length=' + messageQueue.length });
+      if (isCompacting && messageQueue.length > 0) {
+        vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] SKIPPED drain because isCompacting=true, messageQueue.length=' + messageQueue.length });
       }
-      if (!_wasCompacting && messageQueue.length === 0 && !pendingSendAfterCancel) {
+      if (!isCompacting && messageQueue.length === 0 && !pendingSendAfterCancel) {
         vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] no drain needed: queue empty' });
       }
        break;
@@ -12453,7 +12461,18 @@ sessionState = {
         restoreProcessingStatusSpinner();
         return;
       }
-      chatHistory = [];
+      // Preserve queued user messages — handleQueue adds them to chatHistory
+      // as user bubbles so the user sees them immediately. Compaction must
+      // wipe prior conversation context but NOT destroy messages the user
+      // queued during compaction (they are still pending in messageQueue).
+      var _preservedQueue = [];
+      for (var _qi = 0; _qi < chatHistory.length; _qi++) {
+        var _qItem = chatHistory[_qi];
+        if (_qItem && _qItem.kind === 'message' && _qItem.role === 'user') {
+          _preservedQueue.push(_qItem);
+        }
+      }
+      chatHistory = _preservedQueue;
      messagesEl.innerHTML = '';
      historyRenderGen++;
      for (var _cmpRk in pendingRenderRetries) { delete pendingRenderRetries[_cmpRk]; }
@@ -12466,6 +12485,12 @@ sessionState = {
      toolCalls = {};
      // After compaction clear, chatHistory (now empty) belongs to current session.
      chatHistoryOriginSessionId = (sessionState && sessionState.sessionId) || null;
+     // Re-render preserved queued user bubbles so they are visible after
+     // the compaction wipe. drainQueue sends them to the agent without
+     // re-adding the bubble (it checks for existing user messages).
+     for (var _pri = 0; _pri < _preservedQueue.length; _pri++) {
+       addMessageDOM('user', _preservedQueue[_pri].text || '(image)');
+     }
       toolCallDiffs = {};
       isCompacting = false;
       manualCompacting = false;
@@ -12497,6 +12522,20 @@ sessionState = {
      var _autoNoticeEl = addMessageDOM('system', notice);
      if (_autoNoticeEl) _autoNoticeEl.classList.add('compact-notice');
    }
+    // After manual compaction finishes, drain any messages the user queued
+    // during compaction. The compaction's promptEnd has _wasCompacting=true
+    // so the normal drain path is skipped — there is no subsequent promptEnd
+    // to trigger it. For auto-compact, the turn is still running so
+    // isProcessing is true and drainQueue will be a no-op until the turn
+    // ends (at which point the normal promptEnd drain handles it).
+    if (wasManual && messageQueue.length > 0 && !isProcessing) {
+      vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] flushCompactionMessages: draining after manual compact, queue=' + messageQueue.length });
+      setTimeout(function() {
+        if (!isProcessing && messageQueue.length > 0) {
+          drainQueue();
+        }
+      }, 0);
+    }
   }
 
     /** Bare spinner while the turn is still running (no "Compacting…" label). */
