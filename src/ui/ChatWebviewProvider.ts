@@ -7052,10 +7052,21 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
            _merged.push(_atc);
          }
        }
-       chatHistory = _merged;
-       vscode.postMessage({ type: 'debugLog', message: '[WV-MERGE] full snapshot merge: ' + _merged.length + ' items (snap=' + preLoadChatHistorySnapshot.length + ' loaded=' + _diagLoadedLen + ')' });
-     } else {
-       mergePreLoadInterruptedTurn(preLoadChatHistorySnapshot);
+      chatHistory = _merged;
+      vscode.postMessage({ type: 'debugLog', message: '[WV-MERGE] full snapshot merge: ' + _merged.length + ' items (snap=' + preLoadChatHistorySnapshot.length + ' loaded=' + _diagLoadedLen + ')' });
+      // The snapshot already contains every assistant message from the live
+      // session (it was saved before the reload). The agent_message_chunk
+      // events replayed during session/load accumulated text into
+      // currentAssistantText, but that text is ALREADY in the snapshot.
+      // Clear it so finalizeCurrentAssistantTurn() (called below) does not
+      // push a duplicate assistant message — the dedup guard there only
+      // checks the LAST chatHistory entry, which after a full-snapshot merge
+      // is often a tool_call, causing the guard to miss the duplicate.
+      currentAssistantEl = null;
+      currentAssistantText = '';
+      if (currentTurnEl) { currentTurnEl = null; }
+    } else {
+      mergePreLoadInterruptedTurn(preLoadChatHistorySnapshot);
      }
    }
     preLoadChatHistorySnapshot = null;
@@ -11184,18 +11195,36 @@ forceCollapseTurnFolds();
       if (currentThoughtEl || currentThoughtText || thoughtDomBase) {
         commitOrDiscardCurrentThought();
       }
-     if (currentAssistantText) {
-       // Dedup guard: if the last chatHistory entry is an assistant message
-       // with the exact same text, don't push a duplicate. This can happen
-       // when promptEnd fires during isLoadingSession (committing the text)
-       // and then loadSessionEnd → finalizeCurrentAssistantTurn runs and
-       // the same text is still in currentAssistantText (e.g. from a late
-       // coalescer flush that re-set it after commitCurrentTextSegment cleared it).
-       var _last = chatHistory[chatHistory.length - 1];
-       if (_last && _last.kind === 'message' && _last.role === 'assistant' && _last.text === currentAssistantText) {
-         vscode.postMessage({ type: 'debugLog', message: '[WV-DEDUP] finalizeCurrentAssistantTurn: skipping duplicate assistant push (textLen=' + currentAssistantText.length + ')' });
-       } else {
-       chatHistory.push({ kind: 'message', role: 'assistant', text: currentAssistantText });
+    if (currentAssistantText) {
+      // Dedup guard: skip pushing a duplicate assistant message. After a
+      // full-snapshot merge (handleLoadSessionEnd), currentAssistantText
+      // holds text that was replayed via agent_message_chunk during
+      // session/load — but that text is ALREADY present in the snapshot that
+      // became chatHistory. Check the last few assistant entries (not just
+      // the very last history item, which may be a tool_call after a merge).
+      var _last = chatHistory[chatHistory.length - 1];
+      var _alreadyExists = false;
+      if (_last && _last.kind === 'message' && _last.role === 'assistant' && _last.text === currentAssistantText) {
+        _alreadyExists = true;
+      }
+      if (!_alreadyExists) {
+        // Scan backward through the most recent assistant messages for a match.
+        // The full-snapshot merge can leave trailing tool_calls between the
+        // last assistant and the finalize call, so a single-entry check misses.
+        var _scanLimit = Math.min(chatHistory.length, 15);
+        for (var _si = chatHistory.length - 1; _si >= chatHistory.length - _scanLimit; _si--) {
+          var _se = chatHistory[_si];
+          if (!_se) continue;
+          if (_se.kind === 'message' && _se.role === 'assistant' && _se.text === currentAssistantText) {
+            _alreadyExists = true;
+            break;
+          }
+        }
+      }
+      if (_alreadyExists) {
+        vscode.postMessage({ type: 'debugLog', message: '[WV-DEDUP] finalizeCurrentAssistantTurn: skipping duplicate assistant push (textLen=' + currentAssistantText.length + ')' });
+      } else {
+      chatHistory.push({ kind: 'message', role: 'assistant', text: currentAssistantText });
        saveState();
        }
      }
