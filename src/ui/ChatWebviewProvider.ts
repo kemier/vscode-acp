@@ -6123,41 +6123,46 @@ var _supportsSteer = /ericli|codex|claude/i.test(_agentName);
  // be steered — they need to be sent as a full session/prompt after the current
  // turn ends, not injected mid-turn. Read-only commands (/ps, /status, /tools)
  // are already handled by handleSend before reaching handleQueue.
- var _isMutatingCmd = /^\\/(compact|summarize|compress)\\b/i.test(text) ||
-   /^\\/clear\\b/i.test(text) ||
-   /^\\/index\\s+(build|rebuild|refresh|update|embed|clear|delete)\\b/i.test(text);
- if (_supportsSteer && !hasSteeredThisTurn && !_isMutatingCmd) {
-  // Commit any in-progress assistant text as an interim segment in the
-   // current turn before resetting. This ensures the text before the steer
-   // stays in the old turn's fold, and the next streaming chunk after the
-   // steer starts a NEW turn under the steering user bubble.
-   if (currentAssistantEl && currentAssistantText) {
-     commitCurrentTextSegment({ interim: true });
-   }
-   currentAssistantEl = null;
-   currentAssistantText = '';
-   chatHistory.push({ kind: 'message', role: 'user', text: text || '(image)' });
-   saveState();
-   addMessageDOM('user', text || '(image)');
-   // Reset turn + tool state so the next agent_message_chunk / tool_call
-   // creates a NEW turn container under the steering user bubble.
-   currentTurnEl = null;
-   currentToolsListEl = null;
-   currentToolsCountEl = null;
-   currentToolCount = 0;
-  hasSteeredThisTurn = true;
+var _isMutatingCmd = /^\\/(compact|summarize|compress)\\b/i.test(text) ||
+  /^\\/clear\\b/i.test(text) ||
+  /^\\/index\\s+(build|rebuild|refresh|update|embed|clear|delete)\\b/i.test(text);
+ // Codex and EricCLI both support MULTIPLE steers per turn — each steer
+ // is injected into the agent's input queue and drained at the next
+ // iteration boundary (between tool calls). So we steer EVERY message,
+ // not just the first. This matches codex TUI behavior where multiple
+ // steering messages are delivered in real time, not batched until
+ // promptEnd.
+ if (_supportsSteer && !_isMutatingCmd) {
+ // Commit any in-progress assistant text as an interim segment in the
+  // current turn before resetting. This ensures the text before the steer
+  // stays in the old turn's fold, and the next streaming chunk after the
+  // steer starts a NEW turn under the steering user bubble.
+  if (currentAssistantEl && currentAssistantText) {
+    commitCurrentTextSegment({ interim: true });
+  }
+  currentAssistantEl = null;
+  currentAssistantText = '';
+  chatHistory.push({ kind: 'message', role: 'user', text: text || '(image)' });
+  saveState();
+  addMessageDOM('user', text || '(image)');
+  // Reset turn + tool state so the next agent_message_chunk / tool_call
+  // creates a NEW turn container under the steering user bubble.
+  currentTurnEl = null;
+  currentToolsListEl = null;
+  currentToolsCountEl = null;
+  currentToolCount = 0;
   vscode.postMessage({ type: 'steerPrompt', text: text });
-  vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] handleQueue: STEERED msg, hasSteeredThisTurn=true' });
+  vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] handleQueue: STEERED msg (multi-steer)' });
 } else {
  vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] handleQueue: QUEUED msg (not steered), _supportsSteer=' + _supportsSteer + ' hasSteeredThisTurn=' + hasSteeredThisTurn + ' _isMutatingCmd=' + _isMutatingCmd + ' messageQueue.length=' + (messageQueue.length + 1) });
- // Show the message as a normal user bubble in the main chat panel
- // immediately — it will be dealt with as the next turn when the current
- // turn finishes. drainQueue() will NOT re-add it (the bubble is already
- // visible); it only sends the prompt to the agent.
- chatHistory.push({ kind: 'message', role: 'user', text: text || '(image)' });
- saveState();
- addMessageDOM('user', text || '(image)');
- queueMessage(text, images);
+// Show the message as a normal user bubble in the main chat panel
+// immediately — it will be dealt with as the next turn when the current
+// turn finishes. drainQueue() will NOT re-add it (the bubble is already
+// visible); it only sends the prompt to the agent.
+chatHistory.push({ kind: 'message', role: 'user', text: text || '(image)' });
+saveState();
+addMessageDOM('user', text || '(image)');
+queueMessage(text, images);
 }
  }
 
