@@ -9554,14 +9554,23 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       result = formatStagesTooltipText(rawInput.stages, rawInput.task || rawInput.description || '');
     }
     // Codex collab agent tool call (spawnAgent, sendInput, etc.):
-    // rawInput = { prompt, senderThreadId, receiverThreadIds, agentsStates, status }
-    // Show the prompt text (the task given to the subagent) instead of
-    // raw JSON with thread IDs and status objects.
-    else if (typeof rawInput.prompt === 'string' && rawInput.prompt.length > 0) {
-      result = rawInput.prompt;
-    }
-    // Command as string
-    else if (typeof rawInput.command === 'string') { result = rawInput.command; }
+   // rawInput = { prompt, senderThreadId, receiverThreadIds, agentsStates, status }
+   // Show the prompt text (the task given to the subagent) instead of
+   // raw JSON with thread IDs and status objects.
+   else if (typeof rawInput.prompt === 'string' && rawInput.prompt.length > 0) {
+     result = rawInput.prompt;
+   }
+   // Codex collab agent tool call without a prompt (wait, sendInput,
+   // closeAgent): show a human-readable summary of the target threads
+   // instead of raw JSON with thread IDs.
+   else if (Array.isArray(rawInput.receiverThreadIds) && rawInput.receiverThreadIds.length > 0) {
+     var _collabAction = rawInput.status || 'collaboration';
+     var _targets = rawInput.receiverThreadIds.length + ' agent' +
+       (rawInput.receiverThreadIds.length > 1 ? 's' : '');
+     result = 'Action: ' + _collabAction + '\\nWaiting on: ' + _targets;
+   }
+   // Command as string
+   else if (typeof rawInput.command === 'string') { result = rawInput.command; }
     // Command as array (Codex format: ["gh", "issue", "view", "3715"])
     else if (Array.isArray(rawInput.command)) { result = rawInput.command.join(' '); }
     // Parsed command fallback
@@ -9765,21 +9774,24 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
  function attachToolCallTooltip(el) {
    // Resolve text at hover time from el._rawInput / el._locations / title —
    // Cursor Agent often sends rawInput:{} first and fills path/locations later.
-   if (el.dataset.tcTooltip) return;
-   el.dataset.tcTooltip = '1';
-   el.style.cursor = 'pointer';
+  if (el.dataset.tcTooltip) return;
+  el.dataset.tcTooltip = '1';
+  el.style.cursor = 'pointer';
 
-   el.addEventListener('pointerenter', function(e) {
-     // Only show tooltips on expanded tool rows — never on the collapsed summary.
-     var parentList = el.closest('.turn-tools-list');
-     if (parentList && parentList.classList.contains('collapsed')) return;
-     var foldBody = el.closest('.turn-fold-body');
-     if (foldBody && foldBody.classList.contains('collapsed')) return;
+  // Attach hover to the truncated title text only — hovering over the icon
+  // or other parts of the tool row should NOT show the tooltip.
+  var hoverTarget = el.querySelector('.tc-title') || el;
 
-     var titleEl = el.querySelector('.tc-title');
-     var title = (titleEl && titleEl.textContent) || el._toolTitle || '';
-     var formatted = formatToolCallTooltipText(title, el._rawInput, el._locations);
-     if (!formatted) return;
+  hoverTarget.addEventListener('pointerenter', function(e) {
+    // Only show tooltips on expanded tool rows — never on the collapsed summary.
+    var parentList = el.closest('.turn-tools-list');
+    if (parentList && parentList.classList.contains('collapsed')) return;
+    var foldBody = el.closest('.turn-fold-body');
+    if (foldBody && foldBody.classList.contains('collapsed')) return;
+
+    var title = (hoverTarget.textContent) || el._toolTitle || '';
+    var formatted = formatToolCallTooltipText(title, el._rawInput, el._locations);
+    if (!formatted) return;
 
      // If a stage tooltip is currently visible (from a child element), hide it
      // so the parent tooltip can take over.
@@ -9842,13 +9854,13 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       }
     });
 
-    el.addEventListener('pointermove', function(e) {
+    hoverTarget.addEventListener('pointermove', function(e) {
       if (tcTooltipEl && tcTooltipEl.style.display !== 'none') {
         positionTcTooltip(e);
       }
     });
 
-    el.addEventListener('pointerleave', function() {
+    hoverTarget.addEventListener('pointerleave', function() {
       hideTcTooltip();
     });
 
