@@ -10689,12 +10689,24 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         }
         syncCrewParentRawInput(el);
       }
-      if (isSubagentSpawnTitle(title, rawInput)) {
-        el.classList.add('tc-subagent');
-        el.setAttribute('data-subagent-crew', '1');
-        el.setAttribute('data-claude-crew', '1');
-        subagentCrewPrimaryId = toolCallId;
+     if (isSubagentSpawnTitle(title, rawInput)) {
+       el.classList.add('tc-subagent');
+       el.setAttribute('data-subagent-crew', '1');
+       el.setAttribute('data-claude-crew', '1');
+      // Mark ericli spawn_parallel crews so per-subagent completion updates
+      // (tool_call_update with aggregate stages[]) are not treated as a
+      // single-stage prompt overwrite on stage 0.
+      if (rawInput && typeof rawInput === 'object' &&
+          Array.isArray(rawInput.stages) && rawInput.stages.length > 1 &&
+          typeof rawInput.task === 'string' && /^spawn\s/i.test(rawInput.task)) {
+        if (el._rawInput && typeof el._rawInput === 'object') {
+          el._rawInput._isSpawnParallel = true;
+        } else {
+          el._rawInput = Object.assign({}, rawInput, { _isSpawnParallel: true });
+        }
       }
+      subagentCrewPrimaryId = toolCallId;
+    }
     }
      attachToolCallTooltip(el);
      if (currentToolsListEl) {
@@ -11034,8 +11046,23 @@ forceCollapseTurnFolds();
      saveState();
      storeDiffContent(toolCallId, content);
 
-     // Crew stage: update spinner + fill tooltip from late rawInput (Claude/Codex
-     // often send empty rawInput first, then prompt/description on update).
+    // Crew stage: update spinner + fill tooltip from late rawInput (Claude/Codex
+    // often send empty rawInput first, then prompt/description on update).
+    // ericli spawn_parallel: the per-subagent progress update carries the
+    // AGGREGATE rawInput.stages[] (with per-stage .status). It must NOT be
+    // handled by the single-stage stageForId path below (which would
+    // overwrite stage 0's prompt with the parent's "Spawn N subagents" task
+    // and short-circuit before the multi-stage iteration runs). Route it to
+    // the crew-level stages[] handler instead.
+    var crewElForAggregate = document.getElementById('tc-' + toolCallId);
+    var isAggregateParallelUpdate = rawInput && typeof rawInput === 'object' &&
+      Array.isArray(rawInput.stages) && rawInput.stages.length > 1 &&
+      crewElForAggregate && (crewElForAggregate.getAttribute('data-subagent-crew') === '1' || crewElForAggregate.getAttribute('data-claude-crew') === '1') &&
+      (crewElForAggregate._rawInput && crewElForAggregate._rawInput._isSpawnParallel);
+    if (isAggregateParallelUpdate) {
+      // Fall through to the crew-level el handler below — it iterates all
+      // stages and applies per-stage icons. Skip the single-stage block.
+    } else {
     var stageForId = document.querySelector('.tc-stage[data-tool-call-id="' + String(toolCallId).replace(/"/g, '') + '"]');
     if (stageForId) {
       // When the tool_call_update is for the parent crew's toolCallId (assigned
@@ -11051,8 +11078,10 @@ forceCollapseTurnFolds();
       // not a tasks[] array).
       var crewElForUpdate = stageForId.closest('.tool-call-inline.tc-subagent');
       var isEricliParallelForUpdate = crewElForUpdate && crewElForUpdate._rawInput && crewElForUpdate._rawInput._isSpawnParallel;
-      var isAggregateSpawnInput = rawInput && Array.isArray(rawInput.tasks);
-      if (rawInput && !(isEricliParallelForUpdate && isAggregateSpawnInput)) {
+      // buildToolRawInput transforms tasks[] → stages[], so check stages[]
+      // (length > 1 = aggregate, not per-subagent) instead of tasks[].
+      var isAggregateSpawnInput2 = rawInput && Array.isArray(rawInput.stages) && rawInput.stages.length > 1;
+      if (rawInput && !(isEricliParallelForUpdate && isAggregateSpawnInput2)) {
         updateStageFromRawInput(stageForId, rawInput, title, { keepName: true });
       }
       // Claude Agent Task / Codex spawn often flip tool_call to "completed"
@@ -11082,6 +11111,7 @@ forceCollapseTurnFolds();
       setSubagentStageStatus(toolCallId, stageStatus);
       return;
     }
+    } // end else (not aggregate parallel update)
 
      const el = toolCalls[toolCallId] || document.getElementById('tc-' + toolCallId);
      if (!el) return;
