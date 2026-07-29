@@ -12508,18 +12508,33 @@ sessionState = {
         restoreProcessingStatusSpinner();
         return;
       }
-      // Preserve queued user messages — handleQueue adds them to chatHistory
-      // as user bubbles so the user sees them immediately. Compaction must
-      // wipe prior conversation context but NOT destroy messages the user
-      // queued during compaction (they are still pending in messageQueue).
-      var _preservedQueue = [];
-      for (var _qi = 0; _qi < chatHistory.length; _qi++) {
-        var _qItem = chatHistory[_qi];
-        if (_qItem && _qItem.kind === 'message' && _qItem.role === 'user') {
-          _preservedQueue.push(_qItem);
-        }
-      }
-      chatHistory = _preservedQueue;
+     // Preserve queued user messages — handleQueue adds them to chatHistory
+     // as user bubbles so the user sees them immediately. Compaction must
+     // wipe prior conversation context but NOT destroy messages the user
+     // queued during compaction (they are still pending in messageQueue).
+     //
+     // IMPORTANT: only messages STILL in messageQueue are truly queued
+     // (not yet sent to the agent). The user message that triggered the
+     // current turn has already been sent — it is part of the compacted
+     // conversation and must be cleared, just like assistant messages.
+     // Previously we preserved ALL user messages, which left the original
+     // prompt floating with no assistant response below it after codex
+     // auto-compact replaced the conversation with a summary.
+     var _queuedTexts = {};
+     for (var _mqi = 0; _mqi < messageQueue.length; _mqi++) {
+       if (messageQueue[_mqi].text) _queuedTexts[messageQueue[_mqi].text] = true;
+     }
+     var _preservedQueue = [];
+     for (var _qi = 0; _qi < chatHistory.length; _qi++) {
+       var _qItem = chatHistory[_qi];
+       if (_qItem && _qItem.kind === 'message' && _qItem.role === 'user') {
+         // Only preserve if still queued (not yet sent to the agent).
+         var _qText = typeof _qItem.text === 'string' ? _qItem.text : '';
+         if (!_queuedTexts[_qText]) continue;
+         _preservedQueue.push(_qItem);
+       }
+     }
+     chatHistory = _preservedQueue;
      messagesEl.innerHTML = '';
      historyRenderGen++;
      for (var _cmpRk in pendingRenderRetries) { delete pendingRenderRetries[_cmpRk]; }
