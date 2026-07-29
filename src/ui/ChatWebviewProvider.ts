@@ -10435,23 +10435,29 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        return;
      }
 
-     // ericli spawn_parallel: expand tasks[] into individual stages so each
-     // subagent gets its own name, role, and prompt from the start.
-     var stagesArray;
-     if (spawnParallelTasks && spawnParallelTasks.length > 0) {
-       stagesArray = spawnParallelTasks.map(function(tk, i) {
-         var taskPrompt = (typeof tk.task === 'string') ? tk.task : '';
-         var taskRole = (typeof tk.type === 'string') ? tk.type : 'agent';
-         var taskName = taskRole + '-' + (i + 1);
-         return {
-           name: taskName,
-           role: taskRole,
-           prompt_template: taskPrompt,
-           prompt: taskPrompt,
-           description: '',
-           status: stageInitStatus,
-         };
-       });
+    // ericli spawn_parallel: expand tasks[] into individual stages so each
+    // subagent gets its own name, role, and prompt from the start.
+    var stagesArray;
+    if (spawnParallelTasks && spawnParallelTasks.length > 0) {
+      stagesArray = spawnParallelTasks.map(function(tk, i) {
+        var taskPrompt = (typeof tk.task === 'string') ? tk.task : '';
+        var taskRole = (typeof tk.type === 'string') ? tk.type : 'agent';
+        // Use a truncated first line of the task description as the visible
+        // name — "explore-1" is uninformative. Fall back to type-index only
+        // when the task is empty.
+        var _firstLine = taskPrompt ? taskPrompt.split('\\n')[0].trim() : '';
+        var taskName = _firstLine
+          ? (_firstLine.length > 60 ? _firstLine.substring(0, 57) + '...' : _firstLine)
+          : (taskRole + '-' + (i + 1));
+        return {
+          name: taskName,
+          role: taskRole,
+          prompt_template: taskPrompt,
+          prompt: taskPrompt,
+          description: '',
+          status: stageInitStatus,
+        };
+      });
      } else {
        var stageName = crewStageLabel(rawInput, title, 1);
        stagesArray = [{
@@ -11089,13 +11095,19 @@ forceCollapseTurnFolds();
      // Keep the stage spinning until promptEnd (or a real failure).
      // BUT: ericli spawn_parallel sends per-subagent completion as a REAL
      // signal — that subagent is done. Don't override to 'running'.
-     // ALSO: codex subAgentActivity item/completed is a REAL completion
-     // signal (the subagent finished), not a "started" signal. The
-     // _meta.codex.subagent field distinguishes it from Claude Agent Task
-     // spawn-acknowledgements. Don't override those to 'running' either.
-     var _isCodexSubagentCompletion = !!(rawInput && typeof rawInput === 'object' &&
-       rawInput.activityKind) || !!(crewElForUpdate && crewElForUpdate._rawInput &&
-       crewElForUpdate._rawInput.activityKind);
+    // ALSO: codex subAgentActivity item/completed is a REAL completion
+    // signal (the subagent finished), not a "started" signal. The
+    // _meta.codex.subagent field distinguishes it from Claude Agent Task
+    // spawn-acknowledgements. Don't override those to 'running' either.
+    // ALSO: codex collabAgentToolCall (spawnAgent/waitAgent) completions
+    // are REAL signals too — the tool call finished. The _meta.codex.collaboration
+    // field or rawInput.receiverThreadIds distinguishes them from Claude.
+    var _isCodexSubagentCompletion = !!(rawInput && typeof rawInput === 'object' &&
+      rawInput.activityKind) || !!(crewElForUpdate && crewElForUpdate._rawInput &&
+      crewElForUpdate._rawInput.activityKind) ||
+      !!(rawInput && typeof rawInput === 'object' && rawInput.receiverThreadIds) ||
+      !!(crewElForUpdate && crewElForUpdate._rawInput &&
+      crewElForUpdate._rawInput.receiverThreadIds);
      var crewEl = stageForId.closest('.tool-call-inline.tc-subagent');
      var isEricliParallel = crewEl && crewEl._rawInput && crewEl._rawInput._isSpawnParallel;
      var stageStatus = status || 'running';
