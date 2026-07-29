@@ -11084,17 +11084,24 @@ forceCollapseTurnFolds();
       if (rawInput && !(isEricliParallelForUpdate && isAggregateSpawnInput2)) {
         updateStageFromRawInput(stageForId, rawInput, title, { keepName: true });
       }
-      // Claude Agent Task / Codex spawn often flip tool_call to "completed"
-      // when the subagent is only *started* (nested child tools still run).
-      // Keep the stage spinning until promptEnd (or a real failure).
-      // BUT: ericli spawn_parallel sends per-subagent completion as a REAL
-      // signal — that subagent is done. Don't override to 'running'.
-      var crewEl = stageForId.closest('.tool-call-inline.tc-subagent');
-      var isEricliParallel = crewEl && crewEl._rawInput && crewEl._rawInput._isSpawnParallel;
-      var stageStatus = status || 'running';
-      if (stageStatus === 'completed' && isProcessing && !isLoadingSession && !isEricliParallel) {
-        stageStatus = 'running';
-      }
+     // Claude Agent Task / Codex spawn often flip tool_call to "completed"
+     // when the subagent is only *started* (nested child tools still run).
+     // Keep the stage spinning until promptEnd (or a real failure).
+     // BUT: ericli spawn_parallel sends per-subagent completion as a REAL
+     // signal — that subagent is done. Don't override to 'running'.
+     // ALSO: codex subAgentActivity item/completed is a REAL completion
+     // signal (the subagent finished), not a "started" signal. The
+     // _meta.codex.subagent field distinguishes it from Claude Agent Task
+     // spawn-acknowledgements. Don't override those to 'running' either.
+     var _isCodexSubagentCompletion = !!(rawInput && typeof rawInput === 'object' &&
+       rawInput.activityKind) || !!(crewElForUpdate && crewElForUpdate._rawInput &&
+       crewElForUpdate._rawInput.activityKind);
+     var crewEl = stageForId.closest('.tool-call-inline.tc-subagent');
+     var isEricliParallel = crewEl && crewEl._rawInput && crewEl._rawInput._isSpawnParallel;
+     var stageStatus = status || 'running';
+     if (stageStatus === 'completed' && isProcessing && !isLoadingSession && !isEricliParallel && !_isCodexSubagentCompletion) {
+       stageStatus = 'running';
+     }
       // ericli spawn_parallel: a subagent that completed with "No output"
       // (empty summary) still sent a real completion signal. Mark it as
       // a terminal state so the spinner stops — don't keep it spinning
