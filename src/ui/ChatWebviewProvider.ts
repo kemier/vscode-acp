@@ -10774,7 +10774,21 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
             // instead of replacing it with just the bare path/query.
             var titleLower = displayTitle.toLowerCase();
             var firstLineLower = firstLine.toLowerCase();
-            if (titleLower.indexOf(firstLineLower) < 0 && firstLineLower.indexOf(titleLower) < 0) {
+            // Descriptive titles often use a file's basename (e.g.
+            // "Edit file 'foo.ts'") while formatRawInput returns the full path
+            // (e.g. "/tmp/foo.ts"). The containment check above fails on that
+            // mismatch and would clobber the verb with a bare path. Also
+            // compare against the basename so a descriptive title is preserved.
+            var baseNameLower = '';
+            var slashIdx = firstLineLower.lastIndexOf('/');
+            if (slashIdx >= 0 && slashIdx < firstLineLower.length - 1) {
+              baseNameLower = firstLineLower.substring(slashIdx + 1);
+            }
+            var titleContainsDetail =
+              titleLower.indexOf(firstLineLower) >= 0 ||
+              firstLineLower.indexOf(titleLower) >= 0 ||
+              (baseNameLower && titleLower.indexOf(baseNameLower) >= 0);
+            if (!titleContainsDetail) {
               displayTitle = firstLine.length > 80 ? firstLine.substring(0, 77) + '...' : firstLine;
             }
           }
