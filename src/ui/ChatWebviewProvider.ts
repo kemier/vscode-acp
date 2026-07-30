@@ -4963,6 +4963,22 @@ let isCompacting = false;  // true while /compact is running
      renderQueue();
    }
 
+   // Add a user bubble for a queue entry at the moment it is actually being
+   // sent to the agent (drain / "Send Now" / pending-after-cancel). handleQueue
+   // deliberately does NOT show the bubble at queue time so a prompt queued
+   // during a long turn (e.g. /compact) stays hidden until it's processed.
+   function addUserBubbleForQueuedEntry(entry) {
+     chatHistory.push({ kind: 'message', role: 'user', text: entry.text || '(image)' });
+     saveState();
+     addMessageDOM('user', entry.text || '(image)');
+     // Reset turn + tool state so the next agent_message_chunk / tool_call
+     // creates a fresh turn container under this user bubble.
+     currentTurnEl = null;
+     currentToolsListEl = null;
+     currentToolsCountEl = null;
+     currentToolCount = 0;
+   }
+
    // Remove a message from the queue by index
    function removeQueuedMessage(index) {
      messageQueue.splice(index, 1);
@@ -5036,20 +5052,22 @@ let isCompacting = false;  // true while /compact is running
    messageQueue.splice(index, 1);
    renderQueue();
 
-  // The user message was already shown as a bubble when it was queued
-  // (handleQueue adds it to chatHistory + DOM immediately). Don't re-add.
+  // The user bubble is added when the message is actually sent (not at
+  // queue time), so it must be added here. Helper centralizes the
+  // chatHistory/DOM/turn-reset so every drain path is consistent.
   if (isProcessing) {
    // Set the pending message; it will be sent once promptEnd fires
    // after the cancel completes.
     pendingSendAfterCancel = entry;
     vscode.postMessage({ type: 'cancelTurn' });
   } else {
-     // Not processing — send directly. The user bubble is already shown.
+     // Not processing — send directly now and show the bubble.
     // Route slash commands through handleLocalSlashCommand so local UI
     // (compaction progress, clear, etc.) is triggered properly.
     if (entry.text && entry.text.startsWith('/') && handleLocalSlashCommand(entry.text)) {
-       // Local slash command handled it.
+       // Local slash command handled it — no user bubble.
      } else {
+       addUserBubbleForQueuedEntry(entry);
        hasSentPrompt = true;
        vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
      }
@@ -5063,15 +5081,17 @@ const entry = messageQueue.shift();
 renderQueue();
  // Dismiss /ps panel (respecting min display window) — a new turn is starting.
  dismissPsPanel(false);
- // The user message was already shown as a bubble when it was queued
- // (handleQueue adds it to chatHistory + DOM immediately). Just send
- // the prompt to the agent — don't re-add the bubble.
+ // The user message is shown as a bubble NOW (at drain time, not queue
+ // time) — handleQueue only added the queue chip so the prompt stayed
+ // hidden while it was genuinely queued (e.g. during a long /compact).
 hasSentPrompt = true;
  if (entry.text && entry.text.startsWith('/') && handleLocalSlashCommand(entry.text)) {
    vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drainQueue: handled as local slash command' });
-   // Local slash command handled it — don't send as prompt.
+   // Local slash command handled it — don't send as prompt, and don't add
+   // a user bubble (slash commands render their own output).
  } else {
    vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drainQueue: sending as sendPrompt' });
+   addUserBubbleForQueuedEntry(entry);
    vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
  }
 return true;
@@ -6168,13 +6188,13 @@ var _isMutatingCmd = /^\\/(compact|summarize|compress)\\b/i.test(text) ||
   vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] handleQueue: STEERED msg (multi-steer)' });
 } else {
  vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] handleQueue: QUEUED msg (not steered), _supportsSteer=' + _supportsSteer + ' hasSteeredThisTurn=' + hasSteeredThisTurn + ' _isMutatingCmd=' + _isMutatingCmd + ' messageQueue.length=' + (messageQueue.length + 1) });
-// Show the message as a normal user bubble in the main chat panel
-// immediately — it will be dealt with as the next turn when the current
-// turn finishes. drainQueue() will NOT re-add it (the bubble is already
-// visible); it only sends the prompt to the agent.
-chatHistory.push({ kind: 'message', role: 'user', text: text || '(image)' });
-saveState();
-addMessageDOM('user', text || '(image)');
+// For deferred-queue agents (Claude, and any agent that can't steer
+// mid-turn), do NOT show the message as a user bubble yet — only the
+// queue chip. Showing the bubble immediately is misleading during a
+// long turn (e.g. /compact running for minutes): the user sees their
+// prompt appear in the conversation as if it were being processed, when
+// it is actually still queued. drainQueue() adds the bubble at the
+// moment the message is actually sent to the agent.
 queueMessage(text, images);
 }
  }
@@ -11956,11 +11976,12 @@ sessionState = {
       pendingSendAfterCancel = null;
       setTimeout(() => {
         if (!isProcessing) {
-          // Message was already shown in sendQueuedMessageNow. Route slash
+          // Show the user bubble now (not at queue time) and route slash
           // commands through handleLocalSlashCommand so local UI is triggered.
           if (entry.text && entry.text.startsWith('/') && handleLocalSlashCommand(entry.text)) {
             // Local slash command handled it.
           } else {
+            addUserBubbleForQueuedEntry(entry);
             hasSentPrompt = true;
             vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
           }
