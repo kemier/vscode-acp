@@ -6118,10 +6118,20 @@ var end = displayText.length;
    // lets the user interrupt the current turn to deal with it sooner.
  var _agentName = (sessionState && (sessionState.agentName || sessionState.agentConfigKey)) || '';
  // Agents that support session/steer: EricCLI (native),
-  // Codex (via codex-acp turn/steer), Claude Code (via claude-code-acp
-  // steer queue + drain). All three handle the session/steer
-  // notification — the message is injected mid-turn without cancelling.
-var _supportsSteer = /ericli|codex|claude/i.test(_agentName);
+  // Codex (via codex-acp turn/steer) and EricCLI handle the session/steer
+  // notification as REAL mid-turn injection — the message is injected into
+  // the agent's input queue and drained at the next iteration boundary,
+  // within the SAME streaming turn. For those agents we steer.
+  //
+  // Claude Code is deliberately EXCLUDED: claude-code-acp cannot inject
+  // mid-turn (Claude CLI has no mid-turn input channel), so its steer is
+  // DEFERRED — queued and drained as sequential --resume prompts only AFTER
+  // the current turn finishes. Steering it would show an immediate user
+  // bubble with no live response (misleading). Instead, route Claude
+  // mid-stream prompts through the visible message queue (queue chip +
+  // drainQueue on promptEnd), matching the user's expectation that queued
+  // prompts are visibly queued and auto-drained.
+var _supportsSteer = /ericli|codex/i.test(_agentName);
  // Mutating slash commands (/compact, /clear, /index build, etc.) must never
  // be steered — they need to be sent as a full session/prompt after the current
  // turn ends, not injected mid-turn. Read-only commands (/ps, /status, /tools)
