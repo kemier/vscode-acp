@@ -9003,10 +9003,23 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     var total = 0;
     var spawnCount = 0;
     var agentOpCount = 0;
+    // Track unique skill names loaded during this turn — file reads of
+    // SKILL.md, references/*.md, and manage_skills(read) all fold into
+    // a single "loaded N skill(s)" summary.
+    var loadedSkills = {};
     for (var i = 0; i < titles.length; i++) {
       var cat;
       var kind = kinds && kinds[i];
       var ri = rawInputs && rawInputs[i];
+      // Skill loading detection — checked BEFORE kind/title heuristics so
+      // that file reads of SKILL.md / references within skill directories
+      // are counted as skill loads, not generic reads or commands.
+      var _skillName = detectSkillLoad(titles[i], kind, ri);
+      if (_skillName) {
+        loadedSkills[_skillName] = true;
+        total++;
+        continue;
+      }
       // Prefer concrete ACP kinds (read/edit/…) over title heuristics. A read of
       // a file named close_agent must not become "1 subagent op".
       // kind=think is excluded: Claude Agent spawns misuse think + description
@@ -9043,8 +9056,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     if (counts.command) parts.push(counts.command + ' command' + (counts.command > 1 ? 's' : ''));
     if (counts.plan) parts.push(counts.plan + ' plan update' + (counts.plan > 1 ? 's' : ''));
     if (counts.todo) parts.push(counts.todo + ' todo' + (counts.todo > 1 ? 's' : ''));
-    if (counts.skill_load) parts.push('load ' + counts.skill_load + ' skill' + (counts.skill_load > 1 ? 's' : ''));
-    if (counts.skill_read) parts.push('read ' + counts.skill_read + ' skill' + (counts.skill_read > 1 ? 's' : ''));
+    // Skill loading — unified count of unique skills loaded (manage_skills read +
+    // file reads of SKILL.md / references within skill directories).
+    var _skillCount = Object.keys(loadedSkills).length;
+    if (_skillCount > 0) parts.push('loaded ' + _skillCount + ' skill' + (_skillCount > 1 ? 's' : ''));
+    // Non-loading skill operations (search, create, update, delete) — still
+    // shown separately since they are distinct actions, not file reads.
     if (counts.skill_search) parts.push('search ' + counts.skill_search + ' skill' + (counts.skill_search > 1 ? 's' : ''));
     if (counts.skill_create) parts.push('create ' + counts.skill_create + ' skill' + (counts.skill_create > 1 ? 's' : ''));
     if (counts.skill_update) parts.push('update ' + counts.skill_update + ' skill' + (counts.skill_update > 1 ? 's' : ''));
@@ -9089,6 +9106,105 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     return false;
   }
 
+  // Skill-loading detection for collapsed-mode summary.
+  // Detects tool calls that load skill content (read SKILL.md, read references
+  // within skill directories, ericli manage_skills read action) and returns the
+  // skill name so the summary can show "loaded N skill(s)" instead of counting
+  // each file read separately.
+  //
+  // Supports all three agents:
+  //  - EricCLI: manage_skills tool with action=read, name=<skill-name>
+  //    + read_file of ~/.cli-4-ericai/skills/<name>/references/*.md
+  //  - Codex: read_file of ~/.codex/skills/<name>/SKILL.md and references/*.md
+  //    (rawInput.locations[].path or rawInput.path)
+  //  - Claude Code: Read tool with file_path=~/.claude/skills/<name>/SKILL.md
+  //    (rawInput.file_path)
+  //  - Kiro: read of ~/.kiro/skills/<name>/SKILL.md
+  //    (rawInput.path or locations[].path)
+  // Returns the skill name (e.g. "jira-skill") or '' if not a skill load.
+  function detectSkillLoad(title, kind, rawInput) {
+    var t = String(title || '').trim().toLowerCase();
+    // Parse rawInput — may be a JSON string from persisted state.
+    var ri = rawInput;
+    if (typeof ri === 'string') {
+      try { ri = JSON.parse(ri); } catch (e) { ri = null; }
+    }
+    if (!ri || typeof ri !== 'object') ri = {};
+
+    // --- EricCLI: manage_skills tool ---
+    // Title: "Read skill: jira-skill"  OR  rawInput: { action: "read", name: "jira-skill" }
+    var _toolName = String(ri._toolName || ri.toolName || '').trim().toLowerCase();
+    if (_toolName === 'manage_skills' || t === 'manage_skills' ||
+        t.indexOf('read skill:') === 0 || t.indexOf('read skill ') === 0) {
+      var _skillName = ri.name || ri.skill || ri.skill_name || '';
+      if (typeof _skillName === 'string' && _skillName.trim()) {
+        return _skillName.trim();
+      }
+      // Extract from title "Read skill: jira-skill"
+      var _titleMatch = t.match(/read skill\\s*:?\\s*(.+)/);
+      if (_titleMatch && _titleMatch[1].trim()) return _titleMatch[1].trim();
+      return 'unknown-skill';
+    }
+
+    // --- File reads of skill content ---
+    // Collect all possible path fields from rawInput.
+    var paths = [];
+    if (typeof ri.path === 'string') paths.push(ri.path);
+    if (typeof ri.file_path === 'string') paths.push(ri.file_path);
+    if (typeof ri.filePath === 'string') paths.push(ri.filePath);
+    // Codex format: locations: [{ path: "..." }]
+    if (Array.isArray(ri.locations)) {
+      for (var li = 0; li < ri.locations.length; li++) {
+        if (ri.locations[li] && typeof ri.locations[li].path === 'string') {
+          paths.push(ri.locations[li].path);
+        }
+      }
+    }
+    // Claude Code: Read tool with file_path, also check rawInput directly
+    if (typeof ri.file_path === 'string') paths.push(ri.file_path);
+
+    // Check each path against skill directory patterns.
+    // Skill dirs: ~/.codex/skills/, ~/.cli-4-ericai/skills/, ~/.kiro/skills/,
+    // ~/.claude/skills/, .agents/skills/
+    for (var pi = 0; pi < paths.length; pi++) {
+      var p = String(paths[pi] || '');
+      // Match /skills/<skill-name>/SKILL.md or /skills/<skill-name>/references/...
+      var m = p.match(/\\/skills\\/([^\\/]+)\\/(?:SKILL\\.md|references\\/|scripts\\/|assets\\/|.*)/i);
+      if (!m) {
+        // Also match .agents/skills/<name>/...
+        m = p.match(/\\.agents\\/skills\\/([^\\/]+)\\//i);
+      }
+      if (!m) {
+        // Direct SKILL.md match: .../<skill-name>/SKILL.md (without /skills/ prefix)
+        m = p.match(/\\/([^\\/]+)\\/SKILL\\.md$/i);
+      }
+      if (m && m[1]) {
+        // Don't match if the "skill name" is a common directory (src, lib, etc.)
+        var candidate = m[1].toLowerCase();
+        if (candidate !== 'src' && candidate !== 'lib' && candidate !== 'test' &&
+            candidate !== 'tests' && candidate !== 'docs' && candidate !== 'config') {
+          return m[1];
+        }
+      }
+    }
+
+    // --- Title-based fallback ---
+    // "Reading SKILL.md:1" (Kiro) or "Read file '.../SKILL.md'" (Codex)
+    if (t.indexOf('skill.md') >= 0 || t.indexOf('reading skill') >= 0) {
+      // Try to extract skill name from title
+      var _tm = t.match(/skills\\/([^\\/]+)/);
+      if (_tm && _tm[1]) return _tm[1];
+      // Check if rawInput has a path we can extract from
+      if (paths.length > 0) {
+        var _pm = paths[0].match(/\\/skills\\/([^\\/]+)/);
+        if (_pm && _pm[1]) return _pm[1];
+      }
+      return 'skill';
+    }
+
+    return '';
+  }
+
    function categorizeToolCall(title) {
      var t = (title || '').toLowerCase().trim();
      // Extract the first word (command name) for matching, since full titles
@@ -9097,17 +9213,15 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      // Also check the full title for keywords like "read file" or "search for"
      // but only match word-boundary keywords, not substrings inside paths.
      var kw = ' ' + t + ' ';
-     // Skill management (ericli manage_skills) — checked first because
-     // "Read skill:" / "Search skills:" start with read/search keywords.
-     // Returns sub-categories so the summary shows "read 1 skill" not "1 skill".
-     if (firstWord === 'load' || kw.indexOf(' load skill') >= 0) return 'skill_load';
-     if (t.indexOf('read skill:') === 0 || t.indexOf('read skill ') === 0) return 'skill_read';
-     if (t.indexOf('search skills:') === 0 || t.indexOf('search skills ') === 0) return 'skill_search';
-     if (t.indexOf('create skill:') === 0 || t.indexOf('create skill ') === 0) return 'skill_create';
-     if (t.indexOf('update skill:') === 0 || t.indexOf('update skill ') === 0) return 'skill_update';
-     if (t.indexOf('delete skill:') === 0 || t.indexOf('delete skill ') === 0) return 'skill_delete';
-     if (firstWord === 'manage_skills' || kw.indexOf(' validate skill ') >= 0 ||
-         kw.indexOf(' skill info:') >= 0 || kw.indexOf(' skill info ') >= 0) return 'skill_other';
+    // Skill management — skill_load / skill_read are handled by detectSkillLoad
+    // (which runs before categorizeToolCall), so only non-loading skill ops
+    // (search, create, update, delete, validate, info) are categorized here.
+    if (t.indexOf('search skills:') === 0 || t.indexOf('search skills ') === 0) return 'skill_search';
+    if (t.indexOf('create skill:') === 0 || t.indexOf('create skill ') === 0) return 'skill_create';
+    if (t.indexOf('update skill:') === 0 || t.indexOf('update skill ') === 0) return 'skill_update';
+    if (t.indexOf('delete skill:') === 0 || t.indexOf('delete skill ') === 0) return 'skill_delete';
+    if (firstWord === 'manage_skills' || kw.indexOf(' validate skill ') >= 0 ||
+        kw.indexOf(' skill info:') >= 0 || kw.indexOf(' skill info ') >= 0) return 'skill_other';
      if (firstWord === 'read' || firstWord === 'read_file' || firstWord === 'fs_read' ||
          firstWord.indexOf('read_') === 0 || firstWord === 'cat' || firstWord === 'view' ||
          kw.indexOf(' read ') >= 0 || kw.indexOf(' view ') >= 0 || kw.indexOf(' read_file ') >= 0) {
