@@ -1840,11 +1840,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         this._cancelFallbackTimer = null;
       }
       this._pendingPromptSessionId = null;
-      logError('Prompt failed', e);
-      const errMsg = e.data ? `${e.message}: ${e.data}` : e.message || 'Prompt failed';
-      // Suppress the error if the connection was closed because the user
-      // started a new conversation or switched sessions — the old session's
-      // in-flight prompt is expected to fail during teardown.
+     logError('Prompt failed', e);
+      const dataStr = e.data
+        ? (typeof e.data === 'string' ? e.data : JSON.stringify(e.data))
+        : '';
+      const errMsg = dataStr ? `${e.message}: ${dataStr}` : e.message || 'Prompt failed';
+     // Suppress the error if the connection was closed because the user
+     // started a new conversation or switched sessions — the old session's
+     // in-flight prompt is expected to fail during teardown.
       if (/connection closed/i.test(errMsg) && this.sessionManager.getActiveSessionId() !== activeId) {
         this.streamCoalescer.flush(activeId);
         this.postMessage({ type: 'promptEnd', stopReason: 'cancelled' });
@@ -2008,13 +2011,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     try {
       await this.sessionManager.setMode(activeId, modeId);
     } catch (e: any) {
-      logError('Failed to set mode', e);
-      this.postMessage({
-        type: 'error',
-        message: `Failed to set mode: ${e.data ? e.message + ': ' + e.data : e.message}`,
-      });
-    }
-  }
+     logError('Failed to set mode', e);
+     this.postMessage({
+       type: 'error',
+        message: `Failed to set mode: ${e.data ? e.message + ': ' + (typeof e.data === 'string' ? e.data : JSON.stringify(e.data)) : e.message}`,
+     });
+   }
+ }
 
   /**
    * Load model → supports-image map from ~/.codex catalog JSON files.
@@ -2097,13 +2100,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     try {
       await this.sessionManager.setModel(activeId, modelId);
     } catch (e: any) {
-      logError('Failed to set model', e);
-      this.postMessage({
-        type: 'error',
-        message: `Failed to set model: ${e.data ? e.message + ': ' + e.data : e.message}`,
-      });
-    }
-  }
+     logError('Failed to set model', e);
+     this.postMessage({
+       type: 'error',
+        message: `Failed to set model: ${e.data ? e.message + ': ' + (typeof e.data === 'string' ? e.data : JSON.stringify(e.data)) : e.message}`,
+     });
+   }
+ }
 
   /**
    * Handle generic config-option change from webview picker
@@ -2121,10 +2124,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       this.postMessage({ type: 'configOptionsUpdate', configOptions: options });
     } catch (e: any) {
       logError('Failed to set config option', e);
-      this.postMessage({
-        type: 'error',
-        message: `Failed to set ${configId}: ${e.data ? e.message + ': ' + e.data : e.message}`,
-      });
+     this.postMessage({
+       type: 'error',
+        message: `Failed to set ${configId}: ${e.data ? e.message + ': ' + (typeof e.data === 'string' ? e.data : JSON.stringify(e.data)) : e.message}`,
+     });
       // Roll back optimistic update on the webview by replaying current state
       const session = this.sessionManager.getSession(activeId);
       this.postMessage({
