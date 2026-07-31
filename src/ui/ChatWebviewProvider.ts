@@ -79,11 +79,17 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    */
   private _cancelFallbackTimer: ReturnType<typeof setTimeout> | null = null;
 
-  /**
-   * Session ID that currently has a prompt in flight. Used by the
-   * cancel fallback timer to ensure it only fires for the correct session.
-   */
-  private _pendingPromptSessionId: string | null = null;
+  /** Monotonic counter incremented each time a new prompt starts. The cancel
+   *  fallback timer captures the value at creation time and only fires if it
+   *  hasn't changed, preventing a stale timer from force-aborting a new prompt
+   *  that started after the cancel was acknowledged. */
+  private _cancelGeneration: number = 0;
+
+ /**
+  * Session ID that currently has a prompt in flight. Used by the
+  * cancel fallback timer to ensure it only fires for the correct session.
+  */
+ private _pendingPromptSessionId: string | null = null;
 
   /**
    * Snapshot of modelImageSupport as a plain object (slug → boolean),
@@ -1410,7 +1416,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
               (message.message.indexOf('[DRAIN-DBG]') === 0 ||
                 message.message.indexOf('[WV-DIAG]') === 0 ||
                 message.message.indexOf('[WV-MERGE]') === 0 ||
-                message.message.indexOf('[WV-UPDATE]') === 0))
+                message.message.indexOf('[WV-UPDATE]') === 0 ||
+                message.message.indexOf('[STAGE-DBG]') === 0))
           ) {
             log('[DEBUG-WV] ' + (message.message || '(empty)'));
           }
@@ -1627,20 +1634,27 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // without starting an LLM turn. Skip context gathering and send
     // the text directly so the agent can intercept it.
     if (text.startsWith('/')) {
-      // Send promptStart so the webview sets isProcessing=true. Without this,
-      // agent_message_chunk notifications from slash commands (e.g. /index build,
-      // /tools, /stats) are dropped by the "After promptEnd the turn is closed"
-      // guard in the webview's sessionUpdate handler.
-      this.postMessage({ type: 'promptStart' });
+     // Send promptStart so the webview sets isProcessing=true. Without this,
+     // agent_message_chunk notifications from slash commands (e.g. /index build,
+     // /tools, /stats) are dropped by the "After promptEnd the turn is closed"
+     // guard in the webview's sessionUpdate handler.
+     this.postMessage({ type: 'promptStart' });
+      let slashStopReason: string = 'end_turn';
       try {
         // Kiro does not intercept `/compact` as a prompt — it requires
         // `_kiro.dev/commands/execute` (see kiro.dev ACP extensions).
         const session = this.sessionManager.getSession(activeId);
         const compactName = text.match(/^\/(compact|summarize|compress)(?:\s|$)/i)?.[1];
         if (compactName && this.sessionManager.isKiroAgentName(session?.agentName)) {
-          await this.handleExecuteKiroCommand('compact');
-        } else {
-          await this.sessionManager.sendPrompt(activeId, text);
+         await this.handleExecuteKiroCommand('compact');
+       } else {
+          // Increment cancel generation so stale timers from a previous
+          // cancel don't fire during this new prompt.
+          this._cancelGeneration++;
+         const slashResponse = await this.sessionManager.sendPrompt(activeId, text);
+          if (slashResponse?.stopReason) {
+            slashStopReason = slashResponse.stopReason;
+          }
         }
       } catch (e: any) {
         logError('Slash command failed', e);
@@ -1653,7 +1667,16 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         // at the webview first and queued messages to be drained before
         // the compacted text is rendered.
         this.streamCoalescer.flush(activeId);
-        this.postMessage({ type: 'promptEnd', stopReason: 'end_turn' });
+        // Clear the cancel fallback timer — the prompt has resolved
+        // (either completed or cancelled). Without this, a stale timer
+        // from a previous cancel can fire during the NEXT prompt and
+        // force-abort it, causing "Prompt already in progress" errors.
+        if (this._cancelFallbackTimer) {
+          clearTimeout(this._cancelFallbackTimer);
+          this._cancelFallbackTimer = null;
+        }
+        this._pendingPromptSessionId = null;
+        this.postMessage({ type: 'promptEnd', stopReason: slashStopReason });
       }
       return;
     }
@@ -1805,8 +1828,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     try {
-      this._pendingPromptSessionId = activeId;
-      const response = await this.sessionManager.sendPrompt(
+      // Increment the cancel generation so any stale cancel fallback timer
+      // from a previous turn won't fire during this new prompt.
+      this._cancelGeneration++;
+     this._pendingPromptSessionId = activeId;
+     const response = await this.sessionManager.sendPrompt(
         activeId,
         text,
         images,
@@ -1885,18 +1911,24 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // once the webview is unblocked. This matches codex-acp behavior
       // (turn interrupt without process kill).
       if (this._cancelFallbackTimer) {
-        clearTimeout(this._cancelFallbackTimer);
-      }
-      this._cancelFallbackTimer = setTimeout(() => {
-        if (this._pendingPromptSessionId === activeId) {
-          log('Cancel fallback: agent did not acknowledge within 5s, forcing promptEnd (session kept alive)');
-          this.streamCoalescer.flush(activeId);
-          this.sessionManager.forceAbortPrompt(activeId);
-          this.postMessage({ type: 'promptEnd', stopReason: 'cancelled' });
-          this._pendingPromptSessionId = null;
-        }
-        this._cancelFallbackTimer = null;
-      }, 5_000);
+       clearTimeout(this._cancelFallbackTimer);
+     }
+      const cancelGen = this._cancelGeneration;
+     this._cancelFallbackTimer = setTimeout(() => {
+        // Only fire if the SAME prompt is still pending — if a new prompt
+        // has started (pendingSendAfterCancel drained a queued message and
+        // a new sendPrompt was issued), the cancel generation will have
+        // changed. This prevents a stale timer from force-aborting a new
+        // prompt that started after the cancel was acknowledged.
+        if (this._pendingPromptSessionId === activeId && this._cancelGeneration === cancelGen) {
+         log('Cancel fallback: agent did not acknowledge within 5s, forcing promptEnd (session kept alive)');
+         this.streamCoalescer.flush(activeId);
+         this.sessionManager.forceAbortPrompt(activeId);
+         this.postMessage({ type: 'promptEnd', stopReason: 'cancelled' });
+         this._pendingPromptSessionId = null;
+       }
+       this._cancelFallbackTimer = null;
+     }, 5_000);
     }
   }
 
@@ -9885,6 +9917,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     e.stopPropagation();
      ensureTcTooltipEl();
      var data = stageEl._stageData || {};
+     // [STAGE-DBG] capture what _stageData holds at hover time — the smoking gun
+     // for "role not shown on hover". If role is absent here but was present at
+     // createStageElement, something between creation and hover wiped it.
+     try {
+       vscode.postMessage({ type: 'debugLog', message: '[STAGE-DBG] hover name="' + String(data.name || stageEl.getAttribute('data-stage-name') || '').slice(0, 60) + '" role="' + String(data.role) + '" hasRoleKey=' + ('role' in data) + ' dataKeys=[' + Object.keys(data).join(',') + ']' });
+     } catch (e2) {}
      var formatted = formatStagesTooltipText([data], '');
      if (!formatted) {
        formatted = 'Name: ' + (data.name || stageEl.getAttribute('data-stage-name') || '(unnamed)');
@@ -10131,6 +10169,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      if (!stageData.prompt_template) stageData.prompt_template = stagePrompt || '';
      stageData.name = stageName;
      stageData.status = iconStatus === 'error' ? 'failed' : iconStatus;
+     // [STAGE-DBG] capture exactly what role each stage is created with, so a
+     // future reproduce of "last N subagents' role missing on hover" reveals
+     // whether role was absent at creation (data) or lost later (merge/update).
+     try {
+       vscode.postMessage({ type: 'debugLog', message: '[STAGE-DBG] createStageElement name="' + String(stageName).slice(0, 60) + '" tcId="' + String(toolCallId).slice(0, 24) + '" role="' + String(stageData.role) + '" metaRole="' + String(stageMeta && stageMeta.role) + '" metaKeys=[' + (stageMeta ? Object.keys(stageMeta).join(',') : '') + ']' });
+     } catch (e) {}
      attachStageTooltip(stage, stageData);
      return stage;
    }
@@ -10469,6 +10513,15 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        var nameEl = stageEl.querySelector('.tc-stage-name');
        if (nameEl) nameEl.textContent = label;
      }
+     // [STAGE-DBG] tool_call_update / restore path. The patch.role has an
+     // 'agent' fallback so it should never be falsy — but Object.assign in
+     // attachStageTooltip copies undefined-valued keys, so if rawInput carries
+     // role: undefined explicitly it could clobber a prior truthy role. Log
+     // before/after to catch that.
+     try {
+       var _prevRole = stageEl._stageData && stageEl._stageData.role;
+       vscode.postMessage({ type: 'debugLog', message: '[STAGE-DBG] updateStageFromRawInput name="' + String(label).slice(0, 60) + '" prevRole="' + String(_prevRole) + '" patchRole="' + String(patch.role) + '" riSubagentType="' + String(rawInput.subagent_type) + '" riRole="' + String(rawInput.role) + '"' });
+     } catch (e) {}
      attachStageTooltip(stageEl, patch);
      var crew = stageEl.closest('.tool-call-inline.tc-subagent');
      if (crew) syncCrewParentRawInput(crew);
@@ -10563,6 +10616,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        }
        var idx = stagesWrap.querySelectorAll('.tc-stage').length + 1;
        var stageName = crewStageLabel(rawInput, title, idx);
+       // [STAGE-DBG] Claude/Codex extend path: each subagent spawn after the
+       // first appends a stage here. Logs what subagent_type/role the spawn
+       // carried so we can see if the last N spawns arrive without a role.
+       try {
+         vscode.postMessage({ type: 'debugLog', message: '[STAGE-DBG] extend-crew idx=' + idx + ' tcId="' + String(toolCallId).slice(0, 24) + '" subagent_type="' + String(rawInput && rawInput.subagent_type) + '" rawRole="' + String(rawInput && rawInput.role) + '" resolvedRole="' + String(stageMeta.role) + '" title="' + String(title).slice(0, 40) + '"' });
+       } catch (e) {}
        stagesWrap.appendChild(createStageElement(stageName, toolCallId, String(stagePrompt || ''), stageMeta));
        toolCalls[toolCallId] = existing;
        syncCrewParentRawInput(existing);
@@ -10854,6 +10913,13 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
               : ((status === 'failed' || status === 'error') ? 'failed'
                 : (status === 'completed' ? 'completed' : 'failed'))
           ));
+          // [STAGE-DBG] Kiro multi-stage initial render: logs each stage's
+          // role as it comes off the wire in rawInput.stages[]. If a stage's
+          // role is absent here, the tooltip will omit "Role:" by design
+          // (formatStagesTooltipText: if (stage.role)).
+          try {
+            vscode.postMessage({ type: 'debugLog', message: '[STAGE-DBG] kiro-stages init idx=' + sti + ' name="' + String(st.name || '').slice(0, 60) + '" role="' + String(st.role) + '" hasRoleKey=' + ('role' in st) + ' stageKeys=[' + Object.keys(st).join(',') + ']' });
+          } catch (e) {}
           attachStageTooltip(stageDivs[sti], Object.assign({}, st, {
             status: tipStatus === 'error' ? 'failed' : tipStatus,
           }));
