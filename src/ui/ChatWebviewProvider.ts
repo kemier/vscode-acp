@@ -8039,9 +8039,15 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           ? !body.classList.contains('expanded')
           : body.classList.contains('collapsed');
        setFoldExpanded(body, willExpand);
-       // Sticky expand only while the turn is still streaming — completed
-       // turns must not stay open across promptEnd / history restore.
-       body._userExpanded = !isLoadingSession && isProcessing && willExpand;
+       // Sticky expand records the user's INTENT. It is deliberately not
+       // gated on isProcessing: ensureCurrentTurnFold() runs on every
+       // mid-stream tool call and thought, and agents can emit updates while
+       // isProcessing reads false (see "Claude ACP may keep streaming between
+       // turns" below) — clearing the flag then snapped a fold the user had
+       // just opened right back shut. Completed turns are still shut by
+       // promptEnd (_endBody._userExpanded = false) and by
+       // forceCollapseTurnFolds() on history restore, so this cannot leak open.
+       body._userExpanded = !isLoadingSession && willExpand;
        // When expanding a fold during streaming, the content grows via CSS
        // (no scroll event fires), so userScrolledUp stays false. The next
        // streaming chunk's autoScrollIfAtBottom() then yanks the user back
@@ -8391,9 +8397,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         body.appendChild(currentAssistantEl);
       }
 
-      // Default shut. Honor sticky expand only while a live turn is streaming
-      // (isProcessing) — never during session/load or after promptEnd.
-      var allowSticky = collapsed && body._userExpanded && isProcessing && !isLoadingSession;
+      // Default shut. Honor sticky expand whenever the user opened this fold —
+      // never during session/load. NOT gated on isProcessing: this runs on every
+      // mid-stream tool call, and a false reading between turns used to clear
+      // the flag and re-collapse a fold the user had just expanded. promptEnd
+      // and forceCollapseTurnFolds() still shut completed turns.
+      var allowSticky = collapsed && body._userExpanded && !isLoadingSession;
       if (collapsed && !allowSticky) {
         body._userExpanded = false;
         setFoldExpanded(body, false);
