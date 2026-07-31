@@ -6071,25 +6071,17 @@ var end = displayText.length;
     if (isProcessing) {
       // /rename works even during streaming (like Claude Code's immediate commands)
       if (handleLocalSlashCommand()) { return; }
-      // Slash commands that are safe to send during streaming (read-only,
-      // non-mutating) bypass the queue — the agent handles them as side-channels
-      // without starting an LLM turn. This mirrors codex TUI where /ps, /status,
-      // etc. are dispatched immediately regardless of whether a turn is running.
-      // BUT mutating commands (/compact, /clear, /index build, etc.) must be
-      // queued — sending session/prompt while a turn is in-flight causes a race
-      // condition. handleLocalSlashCommand returns false for these during
-      // streaming, so we detect them here and queue instead of sending.
-      var slashText = promptInput.value.trim();
-      // Mutating slash commands that must be queued during streaming:
-      // /compact, /summarize, /compress (context compaction)
-      // /clear (conversation wipe)
-      // /index build|rebuild|refresh|update|embed|clear|delete (index mutation)
-      var _isMutatingSlash = slashText.startsWith('/') && (
-        /^\\/(compact|summarize|compress)\\b/i.test(slashText) ||
-        /^\\/clear\\b/i.test(slashText) ||
-        /^\\/index\\s+(build|rebuild|refresh|update|embed|clear|delete)\\b/i.test(slashText)
-      );
-      if (slashText.startsWith('/') && !_isMutatingSlash) { handleSend(); return; }
+      // While a turn is streaming, ANY slash command sent to the agent must be
+      // queued rather than dispatched immediately. claude-code-acp serializes
+      // prompts per session (sessionPromptLocks), so a slash command sent
+      // mid-turn waits for the active turn to finish before running — if we
+      // sent it immediately the user would see nothing until the turn ends
+      // anyway, and historically the concurrent session/prompt raced with the
+      // in-flight turn and could drop the command's output entirely (the
+      // /skills-mid-turn regression: zero agent_message_chunk in the log).
+      // Queuing shows the queue chip so the user knows the command is pending
+      // and will run when the turn finishes. Local-only commands (/rename)
+      // are already handled above by handleLocalSlashCommand().
       handleQueue();
       return;
     }

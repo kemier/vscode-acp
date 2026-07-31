@@ -594,6 +594,13 @@ export class SessionManager extends EventEmitter {
     if (pendingCmds) {
       sessionInfo.availableCommands = pendingCmds;
       this.pendingAvailableCommands.delete(sessionInfo.sessionId);
+      // Emit so the webview picks up the commands that arrived before the
+      // session was registered. Without this, commands sent during session/new
+      // (before the response registers the session) are stored on the session
+      // but never pushed to the slash-command popup until the next
+      // available_commands_update or a full sendCurrentState — so the popup
+      // shows only the client-side builtins until the first LLM response.
+      this.emit('available-commands-changed', sessionInfo.sessionId, pendingCmds);
     }
     const pendingCfg = this.pendingConfigOptions.get(sessionInfo.sessionId);
     if (pendingCfg !== undefined) {
@@ -2016,9 +2023,13 @@ export class SessionManager extends EventEmitter {
       sessionInfo.title = histEntry.title;
     }
     this.sessions.set(sessionId, sessionInfo);
+    // Set activeSessionId BEFORE drainPending so the 'available-commands-changed'
+    // event drainPending emits (for commands buffered during session/new)
+    // passes the active-session guard in the extension listener and reaches
+    // the webview's slash-command popup.
+    this.activeSessionId = sessionId;
     this.drainPending(sessionInfo);
     this.agentSessions.set(agentName, sessionId);
-    this.activeSessionId = sessionId;
     this.emit('agent-connected', agentName);
     this.emit('active-session-changed', sessionId);
 
