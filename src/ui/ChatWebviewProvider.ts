@@ -8095,13 +8095,30 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       if (!el || el._scrollTrackerBound) return;
       el._scrollTrackerBound = true;
       el._userScrolledUp = false;
-      el.addEventListener('scroll', function() {
-        var atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
-        el._userScrolledUp = !atBottom;
+     el.addEventListener('scroll', function() {
+       var atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 30;
+       el._userScrolledUp = !atBottom;
+     });
+   }
+
+    /**
+     * Track user-initiated expand/collapse of a thought <details> block.
+     * When the user manually opens a thought to read the streaming reasoning,
+     * _userExpanded is set to true so commitOrDiscardCurrentThought does NOT
+     * force it shut when a tool call / assistant text / promptEnd commits it.
+     * Without this, every agent_message_chunk snapped the thought shut
+     * instantly — the "expand collapsed → collapses again during streaming" bug.
+     */
+    function attachThoughtExpandTracker(detailsEl) {
+      if (!detailsEl || detailsEl._expandTrackerBound) return;
+      detailsEl._expandTrackerBound = true;
+      detailsEl._userExpanded = false;
+      detailsEl.addEventListener('toggle', function() {
+        detailsEl._userExpanded = detailsEl.open;
       });
     }
 
-    function isMeaningfulThought(el) {
+   function isMeaningfulThought(el) {
       if (!el) return false;
       if (el === currentThoughtEl) return true;
       if (el.classList.contains('streaming')) return true;
@@ -8125,13 +8142,21 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
 
     function commitOrDiscardCurrentThought() {
-      if (!currentThoughtEl && !(currentThoughtText || thoughtDomBase)) return;
-      if (currentThoughtEl) {
-        finalizeThought();
-        currentThoughtEl.open = false;
-      }
-      var historyText = getAccumulatedThoughtText();
-      if (historyText) {
+     if (!currentThoughtEl && !(currentThoughtText || thoughtDomBase)) return;
+     if (currentThoughtEl) {
+       finalizeThought();
+       // Preserve user-expanded thought blocks: if the user manually opened
+       // the <details> to read the streaming reasoning, don't force it shut
+       // when a tool call / assistant text / promptEnd commits the thought.
+       // This was the root cause of "expand collapsed in kiro → collapses
+       // again during streaming" — commitOrDiscardCurrentThought ran on
+       // every agent_message_chunk, snapping the thought shut instantly.
+       if (!currentThoughtEl._userExpanded) {
+         currentThoughtEl.open = false;
+       }
+     }
+     var historyText = getAccumulatedThoughtText();
+     if (historyText) {
         // Ensure DOM still shows the committed text (reuse paths can desync).
         if (currentThoughtEl && currentThoughtTextEl && !currentThoughtTextEl.textContent.trim()) {
           currentThoughtTextEl.textContent = historyText;
@@ -8297,13 +8322,19 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       }
       attachTurnSummaryClick(summary);
 
-      if (!body) {
-        // Create already-collapsed so a missing class never flashes open content.
-        body = document.createElement('div');
-        body.className = collapsed ? 'turn-fold-body collapsed' : 'turn-fold-body';
-      }
+     if (!body) {
+       // Create already-collapsed so a missing class never flashes open content.
+       // Preserve _userExpanded from any legacy nested body (under .turn-tools)
+       // so a fold the user opened during streaming stays open across rebuilds.
+       var _legacyBody = turn.querySelector(':scope > .turn-tools > .turn-fold-body');
+       var _legacyExpanded = !!(_legacyBody && (_legacyBody._userExpanded ||
+                        _legacyBody.classList.contains('expanded')));
+       body = document.createElement('div');
+       body.className = collapsed ? 'turn-fold-body collapsed' : 'turn-fold-body';
+       if (_legacyExpanded) body._userExpanded = true;
+     }
 
-      // Rebuild into the canonical turn-level structure.
+     // Rebuild into the canonical turn-level structure.
       // Always pin summary as the first child so nothing (e.g. an early thought)
       // can sit above the collapse control outside the fold.
       turn.insertBefore(summary, turn.firstChild);
@@ -11638,12 +11669,13 @@ forceCollapseTurnFolds();
     el.className = 'thought-block';
     if (typeof historyIndex === 'number') el._historyIndex = historyIndex;
     el._thoughtCommitted = true;
-    el.innerHTML =
-        '<summary>' + (durationSec > 0 ? 'Thought for ' + durationSec + 's' : (durationSec === 0 ? 'Thought for &lt;1s' : 'Thought')) + '</summary>' +
-       '<div class="thought-content">' + escapeHtml(text.trim().replace(/\\n{3,}/g, '\\n\\n')) + '</div>';
-    // Attach into the current turn so the thought groups with its assistant
-    // response (matching the live-streaming layout). During replay the chatHistory
-    // order is user -> thought -> assistant, so the turn may not exist yet when
+   el.innerHTML =
+       '<summary>' + (durationSec > 0 ? 'Thought for ' + durationSec + 's' : (durationSec === 0 ? 'Thought for &lt;1s' : 'Thought')) + '</summary>' +
+      '<div class="thought-content">' + escapeHtml(text.trim().replace(/\\n{3,}/g, '\\n\\n')) + '</div>';
+   attachThoughtExpandTracker(el);
+   // Attach into the current turn so the thought groups with its assistant
+   // response (matching the live-streaming layout). During replay the chatHistory
+   // order is user -> thought -> assistant, so the turn may not exist yet when
     // the thought is rendered; create it here and prepend the thought to the top.
     if (!currentTurnEl) {
       currentTurnEl = document.createElement('div');
@@ -13337,12 +13369,13 @@ sessionState = {
               var existingThought = streamingThoughts.length
                 ? streamingThoughts[streamingThoughts.length - 1]
                 : null;
-            if (existingThought) {
-              currentThoughtEl = existingThought;
-              currentThoughtTextEl = existingThought.querySelector('.thought-content');
-              attachThoughtContentScrollTracker(currentThoughtTextEl);
-              thoughtDomBase = (currentThoughtTextEl && currentThoughtTextEl.textContent) || '';
-              if (thoughtDomBase && !/\\n$/.test(thoughtDomBase)) thoughtDomBase += '\\n\\n';
+           if (existingThought) {
+             currentThoughtEl = existingThought;
+             currentThoughtTextEl = existingThought.querySelector('.thought-content');
+             attachThoughtContentScrollTracker(currentThoughtTextEl);
+             attachThoughtExpandTracker(existingThought);
+             thoughtDomBase = (currentThoughtTextEl && currentThoughtTextEl.textContent) || '';
+             if (thoughtDomBase && !/\\n$/.test(thoughtDomBase)) thoughtDomBase += '\\n\\n';
               // Keep the just-received chunk in currentThoughtText; don't wipe it.
               thoughtEndTime = null;
               currentThoughtEl.classList.add('streaming');
@@ -13366,11 +13399,12 @@ sessionState = {
                 // Track user scroll within the thought content so streaming
                 // chunks don't yank the user back to the top when they've
                 // scrolled down to read.
-                attachThoughtContentScrollTracker(currentThoughtTextEl);
-                // Append in turn order inside the fold (do not replace prior thoughts).
-                placeThoughtInTurn(currentThoughtEl);
-                if (!thoughtStartTime) thoughtStartTime = Date.now();
-                thoughtDomBase = '';
+               attachThoughtContentScrollTracker(currentThoughtTextEl);
+               attachThoughtExpandTracker(currentThoughtEl);
+               // Append in turn order inside the fold (do not replace prior thoughts).
+               placeThoughtInTurn(currentThoughtEl);
+               if (!thoughtStartTime) thoughtStartTime = Date.now();
+               thoughtDomBase = '';
               }
             }
            var displayThought = (thoughtDomBase + currentThoughtText).replace(/^\\s+/, '').replace(/\\n{3,}/g, '\\n\\n');
