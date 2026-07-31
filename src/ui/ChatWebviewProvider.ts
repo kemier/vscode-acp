@@ -9592,8 +9592,25 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         parentToolUseId: null,
       });
       saveState();
-      storeDiffContent(toolCallId, content);
-      addToolCallInline(toolCallId, title, status, rawInput, toolKind, locations, null);
+     storeDiffContent(toolCallId, content);
+     // For edit tool calls with a generic title (e.g. "Editing files"),
+     // extract the file path from diff content to show in the title.
+     var _editPath = null;
+     if (content && Array.isArray(content)) {
+       for (var _ci = 0; _ci < content.length; _ci++) {
+         var _c = content[_ci];
+         if (_c && (_c.type === 'diff' || _c.type === 'text') && _c.path) {
+           _editPath = _c.path;
+           break;
+         }
+       }
+     }
+     // If the title is generic and we found a path from diff content, use it.
+     if (_editPath && (title === 'Editing files' || title === 'Edit file' || !title)) {
+       var _baseName = _editPath.split('/').pop() || _editPath;
+       title = "Edit '" + _baseName + "'";
+     }
+     addToolCallInline(toolCallId, title, status, rawInput, toolKind, locations, null);
       vscode.postMessage({ type: 'debugLog', message: '[WV-ADDTC] AFTER push chatHistoryLen=' + chatHistory.length });
     }
 
@@ -9960,15 +9977,20 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
   var hoverTarget = el.querySelector('.tc-title') || el;
 
   hoverTarget.addEventListener('pointerenter', function(e) {
-    // Only show tooltips on expanded tool rows — never on the collapsed summary.
-    var parentList = el.closest('.turn-tools-list');
-    if (parentList && parentList.classList.contains('collapsed')) return;
-    var foldBody = el.closest('.turn-fold-body');
-    if (foldBody && foldBody.classList.contains('collapsed')) return;
+   // Only show tooltips on expanded tool rows — never on the collapsed summary.
+   var parentList = el.closest('.turn-tools-list');
+   if (parentList && parentList.classList.contains('collapsed')) return;
+   var foldBody = el.closest('.turn-fold-body');
+   if (foldBody && foldBody.classList.contains('collapsed')) return;
 
-    var title = (hoverTarget.textContent) || el._toolTitle || '';
-    var formatted = formatToolCallTooltipText(title, el._rawInput, el._locations);
-    if (!formatted) return;
+   // Only show the tooltip when the title text is actually truncated
+   // (overflowing). If the full title fits in the row, there's nothing
+   // extra to show — hovering the whole line should be a no-op.
+   if (hoverTarget.scrollWidth <= hoverTarget.clientWidth + 2) return;
+
+   var title = (hoverTarget.textContent) || el._toolTitle || '';
+   var formatted = formatToolCallTooltipText(title, el._rawInput, el._locations);
+   if (!formatted) return;
 
      // If a stage tooltip is currently visible (from a child element), hide it
      // so the parent tooltip can take over.
@@ -10813,8 +10835,27 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      el._locations = locations || null;
      el._toolTitle = title || 'Tool Call';
       var displayTitle = title || 'Tool Call';
-      // Title itself may be a JSON operation blob from Kiro.
-      var titleTrim = String(displayTitle).trim();
+      // Clean up multi-line titles: shell commands with comments (e.g.
+      // "# Find latest logs\\nfind ...") should show only the first
+      // non-comment, non-empty line so the tool call doesn't look like
+      // mixed assistant text + tool call.
+      var _dt = String(displayTitle);
+      if (_dt.indexOf('\\n') >= 0) {
+        var _dtLines = _dt.split('\\n');
+        var _cleanedTitle = '';
+        for (var _li = 0; _li < _dtLines.length; _li++) {
+          var _line = _dtLines[_li].trim();
+          if (_line && !_line.startsWith('#') && !_line.startsWith('//')) {
+            _cleanedTitle = _line;
+            break;
+          }
+        }
+        if (_cleanedTitle) {
+          displayTitle = _cleanedTitle.length > 120 ? _cleanedTitle.substring(0, 117) + '...' : _cleanedTitle;
+        }
+      }
+     // Title itself may be a JSON operation blob from Kiro.
+     var titleTrim = String(displayTitle).trim();
       if (titleTrim.charAt(0) === '{' || titleTrim.charAt(0) === '[') {
         displayTitle = hasKiroStages ? 'spawned subagents' : 'operation';
       }
