@@ -10023,14 +10023,27 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    var foldBody = el.closest('.turn-fold-body');
    if (foldBody && foldBody.classList.contains('collapsed')) return;
 
-   // Only show the tooltip when the title text is actually truncated
-   // (overflowing). If the full title fits in the row, there's nothing
-   // extra to show — hovering the whole line should be a no-op.
-   if (hoverTarget.scrollWidth <= hoverTarget.clientWidth + 2) return;
-
    var title = (hoverTarget.textContent) || el._toolTitle || '';
    var formatted = formatToolCallTooltipText(title, el._rawInput, el._locations);
    if (!formatted) return;
+
+   // Show the tooltip when the row text is CLIPPED, or when the tooltip
+   // carries detail the row does not already show.
+   //
+   // The original rule was "only when clipped", on the assumption that a title
+   // which fits reveals everything. That no longer holds: agents may send a
+   // short summarising title with the full input in rawInput — claude-code-acp
+   // puts a multi-line command's first line in the title and keeps the
+   // remaining lines, the cwd and the description in rawInput. The row then
+   // fits, yet there IS more to reveal. Comparing the tooltip text against the
+   // displayed title keeps the original intent (no redundant tooltip when the
+   // two say the same thing) while restoring the hint when they differ.
+   // textContent preserves the original characters, so a plain trim is enough
+   // to tell "the row already says exactly this" from "there is more".
+   var _tcNorm = function(s) { return String(s || '').trim(); };
+   var _titleNorm = _tcNorm(title);
+   var _clipped = hoverTarget.scrollWidth > hoverTarget.clientWidth + 2;
+   if (!_clipped && _tcNorm(formatted) === _titleNorm) return;
 
      // If a stage tooltip is currently visible (from a child element), hide it
      // so the parent tooltip can take over.
