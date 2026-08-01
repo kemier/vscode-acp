@@ -81,8 +81,8 @@ step "6/7  Packaging VSIX"
 npx vsce package --no-git-tag-version || fail "VSIX packaging failed"
 ok "VSIX packaged"
 
-# ─── 7. Install into local editors (Mac VS Code + Cursor) ──────────
-step "7/8  Installing to local editors (~/.vscode + ~/.vscode-server + ~/.cursor)"
+# ─── 7. Install into local editors (Mac VS Code) ───────────────────
+step "7/8  Installing to local editors (~/.vscode + ~/.vscode-server)"
 bash "$SCRIPT_DIR/install-vscode-server.sh" || fail "Local deploy failed"
 ok "Local editors installed"
 
@@ -99,7 +99,7 @@ done
 if [ "$SKIP_REMOTE" = false ]; then
   SSH_HOST="${ACP_SSH_HOST:-workstation}"
   if [ -n "$SSH_HOST" ]; then
-    step "8/8  Installing on remote ($SSH_HOST: server + local VS Code/Cursor)"
+    step "8/8  Installing on remote ($SSH_HOST: server + local VS Code)"
     ACP_SSH_HOST="$SSH_HOST" bash "$SCRIPT_DIR/install-vscode-server-remote.sh" || fail "Remote deploy failed"
     ok "Remote installed ($SSH_HOST)"
   else

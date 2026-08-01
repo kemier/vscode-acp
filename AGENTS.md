@@ -168,8 +168,8 @@ Then reload the remote VS Code window: `⌘⇧P` (Mac) / `Ctrl+Shift+P` (Win/Lin
 
 | Target | npm script | Install location | Use when |
 |---|---|---|---|
-| Mac desktop | `npm run install:local` | `~/.vscode/extensions/`, `~/.vscode-server/extensions/` (if present), `~/.cursor/extensions/` | Local VS Code / vscode-server / Cursor |
-| Remote (all) | `ACP_SSH_HOST=workstation npm run install:server` | remote `~/.vscode-server/extensions/`, `~/.vscode/extensions/`, `~/.cursor/extensions/` | Remote SSH + local editors on that host |
+| Mac desktop | `npm run install:local` | `~/.vscode/extensions/`, `~/.vscode-server/extensions/` (if present) | Local VS Code / vscode-server |
+| Remote (all) | `ACP_SSH_HOST=workstation npm run install:server` | remote `~/.vscode-server/extensions/`, `~/.vscode/extensions/` | Remote SSH + local VS Code on that host |
 
 `npm run deploy` installs Mac local **and** remote (`ACP_SSH_HOST`, default `workstation`). Skip remote with `--skip-remote`.
 
