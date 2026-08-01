@@ -85,11 +85,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    *  that started after the cancel was acknowledged. */
   private _cancelGeneration: number = 0;
 
- /**
-  * Session ID that currently has a prompt in flight. Used by the
-  * cancel fallback timer to ensure it only fires for the correct session.
-  */
- private _pendingPromptSessionId: string | null = null;
+  /**
+   * Session ID that currently has a prompt in flight. Used by the
+   * cancel fallback timer to ensure it only fires for the correct session.
+   */
+  private _pendingPromptSessionId: string | null = null;
 
   /**
    * Snapshot of modelImageSupport as a plain object (slug → boolean),
@@ -1634,11 +1634,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // without starting an LLM turn. Skip context gathering and send
     // the text directly so the agent can intercept it.
     if (text.startsWith('/')) {
-     // Send promptStart so the webview sets isProcessing=true. Without this,
-     // agent_message_chunk notifications from slash commands (e.g. /index build,
-     // /tools, /stats) are dropped by the "After promptEnd the turn is closed"
-     // guard in the webview's sessionUpdate handler.
-     this.postMessage({ type: 'promptStart' });
+      // Send promptStart so the webview sets isProcessing=true. Without this,
+      // agent_message_chunk notifications from slash commands (e.g. /index build,
+      // /tools, /stats) are dropped by the "After promptEnd the turn is closed"
+      // guard in the webview's sessionUpdate handler.
+      this.postMessage({ type: 'promptStart' });
       let slashStopReason: string = 'end_turn';
       try {
         // Kiro does not intercept `/compact` as a prompt — it requires
@@ -1646,12 +1646,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         const session = this.sessionManager.getSession(activeId);
         const compactName = text.match(/^\/(compact|summarize|compress)(?:\s|$)/i)?.[1];
         if (compactName && this.sessionManager.isKiroAgentName(session?.agentName)) {
-         await this.handleExecuteKiroCommand('compact');
-       } else {
+          await this.handleExecuteKiroCommand('compact');
+        } else {
           // Increment cancel generation so stale timers from a previous
           // cancel don't fire during this new prompt.
           this._cancelGeneration++;
-         const slashResponse = await this.sessionManager.sendPrompt(activeId, text);
+          const slashResponse = await this.sessionManager.sendPrompt(activeId, text);
           if (slashResponse?.stopReason) {
             slashStopReason = slashResponse.stopReason;
           }
@@ -1831,8 +1831,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // Increment the cancel generation so any stale cancel fallback timer
       // from a previous turn won't fire during this new prompt.
       this._cancelGeneration++;
-     this._pendingPromptSessionId = activeId;
-     const response = await this.sessionManager.sendPrompt(
+      this._pendingPromptSessionId = activeId;
+      const response = await this.sessionManager.sendPrompt(
         activeId,
         text,
         images,
@@ -1866,14 +1866,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         this._cancelFallbackTimer = null;
       }
       this._pendingPromptSessionId = null;
-     logError('Prompt failed', e);
-      const dataStr = e.data
-        ? (typeof e.data === 'string' ? e.data : JSON.stringify(e.data))
-        : '';
+      logError('Prompt failed', e);
+      const dataStr = e.data ? (typeof e.data === 'string' ? e.data : JSON.stringify(e.data)) : '';
       const errMsg = dataStr ? `${e.message}: ${dataStr}` : e.message || 'Prompt failed';
-     // Suppress the error if the connection was closed because the user
-     // started a new conversation or switched sessions — the old session's
-     // in-flight prompt is expected to fail during teardown.
+      // Suppress the error if the connection was closed because the user
+      // started a new conversation or switched sessions — the old session's
+      // in-flight prompt is expected to fail during teardown.
       if (/connection closed/i.test(errMsg) && this.sessionManager.getActiveSessionId() !== activeId) {
         this.streamCoalescer.flush(activeId);
         this.postMessage({ type: 'promptEnd', stopReason: 'cancelled' });
@@ -1911,24 +1909,24 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // once the webview is unblocked. This matches codex-acp behavior
       // (turn interrupt without process kill).
       if (this._cancelFallbackTimer) {
-       clearTimeout(this._cancelFallbackTimer);
-     }
+        clearTimeout(this._cancelFallbackTimer);
+      }
       const cancelGen = this._cancelGeneration;
-     this._cancelFallbackTimer = setTimeout(() => {
+      this._cancelFallbackTimer = setTimeout(() => {
         // Only fire if the SAME prompt is still pending — if a new prompt
         // has started (pendingSendAfterCancel drained a queued message and
         // a new sendPrompt was issued), the cancel generation will have
         // changed. This prevents a stale timer from force-aborting a new
         // prompt that started after the cancel was acknowledged.
         if (this._pendingPromptSessionId === activeId && this._cancelGeneration === cancelGen) {
-         log('Cancel fallback: agent did not acknowledge within 5s, forcing promptEnd (session kept alive)');
-         this.streamCoalescer.flush(activeId);
-         this.sessionManager.forceAbortPrompt(activeId);
-         this.postMessage({ type: 'promptEnd', stopReason: 'cancelled' });
-         this._pendingPromptSessionId = null;
-       }
-       this._cancelFallbackTimer = null;
-     }, 5_000);
+          log('Cancel fallback: agent did not acknowledge within 5s, forcing promptEnd (session kept alive)');
+          this.streamCoalescer.flush(activeId);
+          this.sessionManager.forceAbortPrompt(activeId);
+          this.postMessage({ type: 'promptEnd', stopReason: 'cancelled' });
+          this._pendingPromptSessionId = null;
+        }
+        this._cancelFallbackTimer = null;
+      }, 5_000);
     }
   }
 
@@ -2043,13 +2041,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     try {
       await this.sessionManager.setMode(activeId, modeId);
     } catch (e: any) {
-     logError('Failed to set mode', e);
-     this.postMessage({
-       type: 'error',
+      logError('Failed to set mode', e);
+      this.postMessage({
+        type: 'error',
         message: `Failed to set mode: ${e.data ? e.message + ': ' + (typeof e.data === 'string' ? e.data : JSON.stringify(e.data)) : e.message}`,
-     });
-   }
- }
+      });
+    }
+  }
 
   /**
    * Load model → supports-image map from ~/.codex catalog JSON files.
@@ -2132,13 +2130,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     try {
       await this.sessionManager.setModel(activeId, modelId);
     } catch (e: any) {
-     logError('Failed to set model', e);
-     this.postMessage({
-       type: 'error',
+      logError('Failed to set model', e);
+      this.postMessage({
+        type: 'error',
         message: `Failed to set model: ${e.data ? e.message + ': ' + (typeof e.data === 'string' ? e.data : JSON.stringify(e.data)) : e.message}`,
-     });
-   }
- }
+      });
+    }
+  }
 
   /**
    * Handle generic config-option change from webview picker
@@ -2156,10 +2154,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       this.postMessage({ type: 'configOptionsUpdate', configOptions: options });
     } catch (e: any) {
       logError('Failed to set config option', e);
-     this.postMessage({
-       type: 'error',
+      this.postMessage({
+        type: 'error',
         message: `Failed to set ${configId}: ${e.data ? e.message + ': ' + (typeof e.data === 'string' ? e.data : JSON.stringify(e.data)) : e.message}`,
-     });
+      });
       // Roll back optimistic update on the webview by replaying current state
       const session = this.sessionManager.getSession(activeId);
       this.postMessage({
