@@ -82,7 +82,7 @@ npx vsce package --no-git-tag-version || fail "VSIX packaging failed"
 ok "VSIX packaged"
 
 # ─── 7. Install into local editors (Mac VS Code + Cursor) ──────────
-step "7/8  Installing to local editors (~/.vscode + ~/.cursor)"
+step "7/8  Installing to local editors (~/.vscode + ~/.vscode-server + ~/.cursor)"
 bash "$SCRIPT_DIR/install-vscode-server.sh" || fail "Local deploy failed"
 ok "Local editors installed"
 
