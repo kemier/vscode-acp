@@ -1416,6 +1416,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
               (message.message.indexOf('[DRAIN-DBG]') === 0 ||
                 message.message.indexOf('[WV-DIAG]') === 0 ||
                 message.message.indexOf('[WV-MERGE]') === 0 ||
+                message.message.indexOf('[WV-USER]') === 0 ||
+                message.message.indexOf('[WV-ORDER]') === 0 ||
+                message.message.indexOf('[WV-RENDER]') === 0 ||
                 message.message.indexOf('[WV-UPDATE]') === 0 ||
                 message.message.indexOf('[STAGE-DBG]') === 0))
           ) {
@@ -6724,6 +6727,353 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       if (DEBUG) vscode.postMessage({ type: 'debugLog', message: '[REPLAY-TRACE] ' + msg });
     }
 
+    /** Match a loaded history item to its index in a merged array. */
+    function findMergedHistoryAnchor(merged, item) {
+      if (!item || !merged || !merged.length) return -1;
+      if (item.kind === 'toolCall') {
+        if (item.toolCallId) {
+          for (var ti = 0; ti < merged.length; ti++) {
+            if (merged[ti] && merged[ti].kind === 'toolCall' &&
+                merged[ti].toolCallId === item.toolCallId) {
+              return ti;
+            }
+          }
+        }
+        // session/load replay uses synthetic ids (replay-N-M) — fall back to title.
+        var toolTitle = String(item.title || '').trim();
+        if (toolTitle) {
+          for (var tti = 0; tti < merged.length; tti++) {
+            if (merged[tti] && merged[tti].kind === 'toolCall' &&
+                String(merged[tti].title || '').trim() === toolTitle) {
+              return tti;
+            }
+          }
+        }
+        return -1;
+      }
+      if (item.kind === 'message' && item.role === 'assistant') {
+        var asstText = String(item.text || '').trim();
+        if (!asstText) return -1;
+        for (var ai = 0; ai < merged.length; ai++) {
+          if (merged[ai] && merged[ai].kind === 'message' && merged[ai].role === 'assistant' &&
+              String(merged[ai].text || '').trim() === asstText) {
+            return ai;
+          }
+        }
+        return -1;
+      }
+      if (item.kind === 'thought') {
+        var thoughtText = String(item.text || '').trim();
+        if (!thoughtText) return -1;
+        var thoughtPrefix = thoughtText.slice(0, 120);
+        for (var thi = 0; thi < merged.length; thi++) {
+          if (merged[thi] && merged[thi].kind === 'thought') {
+            var mergedThought = String(merged[thi].text || '').trim();
+            if (mergedThought === thoughtText || mergedThought.indexOf(thoughtPrefix) === 0 ||
+                thoughtText.indexOf(mergedThought.slice(0, 120)) === 0) {
+              return thi;
+            }
+          }
+        }
+      }
+      return -1;
+    }
+
+    function countRealUsers(arr) {
+      if (!arr) return 0;
+      var n = 0;
+      for (var i = 0; i < arr.length; i++) {
+        var it = arr[i];
+        if (it && it.kind === 'message' && it.role === 'user' && !isSessionInterruptNotice(it.text)) {
+          n++;
+        }
+      }
+      return n;
+    }
+
+    function realUserEntries(arr) {
+      var out = [];
+      if (!arr) return out;
+      for (var i = 0; i < arr.length; i++) {
+        var it = arr[i];
+        if (it && it.kind === 'message' && it.role === 'user' && !isSessionInterruptNotice(it.text)) {
+          out.push({ index: i, item: it });
+        }
+      }
+      return out;
+    }
+
+    function thoughtPrefixKey(text) {
+      return String(text || '').trim().slice(0, 120);
+    }
+
+    /**
+     * session/load preserves user-turn boundaries; the webview snapshot has richer
+     * thoughts/assistants but may have lost earlier user prompts. Overlay snapshot
+     * extras onto loaded instead of replacing the whole timeline.
+     */
+    function mergeLoadedWithSnapshotOverlay(loaded, snapshot) {
+      var statusById = {};
+      var statusByTitle = {};
+      for (var si = 0; si < snapshot.length; si++) {
+        var s = snapshot[si];
+        if (s && s.kind === 'toolCall') {
+          if (s.toolCallId) statusById[s.toolCallId] = s.status;
+          var st = String(s.title || '').trim();
+          if (st) statusByTitle[st] = s.status;
+        }
+      }
+
+      var merged = [];
+      for (var li = 0; li < loaded.length; li++) {
+        var item = loaded[li];
+        if (!item) continue;
+        if (item.kind === 'toolCall') {
+          var copy = Object.assign({}, item);
+          if (copy.toolCallId && statusById[copy.toolCallId]) {
+            copy.status = statusById[copy.toolCallId];
+          } else {
+            var ct = String(copy.title || '').trim();
+            if (ct && statusByTitle[ct]) copy.status = statusByTitle[ct];
+          }
+          merged.push(copy);
+        } else {
+          merged.push(item);
+        }
+      }
+
+      var mergedThoughtKeys = {};
+      var mergedAsstKeys = {};
+      for (var mi = 0; mi < merged.length; mi++) {
+        var m = merged[mi];
+        if (m && m.kind === 'thought') mergedThoughtKeys[thoughtPrefixKey(m.text)] = true;
+        if (m && m.kind === 'message' && m.role === 'assistant') {
+          mergedAsstKeys[String(m.text || '').trim()] = true;
+        }
+      }
+
+      function insertSnapshotItem(snapItem, snapIndex) {
+        // Thoughts belong BEFORE the next snapshot row already present in merged
+        // (e.g. the tool call they precede). Backward-only anchoring after the
+        // previous tool made thoughts appear after tools in the fold.
+        if (snapItem.kind === 'thought') {
+          for (var after = snapIndex + 1; after < snapshot.length; after++) {
+            var next = snapshot[after];
+            if (!next) continue;
+            if (next.kind === 'message' && (next.role === 'system' || next.role === 'user') &&
+                isSessionInterruptNotice(next.text)) {
+              continue;
+            }
+            var nextAnchor = findMergedHistoryAnchor(merged, next);
+            if (nextAnchor >= 0) {
+              merged.splice(nextAnchor, 0, Object.assign({}, snapItem));
+              return;
+            }
+          }
+        }
+
+        var insertAt = merged.length;
+        for (var before = snapIndex - 1; before >= 0; before--) {
+          var prev = snapshot[before];
+          if (!prev) continue;
+          if (prev.kind === 'message' && (prev.role === 'system' || prev.role === 'user') &&
+              isSessionInterruptNotice(prev.text)) {
+            continue;
+          }
+          var anchor = findMergedHistoryAnchor(merged, prev);
+          if (anchor >= 0) {
+            insertAt = anchor + 1;
+            break;
+          }
+        }
+        merged.splice(insertAt, 0, Object.assign({}, snapItem));
+      }
+
+      function snapshotOrderIndex(item) {
+        if (!item) return Number.MAX_SAFE_INTEGER;
+        for (var si = 0; si < snapshot.length; si++) {
+          var s = snapshot[si];
+          if (!s || s.kind !== item.kind) continue;
+          if (item.kind === 'thought') {
+            var a = thoughtPrefixKey(item.text);
+            var b = thoughtPrefixKey(s.text);
+            if (a && b && (a === b || b.indexOf(a) === 0 || a.indexOf(b) === 0)) return si;
+          }
+          if (item.kind === 'toolCall') {
+            if (item.toolCallId && s.toolCallId && item.toolCallId === s.toolCallId) return si;
+            if (String(item.title || '').trim() === String(s.title || '').trim()) return si;
+          }
+          if (item.kind === 'message' && item.role === 'assistant') {
+            if (String(item.text || '').trim() === String(s.text || '').trim()) return si;
+          }
+        }
+        return Number.MAX_SAFE_INTEGER;
+      }
+
+      function reconcileInterleavedOrderFromSnapshot() {
+        var rebuilt = [];
+        var bucket = [];
+        function flushBucket() {
+          if (!bucket.length) return;
+          bucket.sort(function(a, b) {
+            var ia = snapshotOrderIndex(a);
+            var ib = snapshotOrderIndex(b);
+            if (ia !== ib) return ia - ib;
+            return 0;
+          });
+          rebuilt = rebuilt.concat(bucket);
+          bucket = [];
+        }
+        for (var ri = 0; ri < merged.length; ri++) {
+          var row = merged[ri];
+          if (row && row.kind === 'message' && row.role === 'user' && !isSessionInterruptNotice(row.text)) {
+            flushBucket();
+            rebuilt.push(row);
+          } else {
+            bucket.push(row);
+          }
+        }
+        flushBucket();
+        merged.length = 0;
+        Array.prototype.push.apply(merged, rebuilt);
+      }
+
+      for (var ti = 0; ti < snapshot.length; ti++) {
+        var snapItem = snapshot[ti];
+        if (!snapItem) continue;
+        if (snapItem.kind === 'message' && (snapItem.role === 'system' || snapItem.role === 'user') &&
+            isSessionInterruptNotice(snapItem.text)) {
+          continue;
+        }
+        if (snapItem.kind === 'thought') {
+          var tk = thoughtPrefixKey(snapItem.text);
+          if (!tk || mergedThoughtKeys[tk]) continue;
+          insertSnapshotItem(snapItem, ti);
+          mergedThoughtKeys[tk] = true;
+          continue;
+        }
+        if (snapItem.kind === 'message' && snapItem.role === 'assistant') {
+          var ak = String(snapItem.text || '').trim();
+          if (!ak || mergedAsstKeys[ak]) continue;
+          insertSnapshotItem(snapItem, ti);
+          mergedAsstKeys[ak] = true;
+        }
+        // Skip snapshot tool rows — loaded timeline already has them interleaved.
+      }
+
+      reconcileInterleavedOrderFromSnapshot();
+      return merged;
+    }
+
+    function userMessageKey(text) {
+      var cleaned = cleanUserMessage(String(text || ''));
+      if (String(cleaned || '').trim()) return String(cleaned).trim();
+      return String(text || '').trim();
+    }
+
+    /**
+     * Full snapshot merge can drop earlier user prompts (compaction / interrupted
+     * save). session/load still replays them — re-inject so renderChatHistory keeps
+     * correct per-turn boundaries.
+     */
+    function mergeMissingUsersFromLoaded(merged, loaded) {
+      if (!merged || !loaded || !loaded.length) return 0;
+      var loadedUsers = realUserEntries(loaded);
+      var mergedUsers = realUserEntries(merged);
+      if (loadedUsers.length === 0) return 0;
+
+      var mergedUserKeys = {};
+      for (var mu = 0; mu < mergedUsers.length; mu++) {
+        var mk = userMessageKey(mergedUsers[mu].item.text);
+        if (mk) mergedUserKeys[mk] = true;
+      }
+
+      var injected = 0;
+      for (var u = 0; u < loadedUsers.length; u++) {
+        var lu = loadedUsers[u];
+        var userKey = userMessageKey(lu.item.text);
+        if (!userKey) continue;
+
+        // Same ordinal slot but different text — loaded (session/load) wins.
+        if (u < mergedUsers.length) {
+          var mergedKey = userMessageKey(mergedUsers[u].item.text);
+          if (mergedKey !== userKey) {
+            merged[mergedUsers[u].index] = Object.assign({}, lu.item);
+            mergedUserKeys[userKey] = true;
+            injected++;
+          }
+          continue;
+        }
+
+        if (mergedUserKeys[userKey]) continue;
+
+        var insertBefore = merged.length;
+        for (var lk = lu.index + 1; lk < loaded.length; lk++) {
+          var afterItem = loaded[lk];
+          if (!afterItem) continue;
+          if (afterItem.kind === 'message' && afterItem.role === 'user' &&
+              !isSessionInterruptNotice(afterItem.text)) {
+            break;
+          }
+          var anchorIdx = findMergedHistoryAnchor(merged, afterItem);
+          if (anchorIdx >= 0) {
+            insertBefore = anchorIdx;
+            break;
+          }
+        }
+        merged.splice(insertBefore, 0, Object.assign({}, lu.item));
+        mergedUserKeys[userKey] = true;
+        injected++;
+      }
+      return injected;
+    }
+
+    /**
+     * Legacy text-scan user injection — kept for snapshot-first path when ordinal
+     * counts already match but specific prompts differ by text.
+     */
+    function mergeMissingUsersFromLoadedByText(merged, loaded) {
+      if (!merged || !loaded || !loaded.length) return 0;
+      var mergedUserTexts = {};
+      for (var mu = 0; mu < merged.length; mu++) {
+        var mergedUser = merged[mu];
+        if (mergedUser && mergedUser.kind === 'message' && mergedUser.role === 'user' &&
+            !isSessionInterruptNotice(mergedUser.text)) {
+          var mk = userMessageKey(mergedUser.text);
+          if (mk) mergedUserTexts[mk] = true;
+        }
+      }
+      var injected = 0;
+      for (var li = 0; li < loaded.length; li++) {
+        var loadedItem = loaded[li];
+        if (!loadedItem || loadedItem.kind !== 'message' || loadedItem.role !== 'user' ||
+            isSessionInterruptNotice(loadedItem.text)) {
+          continue;
+        }
+        var userText = userMessageKey(loadedItem.text);
+        if (!userText || mergedUserTexts[userText]) continue;
+
+        var insertBefore = merged.length;
+        for (var lk = li + 1; lk < loaded.length; lk++) {
+          var afterItem = loaded[lk];
+          if (!afterItem) continue;
+          if (afterItem.kind === 'message' && afterItem.role === 'user' &&
+              !isSessionInterruptNotice(afterItem.text)) {
+            break;
+          }
+          var anchorIdx = findMergedHistoryAnchor(merged, afterItem);
+          if (anchorIdx >= 0) {
+            insertBefore = anchorIdx;
+            break;
+          }
+        }
+        merged.splice(insertBefore, 0, Object.assign({}, loadedItem));
+        mergedUserTexts[userText] = true;
+        injected++;
+      }
+      return injected;
+    }
+
     /**
      * Claude session/load often drops an interrupted mid-turn (tools never
      * flushed to the agent transcript). Re-inject the last turn from the
@@ -7066,11 +7416,31 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      // the snapshot is significantly more complete than the loaded history.
      var _loadedHasAssistant = _loadedAssistantCount > 0;
      var _loadedHasThoughts = chatHistory.some(function(x) { return x && x.kind === 'thought'; });
+     var _loadedRealUsers = countRealUsers(chatHistory);
+     var _snapRealUsers = countRealUsers(preLoadChatHistorySnapshot);
+     var _loadedUserMsgCount = _diagLoadedKinds['message:user'] || 0;
+     var _snapUserMsgCount = _diagSnapKinds['message:user'] || 0;
      var _snapshotMoreComplete = (_snapAssistantCount > _loadedAssistantCount) ||
                                   (_snapToolCount > _loadedToolCount);
      if (_snapshotMoreComplete && (_snapHasAssistant || _snapHasThoughts)) {
-       // Codex replay: build a status map from loaded tool_calls, then
-       // use the snapshot as the chatHistory (it has thoughts + assistants).
+       var _loadedHistoryForMerge = chatHistory.slice();
+       // session/load is authoritative for user-turn boundaries; the webview
+       // snapshot may have fewer or coalesced user rows. Always overlay snapshot
+       // thoughts/assistants onto loaded whenever replay returned history.
+       if (_loadedHistoryForMerge.length > 0) {
+         chatHistory = mergeLoadedWithSnapshotOverlay(_loadedHistoryForMerge, preLoadChatHistorySnapshot);
+         vscode.postMessage({
+           type: 'debugLog',
+           message: '[WV-MERGE] loaded-first overlay: ' + chatHistory.length + ' items (snap=' +
+             preLoadChatHistorySnapshot.length + ' loaded=' + _diagLoadedLen + ' loadedUsers=' +
+             _loadedRealUsers + ' snapUsers=' + _snapRealUsers + ' loadedUserMsgs=' +
+             _loadedUserMsgCount + ' snapUserMsgs=' + _snapUserMsgCount + ')',
+         });
+         currentAssistantEl = null;
+         currentAssistantText = '';
+         if (currentTurnEl) { currentTurnEl = null; }
+       } else {
+       // No replay history — fall back to snapshot as base (rare: empty load).
        var _statusMap = {};
        for (var _si = 0; _si < chatHistory.length; _si++) {
          var _tc = chatHistory[_si];
@@ -7112,15 +7482,20 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          _merged.push(_snapItem);
        }
        // Append any loaded tool_calls not in the snapshot (truly new tools)
-       for (var _ai = 0; _ai < chatHistory.length; _ai++) {
-         var _atc = chatHistory[_ai];
+       for (var _ai = 0; _ai < _loadedHistoryForMerge.length; _ai++) {
+         var _atc = _loadedHistoryForMerge[_ai];
          if (_atc && _atc.kind === 'toolCall' && _atc.toolCallId &&
              !_merged.some(function(x) { return x && x.kind === 'toolCall' && x.toolCallId === _atc.toolCallId; })) {
            _merged.push(_atc);
          }
        }
-      chatHistory = _merged;
-      vscode.postMessage({ type: 'debugLog', message: '[WV-MERGE] full snapshot merge: ' + _merged.length + ' items (snap=' + preLoadChatHistorySnapshot.length + ' loaded=' + _diagLoadedLen + ')' });
+       var _injectedUsers = mergeMissingUsersFromLoaded(_merged, _loadedHistoryForMerge);
+       if (_injectedUsers === 0) {
+         _injectedUsers = mergeMissingUsersFromLoadedByText(_merged, _loadedHistoryForMerge);
+       }
+       chatHistory = _merged;
+       var _mergedUserCount = countRealUsers(_merged);
+      vscode.postMessage({ type: 'debugLog', message: '[WV-MERGE] full snapshot merge: ' + _merged.length + ' items (snap=' + preLoadChatHistorySnapshot.length + ' loaded=' + _diagLoadedLen + ' injectedUsers=' + _injectedUsers + ' mergedUsers=' + _mergedUserCount + ')' });
       // The snapshot already contains every assistant message from the live
       // session (it was saved before the reload). The agent_message_chunk
       // events replayed during session/load accumulated text into
@@ -7132,6 +7507,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       currentAssistantEl = null;
       currentAssistantText = '';
       if (currentTurnEl) { currentTurnEl = null; }
+       }
     } else {
       mergePreLoadInterruptedTurn(preLoadChatHistorySnapshot);
      }
@@ -8439,12 +8815,21 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      * Scoop foldable nodes into the fold body preserving document order:
      * thought / tools / interim assistant segments as they occurred in the turn.
      */
- function orderCompactFoldContents(body) {
-   if (!body) return;
-     var turn = body.parentElement;
-     if (!turn || !turn.classList.contains('turn')) return;
+function orderCompactFoldContents(body) {
+  if (!body) return;
+    var turn = body.parentElement;
+    if (!turn || !turn.classList.contains('turn')) return;
 
-     var foldables = [];
+    // Debug: snapshot the current DOM order before we re-sort.
+    var _dbgBefore = Array.prototype.map.call(body.children, function(el) {
+      var tag = el.className.split(' ')[0];
+      var idx = el.getAttribute('data-history-index');
+      var nested = el.classList.contains('turn-tools') ? (el.querySelector('[data-history-index]') ? el.querySelector('[data-history-index]').getAttribute('data-history-index') : 'none') : '';
+      return tag + (idx !== null ? '[' + idx + ']' : nested ? '[n:' + nested + ']' : '[?]');
+    });
+    vscode.postMessage({ type: 'debugLog', message: '[WV-ORDER] before sort: ' + _dbgBefore.join(' | ') });
+
+    var foldables = [];
      function consider(el) {
        if (!el || foldables.indexOf(el) >= 0) return;
        if (el.classList.contains('thought-block')) { foldables.push(el); return; }
@@ -8463,16 +8848,58 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          Array.prototype.forEach.call(child.children, consider);
        }
      });
-    // Stable document order
-    foldables.sort(function(a, b) {
-      if (a === b) return 0;
-      var pos = a.compareDocumentPosition(b);
-      if (pos & Node.DOCUMENT_POSITION_FOLLOWING) return -1;
-      if (pos & Node.DOCUMENT_POSITION_PRECEDING) return 1;
-      return 0;
+    // Stable order by original history index. Each foldable was rendered from
+    // chatHistory[i] and stamped with data-history-index; using it (instead of
+    // compareDocumentPosition on not-yet-inserted .turn-tools wrappers)
+    // preserves the true interleaved order:
+    // thought → tools → interim assistant → tools → assistant.
+    // Node.compareDocumentPosition returns 0 for nodes not yet in the DOM,
+    // which collapsed all later-created .turn-tools groups into one block.
+    function historyOrder(el) {
+      var v = el && el.getAttribute ? el.getAttribute('data-history-index') : null;
+      if (v !== null && v !== undefined && String(v).trim() !== '') {
+        var n = Number(v);
+        return Number.isFinite(n) ? n : Number.MAX_SAFE_INTEGER;
+      }
+      if (el && el._historyIndex != null) {
+        var legacy = Number(el._historyIndex);
+        if (Number.isFinite(legacy)) return legacy;
+      }
+      if (el && el.querySelector) {
+        // .turn-tools wrappers may carry a min index directly; otherwise use
+        // the first descendant stamped with one (tool row or nested item).
+        if (el.classList && el.classList.contains('turn-tools')) {
+          var wrapIdx = el.getAttribute('data-history-index');
+          if (wrapIdx !== null && wrapIdx !== undefined && String(wrapIdx).trim() !== '') {
+            var wn = Number(wrapIdx);
+            if (Number.isFinite(wn)) return wn;
+          }
+        }
+        var first = el.querySelector('[data-history-index]');
+        if (first && first.getAttribute) {
+          var fv = first.getAttribute('data-history-index');
+          if (fv !== null && fv !== undefined && String(fv).trim() !== '') {
+            var fn = Number(fv);
+            return Number.isFinite(fn) ? fn : Number.MAX_SAFE_INTEGER;
+          }
+        }
+      }
+      return Number.MAX_SAFE_INTEGER;
+    }
+    var _dbgSortKeys = foldables.map(function(el) {
+      var tag = el.className.split(' ')[0];
+      return tag + '=' + historyOrder(el);
     });
-    // Append sorted (stable) — preserves interleaved order:
-    // thought → tools → thought → tools → assistant.
+    vscode.postMessage({ type: 'debugLog', message: '[WV-ORDER] sort keys: ' + _dbgSortKeys.join(' | ') });
+    foldables.sort(function(a, b) {
+      return historyOrder(a) - historyOrder(b);
+    });
+    var _dbgAfter = foldables.map(function(el) {
+      var tag = el.className.split(' ')[0];
+      return tag + '[' + historyOrder(el) + ']';
+    });
+    vscode.postMessage({ type: 'debugLog', message: '[WV-ORDER] after sort: ' + _dbgAfter.join(' | ') });
+    // Append sorted (stable) — preserves interleaved order.
     foldables.forEach(function(el) { body.appendChild(el); });
   }
 
@@ -8580,12 +9007,35 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
 
     /** After history restore: lift the last assistant out of the fold as the reply. */
+    function assistantHistoryIndex(el) {
+      if (!el || !el.getAttribute) return -1;
+      var v = el.getAttribute('data-history-index');
+      if (v === null || v === undefined || String(v).trim() === '') return -1;
+      var n = Number(v);
+      return Number.isFinite(n) ? n : -1;
+    }
+
+    function getLastAssistantByHistoryIndex(assistants) {
+      if (!assistants || !assistants.length) return null;
+      var best = assistants[0];
+      var bestIdx = assistantHistoryIndex(best);
+      for (var ai = 1; ai < assistants.length; ai++) {
+        var idx = assistantHistoryIndex(assistants[ai]);
+        if (idx > bestIdx) {
+          bestIdx = idx;
+          best = assistants[ai];
+        }
+      }
+      return best;
+    }
+
     function promoteFinalAssistantForTurn(turn) {
       if (!turn || !compactMode) return;
       if (keepAssistantsInFold) return;
       var assistants = Array.prototype.slice.call(turn.querySelectorAll('.message.assistant'));
       if (!assistants.length) return;
       var body = getTurnFoldBody(turn) || ensureTurnFoldStructure(turn, true, true);
+      var summaryEl = getLastAssistantByHistoryIndex(assistants);
       // Interrupted turns: keep every assistant inside the fold (thoughts +
       // tools + partial reply together). Otherwise Codex resume promoted the
       // last bubble to the main chat while expand still grouped the rest.
@@ -8593,10 +9043,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       // completed reply just because the session was interrupted earlier.
       var isLastTurn = !turn.nextElementSibling || !turn.parentElement ||
         turn === turn.parentElement.querySelector('.turn:last-of-type');
-      var forceFold = foldInterruptedAssistantsOnPromote && !turnLooksFinished(turn) && (
-        turnLooksInterrupted(turn) ||
-        (isLastTurn && sessionMarkedInterrupted())
-      );
+      var turnFinished = turnLooksFinished(turn) ||
+        (isLastTurn && historyLastTurnLooksFinished());
+      var forceFold = foldInterruptedAssistantsOnPromote && !turnFinished && turnLooksInterrupted(turn);
       if (forceFold) {
         assistants.forEach(function(a) {
           a.classList.add('assistant-interim');
@@ -8623,10 +9072,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         }
         return;
       }
-    assistants.forEach(function(a, idx) {
-      if (idx === assistants.length - 1) {
+    assistants.forEach(function(a) {
+      if (a === summaryEl) {
          a.classList.add('assistant-summary');
          a.classList.remove('assistant-interim');
+         a.removeAttribute('data-interrupted');
          turn.appendChild(a);
         } else {
           a.classList.add('assistant-interim');
@@ -8718,14 +9168,13 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           return false;
         }
       }
-     var hasAssistant = false;
      var hasCompletedTool = false;
+     var lastAssistant = null;
      for (var k = lastUser + 1; k < chatHistory.length; k++) {
        var item = chatHistory[k];
        if (!item) continue;
        if (item.kind === 'message' && item.role === 'assistant') {
-         if (item.interrupted) return false;
-         hasAssistant = true;
+         lastAssistant = item;
        }
        if (item.kind === 'toolCall') {
          var st = item.status;
@@ -8738,14 +9187,17 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          if (st === 'completed') hasCompletedTool = true;
        }
      }
+     // Only the final assistant segment matters — earlier interim segments
+     // may carry interrupted=true from a prior cancel without blocking end_turn.
+     if (lastAssistant && lastAssistant.interrupted) return false;
      // A turn is finished when the agent either replied with text
-     // (hasAssistant) OR completed all tool calls without any in-flight
+     // (lastAssistant) OR completed all tool calls without any in-flight
      // ones. EricCLI's session/load replay may omit the final
      // agent_message_chunk when the assistant content was empty (the
      // model only called tools and produced no summary text). In that
      // case, a completed spawn_parallel tool_call IS the turn's result —
      // treating it as interrupted would mark all subagent stages as failed.
-     return hasAssistant || hasCompletedTool;
+     return !!(lastAssistant || hasCompletedTool);
    }
 
     /** Clear stale interrupted flag when the loaded history ended successfully. */
@@ -8789,10 +9241,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     function turnLooksFinished(turn) {
       if (!turn) return false;
       if (!turn.querySelector('.message.assistant')) return false;
-      if (turn.getAttribute('data-turn-interrupted') === '1') return false;
-      if (turn.querySelector('.message.assistant[data-interrupted="1"]')) return false;
       if (turnElHasRunningTools(turn)) return false;
-      return true;
+      // A non-interrupted assistant means the agent produced a final reply.
+      if (turn.querySelector('.message.assistant:not([data-interrupted="1"])')) return true;
+      // Fall back to chatHistory when DOM flags are stale after resume merge.
+      if (historyLastTurnLooksFinished()) return true;
+      return false;
     }
 
     /** Mark a crew so later Kiro list_update cannot revive its stages. */
@@ -11160,6 +11614,9 @@ if (_deduped) {
    if (!item) continue;
    // Skip persisted Kiro Summarizing rows (redundant with assistant summary).
    if (item.kind === 'toolCall' && isKiroSummaryToolTitle(item.title)) continue;
+   // Keep the outer index for DOM stamping — thoughts were pushed via the
+   // addThoughtDOM historyIndex arg, tool rows stamped explicitly below.
+   var _historyIndex = i;
    // Debug: log each item
     if (item.kind === 'toolCall') {
       vscode.postMessage({ type: 'debugLog', message: '[WV-RENDER] renderChatHistory item[' + i + '] kind=toolCall title="' + (item.title || '') + '" id=' + (item.toolCallId || '').slice(0, 12) });
@@ -11194,8 +11651,18 @@ if (_deduped) {
          // Safety net: clean user messages again in case raw context
          // links were stored in chatHistory before the fix.
          var displayText = item.role === 'user' ? cleanUserMessage(item.text) : item.text;
-         // Debug: log cleaned displayText
-         vscode.postMessage({ type: 'debugLog', message: 'renderChatHistory displayText for item[' + i + ']: len=' + displayText.length + ' text="' + (displayText.length > 100 ? displayText.substring(0, 100) + '...' : displayText) + '"' });
+         // If cleaning stripped context-only wrappers, fall back to raw text so
+         // session/load prompts are not silently dropped from the panel.
+         if (item.role === 'user' && !String(displayText || '').trim()) {
+           var rawFallback = String(item.text || '').trim();
+           if (rawFallback && !isSessionInterruptNotice(rawFallback)) {
+             displayText = rawFallback;
+           }
+         }
+         if (item.role === 'user' && !String(displayText || '').trim()) {
+           break;
+         }
+         vscode.postMessage({ type: 'debugLog', message: '[WV-USER] render item[' + i + '] len=' + displayText.length + ' text="' + (displayText.length > 80 ? displayText.substring(0, 80) + '...' : displayText) + '"' });
          var _sysEl = addMessageDOM(item.role, displayText);
          if (item.role === 'system' && _sysEl &&
              String(item.text || '').trim() === 'Conversation compacted.') {
@@ -11274,15 +11741,28 @@ if (_deduped) {
            trace('  -> thought: rendered block (textLen=' + item.text.length + ',dur=' + (item.durationSec || 0) + 's)');
          }
          break;
-       case 'toolCall':
-         addToolCallInline(item.toolCallId, item.title, item.status,
-           item.rawInput && item.rawInput.taskResult
-             ? stripTaskResult(item.rawInput)
-             : item.rawInput,
-           item.toolKind,
-           item.locations,
-           item.parentToolUseId || null);
-         break;
+      case 'toolCall': {
+        addToolCallInline(item.toolCallId, item.title, item.status,
+          item.rawInput && item.rawInput.taskResult
+            ? stripTaskResult(item.rawInput)
+            : item.rawInput,
+          item.toolKind,
+          item.locations,
+          item.parentToolUseId || null);
+        var _toolEl = toolCalls[item.toolCallId] || document.getElementById('tc-' + item.toolCallId);
+        if (_toolEl && _toolEl.setAttribute) {
+          _toolEl.setAttribute('data-history-index', String(_historyIndex));
+          var _toolWrap = _toolEl.closest('.turn-tools');
+          if (_toolWrap && _toolWrap.setAttribute) {
+            var _wrapIdx = _toolWrap.getAttribute('data-history-index');
+            if (_wrapIdx === null || _wrapIdx === undefined || String(_wrapIdx).trim() === '' ||
+                Number(_wrapIdx) > _historyIndex) {
+              _toolWrap.setAttribute('data-history-index', String(_historyIndex));
+            }
+          }
+        }
+        break;
+      }
         case 'plan':
           updatePlanDOM(item.plan);
           break;
@@ -11683,7 +12163,10 @@ forceCollapseTurnFolds();
     hideEmpty();
     const el = document.createElement('details');
     el.className = 'thought-block';
-    if (typeof historyIndex === 'number') el._historyIndex = historyIndex;
+    if (typeof historyIndex === 'number') {
+      el._historyIndex = historyIndex;
+      el.setAttribute('data-history-index', String(historyIndex));
+    }
     el._thoughtCommitted = true;
    el.innerHTML =
        '<summary>' + (durationSec > 0 ? 'Thought for ' + durationSec + 's' : (durationSec === 0 ? 'Thought for &lt;1s' : 'Thought')) + '</summary>' +
@@ -13295,34 +13778,20 @@ sessionState = {
           // Strip injected context blocks from replayed user messages.
           // Uses the shared cleanUserMessage helper defined above.
          finalizeCurrentAssistantTurn();
-         // Coalesce consecutive user chunks into one message.
-         const last = chatHistory[chatHistory.length - 1];
-         if (last && last.kind === 'message' && last.role === 'user' &&
-             !isSessionInterruptNotice(last.text)) {
-          // Debug: log coalescing
-          vscode.postMessage({ type: 'debugLog', message: 'UMC coalesce: existing last.text len=' + last.text.length + ' new chunk len=' + content.text.length });
-          // Accumulate raw text, then clean the full concatenation.
-          // This avoids stripping leading whitespace from individual
-          // chunks (e.g. " in up/epg" -> "in up/epg") which would
-          // concatenate words incorrectly across chunk boundaries.
-          last.text += content.text;
-          var cleaned = cleanUserMessage(last.text);
-          // Debug: log cleaned result
-          vscode.postMessage({ type: 'debugLog', message: 'UMC coalesce cleaned: len=' + cleaned.length + ' text="' + (cleaned.length > 150 ? cleaned.substring(0, 150) + '...' : cleaned) + '"' });
-          if (cleaned === '') break; // still all context links
-          // Update chatHistory with cleaned text so renderChatHistory()
-          // at loadSessionEnd doesn't re-render raw context links.
-          last.text = cleaned;
-          const allUser = messagesEl.querySelectorAll('.message.user');
-          const el = allUser[allUser.length - 1];
-          if (el) { el.textContent = ''; renderUserMessageContent(el, cleaned); }
-         } else {
-           var cleanedNew = cleanUserMessage(content.text);
-           // Debug: log new message cleaned
-           vscode.postMessage({ type: 'debugLog', message: 'UMC new-msg cleaned: len=' + cleanedNew.length + ' text="' + (cleanedNew.length > 150 ? cleanedNew.substring(0, 150) + '...' : cleanedNew) + '"' });
-           if (cleanedNew === '') break; // chunk was only context links
-           addMessage('user', cleanedNew);
-          }
+         // session/load emits one complete user turn per chunk (not streaming
+         // deltas). Never coalesce onto the previous user — Codex often replays
+         // back-to-back user_message_chunk rows with no tool_call between them
+         // (e.g. "passed?" then "commit code"), which must stay separate turns.
+         var cleanedNew = cleanUserMessage(content.text);
+         if (!String(cleanedNew || '').trim()) {
+           var rawFallback = String(content.text || '').trim();
+           if (rawFallback && !isSessionInterruptNotice(rawFallback)) {
+             cleanedNew = rawFallback;
+           }
+         }
+         vscode.postMessage({ type: 'debugLog', message: 'UMC load-turn: len=' + (cleanedNew ? cleanedNew.length : 0) + ' text="' + (cleanedNew && cleanedNew.length > 150 ? cleanedNew.substring(0, 150) + '...' : (cleanedNew || '')) + '"' });
+         if (!String(cleanedNew || '').trim()) break;
+         addMessage('user', cleanedNew);
           } else if (content && (content.type === 'resource' || content.type === 'resource_link')) {
             // ACP "resource"/"resource_link" blocks attached to a user
             // message — editor selections, file/directory mentions,
