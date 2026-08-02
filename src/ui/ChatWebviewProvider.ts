@@ -20,6 +20,7 @@ import { FollowCoalescer, pickFollowTarget, type ToolCallLocationLike } from '..
 import { log, logError, getOutputChannel } from '../utils/Logger';
 import { sendEvent } from '../utils/TelemetryManager';
 import { cleanSessionTitle } from '../utils/TitleCleaner';
+import { ACP_MATH_SPLIT_RE, createMathExtension } from '../utils/markdownMath';
 
 const execFileAsync = promisify(execFile);
 
@@ -114,11 +115,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     private readonly sessionUpdateHandler: SessionUpdateHandler,
     private readonly workspaceState: vscode.Memento,
   ) {
-    // Configure marked for safe rendering
+    // Configure marked for safe rendering + KaTeX math (\(...\), \[...\], $$)
     marked.setOptions({
       breaks: true,
       gfm: true,
     });
+    marked.use(createMathExtension());
 
     this.streamCoalescer = new StreamCoalescer({
       flushIntervalMs: 8,
@@ -1022,10 +1024,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // Even indices = plain text (prose); odd indices = HTML elements to skip.
       // For snake_case linkification, we need a second pass that splits on
       // <code> tags too, so we only linkify snake_case inside code spans.
-      const splitRegex =
-        /(<pre>.*?<\/pre>|<span class="nolink">.*?<\/span>|<a\s[^>]*>.*?<\/a>|https?:\/\/[^\s<]+|www\.[^\s<]+|file:\/\/\/[^\s<"]+|(?:github|gitlab|bitbucket|stackoverflow|developer\.mozilla|en\.wikipedia|docs\.python|docs\.rust-lang|crates\.io|pypi\.org|npmjs\.com|docs\.oracle|learn\.microsoft|developer\.android|kubernetes\.io|docker\.com|nodejs\.org|python\.org|go\.dev|rust-lang\.org|swift\.org|jetbrains\.com|visualstudio\.com|atlassian\.com|confluence\.atlassian|jira\.atlassian|gerrit\.googlesource|gerrit-review\.googlesource)\.[a-z]+\/[^\s<]+)/gs;
-      const splitRegexWithFileRef =
-        /(<pre>.*?<\/pre>|<code>.*?<\/code>|<span class="nolink">.*?<\/span>|<span class="file-ref">.*?<\/span>|<a\s[^>]*>.*?<\/a>|https?:\/\/[^\s<]+|www\.[^\s<]+|file:\/\/\/[^\s<"]+|(?:github|gitlab|bitbucket|stackoverflow|developer\.mozilla|en\.wikipedia|docs\.python|docs\.rust-lang|crates\.io|pypi\.org|npmjs\.com|docs\.oracle|learn\.microsoft|developer\.android|kubernetes\.io|docker\.com|nodejs\.org|python\.org|go\.dev|rust-lang\.org|swift\.org|jetbrains\.com|visualstudio\.com|atlassian\.com|confluence\.atlassian|jira\.atlassian|gerrit\.googlesource|gerrit-review\.googlesource)\.[a-z]+\/[^\s<]+)/gs;
+      const splitRegex = new RegExp(
+        `(${ACP_MATH_SPLIT_RE}|<pre>.*?</pre>|<span class="nolink">.*?</span>|<a\\s[^>]*>.*?</a>|https?:\\/\\/[^\\s<]+|www\\.[^\\s<]+|file:\\/\\/\\/[^\\s<"]+|(?:github|gitlab|bitbucket|stackoverflow|developer\\.mozilla|en\\.wikipedia|docs\\.python|docs\\.rust-lang|crates\\.io|pypi\\.org|npmjs\\.com|docs\\.oracle|learn\\.microsoft|developer\\.android|kubernetes\\.io|docker\\.com|nodejs\\.org|python\\.org|go\\.dev|rust-lang\\.org|swift\\.org|jetbrains\\.com|visualstudio\\.com|atlassian\\.com|confluence\\.atlassian|jira\\.atlassian|gerrit\\.googlesource|gerrit-review\\.googlesource)\\.[a-z]+\\/[^\\s<]+)`,
+        'gs',
+      );
+      const splitRegexWithFileRef = new RegExp(
+        `(${ACP_MATH_SPLIT_RE}|<pre>.*?</pre>|<code>.*?</code>|<span class="nolink">.*?</span>|<span class="file-ref">.*?</span>|<a\\s[^>]*>.*?</a>|https?:\\/\\/[^\\s<]+|www\\.[^\\s<]+|file:\\/\\/\\/[^\\s<"]+|(?:github|gitlab|bitbucket|stackoverflow|developer\\.mozilla|en\\.wikipedia|docs\\.python|docs\\.rust-lang|crates\\.io|pypi\\.org|npmjs\\.com|docs\\.oracle|learn\\.microsoft|developer\\.android|kubernetes\\.io|docker\\.com|nodejs\\.org|python\\.org|go\\.dev|rust-lang\\.org|swift\\.org|jetbrains\\.com|visualstudio\\.com|atlassian\\.com|confluence\\.atlassian|jira\\.atlassian|gerrit\\.googlesource|gerrit-review\\.googlesource)\\.[a-z]+\\/[^\\s<]+)`,
+        'gs',
+      );
 
       // Pass 1: linkify file paths (creates new <a> tags)
       let parts = html.split(splitRegex);
@@ -3380,6 +3386,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   private getHtmlContent(webview: vscode.Webview): string {
     const nonce = getNonce();
     const mermaidUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'resources', 'mermaid.min.js'));
+    const katexCssUri = webview.asWebviewUri(
+      vscode.Uri.joinPath(this.extensionUri, 'resources', 'katex', 'katex.min.css'),
+    );
     const buildStamp = Date.now();
 
     return /*html*/ `<!DOCTYPE html>
@@ -3387,10 +3396,21 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src blob:; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' ${webview.cspSource};">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src blob:; font-src ${webview.cspSource}; style-src ${webview.cspSource} 'unsafe-inline'; script-src 'nonce-${nonce}' ${webview.cspSource};">
   <title>ACP Chat</title>
   <!-- BUILD-STAMP: ${buildStamp} -->
+  <link rel="stylesheet" href="${katexCssUri}">
   <style>
+    acp-math {
+      color: var(--vscode-editor-foreground);
+    }
+    acp-math[data-display="1"] {
+      display: block;
+      overflow-x: auto;
+      margin: 0.75em 0;
+      text-align: center;
+    }
+    acp-math .katex { font-size: 1.05em; }
     :root {
       --container-padding: 12px;
       --message-radius: 8px;
