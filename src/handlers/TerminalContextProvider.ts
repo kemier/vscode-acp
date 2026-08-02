@@ -1,3 +1,6 @@
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { log } from '../utils/Logger';
 
@@ -6,28 +9,28 @@ import { log } from '../utils/Logger';
  *
  * Primary path: VS Code shell integration
  * (`onDidStart/EndTerminalShellExecution`). This is the reliable, bounded
- * capture — but it requires shell integration to be active, which is not the
- * case for all vscode-server / SSH / shell setups.
+ * capture — but it requires shell integration to be active, which fails when
+ * VS Code cannot create its zsh ZDOTDIR under /tmp (`$USER-code-zsh`).
  *
- * Fallback path: `onDidWriteTerminalData` (deprecated but still present at
- * runtime in many builds). It fires for any terminal output regardless of
- * shell integration, giving best-effort capture with no command boundaries.
- *
- * When neither path produces output, {@link getLastOutput} returns empty and
- * the caller should warn the user.
+ * Fallback path: `onDidWriteTerminalData` (deprecated) was removed — it is
+ * gated inconsistently across VS Code builds via proposed-API rules.
  */
 export class TerminalContextProvider {
   private lastOutput = '';
   private lastTerminalName = '';
+  /** True once any shell-integration execution event has fired. */
+  private seenExecution = false;
 
   private disposables: vscode.Disposable[] = [];
   private activeOutputs = new Map<vscode.TerminalShellExecution, string>();
 
   constructor() {
+    ensureZshShellIntegrationDirs();
     log('[TerminalContext] Provider initialized');
 
     this.disposables.push(
       vscode.window.onDidStartTerminalShellExecution(async (e) => {
+        this.seenExecution = true;
         log(`[TerminalContext] Execution started in terminal: ${e.terminal.name}`);
         try {
           let output = '';
@@ -45,6 +48,7 @@ export class TerminalContextProvider {
         }
       }),
       vscode.window.onDidEndTerminalShellExecution((e) => {
+        this.seenExecution = true;
         log(`[TerminalContext] Execution ended in terminal: ${e.terminal.name}`);
         const output = this.activeOutputs.get(e.execution);
         this.activeOutputs.delete(e.execution);
@@ -57,18 +61,6 @@ export class TerminalContextProvider {
         }
       }),
     );
-
-    // NOTE: The deprecated onDidWriteTerminalData (terminalDataWriteEvent
-    // proposed API) previously lived here as a fallback. It has been removed
-    // because it is gated inconsistently across VS Code builds: some builds
-    // require it to be declared in enabledApiProposals, some have stabilized
-    // it, and some have removed it entirely. Declaring it breaks activation on
-    // builds where it is stabilized, and referencing it (even via runtime
-    // string lookup) trips the static proposed-API scanner on other builds.
-    // See https://github.com/microsoft/vscode/issues/78502 and the VS Code
-    // proposed-API guidance. The stable shell-integration path above
-    // (onDidStartTerminalShellExecution) handles terminal capture for all
-    // modern builds, which is the reliable and published-extension-safe approach.
   }
 
   /** Get the most recent terminal output, or empty string if none. */
@@ -84,16 +76,75 @@ export class TerminalContextProvider {
       log(`[TerminalContext] getLastOutput: returning ${this.lastOutput.length} chars from "${this.lastTerminalName}"`);
       return { text: this.lastOutput, name: this.lastTerminalName };
     }
-    log('[TerminalContext] getLastOutput: no output available (shell integration inactive)');
+    log(
+      `[TerminalContext] getLastOutput: no output available ` +
+        `(seenExecution=${this.seenExecution}, shellIntegration=${this.isCaptureAvailable})`,
+    );
     return { text: '', name: '' };
   }
 
-  /** True if shell integration capture is available. */
+  /**
+   * Human-readable hint when {@link getLastOutput} is empty.
+   * Distinguishes "never tracked a command" from "buffer empty".
+   */
+  getEmptyCaptureHint(): string {
+    if (this.seenExecution) {
+      return 'The last tracked command produced no output. Run a command that prints something, then retry @terminal.';
+    }
+    if (this.isCaptureAvailable) {
+      return (
+        'Shell integration is present but has not tracked any command yet. ' +
+        'Kill the terminal, open a new one, run a command, then retry @terminal.'
+      );
+    }
+    return (
+      'VS Code shell integration is not active in this terminal (zsh ZDOTDIR inject often fails). ' +
+      'Kill the terminal, open a new one, run a command, then retry. ' +
+      'Verify with: echo $VSCODE_SHELL_INTEGRATION  (should print 1). ' +
+      'If it stays empty, add to ~/.zshrc: ' +
+      '[[ "$TERM_PROGRAM" == "vscode" ]] && . "$(code --locate-shell-integration-path zsh)"'
+    );
+  }
+
+  /** True if shell integration capture is available on the active terminal. */
   get isCaptureAvailable(): boolean {
     return vscode.window.activeTerminal?.shellIntegration !== undefined;
   }
 
   dispose(): void {
     this.disposables.forEach((d) => d.dispose());
+  }
+}
+
+/**
+ * VS Code injects zsh shell integration via ZDOTDIR under
+ * `$TMPDIR/$USER-$appName-zsh`. If that directory is missing, chmod of the
+ * sticky bit fails and injection is aborted — `onDidStartTerminalShellExecution`
+ * never fires and @terminal stays empty. Pre-create common app dirs so the
+ * next terminal can activate shell integration.
+ *
+ * See https://github.com/microsoft/vscode/issues/246531
+ */
+function ensureZshShellIntegrationDirs(): void {
+  if (process.platform === 'win32') {
+    return;
+  }
+  let tmp: string;
+  try {
+    tmp = fs.realpathSync(os.tmpdir());
+  } catch {
+    tmp = os.tmpdir();
+  }
+  const username = os.userInfo().username;
+  const appNames = ['code', 'code-insiders', 'cursor', 'cursor-insiders'];
+  for (const app of appNames) {
+    const dir = path.join(tmp, `${username}-${app}-zsh`);
+    try {
+      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+      fs.chmodSync(dir, 0o1700);
+      log(`[TerminalContext] Ensured zsh SI dir: ${dir}`);
+    } catch (err) {
+      log(`[TerminalContext] Could not ensure zsh SI dir ${dir}: ${err}`);
+    }
   }
 }

@@ -1742,15 +1742,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           text = `<terminal name="${name || 'active'}">\n${termOutput}\n</terminal>\n\n${text}`;
         }
       } else {
-        // No terminal output available — shell integration may be inactive
-        // (vscode-server/SSH) or the buffer is empty. Warn instead of silently
-        // sending a bare "@terminal" keyword to the agent.
-        const hint = this.terminalContext.isCaptureAvailable
-          ? 'Run a command in the terminal first, then retry @terminal.'
-          : 'Shell integration is unavailable (common on vscode-server / SSH). ' +
-            'Enable "terminal.integrated.shellIntegration.enabled" in settings ' +
-            'and use a supported shell.';
-        vscode.window.showWarningMessage(`@terminal: no terminal output captured. ${hint}`);
+        // No terminal output available — usually zsh shell integration never
+        // activated (VS Code ZDOTDIR inject), not "user forgot to run a command".
+        vscode.window.showWarningMessage(
+          `@terminal: no terminal output captured. ${this.terminalContext.getEmptyCaptureHint()}`,
+        );
       }
     }
 
