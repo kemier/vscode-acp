@@ -1,4 +1,7 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import {
   buildSelectionBlock,
@@ -10,6 +13,25 @@ import {
   directoryUri,
   type SelectionContext,
 } from '../core/ContextBlockBuilder';
+import { TerminalOutputStore } from '../core/TerminalOutputStore';
+
+/** A per-run temp dir for TerminalOutputStore so tests don't touch real
+ *  extension storage. Created once; cleaned up in suiteTeardown. */
+let tmpDir: string;
+
+suiteSetup(() => {
+  tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-term-test-'));
+});
+suiteTeardown(() => {
+  try {
+    for (const f of fs.readdirSync(tmpDir)) {
+      fs.unlinkSync(path.join(tmpDir, f));
+    }
+    fs.rmdirSync(tmpDir);
+  } catch {
+    /* best-effort */
+  }
+});
 
 suite('ContextBlockBuilder', () => {
   const POSIX_PATH = '/workspace/project/src/foo.ts';
@@ -145,8 +167,42 @@ suite('ContextBlockBuilder', () => {
     });
 
     test('uses explicit lineCount when provided', () => {
-      const block = buildTerminalBlock('whatever', true, 42) as any;
+      const block = buildTerminalBlock('whatever', true, undefined, 42) as any;
       assert.ok(block.resource.uri.includes('lines=42'));
+    });
+
+    test('inlines full output when no store is given (legacy behaviour)', () => {
+      const big = 'x'.repeat(20_000);
+      const block = buildTerminalBlock(big, true) as any;
+      assert.strictEqual(block.resource.text, big);
+    });
+
+    test('persists oversize output and replaces text with a truncated preview + file pointer', () => {
+      const store = new TerminalOutputStore(tmpDir);
+      const big = 'x'.repeat(20_000);
+      const block = buildTerminalBlock(big, true, store) as any;
+      assert.ok(block);
+      // Text is NOT the full output — it's the truncated preview.
+      assert.notStrictEqual(block.resource.text, big);
+      assert.ok(block.resource.text.length < big.length, 'preview must be smaller than full output');
+      assert.ok(block.resource.text.includes('truncated below'), 'preview must announce truncation');
+      assert.ok(
+        /Full output saved to: file:\/\/.+\.txt/.test(block.resource.text),
+        'preview must point at the persisted file',
+      );
+      // The persisted file exists and holds the full output.
+      const match = block.resource.text.match(/Full output saved to: (file:\/\/.+\.txt)/);
+      assert.ok(match, 'must contain a file pointer');
+      const filePath = vscode.Uri.parse(match![1]).fsPath;
+      assert.ok(fs.existsSync(filePath), 'persisted file must exist');
+      assert.strictEqual(fs.readFileSync(filePath, 'utf8'), big, 'file must hold the full output');
+    });
+
+    test('inlines output below the threshold even when a store is given', () => {
+      const store = new TerminalOutputStore(tmpDir);
+      const small = 'just a few lines\n';
+      const block = buildTerminalBlock(small, true, store) as any;
+      assert.strictEqual(block.resource.text, small);
     });
   });
 

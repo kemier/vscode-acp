@@ -29,6 +29,7 @@ import { SessionManager } from './core/SessionManager';
 import { NESManager } from './core/NESManager';
 import { NESInlineCompletionProvider } from './core/NESInlineCompletionProvider';
 import { SessionHistoryStore } from './core/SessionHistoryStore';
+import { TerminalOutputStore } from './core/TerminalOutputStore';
 import { KiroSessionDiscovery } from './core/KiroSessionDiscovery';
 import { SessionUpdateHandler } from './handlers/SessionUpdateHandler';
 import { SessionTreeProvider } from './ui/SessionTreeProvider';
@@ -170,11 +171,19 @@ export function activate(context: vscode.ExtensionContext): void {
     treeDataProvider: sessionTreeProvider,
   });
 
+  // Persists oversize @terminal output to a file (instead of inlining tens of
+  // thousands of chars into the prompt) and reaps stale files so they don't
+  // accumulate across sessions. Created once; the preview+pointer is injected
+  // into the terminal resource block at prompt-build time.
+  const terminalOutputStore = new TerminalOutputStore(context.globalStorageUri.fsPath);
+  terminalOutputStore.reapStale(); // clean up on activation
+
   const chatWebviewProvider = new ChatWebviewProvider(
     context.extensionUri,
     sessionManager,
     sessionUpdateHandler,
     context.workspaceState,
+    terminalOutputStore,
   );
   const chatViewRegistration = vscode.window.registerWebviewViewProvider(
     ChatWebviewProvider.viewType,

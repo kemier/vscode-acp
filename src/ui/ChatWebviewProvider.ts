@@ -15,6 +15,7 @@ import {
   buildTerminalBlock,
   buildDiagnosticsBlock,
 } from '../core/ContextBlockBuilder';
+import { TerminalOutputStore } from '../core/TerminalOutputStore';
 import { StreamCoalescer } from '../core/StreamCoalescer';
 import { FollowCoalescer, pickFollowTarget, type ToolCallLocationLike } from '../core/FollowAgent';
 import { log, logError, getOutputChannel } from '../utils/Logger';
@@ -46,6 +47,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   private _hasChatContent = false;
   private toolCallDiffs = new Map<string, Array<{ path: string; oldText?: string; newText: string }>>();
   private terminalContext = new TerminalContextProvider();
+  /** Optional store that persists oversize @terminal output to a file and
+   *  keeps a truncated preview inline. Wired from activate(); undefined keeps
+   *  the legacy inline-verbatim behaviour. */
+  private terminalOutputStore: TerminalOutputStore | undefined;
   /**
    * Coalesces per-token streaming chunks. See `StreamCoalescer` for details.
    * Codex emits `agent_message_chunk` / `agent_thought_chunk` per LLM delta,
@@ -114,7 +119,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     private readonly sessionManager: SessionManager,
     private readonly sessionUpdateHandler: SessionUpdateHandler,
     private readonly workspaceState: vscode.Memento,
+    terminalOutputStore?: TerminalOutputStore,
   ) {
+    this.terminalOutputStore = terminalOutputStore;
     // Configure marked for safe rendering + KaTeX math (\(...\), \[...\], $$)
     marked.setOptions({
       breaks: true,
@@ -1744,7 +1751,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       const { text: termOutput, name } = this.terminalContext.getLastOutput();
       if (termOutput) {
         text = text.replace(/@terminal\b/gi, '').trim();
-        const block = buildTerminalBlock(termOutput, supportsEmbedded);
+        const block = buildTerminalBlock(termOutput, supportsEmbedded, this.terminalOutputStore);
         if (block) {
           contextBlocks.push(block);
         } else {

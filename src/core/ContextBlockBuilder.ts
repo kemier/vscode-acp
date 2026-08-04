@@ -24,6 +24,7 @@
  */
 import * as vscode from 'vscode';
 import type { ContentBlock } from '@agentclientprotocol/sdk';
+import { TerminalOutputStore } from './TerminalOutputStore';
 
 /**
  * A piece of editor-selection context to attach to the next prompt.
@@ -147,18 +148,32 @@ export function buildDirectoryBlock(absPath: string): ContentBlock {
  * `resource_link` to `zed:///agent/terminal-selection` is useless because the
  * agent cannot dereference it. The caller is expected to keep the legacy
  * `<terminal>` inline-text fallback in that case.
+ *
+ * Large output: when `store` is provided and the output exceeds the inline
+ * threshold, the full output is persisted to a file and the block's `text`
+ * carries a truncated head+tail preview plus a pointer to the file (a plain
+ * `file://` URI the agent can `read_file`). This keeps oversized terminal logs
+ * (build output, `git log`, …) from blowing out the model's context window
+ * and slowing prefill on thinking models. When `store` is omitted, the full
+ * output is inlined verbatim (legacy behaviour).
  */
-export function buildTerminalBlock(output: string, supportsEmbedded: boolean, lineCount?: number): ContentBlock | null {
+export function buildTerminalBlock(
+  output: string,
+  supportsEmbedded: boolean,
+  store?: TerminalOutputStore,
+  lineCount?: number,
+): ContentBlock | null {
   if (!supportsEmbedded) {
     return null;
   }
+  const text = store ? store.persist(output).text : output;
   const lines = lineCount ?? output.split('\n').length;
   const uri = `zed:///agent/terminal-selection?lines=${lines}`;
   return {
     type: 'resource',
     resource: {
       uri,
-      text: output,
+      text,
       mimeType: 'text/plain',
     },
   } as ContentBlock;
