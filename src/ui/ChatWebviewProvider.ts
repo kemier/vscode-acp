@@ -11308,6 +11308,35 @@ function orderCompactFoldContents(body) {
      return;
    }
 
+   // Clean up multi-line tool-call titles. A shell command arrives as a
+   // single title string that may contain newlines (e.g. "cd <dir>\\n<cmd>"
+   // or a "# comment\\n<cmd>" preamble). Show the WHOLE command chain by
+   // joining every non-comment, non-empty line with ' && ' — not just the
+   // bare first line (which hid the real command behind a bare "cd"). Capped
+   // at 120 chars with '...'; we deliberately do NOT fall back to the first
+   // line when the join is long (that re-hides the real command).
+   // NOTE: webview JS lives in a TS template literal, so newline escapes are
+   // doubled ('\\n').
+   function cleanMultiLineTitle(title) {
+     var displayTitle = title || 'Tool Call';
+     var _dt = String(displayTitle);
+     if (_dt.indexOf('\\n') >= 0) {
+       var _dtLines = _dt.split('\\n');
+       var _meaningful = [];
+       for (var _li = 0; _li < _dtLines.length; _li++) {
+         var _line = _dtLines[_li].trim();
+         if (_line && !_line.startsWith('#') && !_line.startsWith('//')) {
+           _meaningful.push(_line);
+         }
+       }
+       var _joined = _meaningful.join(' && ');
+       if (_joined) {
+         displayTitle = _joined.length > 120 ? _joined.substring(0, 117) + '...' : _joined;
+       }
+     }
+     return displayTitle;
+   }
+
    function addToolCallInline(toolCallId, title, status, rawInput, toolKind, locations, parentToolUseId) {
       hideEmpty();
      if (parentToolUseId) {
@@ -11362,26 +11391,7 @@ function orderCompactFoldContents(body) {
      el._rawInput = rawInput || null;
      el._locations = locations || null;
      el._toolTitle = title || 'Tool Call';
-      var displayTitle = title || 'Tool Call';
-      // Clean up multi-line titles: shell commands with comments (e.g.
-      // "# Find latest logs\\nfind ...") should show only the first
-      // non-comment, non-empty line so the tool call doesn't look like
-      // mixed assistant text + tool call.
-      var _dt = String(displayTitle);
-      if (_dt.indexOf('\\n') >= 0) {
-        var _dtLines = _dt.split('\\n');
-        var _cleanedTitle = '';
-        for (var _li = 0; _li < _dtLines.length; _li++) {
-          var _line = _dtLines[_li].trim();
-          if (_line && !_line.startsWith('#') && !_line.startsWith('//')) {
-            _cleanedTitle = _line;
-            break;
-          }
-        }
-        if (_cleanedTitle) {
-          displayTitle = _cleanedTitle.length > 120 ? _cleanedTitle.substring(0, 117) + '...' : _cleanedTitle;
-        }
-      }
+      var displayTitle = cleanMultiLineTitle(title);
      // Title itself may be a JSON operation blob from Kiro.
      var titleTrim = String(displayTitle).trim();
       if (titleTrim.charAt(0) === '{' || titleTrim.charAt(0) === '[') {
@@ -12035,7 +12045,7 @@ forceCollapseTurnFolds();
           const titleEl = el.querySelector('.tc-title');
           if (titleEl) {
             // Apply friendly title for subagent spawn calls
-            var dt = title;
+            var dt = cleanMultiLineTitle(title);
             var elRawInput = el._rawInput || rawInput;
             if (isSubagentToolCall(title, el.dataset.toolKind || null, elRawInput)) {
               var sn = getSubagentSpawnCount(title, elRawInput);
@@ -12063,7 +12073,7 @@ forceCollapseTurnFolds();
       }
       if (title) {
         const titleEl = el.querySelector('.title');
-        if (titleEl) titleEl.textContent = title;
+        if (titleEl) titleEl.textContent = cleanMultiLineTitle(title);
       }
     }
 
