@@ -1692,7 +1692,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           this._cancelFallbackTimer = null;
         }
         this._pendingPromptSessionId = null;
-        this.postMessage({ type: 'promptEnd', stopReason: slashStopReason });
+        // Only deliver promptEnd to the webview if this session is still the
+        // active one. If the user switched agents mid-turn, the old session's
+        // prompt resolves here after the webview has already moved on to the
+        // new agent's panel — posting promptEnd: cancelled would leak the
+        // "— Conversation interrupted —" notice into the wrong chat.
+        if (this.sessionManager.getActiveSessionId() === activeId) {
+          this.postMessage({ type: 'promptEnd', stopReason: slashStopReason });
+        }
       }
       return;
     }
@@ -1865,11 +1872,18 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       this._pendingPromptSessionId = null;
       // Render the accumulated assistant text as markdown
       // The webview will have sent us the raw text via promptEnd handling
-      this.postMessage({
-        type: 'promptEnd',
-        stopReason: response.stopReason,
-        usage: (response as any).usage,
-      });
+      // Only deliver promptEnd to the webview if this session is still the
+      // active one. On agent switch mid-turn, disconnectAgent cancels the old
+      // session's in-flight prompt, which resolves here after the webview has
+      // already switched to the new agent. Posting promptEnd: cancelled would
+      // render "— Conversation interrupted —" in the WRONG agent's panel.
+      if (this.sessionManager.getActiveSessionId() === activeId) {
+        this.postMessage({
+          type: 'promptEnd',
+          stopReason: response.stopReason,
+          usage: (response as any).usage,
+        });
+      }
       this.sessionManager.touchHistory(activeId);
     } catch (e: any) {
       // Clear fallback timer and pending session on error too.
@@ -1886,7 +1900,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // in-flight prompt is expected to fail during teardown.
       if (/connection closed/i.test(errMsg) && this.sessionManager.getActiveSessionId() !== activeId) {
         this.streamCoalescer.flush(activeId);
-        this.postMessage({ type: 'promptEnd', stopReason: 'cancelled' });
+        // The session is no longer active (user switched agents), so the
+        // webview is showing a different chat. Do NOT post promptEnd here —
+        // it would leak "— Conversation interrupted —" into the new agent's
+        // panel. The webview's new state already cleared processing.
         return;
       }
       // Detect context length errors and provide actionable guidance
@@ -1934,7 +1951,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           log('Cancel fallback: agent did not acknowledge within 5s, forcing promptEnd (session kept alive)');
           this.streamCoalescer.flush(activeId);
           this.sessionManager.forceAbortPrompt(activeId);
-          this.postMessage({ type: 'promptEnd', stopReason: 'cancelled' });
+          // Same session-is-still-active guard as handleSendPrompt: if the user
+          // switched agents while this cancel was in flight, do not leak the
+          // "— Conversation interrupted —" notice into the new agent's panel.
+          if (this.sessionManager.getActiveSessionId() === activeId) {
+            this.postMessage({ type: 'promptEnd', stopReason: 'cancelled' });
+          }
           this._pendingPromptSessionId = null;
         }
         this._cancelFallbackTimer = null;
