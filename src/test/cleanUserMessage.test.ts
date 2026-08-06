@@ -1,4 +1,6 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
 
 /**
  * Standalone reimplementation of cleanUserMessage + stripTag from
@@ -454,6 +456,58 @@ suite('cleanUserMessage', () => {
     test('leaves a message that merely mentions memory alone', () => {
       const input = 'check memory acp log if has function normally';
       assert.strictEqual(cleanUserMessage(input), 'check memory acp log if has function normally');
+    });
+  });
+
+  suite('recall-only fallback guard (isMachineContextOnly)', () => {
+    // Extracted from the real webview source so it cannot drift from production.
+    const src = fs.readFileSync(path.resolve(__dirname, '../../src/ui/ChatWebviewProvider.ts'), 'utf8');
+    const startIdx = src.indexOf('function isMachineContextOnly(rawText) {');
+    const endIdx = src.indexOf('\n    }', startIdx);
+    const fnSrc = src.slice(startIdx, endIdx + '\n    }'.length);
+    const isMachineContextOnly = new Function('return (' + fnSrc + ')')() as (raw: string) => boolean;
+
+    test('a complete recall blob is machine context', () => {
+      assert.strictEqual(
+        isMachineContextOnly('<agent-memory>\n<relevant-memories>x</relevant-memories>\n</agent-memory>'),
+        true,
+      );
+    });
+
+    test('an unwrapped but complete recall section is machine context', () => {
+      assert.strictEqual(isMachineContextOnly('<user-persona>doctrine</user-persona>'), true);
+    });
+
+    test('an UNTERMINATED block is not treated as machine context', () => {
+      // stripTag drops everything after an unclosed tag, which may have eaten
+      // real user text — keep the raw fallback in that case.
+      assert.strictEqual(isMachineContextOnly('<agent-memory>\n<relevant-memories>truncated mid-stream'), false);
+    });
+
+    test('ordinary user text is never machine context', () => {
+      assert.strictEqual(isMachineContextOnly('deployed a2a?'), false);
+      assert.strictEqual(isMachineContextOnly('talk about <agent-memory> as a concept'), false);
+    });
+
+    test('empty text counts as machine context (nothing to show)', () => {
+      assert.strictEqual(isMachineContextOnly('   '), true);
+    });
+
+    test('render decision: recall-only message is dropped, not resurrected', () => {
+      const raw = '<agent-memory>\n<relevant-memories>- a fact</relevant-memories>\n</agent-memory>';
+      const cleaned = cleanUserMessage(raw);
+      assert.strictEqual(cleaned, '');
+      // Mirrors both render paths: fall back to raw ONLY when it is not
+      // machine-only context.
+      const shown = cleaned.trim() || (isMachineContextOnly(raw) ? '' : raw);
+      assert.strictEqual(shown, '');
+    });
+
+    test('render decision: blob + question still shows the question', () => {
+      const raw = '<agent-memory>\n<relevant-memories>- a fact</relevant-memories>\n</agent-memory>deployed?';
+      const cleaned = cleanUserMessage(raw);
+      const shown = cleaned.trim() || (isMachineContextOnly(raw) ? '' : raw);
+      assert.strictEqual(shown, 'deployed?');
     });
   });
 });

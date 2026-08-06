@@ -5349,6 +5349,30 @@ const builtinCommands = [
     }
 
     /**
+     * True when a user message is nothing but injected machine context —
+     * currently the shared-memory recall payload.
+     *
+     * Both render paths fall back to the RAW text when cleanUserMessage()
+     * empties a message, so that a session/load prompt is never silently
+     * dropped. For a recall-only message that fallback re-displayed the whole
+     * <agent-memory> blob in the panel. Only complete (properly closed) blocks
+     * count: an unterminated block may have swallowed real user text after it,
+     * and in that case showing the raw message is still the lesser evil.
+     */
+    function isMachineContextOnly(rawText) {
+      var raw = String(rawText || '');
+      if (!raw.trim()) return true;
+      var tags = ['agent-memory', 'relevant-memories', 'user-persona', 'relevant-scenes', 'scene-navigation', 'memory-tools-guide'];
+      for (var i = 0; i < tags.length; i++) {
+        var open = raw.indexOf('<' + tags[i]);
+        if (open < 0) continue;
+        var close = raw.indexOf('</' + tags[i] + '>', open);
+        if (close > open) return true;
+      }
+      return false;
+    }
+
+    /**
      * Clean a user message by stripping all injected context blocks
      * (<open_files>, <selection>, <terminal>, <problems>, <file>, <folder>).
      * Falls back to the original if the result is empty.
@@ -11773,7 +11797,7 @@ if (_deduped) {
          // session/load prompts are not silently dropped from the panel.
          if (item.role === 'user' && !String(displayText || '').trim()) {
            var rawFallback = String(item.text || '').trim();
-           if (rawFallback && !isSessionInterruptNotice(rawFallback)) {
+           if (rawFallback && !isSessionInterruptNotice(rawFallback) && !isMachineContextOnly(rawFallback)) {
              displayText = rawFallback;
            }
          }
@@ -13895,7 +13919,7 @@ sessionState = {
          var cleanedNew = cleanUserMessage(content.text);
          if (!String(cleanedNew || '').trim()) {
            var rawFallback = String(content.text || '').trim();
-           if (rawFallback && !isSessionInterruptNotice(rawFallback)) {
+           if (rawFallback && !isSessionInterruptNotice(rawFallback) && !isMachineContextOnly(rawFallback)) {
              cleanedNew = rawFallback;
            }
          }
