@@ -102,6 +102,14 @@ function cleanUserMessage(rawText: string): string {
   }
 
   displayText = stripTag(displayText, 'context', null);
+  // Shared-memory recall blob (SharedMemoryProvider) — machine context that
+  // session/load replays back inside the user message.
+  displayText = stripTag(displayText, 'agent-memory', null);
+  displayText = stripTag(displayText, 'relevant-memories', null);
+  displayText = stripTag(displayText, 'user-persona', null);
+  displayText = stripTag(displayText, 'relevant-scenes', null);
+  displayText = stripTag(displayText, 'scene-navigation', null);
+  displayText = stripTag(displayText, 'memory-tools-guide', null);
 
   const acpCtxMarker = 'Additional ACP context:';
   const acpCtxIdx = displayText.indexOf(acpCtxMarker);
@@ -167,6 +175,9 @@ function cleanUserMessage(rawText: string): string {
       rawText.indexOf('<file') >= 0 ||
       rawText.indexOf('<folder') >= 0 ||
       rawText.indexOf('<context') >= 0 ||
+      rawText.indexOf('<agent-memory') >= 0 ||
+      rawText.indexOf('<relevant-memories') >= 0 ||
+      rawText.indexOf('<user-persona') >= 0 ||
       rawText.indexOf('zed:///') >= 0 ||
       rawText.indexOf('Additional ACP context:') >= 0 ||
       rawText.indexOf('[ACP resource_link]') >= 0;
@@ -412,6 +423,37 @@ suite('cleanUserMessage', () => {
       }
 
       assert.strictEqual(coalesced, 'run sft in up/epg');
+    });
+  });
+
+  suite('shared-memory recall stripping', () => {
+    test('hides the <agent-memory> recall blob, keeps the typed question', () => {
+      const input =
+        '<agent-memory>\n<relevant-memories>\n- [work_fact] recalled thing\n</relevant-memories>\n</agent-memory>deployed a2a?';
+      assert.strictEqual(cleanUserMessage(input), 'deployed a2a?');
+    });
+
+    test('hides a recall blob that also carries the persona section', () => {
+      const input =
+        '<agent-memory>\n<user-persona>\n# Team Operating Doctrine\n</user-persona>\n</agent-memory>and also thinking block';
+      assert.strictEqual(cleanUserMessage(input), 'and also thinking block');
+    });
+
+    test('renders empty when the replayed message is only a recall blob', () => {
+      const input =
+        '<agent-memory>\n<relevant-memories>\n- nothing typed by the user\n</relevant-memories>\n</agent-memory>';
+      assert.strictEqual(cleanUserMessage(input), '');
+    });
+
+    test('hides unwrapped recall sections too', () => {
+      const input =
+        '<relevant-memories>\n- a fact\n</relevant-memories>\n<user-persona>doctrine</user-persona>\nfix on both branch';
+      assert.strictEqual(cleanUserMessage(input), 'fix on both branch');
+    });
+
+    test('leaves a message that merely mentions memory alone', () => {
+      const input = 'check memory acp log if has function normally';
+      assert.strictEqual(cleanUserMessage(input), 'check memory acp log if has function normally');
     });
   });
 });

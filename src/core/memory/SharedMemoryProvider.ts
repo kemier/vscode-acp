@@ -16,7 +16,7 @@ import { isMemoryConfigured, readMemorySettings, type MemorySettings } from './M
 import { resolveMemoryAgentId } from './MemoryAgentId';
 import { formatRecallContext } from './MemoryFormat';
 import { MemoryHttpClient, type MemoryIsolation } from './MemoryHttpClient';
-import { sanitizeMemoryText, shouldCaptureL0, stripCodeBlocks } from './MemorySanitize';
+import { buildRecallQuery, sanitizeMemoryText, shouldCaptureL0, stripCodeBlocks } from './MemorySanitize';
 
 interface PendingTurn {
   agentName: string;
@@ -95,10 +95,16 @@ export class SharedMemoryProvider {
     const memoryAgentId = resolveMemoryAgentId(opts.agentName, settings.agentIdMap);
     const client = this.getClient(settings);
     const iso = this.isolation(settings, memoryAgentId);
+    // The raw prompt may carry a previously injected recall blob plus @file /
+    // @terminal context and can exceed the gateway's 2048-char query limit.
+    const query = buildRecallQuery(opts.query);
+    if (!query) {
+      return [];
+    }
 
     try {
       const [searchResult, personaResult, scenesResult] = await Promise.allSettled([
-        client.searchAtomic(iso, { query: opts.query, limit: settings.recallMaxResults }),
+        client.searchAtomic(iso, { query, limit: settings.recallMaxResults }),
         settings.includePersona ? client.readCore(iso) : Promise.resolve(null),
         settings.includeSceneNav ? client.listScenarios(iso) : Promise.resolve(null),
       ]);

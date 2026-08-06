@@ -1,7 +1,13 @@
 import * as assert from 'assert';
 import { resolveMemoryAgentId } from '../core/memory/MemoryAgentId';
 import { formatL1Memories, formatRecallContext } from '../core/memory/MemoryFormat';
-import { sanitizeMemoryText, shouldCaptureL0, stripCodeBlocks } from '../core/memory/MemorySanitize';
+import {
+  RECALL_QUERY_MAX_CHARS,
+  buildRecallQuery,
+  sanitizeMemoryText,
+  shouldCaptureL0,
+  stripCodeBlocks,
+} from '../core/memory/MemorySanitize';
 
 suite('MemoryAgentId.resolveMemoryAgentId (Model B)', () => {
   test('maps Codex / Claude / Kiro via heuristics', () => {
@@ -71,5 +77,33 @@ suite('MemorySanitize', () => {
     assert.strictEqual(shouldCaptureL0('/compact'), false);
     assert.strictEqual(shouldCaptureL0('  '), false);
     assert.strictEqual(shouldCaptureL0('please fix the bug'), true);
+  });
+});
+
+suite('MemorySanitize.buildRecallQuery', () => {
+  test('drops a previously injected recall blob and keeps the real question', () => {
+    const raw =
+      '<agent-memory>\n<relevant-memories>\n- [work_fact] something recalled\n</relevant-memories>\n</agent-memory>why is the fold order wrong?';
+    assert.strictEqual(buildRecallQuery(raw), 'why is the fold order wrong?');
+  });
+
+  test('drops workspace context blocks', () => {
+    const raw = '<context ref="session:memory">dump</context>\n<terminal>log lines</terminal>\nfix the build';
+    assert.strictEqual(buildRecallQuery(raw), 'fix the build');
+  });
+
+  test('caps the query at the gateway limit', () => {
+    const raw = 'x'.repeat(RECALL_QUERY_MAX_CHARS + 500);
+    const query = buildRecallQuery(raw);
+    assert.strictEqual(query.length, RECALL_QUERY_MAX_CHARS);
+  });
+
+  test('a prompt that is only recall context yields an empty query', () => {
+    const raw = '<agent-memory>\n<user-persona>doctrine</user-persona>\n</agent-memory>';
+    assert.strictEqual(buildRecallQuery(raw), '');
+  });
+
+  test('plain prompts pass through untouched', () => {
+    assert.strictEqual(buildRecallQuery('deployed a2a?'), 'deployed a2a?');
   });
 });

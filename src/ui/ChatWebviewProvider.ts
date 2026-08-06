@@ -5451,6 +5451,17 @@ const builtinCommands = [
    }
  // Strip leading <context ref="...">...</context> blocks
  displayText = stripTag(displayText, 'context', null);
+ // Strip the shared-memory recall blob. SharedMemoryProvider prepends it to
+ // the prompt (as a resource, or as plain text for agents without embedded
+ // context), so session/load replay hands it back as part of the user
+ // message. It is machine context, never something the user typed.
+ displayText = stripTag(displayText, 'agent-memory', null);
+ // Older / partial recall payloads arrive without the <agent-memory> wrapper.
+ displayText = stripTag(displayText, 'relevant-memories', null);
+ displayText = stripTag(displayText, 'user-persona', null);
+ displayText = stripTag(displayText, 'relevant-scenes', null);
+ displayText = stripTag(displayText, 'scene-navigation', null);
+ displayText = stripTag(displayText, 'memory-tools-guide', null);
  // Cursor Agent inlines open-file / resource attachments into the user
  // message text during session/load as a trailing "Additional ACP context:"
  // block (followed by "[ACP resource_link] ..." dumps). Keep only the real
@@ -5509,6 +5520,9 @@ var end = displayText.length;
           || rawText.indexOf('<file') >= 0
           || rawText.indexOf('<folder') >= 0
           || rawText.indexOf('<context') >= 0
+          || rawText.indexOf('<agent-memory') >= 0
+          || rawText.indexOf('<relevant-memories') >= 0
+          || rawText.indexOf('<user-persona') >= 0
           || rawText.indexOf('zed:///') >= 0
           || rawText.indexOf('"type":"resource_link"') >= 0
           || rawText.indexOf('Additional ACP context:') >= 0
