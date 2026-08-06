@@ -374,6 +374,69 @@
           "default": 1000,
           "minimum": 50,
           "description": "Maximum number of entries kept in the ACP Traffic output channel before it is cleared. Prevents unbounded memory growth in long sessions."
+        },
+        "acp.memory.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable TencentDB Agent Memory (Model B): shared team memory with per-agent profiles (codex/claude/kiro/…). Requires a running MemoryCore Gateway."
+        },
+        "acp.memory.endpoint": {
+          "type": "string",
+          "default": "http://127.0.0.1:8420",
+          "description": "MemoryCore Gateway base URL (no trailing slash)."
+        },
+        "acp.memory.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Bearer token for MemoryCore Gateway (TDAI_GATEWAY_API_KEY)."
+        },
+        "acp.memory.serviceId": {
+          "type": "string",
+          "default": "default",
+          "description": "Memory instance / space id (x-tdai-service-id). Shared by all ACP agents."
+        },
+        "acp.memory.teamId": {
+          "type": "string",
+          "default": "default",
+          "description": "Team id for Model B isolation. Shared by all ACP agents so team-visible Skills/Knowledge can be shared."
+        },
+        "acp.memory.userId": {
+          "type": "string",
+          "default": "",
+          "description": "User id for memory isolation. Empty = OS username."
+        },
+        "acp.memory.agentIdMap": {
+          "type": "object",
+          "default": {},
+          "description": "Optional map of ACP agent config name → MemoryCore agent_id. Unmapped names use built-in heuristics (Codex→codex, Claude→claude, Kiro→kiro, …)."
+        },
+        "acp.memory.recallMaxResults": {
+          "type": "number",
+          "default": 5,
+          "minimum": 1,
+          "maximum": 50,
+          "description": "Max L1 atomic memories to inject on each prompt."
+        },
+        "acp.memory.includePersona": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include L3 persona (core) for the agent profile on recall."
+        },
+        "acp.memory.includeSceneNav": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include L2 scenario navigation index for the agent profile on recall."
+        },
+        "acp.memory.captureEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Write L0 conversation turns to MemoryCore after each prompt completes."
+        },
+        "acp.memory.timeoutMs": {
+          "type": "number",
+          "default": 15000,
+          "minimum": 1000,
+          "description": "HTTP timeout for MemoryCore Gateway requests (milliseconds)."
         }
       }
     }
@@ -388,7 +451,7 @@
     "lint": "eslint src --max-warnings 0",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "test": "vscode-test",
-    "test:unit": "npm run compile-tests && mocha --ui tdd 'out/test/markdownMath.test.js' 'out/test/linkifier.test.js' 'out/test/titleCleaner.test.js' 'out/test/toolCallTitleCleaner.test.js' 'out/test/streamCoalescer.test.js' 'out/test/cleanUserMessage.test.js' 'out/test/followAgent.test.js'",
+    "test:unit": "npm run compile-tests && mocha --ui tdd 'out/test/markdownMath.test.js' 'out/test/linkifier.test.js' 'out/test/titleCleaner.test.js' 'out/test/toolCallTitleCleaner.test.js' 'out/test/streamCoalescer.test.js' 'out/test/cleanUserMessage.test.js' 'out/test/followAgent.test.js' 'out/test/memory.test.js'",
     "deploy": "bash scripts/deploy-all.sh",
     "deploy:fast": "bash scripts/deploy-all.sh --skip-tests --skip-lint",
     "install:local": "bash scripts/install-vscode-server.sh",

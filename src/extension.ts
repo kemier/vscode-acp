@@ -31,6 +31,8 @@ import { NESInlineCompletionProvider } from './core/NESInlineCompletionProvider'
 import { SessionHistoryStore } from './core/SessionHistoryStore';
 import { TerminalOutputStore } from './core/TerminalOutputStore';
 import { KiroSessionDiscovery } from './core/KiroSessionDiscovery';
+import { SharedMemoryProvider } from './core/memory/SharedMemoryProvider';
+import { isMemoryConfigured, readMemorySettings } from './core/memory/MemoryConfig';
 import { SessionUpdateHandler } from './handlers/SessionUpdateHandler';
 import { SessionTreeProvider } from './ui/SessionTreeProvider';
 import { StatusBarManager } from './ui/StatusBarManager';
@@ -81,6 +83,23 @@ export function activate(context: vscode.ExtensionContext): void {
   const connectionManager = new ConnectionManager(sessionUpdateHandler);
   const sessionManager = new SessionManager(agentManager, connectionManager, sessionUpdateHandler);
   _sessionManager = sessionManager;
+
+  // --- Shared memory (TencentDB Agent Memory, Model B) ---
+  // team_id shared across agents; agent_id mapped per ACP agent type.
+  const memoryProvider = new SharedMemoryProvider(sessionUpdateHandler);
+  sessionManager.setMemoryProvider(memoryProvider);
+  context.subscriptions.push({ dispose: () => memoryProvider.dispose() });
+  {
+    const mem = readMemorySettings();
+    if (isMemoryConfigured(mem)) {
+      log(
+        `SharedMemoryProvider: enabled endpoint=${mem.endpoint} team=${mem.teamId} ` +
+          `service=${mem.serviceId} user=${mem.userId}`,
+      );
+    } else if (mem.enabled) {
+      log('SharedMemoryProvider: acp.memory.enabled but missing apiKey/endpoint — recall/capture idle');
+    }
+  }
 
   // --- NES (Next Edit Suggestions) ---
   // NES is an experimental ACP feature. codex-acp does NOT currently support

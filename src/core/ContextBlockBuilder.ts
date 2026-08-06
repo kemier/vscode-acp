@@ -197,3 +197,32 @@ export function buildDiagnosticsBlock(text: string, supportsEmbedded: boolean): 
     },
   } as ContentBlock;
 }
+
+/**
+ * Build a block carrying TencentDB Agent Memory recall text.
+ *
+ * - With `embeddedContext`: `resource` at `vscode-acp:///memory/<agentId>`.
+ * - Without: returns `null` so the caller can prepend the text inline
+ *   (the URI is not dereferenceable by the agent).
+ */
+export function buildMemoryBlock(
+  text: string,
+  supportsEmbedded: boolean,
+  memoryAgentId: string,
+): ContentBlock | null {
+  if (!text.trim()) {
+    return null;
+  }
+  if (!supportsEmbedded) {
+    return null;
+  }
+  const id = encodeURIComponent(memoryAgentId || 'agent');
+  return {
+    type: 'resource',
+    resource: {
+      uri: `vscode-acp:///memory/${id}`,
+      text,
+      mimeType: 'text/plain',
+    },
+  } as ContentBlock;
+}

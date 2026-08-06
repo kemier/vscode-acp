@@ -85,6 +85,7 @@ export interface AgentCapabilitySummary {
  */
 export type { SelectionContext } from './ContextBlockBuilder';
 import { buildSelectionBlock, type SelectionContext } from './ContextBlockBuilder';
+import type { SharedMemoryProvider } from './memory/SharedMemoryProvider';
 
 /**
  * Why an agent expansion failed (used to surface a useful tree placeholder).
@@ -174,6 +175,9 @@ export class SessionManager extends EventEmitter {
   /** Client-side session history (optional — only used for tier-2 tree). */
   private historyStore: SessionHistoryStore | null = null;
 
+  /** Optional TencentDB Agent Memory provider (Model B shared team memory). */
+  private memoryProvider: SharedMemoryProvider | null = null;
+
   constructor(
     private readonly agentManager: AgentManager,
     private readonly connectionManager: ConnectionManager,
@@ -185,6 +189,11 @@ export class SessionManager extends EventEmitter {
   /** Wire in the persistent session-history store (called once at startup). */
   setHistoryStore(store: SessionHistoryStore): void {
     this.historyStore = store;
+  }
+
+  /** Wire in shared memory (called once at startup when configured). */
+  setMemoryProvider(provider: SharedMemoryProvider): void {
+    this.memoryProvider = provider;
   }
 
   /** Public accessor for downstream UI. */
@@ -666,8 +675,27 @@ export class SessionManager extends EventEmitter {
     );
 
     const supportsEmbeddedContext = !!this.getPromptCapabilities(sessionId)?.embeddedContext;
+    const isSlashCommand = text.startsWith('/');
 
     const prompt: ContentBlock[] = [];
+
+    // Shared memory recall (Model B) — inject before workspace context so the
+    // agent sees durable team/agent memory ahead of ephemeral @file/@terminal.
+    if (!isSlashCommand && this.memoryProvider?.isEnabled()) {
+      try {
+        const memoryBlocks = await this.memoryProvider.buildRecallBlocks({
+          sessionId,
+          agentName: session.agentName,
+          query: text,
+          supportsEmbedded: supportsEmbeddedContext,
+        });
+        if (memoryBlocks.length > 0) {
+          prompt.push(...memoryBlocks);
+        }
+      } catch (e) {
+        logError('Memory recall failed', e);
+      }
+    }
 
     // Caller-built context blocks (file/directory/terminal/diagnostics
     // mentions) come first so the agent sees the broader workspace context
@@ -704,6 +732,9 @@ export class SessionManager extends EventEmitter {
     prompt.push({ type: 'text', text });
 
     this.inFlightPromptSessions.add(sessionId);
+    if (!isSlashCommand && this.memoryProvider?.isEnabled()) {
+      this.memoryProvider.beginTurn(sessionId, session.agentName, text);
+    }
     try {
       const response = await connInfo.connection.prompt({
         sessionId,
@@ -714,6 +745,9 @@ export class SessionManager extends EventEmitter {
       return response;
     } finally {
       this.inFlightPromptSessions.delete(sessionId);
+      if (!isSlashCommand && this.memoryProvider) {
+        void this.memoryProvider.endTurn(sessionId).catch((e) => logError('Memory capture failed', e));
+      }
     }
   }
 
