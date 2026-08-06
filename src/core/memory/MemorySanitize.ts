@@ -16,7 +16,10 @@ export function sanitizeMemoryText(text: string): string {
   cleaned = cleaned.replace(/<agent-memory>[\s\S]*?<\/agent-memory>/g, '');
 
   cleaned = cleaned.replace(/data:image\/[a-z+]+;base64,[A-Za-z0-9+/=]+/gi, '');
-  cleaned = cleaned.replace(/\0/g, '').replace(/\n{3,}/g, '\n\n').trim();
+  cleaned = cleaned
+    .replace(/\0/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
 
   return cleaned;
 }

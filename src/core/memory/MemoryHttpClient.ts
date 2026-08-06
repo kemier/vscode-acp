@@ -132,10 +132,7 @@ export class MemoryHttpClient {
     }
   }
 
-  searchAtomic(
-    iso: MemoryIsolation,
-    params: { query: string; limit?: number },
-  ): Promise<{ items: AtomicSearchHit[] }> {
+  searchAtomic(iso: MemoryIsolation, params: { query: string; limit?: number }): Promise<{ items: AtomicSearchHit[] }> {
     // Omit session_id on recall so search aggregates across sessions for
     // this team+agent+user (Model B per-agent memory).
     const { sessionId: _sessionId, ...rest } = iso;

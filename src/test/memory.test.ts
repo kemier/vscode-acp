@@ -33,11 +33,9 @@ suite('MemoryFormat', () => {
   });
 
   test('formatRecallContext combines layers', () => {
-    const formatted = formatRecallContext(
-      [{ content: 'uses pnpm', type: 'fact' }],
-      'User is a systems engineer.',
-      [{ path: 'scene_blocks/deploy.md' }],
-    );
+    const formatted = formatRecallContext([{ content: 'uses pnpm', type: 'fact' }], 'User is a systems engineer.', [
+      { path: 'scene_blocks/deploy.md' },
+    ]);
     assert.ok(formatted);
     assert.ok(formatted!.text.includes('<agent-memory>'));
     assert.ok(formatted!.text.includes('<relevant-memories>'));
@@ -55,8 +53,7 @@ suite('MemoryFormat', () => {
 
 suite('MemorySanitize', () => {
   test('strips injected recall tags to prevent feedback loops', () => {
-    const raw =
-      '<relevant-memories>\n- [fact] secret\n</relevant-memories>\n\nreal user question';
+    const raw = '<relevant-memories>\n- [fact] secret\n</relevant-memories>\n\nreal user question';
     assert.strictEqual(sanitizeMemoryText(raw), 'real user question');
   });
 

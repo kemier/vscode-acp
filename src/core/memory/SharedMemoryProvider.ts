@@ -104,20 +104,19 @@ export class SharedMemoryProvider {
       ]);
 
       const l1Items =
-        searchResult.status === 'fulfilled' ? (searchResult.value.items ?? []).map((i) => ({
-          id: i.id,
-          content: i.content,
-          type: i.type,
-          score: i.score,
-        })) : [];
+        searchResult.status === 'fulfilled'
+          ? (searchResult.value.items ?? []).map((i) => ({
+              id: i.id,
+              content: i.content,
+              type: i.type,
+              score: i.score,
+            }))
+          : [];
       if (searchResult.status === 'rejected') {
         logError('Memory recall L1 search failed', searchResult.reason);
       }
 
-      const persona =
-        personaResult.status === 'fulfilled' && personaResult.value
-          ? personaResult.value.content
-          : null;
+      const persona = personaResult.status === 'fulfilled' && personaResult.value ? personaResult.value.content : null;
       if (personaResult.status === 'rejected') {
         logError('Memory recall persona read failed', personaResult.reason);
       }
@@ -132,9 +131,7 @@ export class SharedMemoryProvider {
 
       const formatted = formatRecallContext(l1Items, persona, scenes);
       if (!formatted) {
-        log(
-          `Memory recall: no hits (agent=${opts.agentName}→${memoryAgentId}, session=${opts.sessionId})`,
-        );
+        log(`Memory recall: no hits (agent=${opts.agentName}→${memoryAgentId}, session=${opts.sessionId})`);
         return [];
       }
 

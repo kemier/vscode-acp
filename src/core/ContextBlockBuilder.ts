@@ -205,11 +205,7 @@ export function buildDiagnosticsBlock(text: string, supportsEmbedded: boolean): 
  * - Without: returns `null` so the caller can prepend the text inline
  *   (the URI is not dereferenceable by the agent).
  */
-export function buildMemoryBlock(
-  text: string,
-  supportsEmbedded: boolean,
-  memoryAgentId: string,
-): ContentBlock | null {
+export function buildMemoryBlock(text: string, supportsEmbedded: boolean, memoryAgentId: string): ContentBlock | null {
   if (!text.trim()) {
     return null;
   }
