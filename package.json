@@ -388,7 +388,7 @@
     "lint": "eslint src --max-warnings 0",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "test": "vscode-test",
-    "test:unit": "npm run compile-tests && mocha --ui tdd 'out/test/markdownMath.test.js' 'out/test/linkifier.test.js' 'out/test/titleCleaner.test.js' 'out/test/streamCoalescer.test.js' 'out/test/cleanUserMessage.test.js' 'out/test/followAgent.test.js'",
+    "test:unit": "npm run compile-tests && mocha --ui tdd 'out/test/markdownMath.test.js' 'out/test/linkifier.test.js' 'out/test/titleCleaner.test.js' 'out/test/toolCallTitleCleaner.test.js' 'out/test/streamCoalescer.test.js' 'out/test/cleanUserMessage.test.js' 'out/test/followAgent.test.js'",
     "deploy": "bash scripts/deploy-all.sh",
     "deploy:fast": "bash scripts/deploy-all.sh --skip-tests --skip-lint",
     "install:local": "bash scripts/install-vscode-server.sh",
