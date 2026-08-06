@@ -4,6 +4,7 @@ set -euo pipefail
 # Install the built VSIX on a remote SSH host into:
 #   - ~/.vscode-server/extensions  (Remote SSH / code-server)
 #   - ~/.vscode/extensions         (local VS Code on that machine)
+#   - ~/.cursor/extensions         (local Cursor on that machine, if present)
 #
 # Each target is registered in extensions.json so the editor doesn't mark
 # a plain unzip as .obsolete.
@@ -91,7 +92,7 @@ install_local_vscode_server() {
 
 if [[ -n "${ACP_SSH_HOST:-}" ]]; then
   echo "📦 Installing $EXT_ID v$VERSION on SSH host: $ACP_SSH_HOST"
-  echo "   Targets: ~/.vscode-server/extensions, ~/.vscode/extensions"
+  echo "   Targets: ~/.vscode-server/extensions, ~/.vscode/extensions, ~/.cursor/extensions (if present)"
   scp -o BatchMode=yes "$VSIX" "$ACP_SSH_HOST:/tmp/$NAME-$VERSION.vsix"
   # shellcheck disable=SC2087
   ssh -o BatchMode=yes "$ACP_SSH_HOST" bash -s <<EOF
@@ -155,10 +156,21 @@ install_root() {
 install_root "\$HOME/.vscode-server/extensions" "vscode-server (Remote SSH)"
 install_root "\$HOME/.vscode/extensions" "local VS Code"
 
+if [[ -d "\$HOME/.cursor/extensions" ]]; then
+  install_root "\$HOME/.cursor/extensions" "local Cursor"
+else
+  echo "── local Cursor"
+  echo "   Skip: \$HOME/.cursor/extensions not present"
+fi
+
 # Prefer CLI install when available (registers + activates cleanly).
 if command -v code >/dev/null 2>&1; then
   echo "── code --install-extension"
   code --install-extension "\$VSIX" --force || true
+fi
+if command -v cursor >/dev/null 2>&1; then
+  echo "── cursor --install-extension"
+  cursor --install-extension "\$VSIX" --force || true
 fi
 
 rm -f "\$VSIX"
