@@ -56,7 +56,7 @@ if [ "$SKIP_TESTS" = false ]; then
   # Compile test TypeScript to out/
   npx tsc -p . --outDir out || fail "Test compilation failed"
   # Run standalone tests with mocha (no VS Code dependency needed)
-  npx mocha --ui tdd 'out/test/cleanUserMessage.test.js' 'out/test/followAgent.test.js' 'out/test/linkifier.test.js' 'out/test/streamCoalescer.test.js' || fail "Tests failed"
+  npx mocha --ui tdd 'out/test/cleanUserMessage.test.js' 'out/test/followAgent.test.js' 'out/test/linkifier.test.js' 'out/test/streamCoalescer.test.js' 'out/test/foldOrdering.test.js' || fail "Tests failed"
   ok "All tests passed"
 else
   warn "Skipping tests (--skip-tests)"

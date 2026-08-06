@@ -8940,12 +8940,29 @@ function orderCompactFoldContents(body) {
       return tag + '=' + historyOrder(el);
     });
     vscode.postMessage({ type: 'debugLog', message: '[WV-ORDER] sort keys: ' + _dbgSortKeys.join(' | ') });
-    foldables.sort(function(a, b) {
-      return historyOrder(a) - historyOrder(b);
-    });
-    var _dbgAfter = foldables.map(function(el) {
+    // Nodes with no stamp (legacy groups, subagent crew rows, anything created
+    // before it lands in chatHistory) must keep the position they were appended
+    // at. Scoring them MAX_SAFE_INTEGER made every unstamped tool group sink to
+    // the bottom of the fold, so an expanded turn showed all thoughts, then all
+    // tools, instead of thought → tools → text → tools. Inherit the preceding
+    // key + 0.5 so an unstamped node stays adjacent to its predecessor.
+    var _keys = foldables.map(historyOrder);
+    var _lastKnown = -1;
+    for (var _ki = 0; _ki < _keys.length; _ki++) {
+      if (_keys[_ki] === Number.MAX_SAFE_INTEGER) {
+        _keys[_ki] = _lastKnown + 0.5;
+      } else {
+        _lastKnown = _keys[_ki];
+      }
+    }
+    // Decorate-sort-undecorate: explicit tie-break on the original position so
+    // equal keys never reorder, independent of engine sort stability.
+    var _decorated = foldables.map(function(el, i) { return { el: el, key: _keys[i], i: i }; });
+    _decorated.sort(function(a, b) { return (a.key - b.key) || (a.i - b.i); });
+    foldables = _decorated.map(function(d) { return d.el; });
+    var _dbgAfter = foldables.map(function(el, i) {
       var tag = el.className.split(' ')[0];
-      return tag + '[' + historyOrder(el) + ']';
+      return tag + '[' + _decorated[i].key + ']';
     });
     vscode.postMessage({ type: 'debugLog', message: '[WV-ORDER] after sort: ' + _dbgAfter.join(' | ') });
     // Append sorted (stable) — preserves interleaved order.
@@ -9490,6 +9507,29 @@ function orderCompactFoldContents(body) {
         currentToolsCountEl._kinds || [],
         currentToolsCountEl._rawInputs || []
       );
+    }
+
+    /**
+     * Stamp a tool row (and its .turn-tools wrapper) with the chatHistory index
+     * it was rendered from. orderCompactFoldContents() sorts fold children by
+     * this attribute; without it a tool group scores MAX_SAFE_INTEGER and sinks
+     * below every thought / interim assistant, which destroyed the interleaved
+     * order as soon as the user expanded a fold mid-turn.
+     * The wrapper keeps the MIN index of its rows so the whole group sorts to
+     * the position of its first tool.
+     */
+    function stampToolHistoryIndex(toolCallId, historyIndex) {
+      if (!Number.isFinite(historyIndex) || historyIndex < 0) return;
+      var el = toolCalls[toolCallId] || document.getElementById('tc-' + toolCallId);
+      if (!el || !el.setAttribute) return;
+      el.setAttribute('data-history-index', String(historyIndex));
+      var wrap = el.closest ? el.closest('.turn-tools') : null;
+      if (!wrap || !wrap.setAttribute) return;
+      var wrapIdx = wrap.getAttribute('data-history-index');
+      if (wrapIdx === null || wrapIdx === undefined || String(wrapIdx).trim() === '' ||
+          Number(wrapIdx) > historyIndex) {
+        wrap.setAttribute('data-history-index', String(historyIndex));
+      }
     }
 
     function placeThoughtInTurn(thoughtEl) {
@@ -10129,6 +10169,7 @@ function orderCompactFoldContents(body) {
         parentToolUseId: null,
       });
       saveState();
+     var _tcHistoryIndex = chatHistory.length - 1;
      storeDiffContent(toolCallId, content);
      // For edit tool calls with a generic title (e.g. "Editing files"),
      // extract the file path from diff content to show in the title.
@@ -10148,6 +10189,10 @@ function orderCompactFoldContents(body) {
        title = "Edit '" + _baseName + "'";
      }
      addToolCallInline(toolCallId, title, status, rawInput, toolKind, locations, null);
+     // Live path must stamp the same way renderChatHistory does — otherwise the
+     // group has no sort key and expanding the fold regroups all tools below
+     // the thoughts / assistant segments instead of interleaving them.
+     stampToolHistoryIndex(toolCallId, _tcHistoryIndex);
       vscode.postMessage({ type: 'debugLog', message: '[WV-ADDTC] AFTER push chatHistoryLen=' + chatHistory.length });
     }
 
@@ -11810,15 +11855,7 @@ if (_deduped) {
           item.parentToolUseId || null);
         var _toolEl = toolCalls[item.toolCallId] || document.getElementById('tc-' + item.toolCallId);
         if (_toolEl && _toolEl.setAttribute) {
-          _toolEl.setAttribute('data-history-index', String(_historyIndex));
-          var _toolWrap = _toolEl.closest('.turn-tools');
-          if (_toolWrap && _toolWrap.setAttribute) {
-            var _wrapIdx = _toolWrap.getAttribute('data-history-index');
-            if (_wrapIdx === null || _wrapIdx === undefined || String(_wrapIdx).trim() === '' ||
-                Number(_wrapIdx) > _historyIndex) {
-              _toolWrap.setAttribute('data-history-index', String(_historyIndex));
-            }
-          }
+          stampToolHistoryIndex(item.toolCallId, _historyIndex);
         }
         break;
       }
