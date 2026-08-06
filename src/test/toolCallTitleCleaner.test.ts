@@ -80,7 +80,7 @@ suite('cleanToolCallTitle (multi-line shell command titles)', () => {
     const input = 'Running: cd /workspace/git/ezennin/vepg/epg\ngit log --oneline -5';
     assert.strictEqual(
       cleanToolCallTitle(input),
-      'Running: cd /workspace/git/ezennin/vepg/epg && git log --oneline -5'
+      'Running: cd /workspace/git/ezennin/vepg/epg && git log --oneline -5',
     );
   });
 
@@ -110,10 +110,7 @@ suite('cleanToolCallTitle (multi-line shell command titles)', () => {
     // Original behaviour took only the first non-comment line. Now we join all
     // meaningful lines, so a comment header is dropped and the commands chain.
     const input = '# Find latest logs\nfind . -name "*.log" | tail -5';
-    assert.strictEqual(
-      cleanToolCallTitle(input),
-      'find . -name "*.log" | tail -5'
-    );
+    assert.strictEqual(cleanToolCallTitle(input), 'find . -name "*.log" | tail -5');
   });
 
   test('comment plus two command lines: both commands joined', () => {
@@ -132,7 +129,7 @@ suite('cleanToolCallTitle (multi-line shell command titles)', () => {
     const input = 'cd /workspace/repo\necho "=== section ==="\ngit log --oneline -5';
     assert.strictEqual(
       cleanToolCallTitle(input),
-      'cd /workspace/repo && echo "=== section ===" && git log --oneline -5'
+      'cd /workspace/repo && echo "=== section ===" && git log --oneline -5',
     );
   });
 

@@ -35,8 +35,7 @@ const MAX_PERSISTED_AGE_MS = 24 * 60 * 60 * 1000; // 24h
  *   head+tail preview + a pointer telling the agent to read the file.
  */
 export type TerminalPersistResult =
-  | { kind: 'inline'; text: string }
-  | { kind: 'persisted'; text: string; filePath: string };
+  { kind: 'inline'; text: string } | { kind: 'persisted'; text: string; filePath: string };
 
 /**
  * Pure truncation + pointer formatting (no I/O). Exported so it can be unit
@@ -110,9 +109,7 @@ export class TerminalOutputStore {
     // dir from growing without a separate timer.
     this.reapStale();
     try {
-      const stamp = new Date()
-        .toISOString()
-        .replace(/[:.]/g, '-');
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       const filePath = path.join(this.dir, `terminal-${stamp}-${process.pid}.txt`);
       fs.writeFileSync(filePath, output, 'utf8');
       log(`[TerminalOutputStore] persisted ${output.length} chars → ${filePath}`);
