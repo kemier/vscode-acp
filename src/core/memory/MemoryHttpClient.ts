@@ -87,8 +87,11 @@ export class MemoryHttpClient {
     const body: Record<string, unknown> = {
       team_id: iso.teamId,
       agent_id: iso.agentId,
-      user_id: iso.userId,
     };
+    // user_id is omitted for profile-scope reads (see readCore).
+    if (iso.userId) {
+      body.user_id = iso.userId;
+    }
     if (iso.sessionId) {
       body.session_id = iso.sessionId;
     }
@@ -109,6 +112,12 @@ export class MemoryHttpClient {
         signal: controller.signal,
       });
       const responseText = await response.text().catch(() => '');
+      if (response.ok && responseText.trim() === '') {
+        // Some gateway endpoints answer 200 with an empty body when the
+        // requested isolation scope has no data. Treat that as "no data"
+        // instead of a parse error.
+        return {} as T;
+      }
       let envelope: ApiEnvelope<T>;
       try {
         envelope = JSON.parse(responseText) as ApiEnvelope<T>;
@@ -144,7 +153,13 @@ export class MemoryHttpClient {
   }
 
   readCore(iso: MemoryIsolation): Promise<{ content: string | null }> {
-    return this.post('/v3/core/read', this.isolationBody({ ...iso, sessionId: undefined }));
+    // The L3 persona is generated at profile scope (team_id|agent_id) — the
+    // gateway logs it as `scope=team:<team>|agent:<agent>`. Sending user_id
+    // narrows the lookup to a per-user profile that does not exist, and the
+    // gateway answers 200 with an empty body, so the persona would never be
+    // injected. Read at profile scope instead.
+    const { sessionId: _sessionId, userId: _userId, ...profile } = iso;
+    return this.post('/v3/core/read', this.isolationBody(profile as MemoryIsolation));
   }
 
   listScenarios(iso: MemoryIsolation): Promise<{ entries: ScenarioEntry[] }> {

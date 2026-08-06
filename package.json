@@ -122,6 +122,10 @@
         "title": "ACP: Export Protocol Traffic"
       },
       {
+        "command": "acp.showMemoryStatus",
+        "title": "ACP: Show Shared Memory Status"
+      },
+      {
         "command": "acp.browseRegistry",
         "title": "ACP: Browse Agent Registry"
       },

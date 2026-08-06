@@ -32,7 +32,7 @@ import { SessionHistoryStore } from './core/SessionHistoryStore';
 import { TerminalOutputStore } from './core/TerminalOutputStore';
 import { KiroSessionDiscovery } from './core/KiroSessionDiscovery';
 import { SharedMemoryProvider } from './core/memory/SharedMemoryProvider';
-import { isMemoryConfigured, readMemorySettings } from './core/memory/MemoryConfig';
+import { describeMemoryConfigSources, isMemoryConfigured, readMemorySettings } from './core/memory/MemoryConfig';
 import { SessionUpdateHandler } from './handlers/SessionUpdateHandler';
 import { SessionTreeProvider } from './ui/SessionTreeProvider';
 import { StatusBarManager } from './ui/StatusBarManager';
@@ -90,15 +90,33 @@ export function activate(context: vscode.ExtensionContext): void {
   sessionManager.setMemoryProvider(memoryProvider);
   context.subscriptions.push({ dispose: () => memoryProvider.dispose() });
   {
-    const mem = readMemorySettings();
-    if (isMemoryConfigured(mem)) {
-      log(
-        `SharedMemoryProvider: enabled endpoint=${mem.endpoint} team=${mem.teamId} ` +
-          `service=${mem.serviceId} user=${mem.userId}`,
-      );
-    } else if (mem.enabled) {
-      log('SharedMemoryProvider: acp.memory.enabled but missing apiKey/endpoint — recall/capture idle');
-    }
+    const logMemoryStatus = (reason: string): string => {
+      const mem = readMemorySettings();
+      const summary = isMemoryConfigured(mem)
+        ? `enabled endpoint=${mem.endpoint} team=${mem.teamId} service=${mem.serviceId} ` +
+          `user=${mem.userId} recall=${mem.recallMaxResults}`
+        : 'idle — acp.memory.* not fully configured (recall/capture disabled)';
+      log(`SharedMemoryProvider [${reason}]: ${summary}`);
+      for (const line of describeMemoryConfigSources()) {
+        log(`SharedMemoryProvider [${reason}]:   ${line}`);
+      }
+      return summary;
+    };
+    logMemoryStatus('activate');
+    context.subscriptions.push(
+      vscode.workspace.onDidChangeConfiguration((e) => {
+        if (e.affectsConfiguration('acp.memory')) {
+          logMemoryStatus('settings changed');
+        }
+      }),
+    );
+    context.subscriptions.push(
+      vscode.commands.registerCommand('acp.showMemoryStatus', () => {
+        const summary = logMemoryStatus('command');
+        getOutputChannel().show(true);
+        vscode.window.showInformationMessage(`ACP shared memory: ${summary}`);
+      }),
+    );
   }
 
   // --- NES (Next Edit Suggestions) ---
