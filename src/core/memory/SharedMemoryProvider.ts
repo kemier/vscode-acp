@@ -53,18 +53,24 @@ export class SharedMemoryProvider {
     return isMemoryConfigured(readMemorySettings());
   }
 
+  /** True when verbose recall/inject timing logging is enabled. */
+  isDebug(): boolean {
+    return this.getSettings().debug === true;
+  }
+
   private getSettings(): MemorySettings {
     return readMemorySettings();
   }
 
   private getClient(settings: MemorySettings): MemoryHttpClient {
-    const key = `${settings.endpoint}|${settings.apiKey}|${settings.serviceId}|${settings.timeoutMs}`;
+    const key = `${settings.endpoint}|${settings.apiKey}|${settings.serviceId}|${settings.timeoutMs}|${settings.debug}`;
     if (!this.client || this.cachedSettingsKey !== key) {
       this.client = new MemoryHttpClient({
         endpoint: settings.endpoint,
         apiKey: settings.apiKey,
         serviceId: settings.serviceId,
         timeoutMs: settings.timeoutMs,
+        debug: settings.debug,
       });
       this.cachedSettingsKey = key;
     }
@@ -108,12 +114,37 @@ export class SharedMemoryProvider {
       return [];
     }
 
+    if (settings.debug) {
+      log(
+        `Memory recall START: session=${opts.sessionId} agent=${opts.agentName}→${memoryAgentId} ` +
+          `queryLen=${query.length} endpoint=${settings.endpoint}`,
+      );
+    }
+    const recallT0 = settings.debug ? performance.now() : 0;
+
     try {
+      const armT0 = settings.debug ? performance.now() : 0;
       const [searchResult, personaResult, scenesResult] = await Promise.allSettled([
         client.searchAtomic(iso, { query, limit: settings.recallMaxResults }),
         settings.includePersona ? client.readCore(iso) : Promise.resolve(null),
         settings.includeSceneNav ? client.listScenarios(iso) : Promise.resolve(null),
       ]);
+      if (settings.debug) {
+        // Per-arm wall time (all three ran concurrently, so each is the time
+        // from dispatch to its own settlement, not sequential).
+        const armElapsed = (performance.now() - armT0).toFixed(1);
+        const l1Status =
+          searchResult.status === 'fulfilled' ? 'ok' : `fail(${(searchResult.reason as Error)?.message?.slice(0, 80)})`;
+        const personaStatus =
+          personaResult.status === 'fulfilled'
+            ? 'ok'
+            : `fail(${(personaResult.reason as Error)?.message?.slice(0, 80)})`;
+        const scenesStatus =
+          scenesResult.status === 'fulfilled' ? 'ok' : `fail(${(scenesResult.reason as Error)?.message?.slice(0, 80)})`;
+        log(
+          `Memory recall arms settled in ${armElapsed}ms: L1=${l1Status} persona=${personaStatus} scenes=${scenesStatus}`,
+        );
+      }
 
       const l1Items =
         searchResult.status === 'fulfilled'
@@ -143,14 +174,29 @@ export class SharedMemoryProvider {
 
       const formatted = formatRecallContext(l1Items, persona, scenes);
       if (!formatted) {
-        log(`Memory recall: no hits (agent=${opts.agentName}→${memoryAgentId}, session=${opts.sessionId})`);
+        if (settings.debug) {
+          log(
+            `Memory recall END (no hits) in ${(performance.now() - recallT0).toFixed(1)}ms ` +
+              `(agent=${opts.agentName}→${memoryAgentId}, session=${opts.sessionId})`,
+          );
+        } else {
+          log(`Memory recall: no hits (agent=${opts.agentName}→${memoryAgentId}, session=${opts.sessionId})`);
+        }
         return [];
       }
 
-      log(
-        `Memory recall: L1=${formatted.l1Count} persona=${formatted.hasPersona} scenes=${formatted.sceneCount} ` +
-          `(agent=${opts.agentName}→${memoryAgentId})`,
-      );
+      if (settings.debug) {
+        log(
+          `Memory recall END: L1=${formatted.l1Count} persona=${formatted.hasPersona} scenes=${formatted.sceneCount} ` +
+            `blobBytes=${formatted.text.length} in ${(performance.now() - recallT0).toFixed(1)}ms ` +
+            `(agent=${opts.agentName}→${memoryAgentId})`,
+        );
+      } else {
+        log(
+          `Memory recall: L1=${formatted.l1Count} persona=${formatted.hasPersona} scenes=${formatted.sceneCount} ` +
+            `(agent=${opts.agentName}→${memoryAgentId})`,
+        );
+      }
 
       const block = buildMemoryBlock(formatted.text, opts.supportsEmbedded, memoryAgentId);
       if (block) {

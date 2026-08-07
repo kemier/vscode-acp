@@ -25,6 +25,8 @@ export interface MemorySettings {
   includeSceneNav: boolean;
   captureEnabled: boolean;
   timeoutMs: number;
+  /** Verbose timing/debug logging for recall + injection. Off by default. */
+  debug: boolean;
 }
 
 const DEFAULT_ENDPOINT = 'http://127.0.0.1:8420';
@@ -60,6 +62,7 @@ export function readMemorySettings(): MemorySettings {
     includeSceneNav: cfg.get<boolean>('memory.includeSceneNav') !== false,
     captureEnabled: cfg.get<boolean>('memory.captureEnabled') !== false,
     timeoutMs: Math.max(1000, cfg.get<number>('memory.timeoutMs') ?? 15_000),
+    debug: cfg.get<boolean>('memory.debug') === true,
   };
 }
 

@@ -19,6 +19,8 @@ export interface MemoryHttpClientOptions {
   apiKey: string;
   serviceId: string;
   timeoutMs?: number;
+  /** When true, log per-request latency + status to the 'ACP Client' channel. */
+  debug?: boolean;
 }
 
 export interface AtomicSearchHit {
@@ -48,6 +50,8 @@ interface ApiEnvelope<T> {
   data?: T;
 }
 
+import { log } from '../../utils/Logger';
+
 export class MemoryHttpError extends Error {
   constructor(
     readonly code: number,
@@ -63,6 +67,7 @@ export class MemoryHttpClient {
   private readonly endpoint: string;
   private readonly headers: Record<string, string>;
   private readonly timeoutMs: number;
+  private readonly debug: boolean;
 
   constructor(opts: MemoryHttpClientOptions) {
     if (!opts.endpoint?.trim()) {
@@ -76,6 +81,7 @@ export class MemoryHttpClient {
     }
     this.endpoint = opts.endpoint.replace(/\/+$/, '');
     this.timeoutMs = opts.timeoutMs ?? 15_000;
+    this.debug = opts.debug === true;
     this.headers = {
       Authorization: `Bearer ${opts.apiKey}`,
       'x-tdai-service-id': opts.serviceId,
@@ -104,6 +110,9 @@ export class MemoryHttpClient {
   private async post<T>(path: string, body: Record<string, unknown>): Promise<T> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
+    // Time the full request (DNS + connect + gateway processing + body read)
+    // so recall latency can be attributed to the gateway vs the network.
+    const t0 = this.debug ? performance.now() : 0;
     try {
       const response = await fetch(`${this.endpoint}${path}`, {
         method: 'POST',
@@ -112,6 +121,13 @@ export class MemoryHttpClient {
         signal: controller.signal,
       });
       const responseText = await response.text().catch(() => '');
+      if (this.debug) {
+        const elapsed = (performance.now() - t0).toFixed(1);
+        log(
+          `Memory HTTP ${path} → HTTP ${response.status} in ${elapsed}ms ` +
+            `(bytes=${responseText.length}, agent=${body.agent_id ?? '?'})`,
+        );
+      }
       if (response.ok && responseText.trim() === '') {
         // Some gateway endpoints answer 200 with an empty body when the
         // requested isolation scope has no data. Treat that as "no data"

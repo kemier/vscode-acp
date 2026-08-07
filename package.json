@@ -441,6 +441,11 @@
           "default": 15000,
           "minimum": 1000,
           "description": "HTTP timeout for MemoryCore Gateway requests (milliseconds)."
+        },
+        "acp.memory.debug": {
+          "type": "boolean",
+          "default": false,
+          "description": "Verbose timing/debug logging for memory recall + injection (per-call latency, total recall time, injection-vs-prompt-send timing). Written to the 'ACP Client' output channel."
         }
       }
     }

@@ -681,6 +681,11 @@ export class SessionManager extends EventEmitter {
 
     // Shared memory recall (Model B) — inject before workspace context so the
     // agent sees durable team/agent memory ahead of ephemeral @file/@terminal.
+    const memDebug = !isSlashCommand && this.memoryProvider?.isEnabled() && this.memoryProvider.isDebug();
+    const sendT0 = memDebug ? performance.now() : 0;
+    if (memDebug) {
+      log(`Memory inject: recall dispatch @+${(performance.now() - sendT0).toFixed(1)}ms (session=${sessionId})`);
+    }
     if (!isSlashCommand && this.memoryProvider?.isEnabled()) {
       try {
         const memoryBlocks = await this.memoryProvider.buildRecallBlocks({
@@ -689,6 +694,12 @@ export class SessionManager extends EventEmitter {
           query: text,
           supportsEmbedded: supportsEmbeddedContext,
         });
+        if (memDebug) {
+          log(
+            `Memory inject: recall resolved @+${(performance.now() - sendT0).toFixed(1)}ms ` +
+              `(blocks=${memoryBlocks.length}, session=${sessionId})`,
+          );
+        }
         if (memoryBlocks.length > 0) {
           prompt.push(...memoryBlocks);
         }
@@ -735,12 +746,24 @@ export class SessionManager extends EventEmitter {
     if (!isSlashCommand && this.memoryProvider?.isEnabled()) {
       this.memoryProvider.beginTurn(sessionId, session.agentName, text);
     }
+    if (memDebug) {
+      log(
+        `Memory inject: prompt array built (blocks=${prompt.length}), sending session/prompt @+${(performance.now() - sendT0).toFixed(1)}ms ` +
+          `(session=${sessionId})`,
+      );
+    }
     try {
       const response = await connInfo.connection.prompt({
         sessionId,
         prompt,
       });
 
+      if (memDebug) {
+        log(
+          `Memory inject: session/prompt response received @+${(performance.now() - sendT0).toFixed(1)}ms ` +
+            `(stopReason=${response.stopReason}, session=${sessionId})`,
+        );
+      }
       log(`Prompt response: stopReason=${response.stopReason}`);
       return response;
     } finally {
