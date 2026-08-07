@@ -36,6 +36,30 @@ export function stripCodeBlocks(text: string): string {
 export const RECALL_QUERY_MAX_CHARS = 2048;
 
 /**
+ * Gateway limit for /v3/conversation/add `content` (characters).
+ * `conversationItemSchema` caps each message's content at `z.string().min(1).max(8192)`;
+ * a longer message makes the whole batch 400 with
+ * "messages.N.content: Too big: expected string to have <=8192 characters".
+ * The gateway logs the reason only in the response envelope (not server-side),
+ * so an over-long capture silently fails — hence truncating client-side.
+ */
+export const CAPTURE_CONTENT_MAX_CHARS = 8192;
+
+/**
+ * Truncate L0 capture text to the gateway's per-message `content` cap.
+ * Mirrors `buildRecallQuery`'s approach for the recall path: the gateway
+ * rejects the whole request when any single message exceeds its schema limit,
+ * so the client (configurator) must shape the data to fit rather than rely on
+ * the gateway to clamp. Keeps the tail so the truncation point is visible.
+ */
+export function truncateForCapture(text: string): string {
+  if (text.length <= CAPTURE_CONTENT_MAX_CHARS) {
+    return text;
+  }
+  return text.slice(0, CAPTURE_CONTENT_MAX_CHARS - 1).trimEnd();
+}
+
+/**
  * Build the L1 search query from the raw prompt text.
  *
  * Two things must be removed or the search fails outright:

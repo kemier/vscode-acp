@@ -2,11 +2,13 @@ import * as assert from 'assert';
 import { resolveMemoryAgentId } from '../core/memory/MemoryAgentId';
 import { formatL1Memories, formatRecallContext } from '../core/memory/MemoryFormat';
 import {
+  CAPTURE_CONTENT_MAX_CHARS,
   RECALL_QUERY_MAX_CHARS,
   buildRecallQuery,
   sanitizeMemoryText,
   shouldCaptureL0,
   stripCodeBlocks,
+  truncateForCapture,
 } from '../core/memory/MemorySanitize';
 
 suite('MemoryAgentId.resolveMemoryAgentId (Model B)', () => {
@@ -77,6 +79,23 @@ suite('MemorySanitize', () => {
     assert.strictEqual(shouldCaptureL0('/compact'), false);
     assert.strictEqual(shouldCaptureL0('  '), false);
     assert.strictEqual(shouldCaptureL0('please fix the bug'), true);
+  });
+});
+
+suite('MemorySanitize.truncateForCapture', () => {
+  test('caps capture content at the gateway limit', () => {
+    const raw = 'x'.repeat(CAPTURE_CONTENT_MAX_CHARS + 500);
+    const captured = truncateForCapture(raw);
+    assert.strictEqual(captured.length, CAPTURE_CONTENT_MAX_CHARS - 1);
+  });
+
+  test('leaves short content untouched', () => {
+    assert.strictEqual(truncateForCapture('short assistant reply'), 'short assistant reply');
+  });
+
+  test('leaves exactly-at-limit content untouched', () => {
+    const raw = 'y'.repeat(CAPTURE_CONTENT_MAX_CHARS);
+    assert.strictEqual(truncateForCapture(raw), raw);
   });
 });
 

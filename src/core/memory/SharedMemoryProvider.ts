@@ -16,7 +16,13 @@ import { isMemoryConfigured, readMemorySettings, type MemorySettings } from './M
 import { resolveMemoryAgentId } from './MemoryAgentId';
 import { formatRecallContext } from './MemoryFormat';
 import { MemoryHttpClient, type MemoryIsolation } from './MemoryHttpClient';
-import { buildRecallQuery, sanitizeMemoryText, shouldCaptureL0, stripCodeBlocks } from './MemorySanitize';
+import {
+  buildRecallQuery,
+  sanitizeMemoryText,
+  shouldCaptureL0,
+  stripCodeBlocks,
+  truncateForCapture,
+} from './MemorySanitize';
 
 interface PendingTurn {
   agentName: string;
@@ -191,9 +197,10 @@ export class SharedMemoryProvider {
       return;
     }
 
-    const userContent = sanitizeMemoryText(turn.userText);
+    const userContent = truncateForCapture(sanitizeMemoryText(turn.userText));
     let assistantContent = sanitizeMemoryText(turn.assistantText);
     assistantContent = stripCodeBlocks(assistantContent);
+    assistantContent = truncateForCapture(assistantContent);
 
     const messages: Array<{ role: 'user' | 'assistant'; content: string; timestamp: string }> = [];
     if (shouldCaptureL0(userContent)) {
