@@ -530,8 +530,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       const filePathRegex = new RegExp(
         '(^|[^\\w\\/])' + // prefix: start or non-word, non-slash
           '(' +
-          '(?:\\.?\\/?[\\w.-]+\\/)+' + // at least one dir separator (path with /)
-          '[\\w.-]+\\.' +
+          '(?:~\\/|\\.?\\/?[\\w.-]+\\/)+' + // at least one dir separator (path with /); ~/ home-relative dir
+          '[\\w.-]*\\.' + //   filename may be a dotfile (.zshrc, .gitignore)
           codeExt +
           '(?::\\d+(?:-\\d+)?)?' + //   + filename.ext[:line[:-end]]
           '(?=$|[\\s,;:\\)\\]\\}\\<|])' + //   word boundary after extension
@@ -540,7 +540,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           codeExt +
           '(?::\\d+(?:-\\d+)?)' + // bare filename.ext:line[:-end]
           '|' +
-          '[\\w.-]+\\.' +
+          '[\\w.-]*\\.' + //   bare filename may be a dotfile (.env, .md)
           codeExt +
           '(?=$|[\\s,;:\\)\\]\\}<|])' + // bare filename.ext (no line)
           ')',
@@ -2238,6 +2238,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       let cleanPath = filePath;
       if (cleanPath.startsWith('file://')) {
         cleanPath = vscode.Uri.parse(cleanPath).fsPath;
+      }
+
+      // Expand a leading ~ to the user's home dir (e.g. ~/notes/x.md, ~/.zshrc).
+      // The linkifier emits ~/ paths verbatim into data-file, so without this
+      // the expanded absolute path is required for openTextDocument to resolve.
+      if (cleanPath === '~' || cleanPath.startsWith('~/')) {
+        cleanPath = path.join(os.homedir(), cleanPath.slice(1));
       }
 
       // Build the initial URI from the path

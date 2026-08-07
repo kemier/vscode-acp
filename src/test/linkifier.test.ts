@@ -950,8 +950,8 @@ const typedefRegex = /(?<![\w:._])([a-zA-Z_][a-zA-Z0-9_]*_t)(?=$|[\s,;:\)\]\}\.<
 const filePathRegex = new RegExp(
   '(^|[^\\w\\/])' +
     '(' +
-    '(?:\\.?\\/?[\\w.-]+\\/)+' +
-    '[\\w.-]+\\.' +
+    '(?:~\\/|\\.?\\/?[\\w.-]+\\/)+' +
+    '[\\w.-]*\\.' +
     codeExt +
     '(?::\\d+(?:-\\d+)?)?' +
     '(?=$|[\\s,;:\\)\\]\\}\\<|])' +
@@ -960,7 +960,7 @@ const filePathRegex = new RegExp(
     codeExt +
     '(?::\\d+(?:-\\d+)?)' +
     '|' +
-    '[\\w.-]+\\.' +
+    '[\\w.-]*\\.' +
     codeExt +
     '(?=$|[\\s,;:\\)\\]\\}<|])' +
     ')',
@@ -1246,6 +1246,42 @@ suite('Linkifier Test Suite', () => {
   test('file path inside <code> block → NOT linkified by Pass 1', () => {
     const html = linkify('<code>src/main.rs:74</code>');
     assertNotContains(html, 'class="file-link"');
+  });
+
+  // === ~/ (home-relative) path linkification (Pass 1) ===
+
+  test('~/ path → clickable file-link with ~ kept in data-file', () => {
+    const html = linkify('<p>See ~/notes/project.md for details</p>');
+    assertContains(html, 'class="file-link bare-file-link"');
+    assertContains(html, 'data-file="~/notes/project.md"');
+    // The ~ must be part of the clickable path, not stripped into the prefix.
+    assertNotContains(html, 'data-file="/notes/project.md"');
+  });
+
+  test('~/.vscode-server/.../settings.json → clickable file-link with ~ kept', () => {
+    const html = linkify('<p>The path is ~/.vscode-server/data/Machine/settings.json</p>');
+    assertContains(html, 'class="file-link bare-file-link"');
+    assertContains(html, 'data-file="~/.vscode-server/data/Machine/settings.json"');
+  });
+
+  test('~/.zshrc → clickable file-link (bare dotfile, no directory slash after ~/)', () => {
+    const html = linkify('<p>Loaded from ~/.zshrc</p>');
+    // .zshrc is a dotfile starting with '.'; the regex dir-segment allows a leading dot,
+    // so the path must include the ~ prefix.
+    assertContains(html, 'data-file="~/.zshrc"');
+  });
+
+  test('~/ path with :line → clickable file-link with line', () => {
+    const html = linkify('<p>See ~/src/main.rs:74</p>');
+    assertContains(html, 'class="file-link"');
+    assertContains(html, 'data-file="~/src/main.rs"');
+    assertContains(html, 'data-line="74"');
+  });
+
+  test('bare dotfile .env → clickable file-link', () => {
+    const html = linkify('<p>Config lives in .env</p>');
+    assertContains(html, 'class="file-link bare-file-link"');
+    assertContains(html, 'data-file=".env"');
   });
 
   // === PascalCase Linkification (Pass 2) ===
