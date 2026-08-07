@@ -4973,6 +4973,30 @@ let isCompacting = false;  // true while /compact is running
  // flush Warning first so the UI matches the intended order.
  let compactedNoticeText = '';
  let compactionFlushTimer = null;
+ // Chunks that arrived while a compaction flush was pending (post-completed,
+ // pre-flush window). Held back so the flush's innerHTML='' wipe doesn't drop
+ // the first tokens of the resumed reply; drained into currentAssistantText
+ // AFTER the wipe so they render cleanly in the fresh panel. See the
+ // agent_message_chunk handler's compactionFlushTimer gate.
+ let pendingPostCompactChunks = [];
+ // Drain buffered post-compact chunks into currentAssistantText and render them.
+ // Used by flushCompactionMessages (after the wipe, so they land in the fresh
+ // panel) and by the agent_message_chunk gate when the flush timer is no longer
+ // armed but the buffer still holds orphaned tokens (the timer was cleared by a
+ // failed/superseded compaction). Preserves order: buffered tokens first, then
+ // any new chunk appended by the caller. No-op when nothing is buffered.
+ function drainPendingPostCompactChunks() {
+   if (pendingPostCompactChunks.length === 0) return;
+   var _drained = pendingPostCompactChunks;
+   pendingPostCompactChunks = [];
+   var _drainedText = _drained.join('');
+   if (_drainedText) {
+     currentAssistantText += _drainedText;
+     if (!isLoadingSession) {
+       scheduleStreamingRender();
+     }
+   }
+ }
  let kiroCompactWatchdog = null; // safety timeout while waiting for true Kiro done
  // After a successful compact flush, drop late Codex boilerplate
  // ("Warning: Heads up…", "*Context compacted…") that arrives after isCompacting
@@ -6452,6 +6476,7 @@ function handleLocalSlashCommand(cmdText) {
     compactedWarningText = '';
     compactedNoticeText = '';
     if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+    pendingPostCompactChunks = []; // new compaction supersedes any buffered resume tokens
     if (kiroCompactWatchdog) { clearTimeout(kiroCompactWatchdog); kiroCompactWatchdog = null; }
     setProcessing(true);
     var compactCmd = '/' + compactMatch[1].toLowerCase();
@@ -6480,6 +6505,7 @@ function handleLocalSlashCommand(cmdText) {
         compactedWarningText = '';
         compactedNoticeText = '';
         if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+        pendingPostCompactChunks = []; // compaction timed out — discard any buffered resume tokens
         hideCompactionProgress();
         if (statusEl) statusEl.innerHTML = '';
         setProcessing(false);
@@ -7368,6 +7394,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     compactedWarningText = '';
     compactedNoticeText = '';
     if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+    pendingPostCompactChunks = []; // session is being rebuilt — discard stale resume tokens
     hideCompactionProgress();
     tokenUsage = null;
      hasSentPrompt = false;
@@ -7465,6 +7492,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     compactedWarningText = '';
     compactedNoticeText = '';
     if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+    pendingPostCompactChunks = []; // session is being rebuilt — discard stale resume tokens
     hideCompactionProgress();
     // Claude interrupted mid-turn: merge tools/thoughts from webview snapshot
     // when session/load only returned the user prompt.
@@ -13555,6 +13583,12 @@ sessionState = {
         }
       }, 0);
     }
+    // Drain chunks buffered during the post-completed/pre-flush window. These
+    // are the first tokens of the resumed reply that arrived while the 400ms
+    // flush timer was armed; we held them back so the wipe above wouldn't
+    // drop them. currentAssistantText was just reset to '' by the wipe, so
+    // appending here renders them cleanly in the fresh panel.
+    drainPendingPostCompactChunks();
   }
 
     /** Bare spinner while the turn is still running (no "Compacting…" label). */
@@ -13584,6 +13618,16 @@ sessionState = {
       }
       if (compactedWarningText || compactedNoticeText) {
         flushCompactionMessages();
+        return;
+      }
+      // A flush is already scheduled (a 'tool_call_update completed' with
+      // _meta.contextCompaction landed and armed the 400ms timer). A resume
+      // signal arriving inside that window - e.g. an agent_message_chunk
+      // from the post-compact reply, common when claude-code-acp runs
+      // auto-compact AFTER promptEnd - must NOT tear down compaction state,
+      // or the pending flush is lost and chat history is never purged. Let
+      // the timer fire (it re-checks isCompacting + notice text).
+      if (compactionFlushTimer) {
         return;
       }
       // Manual /compact: keep spinner until completion notice / promptEnd.
@@ -13819,6 +13863,25 @@ sessionState = {
        }
         if (content && content.type === 'text' && content.text) {
           // Agent resumed after compact — drop banner / compact status.
+          // BUT if a compaction flush is already scheduled (a 'tool_call_update
+          // completed' with _meta.contextCompaction landed and armed the 400ms
+          // timer), do NOT tear down compaction state or start rendering the
+          // resumed reply yet: the pending flush will wipe the chat history,
+          // so rendering these chars now would render-then-wipe-then-rerender.
+          // Buffer them instead and let the flush drain them into the fresh
+          // panel. This is the claude-code-acp auto-compact case where the
+          // resumed reply streams inside the post-completed flush window.
+          if (compactionFlushTimer) {
+            pendingPostCompactChunks.push(content.text);
+            break;
+          }
+          // The flush timer is not armed. If the buffer still holds chunks, the
+          // timer was cleared by a failed/superseded compaction (or the session
+          // was reset) while the resumed reply was streaming — those tokens
+          // would otherwise be stranded. Drain them into currentAssistantText
+          // (preserving order: buffered first, then this chunk appended below)
+          // before continuing.
+          drainPendingPostCompactChunks();
           endCompactingOnAgentResume();
           currentAssistantText += content.text;
                     // Flush /ps panel — assistant is producing content
@@ -14060,6 +14123,7 @@ sessionState = {
           compactedWarningText = '';
           compactedNoticeText = '';
           if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+          pendingPostCompactChunks = []; // new compaction supersedes any buffered resume tokens
           showCompactionProgress('Compacting conversation...', null);
           setProcessing(true);
         }
@@ -14070,6 +14134,7 @@ sessionState = {
           compactedWarningText = '';
           compactedNoticeText = '';
           if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+          pendingPostCompactChunks = []; // compaction failed — discard any buffered resume tokens
           hideCompactionProgress();
           if (statusEl) statusEl.innerHTML = '';
           setProcessing(false);
@@ -14154,6 +14219,7 @@ sessionState = {
           compactedWarningText = '';
           compactedNoticeText = '';
           if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+          pendingPostCompactChunks = []; // new compaction supersedes any buffered resume tokens
           showCompactionProgress('Compacting conversation...', null);
           setProcessing(true);
         }
@@ -14164,6 +14230,7 @@ sessionState = {
           compactedWarningText = '';
           compactedNoticeText = '';
           if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+          pendingPostCompactChunks = []; // compaction failed — discard any buffered resume tokens
           hideCompactionProgress();
           if (statusEl) statusEl.innerHTML = '';
           setProcessing(false);
@@ -14444,6 +14511,7 @@ sessionState = {
       compactedWarningText = '';
       compactedNoticeText = '';
       if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+      pendingPostCompactChunks = []; // new compaction supersedes any buffered resume tokens
       setProcessing(true);
     }
 
@@ -14454,6 +14522,7 @@ sessionState = {
       compactedWarningText = '';
       compactedNoticeText = '';
       if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+      pendingPostCompactChunks = []; // compaction failed — discard any buffered resume tokens
       hideCompactionProgress();
       if (statusEl) statusEl.innerHTML = '';
       setProcessing(false);
@@ -14501,6 +14570,7 @@ sessionState = {
       compactedWarningText = '';
       compactedNoticeText = '';
       if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+      pendingPostCompactChunks = []; // compaction failed — discard any buffered resume tokens
       hideCompactionProgress();
       if (statusEl) statusEl.innerHTML = '';
       setProcessing(false);
