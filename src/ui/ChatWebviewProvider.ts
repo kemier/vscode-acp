@@ -4972,6 +4972,15 @@ let lastPromptWasSlash = false;
 // the active turn (shown as a user bubble + session/steer). Any
 // subsequent messages are queued and drained after the turn ends.
 let hasSteeredThisTurn = false;
+// True in the tiny window between drainQueue() posting sendPrompt and the
+// host's promptStart arriving (the turn-transition tick). A message typed in
+// that window must NOT be sent as a prompt — the previous sendPrompt is still
+// in flight host-side and a second concurrent session/prompt would race the
+// in-flight turn (claude-code-acp serializes via sessionPromptLocks, but
+// codex/ericli would drop/duplicate). Instead it is queued and waits for the
+// next drain. Cleared by promptStart (turn actually started) and by the
+// promptEnd/error path (turn fully finished).
+let isSendingPrompt = false;
 var pendingRenderRetries = {}; // keys of pending renderMarkdown retries
 var historyRenderGen = 0; // generation counter for history renders (invalidated on DOM rebuild)
 var suppressFoldOrdering = false; // true during renderChatHistory to skip intermediate re-ordering
@@ -5180,14 +5189,50 @@ let isCompacting = false;  // true while /compact is running
     // Route slash commands through handleLocalSlashCommand so local UI
     // (compaction progress, clear, etc.) is triggered properly.
     if (entry.text && entry.text.startsWith('/') && handleLocalSlashCommand(entry.text)) {
-       // Local slash command handled it — no user bubble.
-     } else {
-       addUserBubbleForQueuedEntry(entry);
-       hasSentPrompt = true;
-       vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
-     }
-   }
- }
+      // Local slash command handled it — no user bubble.
+    } else {
+      addUserBubbleForQueuedEntry(entry);
+      hasSentPrompt = true;
+      // Guard the transition tick: the sendPrompt is now in flight host-side
+      // and until promptStart lands, new input must queue, not send.
+      isSendingPrompt = true;
+      vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
+    }
+  }
+}
+
+// Pure decision helpers for the message queue. Kept as standalone top-level
+// functions inside the webview template literal (NOT nested in a closure) so
+// the test suite can extract them verbatim via new Function(...) — the same
+// pattern used by foldOrdering.test.ts / cleanUserMessage.test.ts. They encode
+// the queue requirements:
+//   - every mid-turn message is queued (never steered, never dropped);
+//   - messages drain strictly FIFO, one per agent turn;
+//   - the transition tick (sendPrompt posted, promptStart not yet received)
+//     queues instead of racing the in-flight prompt.
+function queueIsMutatingCommand(text) {
+  // NOTE: this block lives inside the webview HTML template literal, so every
+  // backslash must be DOUBLED (\\/) — a single backslash is collapsed by the
+  // template literal into a plain "/" and the emitted script fails to parse
+  // with 'Invalid or unexpected token' (webview crash). The unit test reads
+  // the raw .ts text where the single-backslash form would pass, which is
+  // exactly why the escape must be correct here in the source.
+  return /^\\/(compact|summarize|compress)\\b/i.test(text) ||
+    /^\\/clear\\b/i.test(text) ||
+    /^\\/index\\s+(build|rebuild|refresh|update|embed|clear|delete)\\b/i.test(text);
+}
+
+// Decide whether a drained message counts as "sent to the agent" (a turn will
+// start and the next queued message must wait for its promptEnd) or was
+// handled purely client-side (no turn, chain the next message immediately).
+// handledLocal is true when handleLocalSlashCommand consumed the message as
+// a local command; startedTurn is true when that command set isProcessing
+// (e.g. /compact, /clear) and therefore a real turn is in flight.
+function queueDrainStartedTurn(handledLocal, startedTurn, isProcessingNow) {
+  if (!handledLocal) return true;               // sent as a prompt -> turn
+  if (startedTurn) return true;                 // /compact,/clear -> turn
+  return !!isProcessingNow;                     // defensive: anything processing
+}
 
 function drainQueue() {
  if (messageQueue.length === 0) return false;
@@ -5204,9 +5249,26 @@ hasSentPrompt = true;
    vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drainQueue: handled as local slash command' });
    // Local slash command handled it — don't send as prompt, and don't add
    // a user bubble (slash commands render their own output).
+   // Some local commands (/rename, /ps, /stop, /session) do NOT start a turn
+   // and get no promptEnd. Chain the next queued message immediately instead
+   // of stalling until an unrelated turn completes. Commands that DO start a
+   // turn (/compact, /clear) leave isProcessing true — the next message waits
+   // for that turn's promptEnd (strict FIFO, one per turn).
+   // /compact and /clear set isProcessing true (a turn is in flight), so the
+   // next queued message must wait for that turn's promptEnd. /stop,/rename,
+   // /ps,/session stay idle → chain the next message right away.
+   var _drainStartedTurn = queueDrainStartedTurn(true, isProcessing, isProcessing);
+   if (messageQueue.length > 0 && !_drainStartedTurn && !isCompacting && !isClearing) {
+     vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drainQueue: chaining next (local slash, no turn started), remaining=' + messageQueue.length });
+     setTimeout(function() { if (!isProcessing && messageQueue.length > 0) { drainQueue(); } }, 0);
+   }
  } else {
-   vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drainQueue: sending as sendPrompt' });
-   addUserBubbleForQueuedEntry(entry);
+    vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drainQueue: sending as sendPrompt' });
+    addUserBubbleForQueuedEntry(entry);
+   // The sendPrompt is now in flight — a message typed in the transition
+   // tick (before promptStart arrives) must queue, and the next queued
+   // message must wait for THIS turn's promptEnd (strict FIFO, one per turn).
+   isSendingPrompt = true;
    vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
  }
 return true;
@@ -6217,10 +6279,24 @@ var end = displayText.length;
     // a user bubble immediately (mirrors Codex TUI steering). The message
     // is sent when the turn finishes or when the user presses ESC / Send Now.
     var fastTrackText = promptInput.value.trim();
-     if (!fastTrackText && pendingImages.length === 0 && messageQueue.length > 0) {
-       sendQueuedMessageNow(0);
-       return;
-     }
+    // Transition-tick guard: a sendPrompt is in flight host-side but the
+    // turn hasn't started yet (promptStart not received). Any input in this
+    // window — including Enter on an empty box with queued messages — must
+    // queue, not race the in-flight session/prompt. Drain will pick it up
+    // once the current turn finishes.
+    if (isSendingPrompt) {
+      if (fastTrackText || pendingImages.length > 0) {
+        handleQueue();
+      }
+      // Empty input + queued messages: do nothing extra here — the queued
+      // message is already awaiting drain; don't force-send while a prompt
+      // is mid-flight.
+      return;
+    }
+    if (!fastTrackText && pendingImages.length === 0 && messageQueue.length > 0) {
+      sendQueuedMessageNow(0);
+      return;
+    }
     if (isProcessing) {
       // /rename works even during streaming (like Claude Code's immediate commands)
       if (handleLocalSlashCommand()) { return; }
@@ -6249,90 +6325,39 @@ var end = displayText.length;
     imagePreviewStrip.innerHTML = '';
     promptInput.value = '';
     updateSendButton();
-    // Queue the message and show it as a user bubble immediately.
-    //
-    // Codex CLI uses turn/steer to inject the message mid-turn without
-    // cancelling. ACP doesn't have an equivalent, so we queue the message
-    // and send it when the current turn finishes (or when the user presses
-    // ESC / clicks "Send Now"). The user bubble gives visual context while
-    // the agent works — matching Codex TUI's behavior where steering
-    // messages appear in the conversation history right away.
-    //
-    // The queue chip is kept visible so the user can click "Send Now" to
-    // interrupt the current turn and deal with the queued message
-    // immediately. The user bubble provides visual context; the queue chip
-    // provides control — they serve different purposes and are not
-    // redundant.
-    //
-   // Use addMessageDOM directly (not addMessage) to avoid resetting
-   // currentTurnEl — the agent is still streaming into the current turn
-   // and resetting it would split the response into two visual turns.
-   // For agents that support session/steer (EricCLI), send the
-   // message as a steer notification immediately — the LLM sees it at the
-   // next tool-execution iteration boundary without cancelling the turn.
-   // No queue chip is needed since the message is already delivered.
-    // The user bubble is shown immediately because the message is
-    // delivered right away (steered into the active turn).
-   //
-  // For agents that do NOT support steering (Codex, Kiro, Claude, etc.),
-  // queue the message — it is auto-drained when the turn finishes. Only
-  // the FIRST queued message is sent as a new prompt; the rest remain
-   // queued until that turn finishes. The message is NOT shown as a
-   // chat bubble while queued — it only appears when actually sent
-   // (via drainQueue or "Send Now"). The queue chip with "Send Now"
-   // lets the user interrupt the current turn to deal with it sooner.
+    // Every message typed while a turn is processing is queued here —
+    // NO agent is steered mid-turn from this client anymore (see the
+    // per-agent notes below). The message is held as a queue chip only
+    // (no chat bubble yet — the bubble is added at drain time, when it is
+    // actually sent). The queue chip stays visible so the user can click
+    // "Send Now" to interrupt the current turn and deal with the queued
+    // message immediately. drainQueue() sends exactly ONE queued message
+    // per turn (strict FIFO), so a burst of N messages during a long turn
+    // is answered by N sequential turns — never batched, never dropped.
  var _agentName = (sessionState && (sessionState.agentName || sessionState.agentConfigKey)) || '';
- // Agents that support session/steer: EricCLI (native),
-  // Codex (via codex-acp turn/steer) and EricCLI handle the session/steer
-  // notification as REAL mid-turn injection — the message is injected into
-  // the agent's input queue and drained at the next iteration boundary,
-  // within the SAME streaming turn. For those agents we steer.
-  //
-  // Claude Code is deliberately EXCLUDED: claude-code-acp cannot inject
-  // mid-turn (Claude CLI has no mid-turn input channel), so its steer is
-  // DEFERRED — queued and drained as sequential --resume prompts only AFTER
-  // the current turn finishes. Steering it would show an immediate user
-  // bubble with no live response (misleading). Instead, route Claude
-  // mid-stream prompts through the visible message queue (queue chip +
-  // drainQueue on promptEnd), matching the user's expectation that queued
-  // prompts are visibly queued and auto-drained.
-var _supportsSteer = /ericli|codex/i.test(_agentName);
+ // No agent supports reliable mid-turn steering from this client today:
+ //  - EricLI drains steers only at tool-iteration boundaries (a long single
+ //    tool call or LLM response queues them client-side with no live response).
+ //  - codex-acp's session/steer notification path is fire-and-forget and
+ //    silently drops when currentTurnId is null (turn tail) — the message
+ //    vanishes without ever reaching the LLM.
+ //  - claude-code-acp cannot inject mid-turn at all; steers are deferred to
+ //    sequential --resume turns after the current turn.
+ // Every mid-stream message therefore goes through the visible message queue
+ // (queue chip + auto-drain on turn end), one per turn, FIFO.
  // Mutating slash commands (/compact, /clear, /index build, etc.) must never
  // be steered — they need to be sent as a full session/prompt after the current
  // turn ends, not injected mid-turn. Read-only commands (/ps, /status, /tools)
  // are already handled by handleSend before reaching handleQueue.
-var _isMutatingCmd = /^\\/(compact|summarize|compress)\\b/i.test(text) ||
-  /^\\/clear\\b/i.test(text) ||
-  /^\\/index\\s+(build|rebuild|refresh|update|embed|clear|delete)\\b/i.test(text);
- // Codex and EricCLI both support MULTIPLE steers per turn — each steer
- // is injected into the agent's input queue and drained at the next
- // iteration boundary (between tool calls). So we steer EVERY message,
- // not just the first. This matches codex TUI behavior where multiple
- // steering messages are delivered in real time, not batched until
- // promptEnd.
- if (_supportsSteer && !_isMutatingCmd) {
- // Commit any in-progress assistant text as an interim segment in the
-  // current turn before resetting. This ensures the text before the steer
-  // stays in the old turn's fold, and the next streaming chunk after the
-  // steer starts a NEW turn under the steering user bubble.
-  if (currentAssistantEl && currentAssistantText) {
-    commitCurrentTextSegment({ interim: true });
-  }
-  currentAssistantEl = null;
-  currentAssistantText = '';
-  chatHistory.push({ kind: 'message', role: 'user', text: text || '(image)' });
-  saveState();
-  addMessageDOM('user', text || '(image)');
-  // Reset turn + tool state so the next agent_message_chunk / tool_call
-  // creates a NEW turn container under the steering user bubble.
-  currentTurnEl = null;
-  currentToolsListEl = null;
-  currentToolsCountEl = null;
-  currentToolCount = 0;
-  vscode.postMessage({ type: 'steerPrompt', text: text });
-  vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] handleQueue: STEERED msg (multi-steer)' });
-} else {
- vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] handleQueue: QUEUED msg (not steered), _supportsSteer=' + _supportsSteer + ' hasSteeredThisTurn=' + hasSteeredThisTurn + ' _isMutatingCmd=' + _isMutatingCmd + ' messageQueue.length=' + (messageQueue.length + 1) });
+var _isMutatingCmd = queueIsMutatingCommand(text);
+ if (_isMutatingCmd) {
+   // Mutating slash commands are queued too — but they must run as a real
+   // prompt (never steered), so they go through the same FIFO drain. The
+   // queue chip stays visible so the user knows the command is pending.
+   vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] handleQueue: QUEUED mutating cmd, messageQueue.length=' + (messageQueue.length + 1) });
+   queueMessage(text, images);
+ } else {
+  vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] handleQueue: QUEUED msg, _agentName=' + _agentName + ' isProcessing=' + isProcessing + ' isSendingPrompt=' + isSendingPrompt + ' messageQueue.length=' + (messageQueue.length + 1) });
 // For deferred-queue agents (Claude, and any agent that can't steer
 // mid-turn), do NOT show the message as a user bubble yet — only the
 // queue chip. Showing the bubble immediately is misleading during a
@@ -6638,6 +6663,13 @@ function handleLocalSlashCommand(cmdText) {
  function handleSend() {
    const text = promptInput.value.trim();
    if (!text && pendingImages.length === 0) return;
+   // Transition-tick guard: a sendPrompt was just posted by drainQueue /
+   // Send Now but the turn hasn't started yet (promptStart not received).
+   // Sending now would race the in-flight session/prompt. Queue instead.
+   if (isSendingPrompt) {
+     handleQueue();
+     return;
+   }
    // Block input during /compact — compaction is an atomic operation
    // (like codex TUI's set_task_running(true) during compact).
    // BUT allow local slash commands (e.g. /ps, /rename) that don't
@@ -6658,7 +6690,12 @@ function handleLocalSlashCommand(cmdText) {
 // Allow slash commands through during streaming — the agent
    // handles read-only commands (e.g. /ps, /status) without
    // interrupting the in-progress LLM turn.
-   if (isProcessing && !text.startsWith('/')) return;
+   // Non-slash messages typed while a turn is streaming are QUEUED (never
+   // sent concurrently, never dropped) — they drain one per turn, FIFO.
+   if (isProcessing && !text.startsWith('/')) {
+     handleQueue();
+     return;
+   }
 
    addMessage('user', text || '(image)');
     promptInput.value = '';
@@ -6808,7 +6845,13 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] setProcessing: ' + isProcessing + ' → ' + processing + ' messageQueue.length=' + messageQueue.length + ' hasSteeredThisTurn=' + hasSteeredThisTurn });
     }
     isProcessing = processing;
-    if (!processing) { hasSteeredThisTurn = false; }
+    if (!processing) {
+      hasSteeredThisTurn = false;
+      // A turn ended (promptEnd / error) — the transition-tick guard is no
+      // longer needed. This is the same point promptEnd clears it, kept here
+      // as a safety net for any path that ends processing without promptEnd.
+      isSendingPrompt = false;
+    }
      if (processing) {
         sendStopBtn.className = 'send-stop-btn stop';
         sendStopBtn.textContent = '■ Stop';
@@ -7412,6 +7455,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     tokenUsage = null;
      hasSentPrompt = false;
      hasSteeredThisTurn = false;
+     isSendingPrompt = false;
     if (tokenUsageRing) tokenUsageRing.classList.remove('visible');
       // Keep a copy of the restored webview history. Claude session/load for an
      // interrupted mid-turn often only replays the user prompt — without this
@@ -7489,6 +7533,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     saveState();
     hasSentPrompt = false;
     hasSteeredThisTurn = false;
+    isSendingPrompt = false;
     if (loadOverlay) loadOverlay.classList.remove('visible');
     if (inputArea) inputArea.classList.remove('disabled');
     updateSendButton();
@@ -12375,6 +12420,7 @@ forceCollapseTurnFolds();
   hasActiveSession = true;
   hasSentPrompt = false;
   hasSteeredThisTurn = false;
+  isSendingPrompt = false;
   // Capture the session ID that was active BEFORE this switch so
    // handleLoadSessionStart can label its chatHistory snapshot correctly.
    // sessionState is overwritten below, so we must grab the old value first.
@@ -12460,6 +12506,7 @@ sessionState = {
     hasActiveSession = false;
     hasSentPrompt = false;
     hasSteeredThisTurn = false;
+    isSendingPrompt = false;
     sessionState = null;
      saveState();
       tokenUsage = null;
@@ -12561,6 +12608,10 @@ sessionState = {
           break;
 
       case 'promptStart':
+       // The turn has actually started — the drain/Send-Now sendPrompt is now
+       // in-flight and new input may proceed normally (will be queued because
+       // isProcessing=true, or sent once the turn finishes).
+       isSendingPrompt = false;
        setProcessing(true);
        isForceCancelled = false;
        // Chat history is being built for the current session.
@@ -12769,6 +12820,10 @@ sessionState = {
         currentTurnEl = null;
         currentAssistantEl = null;
         currentAssistantText = '';
+       // The turn has fully finished — clear the transition-tick guard so a
+       // message typed in the drain(s) below sends normally, and so the next
+       // user input after the queue drains is not spuriously queued.
+       isSendingPrompt = false;
        // Auto-send next queued message (if any) after the turn completes.
        // Uses a microtask delay so the UI fully settles before the next
        // turn starts.
