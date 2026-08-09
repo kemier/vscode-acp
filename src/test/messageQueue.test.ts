@@ -71,7 +71,7 @@ suite('webview template-literal escape parity', () => {
     // This test proves the fix: after doubling every backslash, the rendered
     // form is parseable and behaves identically.
     const src = fs.readFileSync(SOURCE, 'utf8');
-    for (const name of ['queueIsMutatingCommand', 'queueDrainStartedTurn']) {
+    for (const name of ['queueIsMutatingCommand', 'queueDrainStartedTurn', 'agentSupportsSteering']) {
       const startIdx = src.indexOf('function ' + name + '(');
       assert.ok(startIdx >= 0, name + ' not found in ChatWebviewProvider.ts');
       const bodyStart = src.indexOf('{', startIdx);
@@ -147,5 +147,23 @@ suite('messageQueue.queueDrainStartedTurn', () => {
 
   test('defensive: anything still processing counts as a started turn', () => {
     assert.strictEqual(queueDrainStartedTurn(true, false, true), true);
+  });
+});
+
+suite('messageQueue.agentSupportsSteering', () => {
+  const agentSupportsSteering = extractFunction('agentSupportsSteering');
+
+  test('EricLI and Codex steer-capable agents return true', () => {
+    assert.strictEqual(agentSupportsSteering('EricCLI'), true);
+    assert.strictEqual(agentSupportsSteering('ericli-acp'), true);
+    assert.strictEqual(agentSupportsSteering('Codex CLI'), true);
+    assert.strictEqual(agentSupportsSteering('codex-acp'), true);
+  });
+
+  test('non-steer agents (Claude, Kiro, others) return false', () => {
+    assert.strictEqual(agentSupportsSteering('claude-code'), false);
+    assert.strictEqual(agentSupportsSteering('Kiro'), false);
+    assert.strictEqual(agentSupportsSteering(''), false);
+    assert.strictEqual(agentSupportsSteering(undefined), false);
   });
 });

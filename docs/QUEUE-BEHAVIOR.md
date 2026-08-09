@@ -5,13 +5,14 @@
 
 This document is the contract for how a message typed while the agent is
 still producing a turn (streaming) is handled. The queue decision helpers
-`queueIsMutatingCommand` and `queueDrainStartedTurn` are kept as standalone
-top-level functions inside the webview template literal so they can be
-extracted and tested verbatim (`src/test/messageQueue.test.ts`).
+`queueIsMutatingCommand`, `queueDrainStartedTurn` and `agentSupportsSteering`
+are kept as standalone top-level functions inside the webview template literal
+so they can be extracted and tested verbatim
+(`src/test/messageQueue.test.ts`).
 
 ---
 
-## 1. Requirement: every mid-turn message is QUEUED — never steered, never dropped
+## 1. Requirement: every mid-turn message is delivered — never lost
 
 Typing or pasting a message (or attaching an image) while a turn is in
 progress must **not**:
@@ -20,28 +21,40 @@ progress must **not**:
   claude-code-acp serializes via `sessionPromptLocks`, but codex/ericli would
   drop or duplicate output);
 - be dropped silently;
-- be "steered" into the active turn.
+- be held for the whole turn when the agent can accept it mid-turn.
 
-**Why no steering?** No agent provides reliable mid-turn injection from this
-client today:
+**Option A — steer-capable agents get real mid-turn injection.**
+`agentSupportsSteering(agentName)` decides the delivery path:
 
-| Agent | Steer behavior | Why it is not used |
-|---|---|---|
-| EricLI | `session/steer` drains only at tool-iteration boundaries | a long single tool call or LLM response queues steers client-side with no live response |
-| codex-acp | `session/steer` notification is fire-and-forget; silently drops when `currentTurnId` is null (turn tail) | the message can vanish without ever reaching the LLM |
-| claude-code-acp | cannot inject mid-turn at all; steers are deferred to sequential `--resume` turns | a bubble shows with no live response (misleading) |
+| Agent           | Steer behavior                                                                                                | Delivery                                                                             |
+| --------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| EricLI          | `session/steer` → `steerQueue` drained at every tool-iteration boundary, injected as `[User interjection]: …` | **Steered** into the active turn — live response within the same streaming turn      |
+| codex-acp       | `session/steer` → per-session `SteeringQueue` → `turn/steer` inject-or-startNewTurn                           | **Steered** into the active turn — never dropped                                     |
+| claude-code-acp | cannot inject mid-turn; steers are deferred to sequential `--resume` turns                                    | **Queued** (a steer would show an instant bubble with no live response — misleading) |
+| Kiro / others   | no reliable mid-turn channel                                                                                  | **Queued**                                                                           |
 
-Instead every mid-turn message goes into the **visible message queue** (the
-queue chip below the input). The chat bubble for the message is added **at
-drain time**, when the message is actually sent to the agent — never at queue
-time — so a prompt queued during a long turn (e.g. `/compact` running for
-minutes) does not appear "accepted" before it is processed.
+For steer-capable agents every mid-turn message is steered (EricLI and
+codex-acp both support MULTIPLE steers per turn). The message appears as a
+user bubble immediately and is delivered to the agent at the next iteration
+boundary, matching Codex TUI behavior.
+
+For deferred-queue agents (Claude, Kiro, …) the message goes into the
+**visible message queue** (the queue chip below the input). The chat bubble
+for the message is added **at drain time**, when the message is actually sent
+to the agent — never at queue time — so a prompt queued during a long turn
+(e.g. `/compact` running for minutes) does not appear "accepted" before it is
+processed.
 
 ## 2. Requirement: strict FIFO — ONE queued message per agent turn
 
-`drainQueue()` sends **exactly one** queued message per `promptEnd`. A burst
-of N messages typed during a long turn is therefore answered by **N
-sequential turns** — never batched, never reordered, never dropped.
+This section applies to deferred-queue agents. Steer-capable agents bypass the
+queue entirely (section 1), so a burst of N messages during a long turn is
+delivered as N live steers within the same turn.
+
+For queued agents, `drainQueue()` sends **exactly one** queued message per
+`promptEnd`. A burst of N messages typed during a long turn is therefore
+answered by **N sequential turns** — never batched, never reordered, never
+dropped.
 
 Drain triggers:
 
@@ -68,7 +81,9 @@ message typed in this tiny window (`isSendingPrompt === true`) must be
   (`drainQueue`, `sendQueuedMessageNow`), and cleared by `promptStart`
   (turn started) and by `promptEnd`/`setProcessing(false)` (turn finished).
 
-## 4. Requirement: mutating slash commands are queued as real prompts
+## 4. Requirement: mutating slash commands are queued as real prompts —
+
+never steered
 
 `/compact`, `/summarize`, `/compress`, `/clear`, `/index build|rebuild|…`
 are **mutating**: they must run as a full `session/prompt` after the current
@@ -80,6 +95,11 @@ Read-only commands (`/ps`, `/status`, `/tools`, …) are handled by
 `handleSend` before queueing — they run as side-channels without starting a
 turn.
 
+This check applies to steer-capable agents too: `handleQueue` routes a
+mutating command to the FIFO queue (`queueMessage`) even when the agent
+supports steering, so `/compact`/`/clear` never race the live turn. When that
+turn ends, the queued command drains as a full `session/prompt`.
+
 ## 5. Requirement: no deadlock / no stall
 
 - When the drained message is a **local** command that does not start a turn
@@ -88,16 +108,17 @@ turn.
 - When the drained message **starts** a turn (a normal prompt, or
   `/compact`/`/clear` which set `isProcessing`), the next queued message
   waits for that turn's `promptEnd` — `queueDrainStartedTurn(handledLocal,
-  startedTurn, isProcessingNow)` encodes exactly this decision.
+startedTurn, isProcessingNow)` encodes exactly this decision.
 - `/compact`/`/clear` queued mid-turn are drained only after the current
   turn ends (`promptEnd`), at which point `handleLocalSlashCommand` runs
   with `isProcessing=false` and starts the compaction turn.
 
 ## Testing
 
-`messageQueue.test.ts` extracts the real `queueIsMutatingCommand` and
-`queueDrainStartedTurn` from `ChatWebviewProvider.ts` and asserts the
-classification/drain decisions above. Run with:
+`messageQueue.test.ts` extracts the real `queueIsMutatingCommand`,
+`queueDrainStartedTurn` and `agentSupportsSteering` from
+`ChatWebviewProvider.ts` and asserts the classification/drain decisions above.
+Run with:
 
 ```bash
 npm run test:unit
