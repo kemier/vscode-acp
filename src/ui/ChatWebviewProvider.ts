@@ -5688,6 +5688,14 @@ var end = displayText.length;
         return '[' + (fallbackName || uri) + ']' + nl2;
       }
 
+      // Shared-memory recall (Model B). The extension injects it as a
+      // resource block at vscode-acp:///memory/<agentId> before the user
+      // prompt. It is machine context, not a file — render it as a compact
+      // "Memory context" pill instead of a misleading [File: <agentId>].
+      if (u && u.protocol === 'vscode-acp:' && u.pathname.indexOf('/memory/') === 0) {
+        return '[Memory context]' + nl2;
+      }
+
       // Parse "#L<start>(:<end>)?" range fragment if present.
       var lineLabel = '';
       var fragMatch = uri && uri.match(/#L(\\d+)(?::(\\d+))?/);

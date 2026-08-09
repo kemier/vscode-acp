@@ -14,6 +14,14 @@ export function sanitizeMemoryText(text: string): string {
   cleaned = cleaned.replace(/<scene-navigation>[\s\S]*?<\/scene-navigation>/g, '');
   cleaned = cleaned.replace(/<memory-tools-guide>[\s\S]*?<\/memory-tools-guide>/g, '');
   cleaned = cleaned.replace(/<agent-memory>[\s\S]*?<\/agent-memory>/g, '');
+  // Strip the flattened memory recall that the agent echoes back into the
+  // user message: ericli's ACP server renders an embeddedContext resource as
+  //   [@memory](vscode-acp:///memory/<id>)
+  //   <context ref="vscode-acp:///memory/<id>">…blob…</context>
+  // Capturing that verbatim would re-write the recall blob as L0 → feedback
+  // loop (the recalled text keeps reinforcing itself turn after turn).
+  cleaned = cleaned.replace(/\[@memory\]\(vscode-acp:\/\/\/memory\/[^)]*\)\s*/gi, '');
+  cleaned = cleaned.replace(/<context\s+ref="vscode-acp:\/\/\/memory\/[^"]*"[\s\S]*?<\/context>/gi, '');
 
   cleaned = cleaned.replace(/data:image\/[a-z+]+;base64,[A-Za-z0-9+/=]+/gi, '');
   cleaned = cleaned
@@ -98,6 +106,25 @@ export function buildRecallQuery(text: string): string {
     return false;
   }
   if (/^NO_REPLY\s*$/.test(t)) {
+    return false;
+  }
+  // Drop summarizer instruction-echo fragments before they pollute memory.
+  // Observed on DeepSeek-V4-Flash: the ericli empty-reply summarizer once
+  // echoed its own instruction as the assistant message ("Note: The summary
+  // must be based strictly on the actual tool results shown above…"), and
+  // capture wrote it into L0, whose recall then re-injected it into every
+  // later turn (feedback loop). These are machine instructions, never real
+  // conversation content worth remembering.
+  const lower = t.toLowerCase();
+  if (
+    lower.startsWith('note: the summary') ||
+    lower.startsWith('note: summarize') ||
+    lower.startsWith('do not fabricate') ||
+    lower.startsWith('do not invent') ||
+    lower.startsWith('never fabricate') ||
+    lower.includes('based strictly on the actual tool results') ||
+    lower.includes('report that honestly')
+  ) {
     return false;
   }
   return true;

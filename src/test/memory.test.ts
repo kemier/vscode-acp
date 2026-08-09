@@ -70,6 +70,19 @@ suite('MemorySanitize', () => {
     assert.strictEqual(sanitizeMemoryText(raw), 'hello');
   });
 
+  test('strips flattened memory recall echoed back by the agent (feedback loop)', () => {
+    // ericli's ACP server flattens an embeddedContext resource into the user
+    // message as a context tag + link mention. Capturing that verbatim would
+    // re-write the recall blob as L0 → self-reinforcing recall.
+    const raw =
+      '[@memory](vscode-acp:///memory/claude)\n' +
+      '<context ref="vscode-acp:///memory/claude">\n' +
+      '<agent-memory>\n<relevant-memories>\n- [fact] uses pnpm\n</relevant-memories>\n' +
+      '</agent-memory>\n</context>\n\n' +
+      'actual question';
+    assert.strictEqual(sanitizeMemoryText(raw), 'actual question');
+  });
+
   test('stripCodeBlocks removes fenced code', () => {
     const raw = 'Here is a fix:\n```ts\nconst x = 1;\n```\nDone.';
     assert.strictEqual(stripCodeBlocks(raw), 'Here is a fix:\n\nDone.');
@@ -79,6 +92,15 @@ suite('MemorySanitize', () => {
     assert.strictEqual(shouldCaptureL0('/compact'), false);
     assert.strictEqual(shouldCaptureL0('  '), false);
     assert.strictEqual(shouldCaptureL0('please fix the bug'), true);
+  });
+
+  test('shouldCaptureL0 drops summarizer instruction-echo fragments', () => {
+    const leaked =
+      'Note: The summary must be based strictly on the actual tool results shown above. ' +
+      'Do not fabricate or invent any results. If a tool failed or returned an error, report that honestly.';
+    assert.strictEqual(shouldCaptureL0(leaked), false);
+    assert.strictEqual(shouldCaptureL0('Do not fabricate tool results.'), false);
+    assert.strictEqual(shouldCaptureL0('Never fabricate results — report failures honestly.'), false);
   });
 });
 
