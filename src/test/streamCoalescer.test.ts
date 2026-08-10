@@ -36,6 +36,7 @@ interface Emit {
   sessionId: string;
   kind: StreamChunkKind;
   text: string;
+  messageId?: string | null;
 }
 
 function makeCoalescer(flushMs = 8) {
@@ -43,7 +44,13 @@ function makeCoalescer(flushMs = 8) {
   const emitted: Emit[] = [];
   const coalescer = new StreamCoalescer({
     flushIntervalMs: flushMs,
-    onFlush: (sessionId, kind, text) => emitted.push({ sessionId, kind, text }),
+    onFlush: (sessionId, kind, text, messageId) => {
+      const e: Emit = { sessionId, kind, text };
+      if (messageId !== undefined && messageId !== null) {
+        e.messageId = messageId;
+      }
+      emitted.push(e);
+    },
     setTimeoutFn: (fn, ms) => clock.setTimeout(fn, ms),
     clearTimeoutFn: (h) => clock.clearTimeout(h),
   });
@@ -174,5 +181,41 @@ suite('StreamCoalescer', () => {
     const { coalescer, emitted } = makeCoalescer(8);
     coalescer.flush('does-not-exist');
     assert.strictEqual(emitted.length, 0);
+  });
+
+  test('same-messageId message chunks coalesce into one run', () => {
+    const { coalescer, clock, emitted } = makeCoalescer(8);
+    coalescer.append('s1', 'message', 'hel', 'msg_1');
+    coalescer.append('s1', 'message', 'lo', 'msg_1');
+    clock.advance(10);
+    assert.strictEqual(emitted.length, 1);
+    assert.strictEqual(emitted[0].text, 'hello');
+    assert.strictEqual(emitted[0].messageId, 'msg_1');
+  });
+
+  test('a messageId change starts a new run (does not fuse messages)', () => {
+    const { coalescer, clock, emitted } = makeCoalescer(8);
+    // Two distinct assistant messages in the same flush window.
+    coalescer.append('s1', 'message', 'first ', 'msg_1');
+    coalescer.append('s1', 'message', 'part', 'msg_1');
+    coalescer.append('s1', 'message', 'second', 'msg_2');
+    clock.advance(10);
+    assert.strictEqual(emitted.length, 2);
+    assert.strictEqual(emitted[0].text, 'first part');
+    assert.strictEqual(emitted[0].messageId, 'msg_1');
+    assert.strictEqual(emitted[1].text, 'second');
+    assert.strictEqual(emitted[1].messageId, 'msg_2');
+  });
+
+  test('undefined messageId does not merge with an explicit messageId', () => {
+    // Legacy agents (no messageId) must not fuse with a messageId-carrying
+    // chunk — that would silently merge unrelated messages.
+    const { coalescer, clock, emitted } = makeCoalescer(8);
+    coalescer.append('s1', 'message', 'no-id ', undefined);
+    coalescer.append('s1', 'message', 'has-id', 'msg_1');
+    clock.advance(10);
+    assert.strictEqual(emitted.length, 2);
+    assert.strictEqual(emitted[0].messageId, undefined);
+    assert.strictEqual(emitted[1].messageId, 'msg_1');
   });
 });

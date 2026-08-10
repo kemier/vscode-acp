@@ -26,7 +26,12 @@ export interface StreamCoalescerOptions {
   /** Flush window in milliseconds. */
   flushIntervalMs: number;
   /** Called when the coalescer flushes a batched chunk. */
-  onFlush: (sessionId: string, kind: StreamChunkKind, text: string) => void;
+  onFlush: (
+    sessionId: string,
+    kind: StreamChunkKind,
+    text: string,
+    messageId?: string | null,
+  ) => void;
   /** Override for setTimeout (testing). */
   setTimeoutFn?: (fn: () => void, ms: number) => unknown;
   /** Override for clearTimeout (testing). */
@@ -34,8 +39,8 @@ export interface StreamCoalescerOptions {
 }
 
 interface SessionBuffer {
-  /** Ordered runs of the same kind; adjacent same-kind appends merge. */
-  runs: Array<{ kind: StreamChunkKind; text: string }>;
+  /** Ordered runs of the same kind+messageId; adjacent matching appends merge. */
+  runs: Array<{ kind: StreamChunkKind; text: string; messageId?: string | null }>;
   timer?: unknown;
 }
 
@@ -51,8 +56,21 @@ export class StreamCoalescer {
     this.clearTimeoutFn = opts.clearTimeoutFn ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>));
   }
 
-  /** Append a text fragment to the buffer for `sessionId`. */
-  append(sessionId: string, kind: StreamChunkKind, text: string): void {
+  /**
+   * Append a text fragment to the buffer for `sessionId`.
+   * `messageId` (ACP ContentChunk.messageId) groups chunks into one logical
+   * message. Adjacent same-kind chunks with the SAME messageId merge into one
+   * run; a messageId change starts a new run so a new message is not fused
+   * with the prior one. Undefined messageId (agent doesn't emit one) is
+   * treated as its own group — it never merges with a chunk that carries an
+   * explicit id, preserving the legacy split-on-tool-boundary behavior.
+   */
+  append(
+    sessionId: string,
+    kind: StreamChunkKind,
+    text: string,
+    messageId?: string | null,
+  ): void {
     if (!text) {
       return;
     }
@@ -62,10 +80,10 @@ export class StreamCoalescer {
       this.buffers.set(sessionId, buf);
     }
     const last = buf.runs.length > 0 ? buf.runs[buf.runs.length - 1] : null;
-    if (last && last.kind === kind) {
+    if (last && last.kind === kind && last.messageId === messageId) {
       last.text += text;
     } else {
-      buf.runs.push({ kind, text });
+      buf.runs.push({ kind, text, messageId: messageId ?? undefined });
     }
     if (buf.timer === undefined) {
       buf.timer = this.setTimeoutFn(() => this.flush(sessionId), this.opts.flushIntervalMs);
@@ -90,7 +108,7 @@ export class StreamCoalescer {
     buf.runs = [];
     for (const run of runs) {
       if (run.text) {
-        this.opts.onFlush(sessionId, run.kind, run.text);
+        this.opts.onFlush(sessionId, run.kind, run.text, run.messageId);
       }
     }
   }

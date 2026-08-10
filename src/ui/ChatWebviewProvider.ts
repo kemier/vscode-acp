@@ -133,13 +133,17 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
     this.streamCoalescer = new StreamCoalescer({
       flushIntervalMs: 8,
-      onFlush: (sessionId, kind, text) => {
+      onFlush: (sessionId, kind, text, messageId) => {
         this.postMessage({
           type: 'sessionUpdate',
           sessionId,
           update: {
             sessionUpdate: kind === 'message' ? 'agent_message_chunk' : 'agent_thought_chunk',
             content: { type: 'text', text },
+            // Preserve the ACP messageId so the webview can group chunks of
+            // one logical message into a single bubble (text→tool→text stays
+            // one message instead of splitting into separate bubbles).
+            ...(messageId ? { messageId } : {}),
           },
         });
       },
@@ -1525,6 +1529,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         activeId,
         updateKind === 'agent_message_chunk' ? 'message' : 'thought',
         updateData.content.text,
+        // Forward the ACP messageId so same-message chunks coalesce into one
+        // run and reach the webview tagged for bubble grouping.
+        typeof updateData.messageId === 'string' ? updateData.messageId : undefined,
       );
       return;
     }
@@ -6097,6 +6104,20 @@ var end = displayText.length;
    if (inputArea) inputArea.classList.add('disabled');
     let currentAssistantEl = null;
     let currentAssistantText = '';
+    // ACP messageId (ContentChunk.messageId) groups chunks into one logical
+    // message. When a tool call splits the streaming text (commitCurrentTextSegment
+    // nulls currentAssistantEl), we remember the committed segment messageId +
+    // element + text so a later chunk with the SAME messageId can REATTACH to it
+    // instead of starting a new bubble — this is what keeps text-tool-text as ONE
+    // continuous assistant message instead of separate bubbles.
+    let currentMessageId = null;          // messageId of the in-flight bubble
+    let lastCommittedAssistantEl = null;  // last bubble committed by a tool-call split
+    let lastCommittedMessageId = null;    // its messageId
+    let lastCommittedText = '';           // its text (to resume appending)
+    // When a reactivated bubble is committed again, update this chatHistory
+    // entry in place instead of pushing a new one (avoids duplicate entries +
+    // index drift from splicing). -1 = not reactivated (normal push).
+    let reactivatedHistoryIndex = -1;
     let currentTurnEl = null;       // .turn container for current response
     let currentToolsListEl = null;  // .turn-tools-list inside current turn
     let currentToolsCountEl = null; // .turn-tools-summary counter
@@ -6668,6 +6689,11 @@ function handleLocalSlashCommand(cmdText) {
       currentTurnEl = null;
       currentAssistantEl = null;
       currentAssistantText = '';
+      currentMessageId = null;
+      lastCommittedAssistantEl = null;
+      lastCommittedMessageId = null;
+      lastCommittedText = '';
+      reactivatedHistoryIndex = -1;
       currentToolsListEl = null;
       currentToolsCountEl = null;
       currentToolCount = 0;
@@ -7630,6 +7656,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       // will not replay. saveState runs after loadSessionEnd merge instead.
       currentAssistantEl = null;
       currentAssistantText = '';
+      currentMessageId = null;
+      lastCommittedAssistantEl = null;
+      lastCommittedMessageId = null;
+      lastCommittedText = '';
+      reactivatedHistoryIndex = -1;
       toolCalls = {};
       toolCallDiffs = {};
       currentTurnEl = null;
@@ -10395,9 +10426,28 @@ function orderCompactFoldContents(body) {
     var committedText = currentAssistantText;
     var histEntry = { kind: 'message', role: 'assistant', text: committedText };
     if (asInterrupted) histEntry.interrupted = true;
-    chatHistory.push(histEntry);
-    saveState();
-    vscode.postMessage({ type: 'debugLog', message: '[WV-COMMIT] AFTER push chatHistoryLen=' + chatHistory.length + ' index=' + (chatHistory.length - 1) });
+    // The chatHistory index this commit writes to. For a reactivated bubble
+    // (same-messageId chunk resumed after a tool-call split), update the
+    // existing entry in place; otherwise push a new one.
+    var committedIndex;
+    if (reactivatedHistoryIndex >= 0 &&
+        reactivatedHistoryIndex < chatHistory.length &&
+        chatHistory[reactivatedHistoryIndex] &&
+        chatHistory[reactivatedHistoryIndex].kind === 'message' &&
+        chatHistory[reactivatedHistoryIndex].role === 'assistant') {
+      chatHistory[reactivatedHistoryIndex].text = committedText;
+      if (asInterrupted) chatHistory[reactivatedHistoryIndex].interrupted = true;
+      else delete chatHistory[reactivatedHistoryIndex].interrupted;
+      saveState();
+      committedIndex = reactivatedHistoryIndex;
+      vscode.postMessage({ type: 'debugLog', message: '[WV-COMMIT] updated reactivated entry in place: index=' + reactivatedHistoryIndex + ' textLen=' + committedText.length });
+    } else {
+      chatHistory.push(histEntry);
+      saveState();
+      committedIndex = chatHistory.length - 1;
+      vscode.postMessage({ type: 'debugLog', message: '[WV-COMMIT] AFTER push chatHistoryLen=' + chatHistory.length + ' index=' + committedIndex });
+    }
+    reactivatedHistoryIndex = -1; // consumed
    if (currentAssistantEl) {
        // Keep the existing rendered HTML in place while we request a fresh
        // render. Previously this removed md-rendered and set textContent to
@@ -10407,7 +10457,7 @@ function orderCompactFoldContents(body) {
        // arrives; until then, the already-rendered HTML is the best display.
        // Don't remove md-rendered — the handler checks data-render-hash to
        // decide whether to update.
-       var renderIndex = chatHistory.length - 1;
+       var renderIndex = committedIndex;
        vscode.postMessage({ type: 'debugLog', message: 'commitCurrentTextSegment: sending renderMarkdown index=' + renderIndex + ' textLen=' + committedText.length });
       vscode.postMessage({
         type: 'renderMarkdown',
@@ -10423,7 +10473,7 @@ function orderCompactFoldContents(body) {
       currentAssistantEl.classList.add('md-committed');
       // Stable target for markdownRendered — index into querySelectorAll can
       // drift when a live (uncommitted) assistant bubble exists beside interim ones.
-      currentAssistantEl.setAttribute('data-history-index', String(chatHistory.length - 1));
+      currentAssistantEl.setAttribute('data-history-index', String(committedIndex));
       if (asInterim && compactMode) {
         moveAssistantIntoFold(currentAssistantEl);
         if (asInterrupted) {
@@ -10438,8 +10488,16 @@ function orderCompactFoldContents(body) {
         placeSummaryAssistant(currentAssistantEl);
       }
     }
+    // Record the committed segment so a later agent_message_chunk with the SAME
+    // messageId can reattach to this bubble (text→tool→text = one message).
+    // Only meaningful when the segment carried a messageId; null otherwise so
+    // legacy agents (no messageId) never match → old split-on-tool behavior.
+    lastCommittedAssistantEl = currentMessageId ? currentAssistantEl : null;
+    lastCommittedMessageId = currentMessageId;
+    lastCommittedText = currentMessageId ? committedText : '';
     currentAssistantEl = null;
     currentAssistantText = '';
+    currentMessageId = null;
     if (streamingRenderTimer) { clearTimeout(streamingRenderTimer); streamingRenderTimer = null; }
    }
 
@@ -12823,12 +12881,14 @@ sessionState = {
         }
         currentAssistantEl = null;
          currentAssistantText = '';
+         // New turn — clear messageId grouping state so a chunk from THIS turn
+         // never reattaches to a bubble committed in the PRIOR turn.
+         currentMessageId = null;
+         lastCommittedAssistantEl = null;
+         lastCommittedMessageId = null;
+         lastCommittedText = '';
+         reactivatedHistoryIndex = -1;
          currentTurnEl = null;
-         currentToolsListEl = null;
-         currentToolsCountEl = null;
-         currentToolCount = 0;
-         currentThoughtEl = null;
-        currentThoughtTextEl = null;
         currentThoughtText = '';
         thoughtDomBase = '';
         thoughtStartTime = null;
@@ -14137,6 +14197,47 @@ sessionState = {
           // before continuing.
           drainPendingPostCompactChunks();
           endCompactingOnAgentResume();
+          // ACP messageId grouping: if this chunk carries the SAME messageId as
+          // the segment a tool call just split off (currentAssistantEl is null
+          // but lastCommittedMessageId matches), REATTACH to that bubble instead
+          // of starting a new one. This is what makes text→tool→text render as
+          // one continuous assistant message. Without messageId (legacy agents),
+          // lastCommittedMessageId is null and this never matches → old behavior.
+          var _incomingMessageId = typeof update.messageId === 'string' ? update.messageId : null;
+          if (
+            !currentAssistantEl &&
+            _incomingMessageId &&
+            _incomingMessageId === lastCommittedMessageId &&
+            lastCommittedAssistantEl
+          ) {
+            // Reattach to the bubble a tool call just split off. Strip
+            // md-committed so doStreamingRender's index:-1 path will paint the
+            // appended text (markdownRendered skips md-committed bubbles — see
+            // the index===-1 guard). md-committed is re-added at the next commit.
+            currentAssistantEl = lastCommittedAssistantEl;
+            currentAssistantText = lastCommittedText;
+            currentMessageId = lastCommittedMessageId;
+            currentAssistantEl.classList.remove('md-committed');
+            // Remember the chatHistory entry created at the prior commit so the
+            // next commitCurrentTextSegment UPDATES it in place (full text)
+            // instead of pushing a duplicate. Avoids splicing (which would
+            // shift the data-history-index of every later tool entry).
+            reactivatedHistoryIndex = parseInt(
+              currentAssistantEl.getAttribute('data-history-index') || '-1', 10);
+          } else if (
+            currentAssistantEl &&
+            _incomingMessageId &&
+            currentMessageId &&
+            _incomingMessageId !== currentMessageId
+          ) {
+            // messageId changed mid-stream (new message) — commit the current
+            // bubble so the new message starts fresh.
+            commitCurrentTextSegment({ interim: true });
+            currentMessageId = _incomingMessageId;
+          } else if (!currentMessageId && _incomingMessageId) {
+            // First chunk of a messageId-carrying message.
+            currentMessageId = _incomingMessageId;
+          }
           currentAssistantText += content.text;
                     // Flush /ps panel — assistant is producing content
                     dismissPsPanel(false);
