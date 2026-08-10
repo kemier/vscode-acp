@@ -18,6 +18,7 @@ import {
 import { TerminalOutputStore } from '../core/TerminalOutputStore';
 import { StreamCoalescer } from '../core/StreamCoalescer';
 import { FollowCoalescer, pickFollowTarget, type ToolCallLocationLike } from '../core/FollowAgent';
+import { needsRestoreAfterCapture } from '../core/SessionCaptureRestore';
 import { log, logError, getOutputChannel } from '../utils/Logger';
 import { sendEvent } from '../utils/TelemetryManager';
 import { cleanSessionTitle } from '../utils/TitleCleaner';
@@ -3056,29 +3057,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     const picked = bestMatch;
-    const originalActiveAgent = this.sessionManager.getActiveAgentName();
 
     try {
-      // Capture messages from the selected session
+      // Capture messages from the selected session. captureSessionMessages
+      // now unconditionally restores the original (agent, session)
+      // afterward and throws if the restore fails — so on a successful
+      // return the active connection is guaranteed back to where it was,
+      // and a cross-agent /session lookup can no longer morph the picker.
       const messages = await this.captureSessionMessages(picked.sessionId, picked.agentName);
-
-      // Ensure the original agent/session is active again after capture
-      const currentActiveId = this.sessionManager.getActiveSessionId();
-      if (!currentActiveId) {
-        // The capture/restore lost the active session — reconnect
-        this.suppressWebviewUpdates = true;
-        try {
-          const activeAgent = this.sessionManager.getActiveAgentName();
-          if (activeAgent) {
-            await this.sessionManager.connectToAgent(activeAgent);
-          } else if (originalActiveAgent) {
-            await this.sessionManager.connectToAgent(originalActiveAgent);
-          }
-        } finally {
-          this.suppressWebviewUpdates = false;
-        }
-        this.sendCurrentState();
-      }
 
       if (messages.length === 0) {
         this.postMessage({ type: 'sessionSummary', error: 'No messages found in that session.', queryText });
@@ -3187,6 +3173,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
     this.sessionUpdateHandler.addListener(captureListener);
 
+    // Capture the exact (agent, session) to restore. The cross-agent
+    // session/load below disconnects the active agent and connects the target
+    // agent; without an unconditional restore the user is left on the target
+    // agent (e.g. a /session lookup that matched a Kiro CLI session would morph
+    // an EricLI session's picker to Kiro/Claude models and never switch back).
+    const restoreTarget = { agent: activeAgent, sessionId: originalSessionId };
+    let restoreError: unknown = null;
+
     try {
       // Load the session — this replays all messages as session/update
       await this.sessionManager.loadSession(sessionAgent, sessionId);
@@ -3199,21 +3193,43 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       }
     } finally {
       this.sessionUpdateHandler.removeListener(captureListener);
-      this.suppressWebviewUpdates = false;
     }
 
-    // Restore the original session if it was different
-    if (originalSessionId && originalSessionId !== sessionId) {
-      // Reload the original session to restore the webview state
-      this.suppressWebviewUpdates = true;
+    // Unconditionally restore the original (agent, session) if the capture
+    // left the active connection on anything else. This runs whether or not the
+    // load above threw, and regardless of whether the active session is null
+    // (prior restore swallowed errors and was skipped when a truthy target
+    // session remained active — that was the morph bug).
+    const postCaptureAgent = this.sessionManager.getActiveAgentName();
+    const postCaptureSession = this.sessionManager.getActiveSessionId();
+    const needsRestore = needsRestoreAfterCapture(restoreTarget, postCaptureAgent, postCaptureSession);
+    if (needsRestore) {
       try {
-        await this.sessionManager.loadSession(activeAgent, originalSessionId);
-      } catch {
-        // If restore fails, the user is left on the summarized session
-        // — not ideal but not fatal.
-      } finally {
-        this.suppressWebviewUpdates = false;
+        // Reconnect the original agent first (loadSession disconnects any
+        // other active agent), then reload the original session so the
+        // webview, model picker, and config options all return to the
+        // pre-/session state.
+        await this.sessionManager.connectToAgent(restoreTarget.agent);
+        await this.sessionManager.loadSession(restoreTarget.agent, restoreTarget.sessionId!);
+      } catch (e: any) {
+        // Do NOT swallow silently — surface to the caller so the user sees
+        // that the restore failed instead of being silently left on the
+        // summarized session's agent.
+        restoreError = e;
+        log(
+          `captureSessionMessages: restore to ${restoreTarget.agent}/${restoreTarget.sessionId} failed: ${e?.message || e}`,
+        );
       }
+    }
+    this.suppressWebviewUpdates = false;
+    this.sendCurrentState();
+
+    if (restoreError) {
+      throw new Error(
+        'Failed to restore the active session after /session capture: ' +
+          ((restoreError as any)?.message || restoreError) +
+          '. Your active agent may have changed — reload the window to recover.',
+      );
     }
 
     return messages;
