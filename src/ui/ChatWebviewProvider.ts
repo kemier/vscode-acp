@@ -6865,6 +6865,18 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         // The Send button is replaced by Stop, so sending is blocked via isProcessing.
         promptInput.disabled = false;
         statusEl.innerHTML = '<span class="spinner"></span>';
+        // Manual-operation hints: /compact and /clear start with a labeled
+        // status pill ("Compacting conversation..." / "Clearing
+        // conversation..."), but a later re-entry through setProcessing(true)
+        // (promptStart, promptEnd keep-waiting, restored in-flight job, Kiro
+        // status/RPC paths) would overwrite the label with a bare spinner.
+        // Restore the hint so the user always sees what is running — same
+        // pattern /session uses ("Summarizing session...").
+        if (isCompacting) {
+          showCompactionProgress('Compacting conversation...', null);
+        } else if (isClearing) {
+          showStatusBanner('clear', 'Clearing conversation...', null);
+        }
       } else {
         sendStopBtn.className = 'send-stop-btn send';
         sendStopBtn.textContent = 'Send';
