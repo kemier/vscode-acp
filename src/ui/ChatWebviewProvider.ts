@@ -5995,15 +5995,19 @@ var end = displayText.length;
    }
 
    // Only render chat history on restore if the session was NOT interrupted.
-   // If the session was interrupted (turn was in-progress when VS Code closed),
-   // skip rendering — the session/load flow will either replay the full history
-   // (if the session exists on the agent side) or clear it (if not found).
-   // Rendering the stale partial state first causes a flash of "Conversation
-   // interrupted" + unfinished tool calls that disappears after load.
-   var _skipRestoreRender = sessionMarkedInterrupted();
-   if (_skipRestoreRender) {
-     vscode.postMessage({ type: 'debugLog', message: 'restoreState: skipping render — session was interrupted, waiting for session/load' });
-   }
+  // If the session was interrupted (turn was in-progress when VS Code closed),
+  // skip rendering — the session/load flow will either replay the full history
+  // (if the session exists on the agent side) or clear it (if not found).
+  // Rendering the stale partial state first causes a flash of "Conversation
+  // interrupted" + unfinished tool calls that disappears after load.
+  // Also skip when there's an active session — the extension will trigger
+  // session/load (or session/resume + loadSession) which replays the full
+  // history with tools, thoughts, and proper fold structure. Rendering from
+  // the stale snapshot first produces missing tool calls and empty folds.
+  var _skipRestoreRender = sessionMarkedInterrupted() || (hasActiveSession && sessionState && sessionState.sessionId);
+  if (_skipRestoreRender) {
+    vscode.postMessage({ type: 'debugLog', message: 'restoreState: skipping render — ' + (sessionMarkedInterrupted() ? 'session was interrupted' : 'active session pending load') + ', waiting for session/load' });
+  }
    if (!_skipRestoreRender) {
      // Render chat history using compact turn-based inline layout
      // (groups tool calls into collapsible containers instead of standalone cards)
