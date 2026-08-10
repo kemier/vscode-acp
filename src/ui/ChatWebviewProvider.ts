@@ -9379,6 +9379,22 @@ function orderCompactFoldContents(body) {
         else lastRealUser = i;
       }
       if (lastInterrupt < 0) return false;
+      // Only mark the session interrupted when the interrupt notice is NOT
+      // followed by a completed (non-interrupted) assistant reply. If the user
+      // said "go on" after an interrupt and the model produced a final answer,
+      // the turn is finished — stale interrupt notices from earlier turns must
+      // not brand it as interrupted.
+      var hasCompletedAssistantAfter = false;
+      for (var ci = lastInterrupt + 1; ci < chatHistory.length; ci++) {
+        var afterItem = chatHistory[ci];
+        if (afterItem && afterItem.kind === 'message' && afterItem.role === 'assistant' && !afterItem.interrupted) {
+          hasCompletedAssistantAfter = true;
+          break;
+        }
+        if (afterItem && afterItem.kind === 'message' && afterItem.role === 'user' && !isSessionInterruptNotice(afterItem.text)) {
+          break;
+        }
+      }
       for (var j = lastInterrupt - 1; j >= 0; j--) {
         var prev = chatHistory[j];
         if (!prev) continue;
@@ -9391,9 +9407,10 @@ function orderCompactFoldContents(body) {
         }
       }
       // Only mark the session interrupted when the interrupt is the latest
-      // end (no later real user prompt). Otherwise "go on" after interrupt
-      // would keep wrapping finished summaries inside the fold.
-      if (lastInterrupt > lastRealUser) {
+      // end (no later real user prompt AND no completed assistant after it).
+      // Otherwise "go on" after interrupt would keep wrapping finished
+      // summaries inside the fold.
+      if (lastInterrupt > lastRealUser && !hasCompletedAssistantAfter) {
         markSessionInterrupted();
         return true;
       }
@@ -9414,10 +9431,28 @@ function orderCompactFoldContents(body) {
         }
       }
       if (lastUser < 0) return false;
-      for (var j = chatHistory.length - 1; j > lastUser; j--) {
+      // An interrupt notice after the last real user does NOT mean the turn
+      // was interrupted — the user may have said "go on" after the interrupt
+      // and the model completed. Only treat the turn as unfinished when the
+      // interrupt notice is the actual last item (no completed assistant
+      // reply follows it).
+      var hasCompletedAssistantAfterUser = false;
+      for (var j = lastUser + 1; j < chatHistory.length; j++) {
         var x = chatHistory[j];
-        if (x && x.kind === 'message' && x.role === 'user' && isSessionInterruptNotice(x.text)) {
-          return false;
+        if (x && x.kind === 'message' && x.role === 'assistant' && !x.interrupted) {
+          hasCompletedAssistantAfterUser = true;
+          break;
+        }
+      }
+      if (!hasCompletedAssistantAfterUser) {
+        // No completed assistant after the last real user — check if there's
+        // a trailing interrupt notice (which would indicate the turn was
+        // actually interrupted, not just empty).
+        for (var j2 = chatHistory.length - 1; j2 > lastUser; j2--) {
+          var x2 = chatHistory[j2];
+          if (x2 && x2.kind === 'message' && x2.role === 'user' && isSessionInterruptNotice(x2.text)) {
+            return false;
+          }
         }
       }
      var hasCompletedTool = false;

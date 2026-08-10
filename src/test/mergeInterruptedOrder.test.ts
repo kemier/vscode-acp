@@ -205,6 +205,72 @@ suite('merge interrupt-notice ordering (resume regression)', () => {
       'last message stays the finished assistant summary',
     );
   });
+
+  test('interrupt notice followed by completed assistant does not mark session interrupted', () => {
+    // This is the core regression: after reload + resume, the merged chatHistory
+    // can contain stale interrupt notices from earlier turns that end up AFTER
+    // the last real user but BEFORE a completed assistant. The session must
+    // NOT be marked interrupted in this case.
+    //
+    // Timeline: user → interrupt → go on → assistant(end_turn)
+    // The interrupt notice is a stale artefact; the turn finished normally.
+    const history = [
+      user('first question'),
+      asst('first answer'),
+      user('[Request interrupted by user]'),
+      user('go on'),
+      asst('Here is the final answer.'),
+    ];
+    // Simulate applyInterruptNoticesFromHistory logic:
+    // lastInterrupt = index 2, lastRealUser = index 3
+    // lastInterrupt (2) < lastRealUser (3) → should NOT mark interrupted
+    const lastInterrupt = history.findIndex(
+      (it: any) => it && it.kind === 'message' && it.role === 'user' && isInterruptLike(it.text),
+    );
+    const lastRealUser = (() => {
+      for (let i = history.length - 1; i >= 0; i--) {
+        const it = history[i];
+        if (it && it.kind === 'message' && it.role === 'user' && !isInterruptLike(it.text)) return i;
+      }
+      return -1;
+    })();
+    assert.ok(lastInterrupt >= 0, 'interrupt notice found');
+    assert.ok(lastRealUser > lastInterrupt, 'real user after interrupt');
+    // When lastInterrupt < lastRealUser, applyInterruptNoticesFromHistory
+    // should NOT mark the session as interrupted.
+    assert.ok(
+      lastInterrupt < lastRealUser,
+      'interrupt is before the last real user → session should NOT be marked interrupted',
+    );
+  });
+
+  test('interrupt notice as the actual last item (no assistant after) IS interrupted', () => {
+    // Timeline: user → assistant → interrupt (no resume after)
+    // This is a genuine interruption — the session should be marked interrupted.
+    const history = [user('do something'), asst('working on it...'), user('[Request interrupted by user]')];
+    const lastInterrupt = history.findIndex(
+      (it: any) => it && it.kind === 'message' && it.role === 'user' && isInterruptLike(it.text),
+    );
+    const lastRealUser = (() => {
+      for (let i = history.length - 1; i >= 0; i--) {
+        const it = history[i];
+        if (it && it.kind === 'message' && it.role === 'user' && !isInterruptLike(it.text)) return i;
+      }
+      return -1;
+    })();
+    assert.ok(lastInterrupt > lastRealUser, 'interrupt is after the last real user');
+    // Check: no completed assistant after the interrupt
+    let hasCompletedAssistantAfter = false;
+    for (let i = lastInterrupt + 1; i < history.length; i++) {
+      const it = history[i];
+      if (it && it.kind === 'message' && it.role === 'assistant' && !it.interrupted) {
+        hasCompletedAssistantAfter = true;
+        break;
+      }
+    }
+    assert.ok(!hasCompletedAssistantAfter, 'no completed assistant after interrupt');
+    // This scenario SHOULD mark the session as interrupted.
+  });
 });
 
 /** Local mirror of isSessionInterruptNotice for test assertions. */
