@@ -41,6 +41,29 @@ ends the turn first), and it could end the turn prematurely. Option B:
 - a queued prompt does not appear "accepted" before it is processed (important
   during a long turn e.g. `/compact` running for minutes).
 
+## 1b. Memory recall is NOT disabled by Option B
+
+Disabling mid-turn steering (`agentSupportsSteering → false`) does **not**
+disable shared-memory recall. Recall is attached to the **`sendPrompt`** path,
+not the steer path:
+
+- every turn-starting prompt (`sendPrompt` in `SessionManager.ts`) runs the
+  same `buildRecallBlocks` pipeline and prefixes the prompt with the formatted
+  `<agent-memory>` blob (see `docs/MEMORY-RECALL.md`);
+- a mid-turn message queued under Option B is drained after the current
+  `promptEnd` as a real `sendPrompt` — so it also gets the memory recall,
+  just delayed until the turn finishes;
+- the only thing Option B removes is the *optimistic* steer-time recall that
+  used to attach a `memory` field to `session/steer`
+  (`steerPrompt` in the a2a branch). With steering off, an interjected message
+  is no longer answered inside the live turn; it is answered by the next turn
+  with full memory context, which also eliminates the premature-`end_turn`
+  issues observed with steer injection.
+
+Net effect: **Option B keeps memory recall working for every message that is
+actually sent to the agent.** The recall just happens at `sendPrompt` time
+instead of at steer time.
+
 ## 2. Requirement: strict FIFO — ONE queued message per agent turn
 
 With Option B all agents take the deferred-queue path. `drainQueue()` sends
