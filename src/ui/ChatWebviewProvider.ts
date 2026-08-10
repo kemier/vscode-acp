@@ -5629,6 +5629,44 @@ const builtinCommands = [
    displayText = displayText.slice(0, zedIdx) + displayText.slice(zedEnd);
    zedIdx = displayText.indexOf(zedProto);
  }
+ // Strip bare vscode-acp:///memory/<agentId> URIs that the agent flattens
+ // back into the user message during session/load replay. The shared-memory
+ // recall is injected as a resource at vscode-acp:///memory/<id>; agents
+ // without embeddedContext support often echo it as a plain leading line:
+ //   vscode-acp:///memory/codex
+ //   <context ref="vscode-acp:///memory/codex">…</context><actual prompt>
+ // cleanUserMessage strips the <context>/<agent-memory> tags above, which
+ // leaves the bare URI line behind. Remove it too — it is machine context,
+ // never text the user typed. String-based to avoid regex mangling inside
+ // the HTML template literal (webpack double-processing).
+ var memUriProto = 'vscode-acp:///memory/';
+ var memUriIdx = displayText.indexOf(memUriProto);
+ while (memUriIdx !== -1) {
+   var memUriStart = memUriIdx;
+   // Walk back over whitespace so a URI at the start of a paragraph (or any
+   // earlier in the text) is removed with its trailing space/newline.
+   while (memUriStart > 0) {
+     var mbc = displayText.charCodeAt(memUriStart - 1);
+     if (mbc === 32 || mbc === 10 || mbc === 13 || mbc === 9) {
+       memUriStart--;
+     } else {
+       break;
+     }
+   }
+   var memUriEnd = memUriIdx + memUriProto.length;
+   while (memUriEnd < displayText.length) {
+     var mec = displayText.charCodeAt(memUriEnd);
+     // URI id is [A-Za-z0-9_-] (encodeURIComponent output, no '/' in the id
+     // itself). Stop at the trailing whitespace / punctuation / closing tag.
+     if (mec === 32 || mec === 10 || mec === 13 || mec === 9 ||
+         mec === 60 /* '<' */ || mec === 41 /* ')' */ || mec === 44 /* ',' */) {
+       break;
+     }
+     memUriEnd++;
+   }
+   displayText = displayText.slice(0, memUriStart) + displayText.slice(memUriEnd);
+   memUriIdx = displayText.indexOf(memUriProto);
+ }
  // Strip any remaining leading whitespace after stripping
  var leadEnd = 0;
  while (leadEnd < displayText.length) {

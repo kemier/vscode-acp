@@ -143,6 +143,41 @@ function cleanUserMessage(rawText: string): string {
     zedIdx = displayText.indexOf(zedProto);
   }
 
+  // Strip bare vscode-acp:///memory/<agentId> URIs flattened back into the
+  // user message during session/load replay (mirror of the production code
+  // in ChatWebviewProvider's cleanUserMessage).
+  const memUriProto = 'vscode-acp:///memory/';
+  let memUriIdx = displayText.indexOf(memUriProto);
+  while (memUriIdx !== -1) {
+    let memUriStart = memUriIdx;
+    while (memUriStart > 0) {
+      const mbc = displayText.charCodeAt(memUriStart - 1);
+      if (mbc === 32 || mbc === 10 || mbc === 13 || mbc === 9) {
+        memUriStart--;
+      } else {
+        break;
+      }
+    }
+    let memUriEnd = memUriIdx + memUriProto.length;
+    while (memUriEnd < displayText.length) {
+      const mec = displayText.charCodeAt(memUriEnd);
+      if (
+        mec === 32 ||
+        mec === 10 ||
+        mec === 13 ||
+        mec === 9 ||
+        mec === 60 /* '<' */ ||
+        mec === 41 /* ')' */ ||
+        mec === 44 /* ',' */
+      ) {
+        break;
+      }
+      memUriEnd++;
+    }
+    displayText = displayText.slice(0, memUriStart) + displayText.slice(memUriEnd);
+    memUriIdx = displayText.indexOf(memUriProto);
+  }
+
   let leadEnd = 0;
   while (leadEnd < displayText.length) {
     const lc = displayText.charCodeAt(leadEnd);
@@ -456,6 +491,30 @@ suite('cleanUserMessage', () => {
     test('leaves a message that merely mentions memory alone', () => {
       const input = 'check memory acp log if has function normally';
       assert.strictEqual(cleanUserMessage(input), 'check memory acp log if has function normally');
+    });
+
+    test('strips the bare vscode-acp:///memory/<id> URI flattened on resume', () => {
+      const input =
+        'vscode-acp:///memory/codex\n' +
+        '<context ref="vscode-acp:///memory/codex">\n<agent-memory>\n<relevant-memories>\n- [fact] x\n' +
+        '</relevant-memories>\n</agent-memory>\n</context>add hint in spinner';
+      assert.strictEqual(cleanUserMessage(input), 'add hint in spinner');
+    });
+
+    test('strips the bare memory URI even without a trailing context block', () => {
+      const input =
+        'vscode-acp:///memory/codex\n<agent-memory>\n<relevant-memories>- x\n</relevant-memories>\n</agent-memory>my question';
+      assert.strictEqual(cleanUserMessage(input), 'my question');
+    });
+
+    test('strips multiple bare memory URIs and keeps the prompt text', () => {
+      const input = 'vscode-acp:///memory/codex\nvscode-acp:///memory/ericli\ncheck the log';
+      assert.strictEqual(cleanUserMessage(input), 'check the log');
+    });
+
+    test('strips the bare URI with trailing punctuation-only before text', () => {
+      const input = 'vscode-acp:///memory/codex) then do the thing';
+      assert.strictEqual(cleanUserMessage(input), ') then do the thing');
     });
   });
 
