@@ -7136,7 +7136,14 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         }
         // If still no anchor found (neither backward nor forward), skip
         // the item — the loaded timeline has no reference point for it.
-        if (insertAt === merged.length) {
+        // Exception: if there are no more snapshot items after this one
+        // (i.e. this is in the last turn), appending at the tail IS correct
+        // — the loaded timeline's tail is also the last turn.
+        var hasMoreSnapshotItems = false;
+        for (var _hsi = snapIndex + 1; _hsi < snapshot.length; _hsi++) {
+          if (snapshot[_hsi]) { hasMoreSnapshotItems = true; break; }
+        }
+        if (insertAt === merged.length && hasMoreSnapshotItems) {
           return;
         }
         merged.splice(insertAt, 0, Object.assign({}, snapItem));
