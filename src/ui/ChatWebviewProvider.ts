@@ -10158,29 +10158,10 @@ function orderCompactFoldContents(body) {
        turn.querySelector('.message.assistant[data-interrupted="1"]')
      ));
      var hasInterim = !!(turn && turn.querySelector('.message.assistant.assistant-interim'));
-     // Thought-only turns (no tools): a completed turn whose reasoning was
-     // folded must still show a ▸ header so the collapsed state doesn't
-     // leave a bare assistant bubble with no hint of hidden content.
-     // Count meaningful thoughts on the turn (finalized cards only — a live
-     // streaming thought is excluded so the header does not flash mid-turn).
-     var hasThoughts = false;
-     if (turn && summaryEl && summaryEl._hasThought) {
-       var finalizedThoughts = Array.prototype.filter.call(
-         turn.querySelectorAll('.thought-block'),
-         function(t) {
-           return t !== currentThoughtEl &&
-             !t.classList.contains('streaming') &&
-             isMeaningfulThought(t);
-         }
-       );
-       hasThoughts = finalizedThoughts.length > 0;
-     }
-     // Show the ▸ header for tools, or for folded thought content, or for
-     // interrupted interim-only folds. Do NOT show a placeholder like
-     // "Details"/"Thought" while thinking — that flashes mid-turn before
-     // the first tool arrives.
-     var hasFoldableContent = toolCount > 0 || hasThoughts || (isInterruptedFold && hasInterim);
-     if (!hasFoldableContent) {
+     // Show the ▸ header for tools, or for interrupted interim-only folds.
+     // Do NOT show a placeholder like "Details"/"Thought" while thinking —
+     // that flashes mid-turn before the first tool arrives.
+     if (toolCount === 0 && !(isInterruptedFold && hasInterim)) {
        summaryEl.style.display = 'none';
        summaryEl.innerHTML = '';
        return;
@@ -10216,16 +10197,6 @@ function orderCompactFoldContents(body) {
        }
      }
      var detail = '';
-     var thoughtCount = hasThoughts && turn
-       ? Array.prototype.filter.call(
-           turn.querySelectorAll('.thought-block'),
-           function(t) {
-             return t !== currentThoughtEl &&
-               !t.classList.contains('streaming') &&
-               isMeaningfulThought(t);
-           }
-         ).length
-       : 0;
      if (toolCount > 0) {
        if (useTitles.length) {
          detail = generateToolGroupSummary(useTitles, useKinds, useRaw);
@@ -10233,8 +10204,6 @@ function orderCompactFoldContents(body) {
        if (!detail) {
          detail = toolCount + ' tool call' + (toolCount === 1 ? '' : 's');
        }
-     } else if (thoughtCount > 0) {
-       detail = thoughtCount === 1 ? '1 thought' : thoughtCount + ' thoughts';
      } else {
        detail = 'Interrupted';
      }
