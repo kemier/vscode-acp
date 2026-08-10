@@ -7148,9 +7148,16 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           rebuilt = rebuilt.concat(bucket);
           bucket = [];
         }
+        // Interrupt notices are turn artefacts, not real user prompts — they
+        // must act as BOUNDARIES in the merged timeline, not as bucket content.
+        // Bucketing them would sort them to the absolute tail (they have no
+        // snapshotOrderIndex → MAX_SAFE_INTEGER), i.e. AFTER the final completed
+        // turn. reconcileInterruptedSessionFlag → applyInterruptNoticesFromHistory
+        // would then brand the last FINISHED assistant as interrupted and the
+        // collapsed title shows "Interrupted" after a normal reload + resume.
         for (var ri = 0; ri < merged.length; ri++) {
           var row = merged[ri];
-          if (row && row.kind === 'message' && row.role === 'user' && !isSessionInterruptNotice(row.text)) {
+          if (row && row.kind === 'message' && row.role === 'user') {
             flushBucket();
             rebuilt.push(row);
           } else {
