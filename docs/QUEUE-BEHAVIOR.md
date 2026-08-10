@@ -23,38 +23,30 @@ progress must **not**:
 - be dropped silently;
 - be held for the whole turn when the agent can accept it mid-turn.
 
-**Option A — steer-capable agents get real mid-turn injection.**
-`agentSupportsSteering(agentName)` decides the delivery path:
+**Option B — every agent takes the deferred-queue path (default).**
+`agentSupportsSteering(agentName)` currently returns `false` for ALL agents
+(EricLI and Codex included). Option A (real mid-turn steering via
+`session/steer` → live `turn/steer` injection) was enabled for EricLI/Codex in
+commit `2892a07`, but it rendered the user's prompt as an instant chat bubble
+before the agent consumed it — misleading when the steer was actually only
+drained at the next tool-iteration boundary (or not at all, e.g. when the model
+ends the turn first), and it could end the turn prematurely. Option B:
 
-| Agent           | Steer behavior                                                                                                | Delivery                                                                             |
-| --------------- | ------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
-| EricLI          | `session/steer` → `steerQueue` drained at every tool-iteration boundary, injected as `[User interjection]: …` | **Steered** into the active turn — live response within the same streaming turn      |
-| codex-acp       | `session/steer` → per-session `SteeringQueue` → `turn/steer` inject-or-startNewTurn                           | **Steered** into the active turn — never dropped                                     |
-| claude-code-acp | cannot inject mid-turn; steers are deferred to sequential `--resume` turns                                    | **Queued** (a steer would show an instant bubble with no live response — misleading) |
-| Kiro / others   | no reliable mid-turn channel                                                                                  | **Queued**                                                                           |
-
-For steer-capable agents every mid-turn message is steered (EricLI and
-codex-acp both support MULTIPLE steers per turn). The message appears as a
-user bubble immediately and is delivered to the agent at the next iteration
-boundary, matching Codex TUI behavior.
-
-For deferred-queue agents (Claude, Kiro, …) the message goes into the
-**visible message queue** (the queue chip below the input). The chat bubble
-for the message is added **at drain time**, when the message is actually sent
-to the agent — never at queue time — so a prompt queued during a long turn
-(e.g. `/compact` running for minutes) does not appear "accepted" before it is
-processed.
+- every mid-turn message goes into the **visible message queue** (the queue
+  chip below the input) — the chat bubble is added **at drain time**, when the
+  message is actually sent to the agent, never at queue time;
+- messages drain strictly FIFO, **one per turn** (`drainQueue()` sends exactly
+  one queued message per `promptEnd`), a burst of N messages during a long turn
+  is answered by N sequential turns — never batched, never dropped;
+- a queued prompt does not appear "accepted" before it is processed (important
+  during a long turn e.g. `/compact` running for minutes).
 
 ## 2. Requirement: strict FIFO — ONE queued message per agent turn
 
-This section applies to deferred-queue agents. Steer-capable agents bypass the
-queue entirely (section 1), so a burst of N messages during a long turn is
-delivered as N live steers within the same turn.
-
-For queued agents, `drainQueue()` sends **exactly one** queued message per
-`promptEnd`. A burst of N messages typed during a long turn is therefore
-answered by **N sequential turns** — never batched, never reordered, never
-dropped.
+With Option B all agents take the deferred-queue path. `drainQueue()` sends
+**exactly one** queued message per `promptEnd`. A burst of N messages typed
+during a long turn is therefore answered by **N sequential turns** — never
+batched, never reordered, never dropped.
 
 Drain triggers:
 

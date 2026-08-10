@@ -5234,20 +5234,18 @@ function queueDrainStartedTurn(handledLocal, startedTurn, isProcessingNow) {
   return !!isProcessingNow;                     // defensive: anything processing
 }
 
-// Decide whether an agent supports REAL mid-turn steering from this client.
-// These agents implement session/steer as live turn injection:
-//   - EricLI: steers are queued server-side and drained at every tool-
-//     iteration boundary (injected as "[User interjection]: …" user
-//     messages), so a steer arrives WHILE the turn is still running.
-//   - codex-acp: every session gets a SteeringQueue; each steer injects into
-//     the live turn via turn/steer (or starts a new turn when none is live),
-//     with an inject-or-startNewTurn fallback — steers are never dropped.
-// Claude-code-acp is deliberately excluded: it cannot inject mid-turn, so its
-// steers are deferred to sequential --resume turns — steering it would show an
-// instant user bubble with no live response (misleading). Mutating slash
-// commands (/compact, /clear, …) are excluded by the caller (queueIsMutatingCommand).
+// Whether an agent supports REAL mid-turn steering from this client.
+// Option B is active: EVERY agent (EricLI, Codex included) takes the
+// deferred-queue path — a message typed mid-turn is held as a queue chip (no
+// chat bubble yet) and drained via drainQueue() one-per-turn FIFO after the
+// current turn's promptEnd. Steers (session/steer → live turn injection)
+// caused the prompt to appear in the chat panel immediately and, for some
+// models, ended the turn prematurely — the visible bubble was misleading
+// because the agent had not actually consumed it yet. Keeping this false
+// guarantees the user bubble only appears when the message is actually sent,
+// matching the documented Option B behavior in docs/QUEUE-BEHAVIOR.md.
 function agentSupportsSteering(agentName) {
-  return /eric|codex/i.test(agentName || '');
+  return false;
 }
 
 function drainQueue() {
@@ -6358,67 +6356,20 @@ var end = displayText.length;
     // message immediately. drainQueue() sends exactly ONE queued message
     // per turn (strict FIFO), so a burst of N messages during a long turn
     // is answered by N sequential turns — never batched, never dropped.
- var _agentName = (sessionState && (sessionState.agentName || sessionState.agentConfigKey)) || '';
- // Agents that support REAL mid-turn steering (EricLI, Codex — see
- // agentSupportsSteering) get their message injected into the ACTIVE turn:
- // the steer is drained at the next tool-iteration boundary (EricLI) or
- // injected into the live turn via turn/steer (codex-acp), so the user gets
- // a live response within the same streaming turn. This is Option A of the
- // queue design (see docs/QUEUE-BEHAVIOR.md): mid-turn messages are steered
- // for steer-capable agents, and queued FIFO (one per turn) for the rest
- // (Claude, Kiro, ...).
- // Mutating slash commands (/compact, /clear, /index build, etc.) must never
- // be steered — they need to be sent as a full session/prompt after the current
- // turn ends, not injected mid-turn. Read-only commands (/ps, /status, /tools)
- // are already handled by handleSend before reaching handleQueue.
 var _isMutatingCmd = queueIsMutatingCommand(text);
-// Steer only when the turn is CONFIRMED live. During the transition tick
-// (isSendingPrompt true — a sendPrompt is in flight host-side but promptStart
-// has not arrived yet), the agent has no active iteration to drain a steer:
-// ericli's steer() silently drops when abortController is unset, and
-// codex-acp would fall back to starting a NEW turn (racing the in-flight
-// session/prompt). Queuing in that window preserves the c397673 guarantee
-// (never race an in-flight prompt); the message drains as a real prompt once
-// the turn finishes.
- var _supportsSteer = agentSupportsSteering(_agentName) && !isSendingPrompt;
- if (_isMutatingCmd) {
-   // Mutating slash commands are queued too — but they must run as a real
-   // prompt (never steered), so they go through the same FIFO drain. The
+if (_isMutatingCmd) {
+  // Mutating slash commands are queued too — but they must run as a real
+   // prompt — they are NOT shown as a chat bubble until they drain. The
    // queue chip stays visible so the user knows the command is pending.
    vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] handleQueue: QUEUED mutating cmd, messageQueue.length=' + (messageQueue.length + 1) });
    queueMessage(text, images);
- } else if (_supportsSteer) {
-   // Steer the message into the ACTIVE turn. Both EricLI and codex-acp support
-   // MULTIPLE steers per turn (each is injected at the next iteration
-   // boundary), so every message steers — not just the first. This matches
-   // Codex TUI behavior where steering messages are delivered in real time.
-   // Commit any in-progress assistant text as an interim segment so the text
-   // before the steer stays in the old turn's fold, and the next streaming
-   // chunk after the steer starts a NEW turn under the steering user bubble.
-   if (currentAssistantEl && currentAssistantText) {
-     commitCurrentTextSegment({ interim: true });
-   }
-   currentAssistantEl = null;
-   currentAssistantText = '';
-   chatHistory.push({ kind: 'message', role: 'user', text: text || '(image)' });
-   saveState();
-   addMessageDOM('user', text || '(image)');
-   // Reset turn + tool state so the next agent_message_chunk / tool_call
-   // creates a NEW turn container under the steering user bubble.
-   currentTurnEl = null;
-   currentToolsListEl = null;
-   currentToolsCountEl = null;
-   currentToolCount = 0;
-   vscode.postMessage({ type: 'steerPrompt', text: text });
-   vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] handleQueue: STEERED msg, _agentName=' + _agentName });
  } else {
-   // Deferred-queue agents (Claude, Kiro, others): do NOT show the message as
-   // a user bubble yet — only the queue chip. Showing the bubble immediately
-   // is misleading during a long turn (e.g. /compact running for minutes):
-   // the user sees their prompt appear in the conversation as if it were being
-   // processed, when it is actually still queued. drainQueue() adds the bubble
-   // at the moment the message is actually sent to the agent.
-   vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] handleQueue: QUEUED msg (not steered), _agentName=' + _agentName + ' isProcessing=' + isProcessing + ' isSendingPrompt=' + isSendingPrompt + ' messageQueue.length=' + (messageQueue.length + 1) });
+   // Option B (all agents): do NOT show the message as a user bubble yet —
+   // only the queue chip. Showing the bubble immediately is misleading during
+   // a long turn: the user sees their prompt in the conversation as if it were
+   // being processed, when it is actually still queued. drainQueue() adds the
+   // bubble at the moment the message is actually sent to the agent.
+   vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] handleQueue: QUEUED msg, isProcessing=' + isProcessing + ' isSendingPrompt=' + isSendingPrompt + ' messageQueue.length=' + (messageQueue.length + 1) });
    queueMessage(text, images);
  }
  }
