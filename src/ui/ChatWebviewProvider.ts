@@ -7114,6 +7114,31 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
             break;
           }
         }
+        // If no backward anchor was found, try a forward anchor: the next
+        // snapshot item that IS in the merged timeline. Insert before it.
+        // This prevents items from earlier turns (whose neighbours are all
+        // absent from the compacted loaded timeline) from being appended
+        // at the tail — after the end_turn summary.
+        if (insertAt === merged.length) {
+          for (var after2 = snapIndex + 1; after2 < snapshot.length; after2++) {
+            var nextItem = snapshot[after2];
+            if (!nextItem) continue;
+            if (nextItem.kind === 'message' && (nextItem.role === 'system' || nextItem.role === 'user') &&
+                isSessionInterruptNotice(nextItem.text)) {
+              continue;
+            }
+            var fwdAnchor = findMergedHistoryAnchor(merged, nextItem);
+            if (fwdAnchor >= 0) {
+              insertAt = fwdAnchor;
+              break;
+            }
+          }
+        }
+        // If still no anchor found (neither backward nor forward), skip
+        // the item — the loaded timeline has no reference point for it.
+        if (insertAt === merged.length) {
+          return;
+        }
         merged.splice(insertAt, 0, Object.assign({}, snapItem));
       }
 
@@ -7187,13 +7212,30 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           mergedThoughtKeys[tk] = true;
           continue;
         }
-        if (snapItem.kind === 'message' && snapItem.role === 'assistant') {
-          var ak = String(snapItem.text || '').trim();
-          if (!ak || mergedAsstKeys[ak]) continue;
-          insertSnapshotItem(snapItem, ti);
-          mergedAsstKeys[ak] = true;
+       if (snapItem.kind === 'message' && snapItem.role === 'assistant') {
+         var ak = String(snapItem.text || '').trim();
+         if (!ak || mergedAsstKeys[ak]) continue;
+         insertSnapshotItem(snapItem, ti);
+         mergedAsstKeys[ak] = true;
+       }
+        if (snapItem.kind === 'toolCall') {
+          // Merge snapshot tool calls that are NOT already in the loaded
+          // timeline. Codex's session/load may only replay a subset of
+          // tool calls (compacted or limited history), so the snapshot
+          // can contain tool calls the loaded timeline is missing.
+          var snapToolId = snapItem.toolCallId;
+          var snapToolTitle = String(snapItem.title || '').trim();
+          var toolAlreadyMerged = false;
+          for (var _mt = 0; _mt < merged.length; _mt++) {
+            var _mItem = merged[_mt];
+            if (!_mItem || _mItem.kind !== 'toolCall') continue;
+            if (snapToolId && _mItem.toolCallId === snapToolId) { toolAlreadyMerged = true; break; }
+            if (snapToolTitle && String(_mItem.title || '').trim() === snapToolTitle) { toolAlreadyMerged = true; break; }
+          }
+          if (!toolAlreadyMerged) {
+            insertSnapshotItem(snapItem, ti);
+          }
         }
-        // Skip snapshot tool rows — loaded timeline already has them interleaved.
       }
 
       reconcileInterleavedOrderFromSnapshot();
