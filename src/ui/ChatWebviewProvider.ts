@@ -3307,15 +3307,31 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
   /**
    * Notify webview of mode state changes.
+   *
+   * Guarded by suppressWebviewUpdates so a cross-agent /session capture (which
+   * swaps agents mid-flight and emits mode-changed for the *target* agent) can't
+   * flash the picker to the foreign agent's modes. The final sendCurrentState()
+   * after the capture re-publishes the original agent's state.
    */
   notifyModesUpdate(modes: any): void {
+    if (this.suppressWebviewUpdates) {
+      return;
+    }
     this.postMessage({ type: 'modesUpdate', modes });
   }
 
   /**
    * Notify webview of model state changes.
+   *
+   * Same suppression guard as notifyModesUpdate: without it a cross-agent
+   * /session lookup would briefly morph the model picker to the captured-from
+   * agent's models (e.g. an EricLI session picker flashing to Kiro/Claude
+   * models and back) even though the active connection is restored afterward.
    */
   notifyModelsUpdate(models: any): void {
+    if (this.suppressWebviewUpdates) {
+      return;
+    }
     const currentModelId = models?.currentModelId;
     this.postMessage({
       type: 'modelsUpdate',
@@ -3328,8 +3344,16 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
   /**
    * Notify webview of session config-option state changes.
+   *
+   * Same suppression guard: a cross-agent /session capture emits
+   * config-options-changed for the target agent, which would otherwise flash
+   * the config strip (model selector, thought_level, etc.) to the foreign
+   * agent's options mid-capture.
    */
   notifyConfigOptionsUpdate(configOptions: any): void {
+    if (this.suppressWebviewUpdates) {
+      return;
+    }
     this.postMessage({ type: 'configOptionsUpdate', configOptions });
   }
 
