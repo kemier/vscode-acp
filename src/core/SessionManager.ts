@@ -85,6 +85,7 @@ export interface AgentCapabilitySummary {
  */
 export type { SelectionContext } from './ContextBlockBuilder';
 import { buildSelectionBlock, type SelectionContext } from './ContextBlockBuilder';
+import { shouldInjectMemoryForTurn } from './MemoryCacheStability';
 import type { SharedMemoryProvider } from './memory/SharedMemoryProvider';
 
 /**
@@ -161,6 +162,14 @@ export class SessionManager extends EventEmitter {
 
   /** Set of session IDs with an in-flight `session/prompt` request. */
   private inFlightPromptSessions: Set<string> = new Set();
+
+  /**
+   * Set of session IDs that have already received at least one
+   * `session/prompt` in their lifetime. Used to gate memory re-injection for
+   * agents on the OpenAI Responses-API incremental path (codex-acp) — see
+   * `sendPrompt` and the `firstTurnOfIncrementalSession` comment.
+   */
+  private promptedSessions: Set<string> = new Set();
 
   /**
    * Returns true if the given session has an in-flight `session/prompt`
@@ -281,6 +290,7 @@ export class SessionManager extends EventEmitter {
           if (sessionId) {
             this.sessions.delete(sessionId);
             this.agentSessions.delete(agentName);
+            this.promptedSessions.delete(sessionId);
             if (this.activeSessionId === sessionId) {
               this.activeSessionId = null;
             }
@@ -411,6 +421,7 @@ export class SessionManager extends EventEmitter {
     this.connectionManager.removeConnection(session.agentId);
     this.sessions.delete(sessionId);
     this.agentSessions.delete(agentName);
+    this.promptedSessions.delete(sessionId);
 
     if (this.activeSessionId === sessionId) {
       this.activeSessionId = null;
@@ -450,6 +461,7 @@ export class SessionManager extends EventEmitter {
     this.inFlightPromptSessions.delete(sessionId);
     if (sessionId) {
       this.sessions.delete(sessionId);
+      this.promptedSessions.delete(sessionId);
       if (agentName) {
         this.agentSessions.delete(agentName);
       }
@@ -681,12 +693,28 @@ export class SessionManager extends EventEmitter {
 
     // Shared memory recall (Model B) — inject before workspace context so the
     // agent sees durable team/agent memory ahead of ephemeral @file/@terminal.
+    //
+    // KV-cache stability gate: codex-acp is the only agent on the OpenAI
+    // Responses-API incremental path (`previous_response_id`). Its server-side
+    // prefix cache keys on the exact byte sequence of the conversation prefix.
+    // The memory recall blob is re-fetched every turn (L1 vector search shifts
+    // as L0 captures accumulate), so re-injecting it at the prefix of *every*
+    // user turn makes the leading bytes vary turn-to-turn — which diverges the
+    // prefix at the first memory block and invalidates the entire cached
+    // history (proxy warns "msg_diff: PREFIX CHANGED (KV-cache break!)"). The
+    // first turn's memory block is already carried forward in the cached prefix
+    // via `previous_response_id`, so re-injecting on later turns is both
+    // redundant AND destabilizing for codex-acp specifically. Skip it. See
+    // `MemoryCacheStability` for the pure helper + full rationale.
+    const sessionAlreadyPrompted = this.promptedSessions.has(sessionId);
+    const injectMemoryThisTurn = shouldInjectMemoryForTurn(session.agentName, sessionAlreadyPrompted);
+    const skipMemoryForCacheStability = !injectMemoryThisTurn;
     const memDebug = !isSlashCommand && this.memoryProvider?.isEnabled() && this.memoryProvider.isDebug();
     const sendT0 = memDebug ? performance.now() : 0;
     if (memDebug) {
       log(`Memory inject: recall dispatch @+${(performance.now() - sendT0).toFixed(1)}ms (session=${sessionId})`);
     }
-    if (!isSlashCommand && this.memoryProvider?.isEnabled()) {
+    if (!isSlashCommand && this.memoryProvider?.isEnabled() && !skipMemoryForCacheStability) {
       try {
         const memoryBlocks = await this.memoryProvider.buildRecallBlocks({
           sessionId,
@@ -706,6 +734,11 @@ export class SessionManager extends EventEmitter {
       } catch (e) {
         logError('Memory recall failed', e);
       }
+    } else if (skipMemoryForCacheStability && !isSlashCommand && this.memoryProvider?.isEnabled()) {
+      log(
+        `Memory inject: skipped for codex-acp session ${sessionId} (incremental-path KV-cache stability; ` +
+          `memory already in cached prefix via previous_response_id)`,
+      );
     }
 
     // Caller-built context blocks (file/directory/terminal/diagnostics
@@ -743,6 +776,11 @@ export class SessionManager extends EventEmitter {
     prompt.push({ type: 'text', text });
 
     this.inFlightPromptSessions.add(sessionId);
+    // Record that this session has now been prompted at least once, so the
+    // codex-acp KV-cache-stability gate above knows subsequent turns should
+    // skip memory re-injection (the first turn's block is carried forward in
+    // the Responses-API prefix cache via previous_response_id).
+    this.promptedSessions.add(sessionId);
     if (!isSlashCommand && this.memoryProvider?.isEnabled()) {
       this.memoryProvider.beginTurn(sessionId, session.agentName, text);
     }
@@ -1964,6 +2002,13 @@ export class SessionManager extends EventEmitter {
       if (!placeholder.configOptions || placeholder.configOptions.length === 0) {
         void this.probeOrSynthesizeConfigOptions(sessionId);
       }
+
+      // A loaded/resumed session already has prior turns — for codex-acp this
+      // means the Responses-API server already holds a cached prefix, so the
+      // next prompt is a continuation. Mark it as prompted so the KV-cache-
+      // stability gate in sendPrompt skips memory re-injection (re-injecting
+      // would shift the prefix and invalidate the cached history).
+      this.promptedSessions.add(sessionId);
     } catch (e: any) {
       this.loadingSessionIds.delete(sessionId);
       this.sessions.delete(sessionId);
@@ -2080,6 +2125,11 @@ export class SessionManager extends EventEmitter {
       sessionInfo.title = histEntry.title;
     }
     this.sessions.set(sessionId, sessionInfo);
+    // A resumed session already has prior turns — for codex-acp this means the
+    // Responses-API server holds a cached prefix, so the next prompt is a
+    // continuation. Mark as prompted so the KV-cache-stability gate in
+    // sendPrompt skips memory re-injection (would shift the prefix otherwise).
+    this.promptedSessions.add(sessionId);
     // Set activeSessionId BEFORE drainPending so the 'available-commands-changed'
     // event drainPending emits (for commands buffered during session/new)
     // passes the active-session guard in the extension listener and reaches
@@ -2253,5 +2303,6 @@ export class SessionManager extends EventEmitter {
     this.connectionManager.dispose();
     this.sessions.clear();
     this.agentSessions.clear();
+    this.promptedSessions.clear();
   }
 }
