@@ -162,6 +162,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             // one message instead of splitting into separate bubbles).
             ...(messageId ? { messageId } : {}),
           },
+          // Inline the loading flag so the webview syncs isLoadingSession
+          // with the extension host's authoritative state on every chunk.
+          // This eliminates the race where loadSessionStart's postMessage
+          // arrives at the webview AFTER replay chunks (the SDK dispatches
+          // session/update notifications synchronously while loadSession's
+          // RPC is in-flight).
+          isLoading: this.sessionManager.isLoading(sessionId),
         });
       },
     });
@@ -1599,6 +1606,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           type: 'sessionUpdate',
           update: resolved,
           sessionId: update.sessionId,
+          isLoading: this.sessionManager.isLoading(update.sessionId),
         });
       });
       return;
@@ -1608,6 +1616,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       type: 'sessionUpdate',
       update: update.update,
       sessionId: update.sessionId,
+      isLoading: this.sessionManager.isLoading(update.sessionId),
     });
   }
 
@@ -13564,6 +13573,16 @@ sessionState = {
       break;
 
         case 'sessionUpdate':
+          // Sync isLoadingSession from the extension-side flag. The
+          // extension's loadingSessionIds set is the source of truth —
+          // the async loadSessionStart postMessage may arrive AFTER the
+          // first replay chunk if the SDK dispatches notifications before
+          // the webview processes the loadSessionStart message. This
+          // ensures the notProcessing gate accepts replay chunks even when
+          // isLoadingSession hasn't been set yet by loadSessionStart.
+          if (msg.isLoading !== undefined) {
+            isLoadingSession = !!msg.isLoading;
+          }
           handleUpdate(msg.update);
           break;
 
