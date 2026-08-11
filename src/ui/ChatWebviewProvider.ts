@@ -7928,8 +7928,123 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       mergePreLoadInterruptedTurn(preLoadChatHistorySnapshot);
      }
    }
+   // Capture the snapshot for the kiro dropped-UMC recovery below (it is
+   // nulled right after; the recovery needs the pre-load rows).
+   var _recoverySnapshot = preLoadChatHistorySnapshot;
+   var _recoverySnapshotSid = preLoadSnapshotSessionId;
     preLoadChatHistorySnapshot = null;
    preLoadSnapshotSessionId = null;
+
+   // ── Kiro dropped-user-message recovery ───────────────────────────────
+   // Kiro's session/load replay is streamed synchronously right after the
+   // request. When loads overlap (or the active-session gate drops the fast
+   // replay), the loaded chatHistory can contain tool_calls + thoughts but
+   // ZERO real user rows and zero assistant summaries — the user sees a wall
+   // of collapsed tool blocks with no prompts and no answers.
+   //
+   // Recovery: if the loaded history has substantive content (tools/thoughts)
+   // but no real user messages at all, and the pre-load snapshot belongs to
+   // the SAME session, re-inject the real user rows and assistant summaries
+   // from the snapshot (positioned by their following tool anchors). This is a
+   // one-way rescue — it never fires when the replay legitimately carried
+   // user rows, and it cannot leak rows across sessions (snapshot-session
+   // guard). The snapshot rows are authoritative for what the user saw.
+   var _loadedRealUsers = countRealUsers(chatHistory);
+   var _loadedAsstCount = chatHistory.filter(function(x) {
+     return x && x.kind === 'message' && x.role === 'assistant';
+   }).length;
+   var _loadedToolCount = chatHistory.filter(function(x) {
+     return x && x.kind === 'toolCall';
+   }).length;
+   var _curLoadSid = (sessionState && sessionState.sessionId) || null;
+   if (
+     _loadedRealUsers === 0 &&
+     _loadedToolCount > 0 &&
+     _recoverySnapshot &&
+     _recoverySnapshot.length > 0 &&
+     _recoverySnapshotSid &&
+     _curLoadSid &&
+     _recoverySnapshotSid === _curLoadSid
+   ) {
+     var _snapRealUsers = countRealUsers(_recoverySnapshot);
+     var _snapAsst = _recoverySnapshot.filter(function(x) {
+       return x && x.kind === 'message' && x.role === 'assistant';
+     });
+     if (_snapRealUsers > 0) {
+       // Build anchors: find the snapshot index of the first tool_call after
+       // each user row, then insert the user row just before that tool's
+       // position in the loaded history. This keeps user prompts in
+       // conversation order instead of dumping them all at the top.
+       var _snapRealUserIdx = [];
+       for (var _su = 0; _su < _recoverySnapshot.length; _su++) {
+         var _sIt = _recoverySnapshot[_su];
+         if (_sIt && _sIt.kind === 'message' && _sIt.role === 'user' && !isSessionInterruptNotice(_sIt.text)) {
+           _snapRealUserIdx.push(_su);
+         }
+       }
+       var _injectedUsers = 0;
+       // Insert from the END backwards so earlier insertions don't shift the
+       // anchor positions of later ones.
+       for (var _ui = _snapRealUserIdx.length - 1; _ui >= 0; _ui--) {
+         var _uidx = _snapRealUserIdx[_ui];
+         var _userText = _recoverySnapshot[_uidx] ? _recoverySnapshot[_uidx].text : '';
+         if (!_userText || typeof _userText !== 'string') continue;
+         // Skip interrupt notices / machine-context-only rows.
+         if (isSessionInterruptNotice(_userText)) continue;
+         if (String(_userText || '').trim() === '') continue;
+         var _cleanedUser = cleanUserMessage(_userText);
+         if (!String(_cleanedUser || '').trim()) continue;
+         // Already have this user text? skip.
+         var _dup = chatHistory.some(function(x) {
+           return x && x.kind === 'message' && x.role === 'user' && userMessageKey(x.text) === userMessageKey(_userText);
+         });
+         if (_dup) continue;
+         // Find first tool_call in the loaded history AFTER this snapshot
+         // position (use the snapshot's own ordering: any tool later than
+         // this user in the snapshot).
+         var _insertAt = chatHistory.length;
+         for (var _sa = _uidx + 1; _sa < _recoverySnapshot.length; _sa++) {
+           var _snapAfter = _recoverySnapshot[_sa];
+           if (_snapAfter && _snapAfter.kind === 'toolCall' && _snapAfter.toolCallId) {
+             for (var _ma = 0; _ma < chatHistory.length; _ma++) {
+               var _mIt = chatHistory[_ma];
+               if (_mIt && _mIt.kind === 'toolCall' && _mIt.toolCallId === _snapAfter.toolCallId) {
+                 _insertAt = _ma;
+                 break;
+               }
+             }
+             if (_insertAt !== chatHistory.length) break;
+           }
+         }
+         chatHistory.splice(_insertAt, 0, { kind: 'message', role: 'user', text: _cleanedUser });
+         _injectedUsers++;
+       }
+       vscode.postMessage({ type: 'debugLog', message: '[WV-MERGE] kiro dropped-UMC recovery: injected ' + _injectedUsers + ' user rows (snapUsers=' + _snapRealUsers + ' loadedTools=' + _loadedToolCount + ' loadedAsst=' + _loadedAsstCount + ')' });
+       // Also promote assistant summaries from the snapshot that are missing.
+       // Only when the loaded history has no assistant rows at all AND the
+       // snapshot has some — otherwise we'd duplicate live summaries.
+       if (_loadedAsstCount === 0 && _snapAsst.length > 0) {
+         var _injectedAsst = 0;
+         for (var _ai2 = 0; _ai2 < _snapAsst.length; _ai2++) {
+           var _aSnap = _snapAsst[_ai2];
+           if (!_aSnap || typeof _aSnap.text !== 'string' || !_aSnap.text.trim()) continue;
+           // Skip summaries that belong to a turn whose user row exists.
+           // Simple dedupe: skip if identical text already present.
+           var _aDup = chatHistory.some(function(x) {
+             return x && x.kind === 'message' && x.role === 'assistant' &&
+                    String(x.text || '').trim() === _aSnap.text.trim();
+           });
+           if (_aDup) continue;
+           chatHistory.push({ kind: 'message', role: 'assistant', text: _aSnap.text });
+           _injectedAsst++;
+         }
+         if (_injectedAsst > 0) {
+           vscode.postMessage({ type: 'debugLog', message: '[WV-MERGE] kiro dropped-UMC recovery: injected ' + _injectedAsst + ' assistant rows' });
+         }
+       }
+     }
+   }
+
    // If history was replayed, there were prior prompts — mark as sent
    // so the context usage ring can appear when metadata arrives.
   if (chatHistory.length > 0) hasSentPrompt = true;

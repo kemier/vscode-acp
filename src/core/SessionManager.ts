@@ -164,6 +164,25 @@ export class SessionManager extends EventEmitter {
   private inFlightPromptSessions: Set<string> = new Set();
 
   /**
+   * Per-agent load/resume serialization chain.
+   *
+   * Kiro (and other agents) enforce a single active session per process and
+   * stream the replay synchronously right after the session/load request. If
+   * two loadSession / resumeSession calls for the same agent overlap (e.g. the
+   * user clicks a session while a previous load is still streaming, or the
+   * session tree fires several openSession events in quick succession), the
+   * later call's `activeSessionId` assignment races with the earlier call's
+   * replay — the extension's `handleSessionUpdate` active-session gate then
+   * drops the earlier replay's user_message_chunk / agent_* chunks because
+   * `update.sessionId !== activeId` at the instant they arrive, and the chat
+   * ends up with tool_calls + thoughts but NO user or assistant bubbles.
+   *
+   * Serializing per agent guarantees each load's replay completes (and its
+   * activeSessionId window stays stable) before the next load starts.
+   */
+  private loadSerialChains: Map<string, Promise<unknown>> = new Map();
+
+  /**
    * Set of session IDs that have already received at least one
    * `session/prompt` in their lifetime. Used to gate memory re-injection for
    * agents on the OpenAI Responses-API incremental path (codex-acp) — see
@@ -1899,8 +1918,27 @@ export class SessionManager extends EventEmitter {
    * Load an existing session, replaying the entire conversation history via
    * `session/update` notifications. Heavyweight. Active session is switched
    * to the loaded session on success.
+   *
+   * Concurrent loads for the same agent are serialized (per-agent chain) so a
+   * later load can never interleave with an earlier load's replay and cause
+   * the active-session gate in the extension host to drop replay chunks.
    */
   async loadSession(agentName: string, sessionId: string): Promise<SessionInfo> {
+    const prev = this.loadSerialChains.get(agentName) ?? Promise.resolve();
+    const run = prev.then(() => this.loadSessionImpl(agentName, sessionId));
+    // Keep the chain alive even on rejection so a failed load does not block
+    // subsequent loads forever; the error still propagates to the caller.
+    this.loadSerialChains.set(
+      agentName,
+      run.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return run;
+  }
+
+  private async loadSessionImpl(agentName: string, sessionId: string): Promise<SessionInfo> {
     // Honor the single-active-session model: if a different agent currently
     // owns the active session, disconnect it before opening this one.
     const currentAgent = this.getActiveAgentName();
@@ -2057,6 +2095,25 @@ export class SessionManager extends EventEmitter {
     }
 
     this.loadingSessionIds.delete(sessionId);
+    // Drain pending replay notifications BEFORE signalling load-end.
+    //
+    // Kiro (and other stdio agents) stream the whole session/load replay as a
+    // burst of session/update notifications that the SDK dispatches AFTER the
+    // session/load response promise resolves. If we emit session-load-end
+    // immediately, the webview flips isLoadingSession=false first, and the
+    // delayed user_message_chunk / agent_message_chunk replay notifications
+    // then hit the `if (!isLoadingSession) break;` gates in the webview and
+    // are silently dropped — the replayed chat ends up with tool_calls +
+    // thoughts but NO user prompts and NO assistant summaries (exactly the
+    // "user msg and summary don't show after resume" bug).
+    //
+    // Give the notification dispatch a few event-loop turns to flush before
+    // signalling load-end. This is a bounded drain (no await on the agent);
+    // 100 ms is far beyond any inter-frame jitter and short enough to stay
+    // imperceptible to the user.
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 100);
+    });
     this.emit('session-load-end', sessionId, agentName, /*ok=*/ true);
 
     // Touch history-store activity timestamp.
@@ -2068,8 +2125,25 @@ export class SessionManager extends EventEmitter {
 
   /**
    * Resume an existing session without replaying history (light path).
+   * Serialized per agent (same chain as loadSession) so a concurrent load or
+   * resume for the same agent cannot interleave and flip activeSessionId
+   * mid-replay, which would drop that replay's chunks at the active-session
+   * gate in the extension host.
    */
   async resumeSession(agentName: string, sessionId: string): Promise<SessionInfo> {
+    const prev = this.loadSerialChains.get(agentName) ?? Promise.resolve();
+    const run = prev.then(() => this.resumeSessionImpl(agentName, sessionId));
+    this.loadSerialChains.set(
+      agentName,
+      run.then(
+        () => undefined,
+        () => undefined,
+      ),
+    );
+    return run;
+  }
+
+  private async resumeSessionImpl(agentName: string, sessionId: string): Promise<SessionInfo> {
     const currentAgent = this.getActiveAgentName();
     if (currentAgent && currentAgent !== agentName) {
       await this.disconnectAgent(currentAgent);
