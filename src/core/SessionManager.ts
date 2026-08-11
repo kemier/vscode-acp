@@ -628,11 +628,15 @@ export class SessionManager extends EventEmitter {
       sessionInfo.configOptions = pendingCfg;
       this.pendingConfigOptions.delete(sessionInfo.sessionId);
     }
-    const pendingTitle = this.pendingTitles.get(sessionInfo.sessionId);
-    if (pendingTitle !== undefined) {
-      sessionInfo.title = pendingTitle;
-      this.pendingTitles.delete(sessionInfo.sessionId);
-    }
+   const pendingTitle = this.pendingTitles.get(sessionInfo.sessionId);
+   if (pendingTitle !== undefined) {
+     this.pendingTitles.delete(sessionInfo.sessionId);
+     // Don't let a buffered agent title overwrite a user-set /rename title.
+     const histEntry = this.historyStore?.get(sessionInfo.agentName, sessionInfo.sessionId);
+     if (!histEntry?.userRenamed) {
+       sessionInfo.title = pendingTitle;
+     }
+   }
   }
 
   /**
@@ -1569,9 +1573,11 @@ export class SessionManager extends EventEmitter {
       // custom title (from /rename). Only block if the user explicitly
       // renamed via /rename (userRenamed flag), not just if any title exists.
       const histEntry = session.agentName ? this.historyStore?.get(session.agentName, sessionId) : undefined;
-      const hasCustomTitle = !!histEntry?.userRenamed;
-      if (hasCustomTitle && typeof update.title === 'string') {
+     const hasCustomTitle = !!histEntry?.userRenamed;
+      if (hasCustomTitle && update.title !== undefined) {
         // Keep the user's title; ignore the agent's.
+        // Block both string titles (agent auto-title) and null (agent
+        // clearing its title) — neither should overwrite a /rename title.
         return;
       }
       if (update.title === null) {
