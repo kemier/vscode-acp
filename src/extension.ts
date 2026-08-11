@@ -866,6 +866,31 @@ export function activate(context: vscode.ExtensionContext): void {
     } catch (e: any) {
       logError('Failed to open session', e);
       const errDetail = e?.data ? `${e.message}: ${e.data}` : e?.message || 'Unknown error';
+      const errDataStr = typeof e?.data === 'string' ? e.data : e?.data ? String(e.data) : '';
+      const combinedMsg = `${e?.message || ''} ${errDataStr}`;
+
+      // Kiro enforces a single owner per session: a terminal `kiro-cli chat`
+      // (or another VS Code window) already holds this session, and its ACP
+      // server refuses a session/load from this process. Show a clear,
+      // actionable message instead of the raw "Internal error" toast, and
+      // offer to open a fresh session in this window instead.
+      const activeInAnother = /active in another process \(PID (\d+)\)/i.exec(combinedMsg);
+      if (activeInAnother) {
+        const pid = activeInAnother[1];
+        const choice = await vscode.window.showErrorMessage(
+          `Session is already open in another process (PID ${pid}) — close it there, or start a fresh session here.`,
+          'Start New Session Here',
+        );
+        if (choice === 'Start New Session Here') {
+          try {
+            await vscode.commands.executeCommand('acp.newConversation');
+          } catch (innerErr: any) {
+            vscode.window.showErrorMessage(`Failed to start new session: ${innerErr?.message || innerErr}`);
+          }
+        }
+        return;
+      }
+
       vscode.window.showErrorMessage(`Failed to open session: ${errDetail}`);
     }
   });
