@@ -204,16 +204,16 @@ export function cleanSessionTitle(title: string | null | undefined): string {
       break;
     }
   }
- cleaned = cleaned.slice(start);
- // Truncate to a reasonable length for display in the session tree and banner.
- // Agents (especially codex-acp) use the raw user prompt as the session title;
- // pasting a large block of text would otherwise flood the sidebar label.
- const MAX_TITLE_LEN = 120;
- if (cleaned.length > MAX_TITLE_LEN) {
-   // Try to break at a word boundary near the limit.
-   let cut = cleaned.lastIndexOf(' ', MAX_TITLE_LEN);
-   if (cut < MAX_TITLE_LEN * 0.6) cut = MAX_TITLE_LEN;
-   cleaned = cleaned.slice(0, cut) + '…';
- }
- return cleaned;
+  cleaned = cleaned.slice(start);
+  // Truncate to a reasonable length for display in the session tree and banner.
+  // Agents (especially codex-acp) use the raw user prompt as the session title;
+  // pasting a large block of text would otherwise flood the sidebar label.
+  const MAX_TITLE_LEN = 120;
+  if (cleaned.length > MAX_TITLE_LEN) {
+    // Try to break at a word boundary near the limit.
+    let cut = cleaned.lastIndexOf(' ', MAX_TITLE_LEN);
+    if (cut < MAX_TITLE_LEN * 0.6) cut = MAX_TITLE_LEN;
+    cleaned = cleaned.slice(0, cut) + '…';
+  }
+  return cleaned;
 }

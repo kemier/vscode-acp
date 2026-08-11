@@ -628,15 +628,15 @@ export class SessionManager extends EventEmitter {
       sessionInfo.configOptions = pendingCfg;
       this.pendingConfigOptions.delete(sessionInfo.sessionId);
     }
-   const pendingTitle = this.pendingTitles.get(sessionInfo.sessionId);
-   if (pendingTitle !== undefined) {
-     this.pendingTitles.delete(sessionInfo.sessionId);
-     // Don't let a buffered agent title overwrite a user-set /rename title.
-     const histEntry = this.historyStore?.get(sessionInfo.agentName, sessionInfo.sessionId);
-     if (!histEntry?.userRenamed) {
-       sessionInfo.title = pendingTitle;
-     }
-   }
+    const pendingTitle = this.pendingTitles.get(sessionInfo.sessionId);
+    if (pendingTitle !== undefined) {
+      this.pendingTitles.delete(sessionInfo.sessionId);
+      // Don't let a buffered agent title overwrite a user-set /rename title.
+      const histEntry = this.historyStore?.get(sessionInfo.agentName, sessionInfo.sessionId);
+      if (!histEntry?.userRenamed) {
+        sessionInfo.title = pendingTitle;
+      }
+    }
   }
 
   /**
@@ -1573,7 +1573,7 @@ export class SessionManager extends EventEmitter {
       // custom title (from /rename). Only block if the user explicitly
       // renamed via /rename (userRenamed flag), not just if any title exists.
       const histEntry = session.agentName ? this.historyStore?.get(session.agentName, sessionId) : undefined;
-     const hasCustomTitle = !!histEntry?.userRenamed;
+      const hasCustomTitle = !!histEntry?.userRenamed;
       if (hasCustomTitle && update.title !== undefined) {
         // Keep the user's title; ignore the agent's.
         // Block both string titles (agent auto-title) and null (agent
@@ -2026,8 +2026,10 @@ export class SessionManager extends EventEmitter {
       // If the agent says the session is gone, prune from local history so
       // it doesn't reappear on next refresh.
       // Check both message and data (Kiro puts "Session not found" in data).
-      const msg = String(e?.message || '') + ' ' + String((e as any)?.data || '');
-      if (/not found|no such|unknown session/i.test(msg)) {
+      const errData = (e as any)?.data;
+      const errDataStr = typeof errData === 'string' ? errData : errData ? JSON.stringify(errData) : '';
+      const msg = String(e?.message || '') + ' ' + errDataStr;
+      if (/not found|no such|unknown session|no rollout/i.test(msg)) {
         log(`loadSession: pruning stale session ${sessionId} from history (agent says: not found)`);
         this.historyStore?.forget(agentName, sessionId);
         // Don't emit session-load-end with ok=false — that would show
@@ -2100,12 +2102,14 @@ export class SessionManager extends EventEmitter {
     try {
       response = await conn.connection.resumeSession({
         sessionId,
-        cwd,
         mcpServers: [],
+        cwd,
       });
     } catch (e: any) {
-      const msg = String(e?.message || '');
-      if (/not found|no such|unknown session/i.test(msg)) {
+      const errData = (e as any)?.data;
+      const errDataStr = typeof errData === 'string' ? errData : errData ? JSON.stringify(errData) : '';
+      const msg = String(e?.message || '') + ' ' + errDataStr;
+      if (/not found|no such|unknown session|no rollout/i.test(msg)) {
         this.historyStore?.forget(agentName, sessionId);
       }
       throw e;

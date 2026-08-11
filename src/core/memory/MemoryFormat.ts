@@ -21,6 +21,10 @@ export interface FormattedRecall {
   sceneCount: number;
 }
 
+/** Maximum character length per individual L1 memory item. Some memories
+ *  are long paragraphs; truncate to keep the total recall block bounded. */
+const MAX_L1_ITEM_CHARS = 500;
+
 export function formatL1Memories(items: L1MemoryItem[]): string | undefined {
   if (items.length === 0) {
     return undefined;
@@ -28,18 +32,40 @@ export function formatL1Memories(items: L1MemoryItem[]): string | undefined {
   const lines: string[] = ['<relevant-memories>', ''];
   for (const item of items) {
     const typeTag = item.type ? `[${item.type}] ` : '';
-    lines.push(`- ${typeTag}${item.content}`);
+    let text = item.content;
+    if (text.length > MAX_L1_ITEM_CHARS) {
+      text = text.slice(0, MAX_L1_ITEM_CHARS) + '…';
+    }
+    lines.push(`- ${typeTag}${text}`);
   }
   lines.push('', '</relevant-memories>');
   return lines.join('\n');
 }
 
+/** Maximum character budget for the L3 persona block. The persona is injected
+ *  on every turn for non-incremental agents (claude-code-acp, ericli) and
+ *  carries the full "Team Operating Doctrine" + scene navigation index.
+ *  Without a cap, the persona grows unbounded as scene blocks accumulate,
+ *  consuming 5K+ chars (~1.4K tokens) per turn — a significant fraction of
+ *  the 196K context window when the conversation is long. Truncate at 3K
+ *  chars (~750 tokens) to keep the overhead bounded. */
+const MAX_PERSONA_CHARS = 2000;
+
 export function formatPersona(persona: string | null | undefined): string | undefined {
   if (!persona?.trim()) {
     return undefined;
   }
-  return `<user-persona>\n${persona.trim()}\n</user-persona>`;
+  let trimmed = persona.trim();
+  if (trimmed.length > MAX_PERSONA_CHARS) {
+    trimmed = trimmed.slice(0, MAX_PERSONA_CHARS) + '\n…(persona truncated)';
+  }
+  return `<user-persona>\n${trimmed}\n</user-persona>`;
 }
+
+/** Maximum number of scene nav entries to include. Each entry is a path +
+ *  summary that can be 100+ chars; with 14+ scenes this adds 2.5K+ chars
+ *  (~600 tokens) per turn. Cap at 8 entries to keep the overhead reasonable. */
+const MAX_SCENE_ENTRIES = 8;
 
 export function formatSceneNav(scenes: SceneNavEntry[]): string | undefined {
   if (scenes.length === 0) {
@@ -50,11 +76,24 @@ export function formatSceneNav(scenes: SceneNavEntry[]): string | undefined {
     '*Agent-profile scenario index (L2). Paths are relative to this agent memory profile.*',
     '',
   ];
-  for (const scene of scenes) {
+  const capped = scenes.slice(0, MAX_SCENE_ENTRIES);
+  for (const scene of capped) {
     lines.push(`- \`${scene.path}\``);
+  }
+  if (scenes.length > MAX_SCENE_ENTRIES) {
+    lines.push(`- _(+${scenes.length - MAX_SCENE_ENTRIES} more scenes — read from memory to view)_`);
   }
   return lines.join('\n');
 }
+
+/**
+ * Hard cap on the total <agent-memory> blob size (chars). Final safety net
+ * after per-section caps. Even if the gateway returns unbounded L1 content
+ * (the /v3/atomic/search endpoint does NOT apply maxCharsPerMemory/
+ * maxTotalRecallChars — those only run in the OpenClaw recall hook path),
+ * the blob injected into the prompt is bounded. ~8000 chars ≈ 2000 tokens.
+ */
+const MAX_TOTAL_BLOB_CHARS = 8000;
 
 /**
  * Build a single injectable recall blob for ACP ContentBlocks.
@@ -81,8 +120,15 @@ export function formatRecallContext(
   if (parts.length === 0) {
     return undefined;
   }
+  let blob = `<agent-memory>\n${parts.join('\n\n')}\n</agent-memory>`;
+  // Final safety net: cap the total blob size. If per-section caps weren't
+  // enough (e.g. many L1 items, large persona from gateway), truncate from
+  // the end to preserve the prefix (L1 memories are most relevant).
+  if (blob.length > MAX_TOTAL_BLOB_CHARS) {
+    blob = blob.slice(0, MAX_TOTAL_BLOB_CHARS - 20) + '\n…</agent-memory>';
+  }
   return {
-    text: `<agent-memory>\n${parts.join('\n\n')}\n</agent-memory>`,
+    text: blob,
     l1Count: l1Items.length,
     hasPersona: !!personaBlock,
     sceneCount: scenes.length,

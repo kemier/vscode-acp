@@ -91,28 +91,28 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    *  fallback timer captures the value at creation time and only fires if it
    *  hasn't changed, preventing a stale timer from force-aborting a new prompt
    *  that started after the cancel was acknowledged. */
- private _cancelGeneration: number = 0;
+  private _cancelGeneration: number = 0;
 
- /** Cached git branch for the active session's cwd, shown in the banner. */
- private _cachedGitBranch: string | null = null;
+  /** Cached git branch for the active session's cwd, shown in the banner. */
+  private _cachedGitBranch: string | null = null;
 
- /** Refresh the cached git branch for the given cwd. Called on session switch. */
- private async refreshGitBranch(cwd?: string): Promise<void> {
-   if (!cwd) {
-     this._cachedGitBranch = null;
-     return;
-   }
-   try {
-     const { stdout } = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeout: 2000 });
-     this._cachedGitBranch = stdout.trim() || null;
-   } catch {
-     this._cachedGitBranch = null;
-   }
- }
+  /** Refresh the cached git branch for the given cwd. Called on session switch. */
+  private async refreshGitBranch(cwd?: string): Promise<void> {
+    if (!cwd) {
+      this._cachedGitBranch = null;
+      return;
+    }
+    try {
+      const { stdout } = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeout: 2000 });
+      this._cachedGitBranch = stdout.trim() || null;
+    } catch {
+      this._cachedGitBranch = null;
+    }
+  }
 
- /**
-  * Session ID that currently has a prompt in flight. Used by the
-  * cancel fallback timer to ensure it only fires for the correct session.
+  /**
+   * Session ID that currently has a prompt in flight. Used by the
+   * cancel fallback timer to ensure it only fires for the correct session.
    */
   private _pendingPromptSessionId: string | null = null;
 
@@ -3236,25 +3236,25 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         await this.sessionManager.connectToAgent(restoreTarget.agent);
         await this.sessionManager.loadSession(restoreTarget.agent, restoreTarget.sessionId!);
       } catch (e: any) {
-        // Do NOT swallow silently — surface to the caller so the user sees
-        // that the restore failed instead of being silently left on the
-        // summarized session's agent.
-        restoreError = e;
+        // The restore failed — most commonly because the original session
+        // was a fresh session/new that never received a prompt (no rollout
+        // persisted to disk). loadSession's catch block already handles
+        // "not found" / "no rollout" by creating a new session, but if the
+        // error is something else, log it and let loadSession's fallback
+        // (new session creation) take over. Do NOT throw — throwing here
+        // crashes the /session flow and leaves the user on a "Resume Codex"
+        // button screen with no way to continue.
         log(
           `captureSessionMessages: restore to ${restoreTarget.agent}/${restoreTarget.sessionId} failed: ${e?.message || e}`,
         );
+        // If loadSession already created a new session as its fallback,
+        // there is nothing more to do. If not (non-"not found" error),
+        // the connectToAgent above already spawned a fresh agent process
+        // with a new session — the user can continue from there.
       }
     }
     this.suppressWebviewUpdates = false;
     this.sendCurrentState();
-
-    if (restoreError) {
-      throw new Error(
-        'Failed to restore the active session after /session capture: ' +
-          ((restoreError as any)?.message || restoreError) +
-          '. Your active agent may have changed — reload the window to recover.',
-      );
-    }
 
     return messages;
   }
@@ -3277,10 +3277,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             sessionId: session.sessionId,
             agentName: session.agentDisplayName,
             agentConfigKey: session.agentName,
-           title: cleanSessionTitle(session.title) || session.title,
-           cwd: session.cwd,
-           gitBranch: this._cachedGitBranch || undefined,
-           modes: session.modes,
+            title: cleanSessionTitle(session.title) || session.title,
+            cwd: session.cwd,
+            gitBranch: this._cachedGitBranch || undefined,
+            modes: session.modes,
             models: session.models,
             configOptions: session.configOptions,
             availableCommands: session.availableCommands,
@@ -3320,20 +3320,20 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   /**
    * Notify webview of a new active session.
    */
- notifyActiveSessionChanged(): void {
-   if (this.suppressWebviewUpdates) {
-     return;
-   }
-   // Drop any pending coalesced text from the previous session — its
-   // webview-side state is about to be replaced.
-   this.dropAllStreamBuffers();
-   // Refresh git branch for the new session's cwd, then send state.
-   const session = this.sessionManager.getActiveSession();
-   if (session?.cwd) {
-     this.refreshGitBranch(session.cwd).then(() => this.sendCurrentState());
-   }
-   this.sendCurrentState();
- }
+  notifyActiveSessionChanged(): void {
+    if (this.suppressWebviewUpdates) {
+      return;
+    }
+    // Drop any pending coalesced text from the previous session — its
+    // webview-side state is about to be replaced.
+    this.dropAllStreamBuffers();
+    // Refresh git branch for the new session's cwd, then send state.
+    const session = this.sessionManager.getActiveSession();
+    if (session?.cwd) {
+      this.refreshGitBranch(session.cwd).then(() => this.sendCurrentState());
+    }
+    this.sendCurrentState();
+  }
 
   /**
    * Notify webview of mode state changes.
@@ -13002,6 +13002,29 @@ sessionState = {
        // Interrupted turns: keep the partial reply inside the fold so resume
        // / restore do not promote it into the main chat.
        var _wasCancelled = msg.stopReason === 'cancelled';
+       // ── Premature end_turn detection ──────────────────────────────────
+       // When an agent sends end_turn but there are still in-flight (running/
+       // pending/in_progress) tool calls, the turn likely ended prematurely
+       // (observed with GLM/EricAI backends — subagent results lost, empty
+       // post-tool replies). Log a warning so the user knows work may be
+       // incomplete, and keep the tool spinners visible (not auto-completed)
+       // so the user can see which tools never finished.
+       if (!_wasCancelled && !isLoadingSession && msg.stopReason === 'end_turn') {
+         var _prematureCount = 0;
+         for (var _pid in toolCalls) {
+           var _pEl = toolCalls[_pid];
+           if (_pEl) {
+             var _pIcon = _pEl.querySelector(':scope > .tc-icon') || _pEl.querySelector('.tc-icon');
+             if (_pIcon && (_pIcon.className.indexOf('running') >= 0 || _pIcon.className.indexOf('pending') >= 0 ||
+                 _pIcon.className.indexOf('in_progress') >= 0)) {
+               _prematureCount++;
+             }
+           }
+         }
+         if (_prematureCount > 0) {
+           vscode.postMessage({ type: 'debugLog', message: '[WV-PREMATURE] end_turn received with ' + _prematureCount + ' tool(s) still in-flight — possible premature turn termination' });
+         }
+       }
        // During session/load replay, don't commit here — finalizeCurrentAssistantTurn
        // at loadSessionEnd handles the final push. Committing here AND there
        // creates duplicate chatHistory entries (same text pushed twice).
