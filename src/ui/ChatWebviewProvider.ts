@@ -5045,6 +5045,15 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
  let lastConnectedSessionId = null;
 let isProcessing = false;
 let isForceCancelled = false; // true after cancel fallback forces promptEnd
+// Turn-tail grace window: agents (Codex, EricCLI, Claude Code, Kiro) can emit
+// the FINAL agent_message_chunk a few ms AFTER the session/prompt response
+// that carries end_turn — the response resolves first, promptEnd is posted,
+// and the late chunk hit the "After promptEnd the turn is closed" guard and
+// was silently dropped → user sees "nothing happened" / premature end_turn.
+// We accept chunks for a short window after promptEnd and append them to the
+// last committed assistant bubble instead of dropping.
+let turnTailGraceUntil = 0; // timestamp until which late chunks are accepted
+const TURN_TAIL_GRACE_MS = 1500;
 let hasSentPrompt = false;
 // Track whether the last sent prompt was a slash command (e.g. /ps, /stats).
 // Used to delay queue draining after slash command output so the result
@@ -12958,9 +12967,13 @@ sessionState = {
         }
         currentAssistantEl = null;
          currentAssistantText = '';
-         // New turn — clear messageId grouping state so a chunk from THIS turn
-         // never reattaches to a bubble committed in the PRIOR turn.
-         currentMessageId = null;
+       // New turn — clear messageId grouping state so a chunk from THIS turn
+       // never reattaches to a bubble committed in the PRIOR turn.
+       // Also close the turn-tail grace window: a new promptStart means the
+       // agent began a fresh turn, so late chunks from the previous turn must
+       // no longer be accepted.
+       turnTailGraceUntil = 0;
+       currentMessageId = null;
          lastCommittedAssistantEl = null;
          lastCommittedMessageId = null;
          lastCommittedText = '';
@@ -13080,15 +13093,25 @@ sessionState = {
          // never sends status:"completed" for individual tool calls — it
          // only sends "in_progress" then moves on, so without this sync
          // chatHistory retains "running" forever.
-         for (var _hi2 = 0; _hi2 < chatHistory.length; _hi2++) {
-           var _hItem2 = chatHistory[_hi2];
-           if (_hItem2 && _hItem2.kind === 'toolCall' &&
-               (_hItem2.status === 'in_progress' || _hItem2.status === 'running' || _hItem2.status === 'pending')) {
-             _hItem2.status = 'completed';
-           }
-         }
-         saveState();
-       }
+        for (var _hi2 = 0; _hi2 < chatHistory.length; _hi2++) {
+          var _hItem2 = chatHistory[_hi2];
+          if (_hItem2 && _hItem2.kind === 'toolCall' &&
+              (_hItem2.status === 'in_progress' || _hItem2.status === 'running' || _hItem2.status === 'pending')) {
+            _hItem2.status = 'completed';
+          }
+        }
+        saveState();
+      }
+      // Arm the turn-tail grace window BEFORE dropping isProcessing. Agents
+      // (Codex, EricCLI, Claude Code, Kiro) can emit the final text chunk a
+      // few ms after the session/prompt response carrying end_turn resolves —
+      // if this turn just ended normally and the tail chunk is still in
+      // transit, keep accepting it for a short window and append to the last
+      // committed assistant bubble instead of dropping it (premature
+      // end_turn / "nothing happened" symptom).
+      if (!_wasCancelled && !isLoadingSession && !_wasCompacting) {
+        turnTailGraceUntil = Date.now() + TURN_TAIL_GRACE_MS;
+      }
       setProcessing(false);
       vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] after setProcessing(false): isProcessing=' + isProcessing + ' isCompacting=' + isCompacting + ' messageQueue.length=' + messageQueue.length + ' pendingSendAfterCancel=' + !!pendingSendAfterCancel });
        // Interrupted: keep partial reply folded and refresh the ▸ header
@@ -14164,7 +14187,13 @@ sessionState = {
       }
       // After promptEnd the turn is closed. Claude ACP may keep streaming
       // between turns — ignore so assistants stay per-user-turn.
-      if (!isLoadingSession && !isProcessing && !isCompacting) {
+      // BUT: within the turn-tail grace window (end_turn response landed but
+      // the agent's FINAL text chunk is still in transit — Codex, EricCLI,
+      // Claude Code and Kiro all do this), accept the chunk and append it to
+      // the last committed assistant bubble. Without this the final answer is
+      // silently dropped → premature end_turn / "nothing happened".
+      var _inTailGrace = Date.now() <= turnTailGraceUntil;
+      if (!isLoadingSession && !isProcessing && !isCompacting && !_inTailGrace) {
         break;
       }
       // Detect auto-compaction: if the agent sends "*Context compacted*" text
@@ -14396,6 +14425,16 @@ sessionState = {
          if (!isLoadingSession) {
            scheduleStreamingRender();
            scheduleProvisionalSummaryPromote();
+         }
+         // Turn-tail chunk: accepted during the post-end_turn grace window.
+         // isProcessing is already false, so there is no streaming turn to
+         // keep this text alive in — commit it to chatHistory immediately so
+         // the final answer renders (and survives the next promptStart's
+         // orphaned-element cleanup). Otherwise the appended text would live
+         // only in the live (uncommitted) assistant element and be removed as
+         // an orphaned slash-command bubble on the next turn.
+         if (_inTailGrace && currentAssistantEl && currentAssistantText) {
+           commitCurrentTextSegment();
          }
          autoScrollIfAtBottom();
        }
