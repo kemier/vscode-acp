@@ -91,11 +91,28 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    *  fallback timer captures the value at creation time and only fires if it
    *  hasn't changed, preventing a stale timer from force-aborting a new prompt
    *  that started after the cancel was acknowledged. */
-  private _cancelGeneration: number = 0;
+ private _cancelGeneration: number = 0;
 
-  /**
-   * Session ID that currently has a prompt in flight. Used by the
-   * cancel fallback timer to ensure it only fires for the correct session.
+ /** Cached git branch for the active session's cwd, shown in the banner. */
+ private _cachedGitBranch: string | null = null;
+
+ /** Refresh the cached git branch for the given cwd. Called on session switch. */
+ private async refreshGitBranch(cwd?: string): Promise<void> {
+   if (!cwd) {
+     this._cachedGitBranch = null;
+     return;
+   }
+   try {
+     const { stdout } = await execFileAsync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], { cwd, timeout: 2000 });
+     this._cachedGitBranch = stdout.trim() || null;
+   } catch {
+     this._cachedGitBranch = null;
+   }
+ }
+
+ /**
+  * Session ID that currently has a prompt in flight. Used by the
+  * cancel fallback timer to ensure it only fires for the correct session.
    */
   private _pendingPromptSessionId: string | null = null;
 
@@ -3260,9 +3277,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             sessionId: session.sessionId,
             agentName: session.agentDisplayName,
             agentConfigKey: session.agentName,
-            title: cleanSessionTitle(session.title) || session.title,
-            cwd: session.cwd,
-            modes: session.modes,
+           title: cleanSessionTitle(session.title) || session.title,
+           cwd: session.cwd,
+           gitBranch: this._cachedGitBranch || undefined,
+           modes: session.modes,
             models: session.models,
             configOptions: session.configOptions,
             availableCommands: session.availableCommands,
@@ -3302,15 +3320,20 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   /**
    * Notify webview of a new active session.
    */
-  notifyActiveSessionChanged(): void {
-    if (this.suppressWebviewUpdates) {
-      return;
-    }
-    // Drop any pending coalesced text from the previous session — its
-    // webview-side state is about to be replaced.
-    this.dropAllStreamBuffers();
-    this.sendCurrentState();
-  }
+ notifyActiveSessionChanged(): void {
+   if (this.suppressWebviewUpdates) {
+     return;
+   }
+   // Drop any pending coalesced text from the previous session — its
+   // webview-side state is about to be replaced.
+   this.dropAllStreamBuffers();
+   // Refresh git branch for the new session's cwd, then send state.
+   const session = this.sessionManager.getActiveSession();
+   if (session?.cwd) {
+     this.refreshGitBranch(session.cwd).then(() => this.sendCurrentState());
+   }
+   this.sendCurrentState();
+ }
 
   /**
    * Notify webview of mode state changes.
@@ -3601,12 +3624,20 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       overflow: hidden;
       text-overflow: ellipsis;
     }
-    .session-banner .cwd {
-      font-size: 0.85em;
-      opacity: 0.6;
-      margin-top: 1px;
-    }
-   .session-banner .status {
+   .session-banner .cwd {
+     font-size: 0.85em;
+     opacity: 0.6;
+     margin-top: 1px;
+     white-space: nowrap;
+     overflow: hidden;
+     text-overflow: ellipsis;
+   }
+   .session-banner .cwd .git-branch {
+     color: var(--vscode-charts-blue, inherit);
+     font-weight: 600;
+     opacity: 0.9;
+   }
+  .session-banner .status {
      font-size: 0.85em;
      opacity: 0.7;
      flex-shrink: 0;
@@ -12712,8 +12743,9 @@ sessionState = {
   sessionId: session.sessionId,
   agentName: session.agentName,
   agentConfigKey: session.agentConfigKey,
-  cwd: session.cwd,
-    title: cleanUserMessage(session.title || '') || undefined,
+ cwd: session.cwd,
+   gitBranch: session.gitBranch || null,
+   title: cleanUserMessage(session.title || '') || undefined,
    promptCapabilities: session.promptCapabilities,
     currentModelImageSupport: session.currentModelImageSupport,
     modelImageMap: session.modelImageMap || {},
@@ -12757,9 +12789,16 @@ sessionState = {
     var _ssTitle = cleanUserMessage(ss.title || '') || ss.agentName || 'Agent';
     bannerAgent.textContent = truncateForBanner(_ssTitle);
     bannerAgent.title = _ssTitle;
-  }
-   if (bannerCwd) bannerCwd.textContent = ss.cwd || '';
-      if (sessionBanner) sessionBanner.classList.add('visible');
+ }
+   if (bannerCwd) {
+     var _cwdText = ss.cwd || '';
+     if (ss.gitBranch) {
+       bannerCwd.innerHTML = escapeHtml(_cwdText) + ' <span class="git-branch">⎇ ' + escapeHtml(ss.gitBranch) + '</span>';
+     } else {
+       bannerCwd.textContent = _cwdText;
+     }
+   }
+     if (sessionBanner) sessionBanner.classList.add('visible');
       if (inputArea) inputArea.classList.remove('disabled');
       promptInput.disabled = false;
       updateSendButton();
