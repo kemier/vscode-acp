@@ -3594,8 +3594,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       background: var(--vscode-testing-iconPassed);
       flex-shrink: 0;
     }
-    .session-banner .info { flex: 1; }
-    .session-banner .agent { font-weight: 600; }
+    .session-banner .info { flex: 1; min-width: 0; overflow: hidden; }
+    .session-banner .agent {
+      font-weight: 600;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
     .session-banner .cwd {
       font-size: 0.85em;
       opacity: 0.6;
@@ -5530,14 +5535,30 @@ const builtinCommands = [
         if (close > open) return true;
       }
       return false;
-    }
+   }
 
-    /**
-     * Clean a user message by stripping all injected context blocks
-     * (<open_files>, <selection>, <terminal>, <problems>, <file>, <folder>).
-     * Falls back to the original if the result is empty.
-     */
-  function cleanUserMessage(rawText) {
+   /**
+    * Truncate a session title for display in the banner.
+    * The full title is kept in sessionState.title for tooltips/persistence;
+    * only the visible text is capped. CSS text-overflow:ellipsis handles
+    * the visual cutoff, but pre-truncating avoids storing a huge string
+    * in the DOM and keeps the tooltip readable.
+    */
+   function truncateForBanner(text, max) {
+     max = max || 120;
+     if (!text || text.length <= max) return text;
+     // Try to break at a word boundary near the limit.
+     var cut = text.lastIndexOf(' ', max);
+     if (cut < max * 0.6) cut = max; // no good break point — hard cut
+     return text.substring(0, cut) + '…';
+   }
+
+   /**
+    * Clean a user message by stripping all injected context blocks
+    * (<open_files>, <selection>, <terminal>, <problems>, <file>, <folder>).
+    * Falls back to the original if the result is empty.
+    */
+ function cleanUserMessage(rawText) {
     var displayText = rawText;
     // Debug: log cleanUserMessage entry
     var _dbgPreview = rawText.length > 200 ? rawText.substring(0, 200) + '...' : rawText;
@@ -8007,16 +8028,18 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        // Clean context links from session title — codex-acp uses the
        // raw user message (including [@name](file:///...) links) as the
       // title, which shows up raw in the banner and session list.
-       const _cleanedTitle = cleanUserMessage(title);
-       sessionState.title = _cleanedTitle || undefined;
-    } else if (title === null) {
-      delete sessionState.title;
-     }
-    saveState();
-   if (bannerAgent) {
-     bannerAgent.textContent = sessionState.title || sessionState.agentName || 'Agent';
-   }
- }
+      const _cleanedTitle = cleanUserMessage(title);
+      sessionState.title = _cleanedTitle || undefined;
+   } else if (title === null) {
+     delete sessionState.title;
+    }
+   saveState();
+  if (bannerAgent) {
+     var _bannerTitle = sessionState.title || sessionState.agentName || 'Agent';
+     bannerAgent.textContent = truncateForBanner(_bannerTitle);
+     bannerAgent.title = _bannerTitle;
+  }
+}
 
     // --- Mode / Model pickers ---
 
@@ -12730,7 +12753,11 @@ sessionState = {
  hasActiveSession = true;
  hideEmpty();
  if (resumeBar) resumeBar.style.display = 'none';
-  if (bannerAgent) bannerAgent.textContent = cleanUserMessage(ss.title || '') || ss.agentName || 'Agent';
+  if (bannerAgent) {
+    var _ssTitle = cleanUserMessage(ss.title || '') || ss.agentName || 'Agent';
+    bannerAgent.textContent = truncateForBanner(_ssTitle);
+    bannerAgent.title = _ssTitle;
+  }
    if (bannerCwd) bannerCwd.textContent = ss.cwd || '';
       if (sessionBanner) sessionBanner.classList.add('visible');
       if (inputArea) inputArea.classList.remove('disabled');
