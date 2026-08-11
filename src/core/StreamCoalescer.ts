@@ -26,12 +26,7 @@ export interface StreamCoalescerOptions {
   /** Flush window in milliseconds. */
   flushIntervalMs: number;
   /** Called when the coalescer flushes a batched chunk. */
-  onFlush: (
-    sessionId: string,
-    kind: StreamChunkKind,
-    text: string,
-    messageId?: string | null,
-  ) => void;
+  onFlush: (sessionId: string, kind: StreamChunkKind, text: string, messageId?: string | null) => void;
   /** Override for setTimeout (testing). */
   setTimeoutFn?: (fn: () => void, ms: number) => unknown;
   /** Override for clearTimeout (testing). */
@@ -65,12 +60,7 @@ export class StreamCoalescer {
    * treated as its own group — it never merges with a chunk that carries an
    * explicit id, preserving the legacy split-on-tool-boundary behavior.
    */
-  append(
-    sessionId: string,
-    kind: StreamChunkKind,
-    text: string,
-    messageId?: string | null,
-  ): void {
+  append(sessionId: string, kind: StreamChunkKind, text: string, messageId?: string | null): void {
     if (!text) {
       return;
     }

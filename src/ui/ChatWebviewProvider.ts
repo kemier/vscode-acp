@@ -8901,23 +8901,34 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
              currentThoughtEl._historyIndex >= 0 && currentThoughtEl._historyIndex < chatHistory.length &&
              chatHistory[currentThoughtEl._historyIndex] &&
              chatHistory[currentThoughtEl._historyIndex].kind === 'thought') {
-           chatHistory[currentThoughtEl._historyIndex].text = historyText;
-           chatHistory[currentThoughtEl._historyIndex].durationSec =
-             thoughtStartTime ? Math.round(((thoughtEndTime || Date.now()) - thoughtStartTime) / 1000) : 0;
-           saveState();
-           if (currentThoughtEl) currentThoughtEl._thoughtCommitted = true;
-         } else {
-           chatHistory.push({
-             kind: 'thought',
-             text: historyText,
-             durationSec: thoughtStartTime ? Math.round(((thoughtEndTime || Date.now()) - thoughtStartTime) / 1000) : 0,
-           });
-           saveState();
-           if (currentThoughtEl) {
-             currentThoughtEl._thoughtCommitted = true;
-             currentThoughtEl._historyIndex = chatHistory.length - 1;
+          chatHistory[currentThoughtEl._historyIndex].text = historyText;
+          chatHistory[currentThoughtEl._historyIndex].durationSec =
+            thoughtStartTime ? Math.round(((thoughtEndTime || Date.now()) - thoughtStartTime) / 1000) : 0;
+          saveState();
+          if (currentThoughtEl) {
+            currentThoughtEl._thoughtCommitted = true;
+            // Ensure DOM attribute matches the JS property (may have been
+            // set on a prior commit — but if the element was re-created via
+            // resume-from-streaming, only _historyIndex was restored).
+            currentThoughtEl.setAttribute('data-history-index', String(currentThoughtEl._historyIndex));
+          }
+           } else {
+             chatHistory.push({
+               kind: 'thought',
+               text: historyText,
+               durationSec: thoughtStartTime ? Math.round(((thoughtEndTime || Date.now()) - thoughtStartTime) / 1000) : 0,
+             });
+             saveState();
+             if (currentThoughtEl) {
+               currentThoughtEl._thoughtCommitted = true;
+               currentThoughtEl._historyIndex = chatHistory.length - 1;
+               // Stamp the DOM attribute so orderCompactFoldContents sorts
+               // this thought relative to tool groups by history index.
+               // Without it, historyOrder() returns MAX_SAFE_INTEGER and the
+               // thought sinks below stamped tool groups in the fold.
+               currentThoughtEl.setAttribute('data-history-index', String(chatHistory.length - 1));
+             }
            }
-         }
        }
         if (currentTurnEl) {
           var sumEl = getTurnSummaryEl(currentTurnEl);
@@ -14185,7 +14196,13 @@ sessionState = {
           // Buffer them instead and let the flush drain them into the fresh
           // panel. This is the claude-code-acp auto-compact case where the
           // resumed reply streams inside the post-completed flush window.
-          if (compactionFlushTimer) {
+          // Also buffer when isCompacting is true but no flush timer is armed
+          // yet - claude-code-acp reorders auto-compact to emit "completed"
+          // AFTER the continuation, so continuation text arrives while
+          // isCompacting=true but compactionFlushTimer is null. Without this,
+          // endCompactingOnAgentResume tears down isCompacting and the
+          // later "completed" lifecycle finds isCompacting=false -> no wipe.
+          if (compactionFlushTimer || isCompacting) {
             pendingPostCompactChunks.push(content.text);
             break;
           }
@@ -14518,7 +14535,9 @@ sessionState = {
         break;
       }
       // Non-compaction tool — agent is working again; clear compact status.
+      if (!isCompacting) {
       endCompactingOnAgentResume();
+      }
       const tc = update;
       var _parentId = update._meta && update._meta.claudeCode && update._meta.claudeCode.parentToolUseId;
       var _claudeToolName = update._meta && update._meta.claudeCode && update._meta.claudeCode.toolName;
