@@ -7881,16 +7881,40 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
                                   (_snapToolCount > _loadedToolCount);
      // If the loaded history contains a compaction notice, the session was
      // compacted on the agent side — all pre-compaction history is gone.
-     // The snapshot (taken before session/load) contains the OLD, pre-compaction
-     // history. Merging it back would resurrect stale items and push the
-     // user message to the end. Skip the snapshot merge entirely.
+     // The snapshot (taken before session/load) may contain the OLD
+     // pre-compaction history. Filter the snapshot to only include items
+     // AFTER the compaction boundary, then proceed with the normal merge.
+     // Without this, pre-compaction tools/assistants are resurrected and
+     // push the user message to the end.
      var _loadedHasCompaction = chatHistory.some(function(x) {
        return x && x.kind === 'message' && x.role === 'system' &&
          String(x.text || '').indexOf('compacted') >= 0;
      });
-     if (_loadedHasCompaction) {
-       _snapshotMoreComplete = false;
-       vscode.postMessage({ type: 'debugLog', message: '[WV-MERGE] skipping snapshot merge: loaded history has compaction notice' });
+     if (_loadedHasCompaction && preLoadChatHistorySnapshot) {
+       // Find the compaction boundary in the snapshot. Items after it are
+       // post-compaction and should be kept; items before it are stale.
+       var _compactionBoundary = -1;
+       for (var _ci = 0; _ci < preLoadChatHistorySnapshot.length; _ci++) {
+         var _cItem = preLoadChatHistorySnapshot[_ci];
+         if (_cItem && _cItem.kind === 'message' && _cItem.role === 'system' &&
+             String(_cItem.text || '').indexOf('compacted') >= 0) {
+           _compactionBoundary = _ci;
+           break;
+         }
+       }
+       if (_compactionBoundary >= 0) {
+         var _preSlice = preLoadChatHistorySnapshot.slice(0, _compactionBoundary);
+         var _postSlice = preLoadChatHistorySnapshot.slice(_compactionBoundary + 1);
+         preLoadChatHistorySnapshot = _postSlice;
+         vscode.postMessage({ type: 'debugLog', message: '[WV-MERGE] compaction boundary at snapshot[' + _compactionBoundary + ']: sliced ' + _preSlice.length + ' pre-compaction items, keeping ' + _postSlice.length + ' post-compaction items' });
+         // Recount snapshot stats after slicing
+         _snapAssistantCount = preLoadChatHistorySnapshot.filter(function(x) { return x && x.kind === 'message' && x.role === 'assistant'; }).length;
+         _snapToolCount = preLoadChatHistorySnapshot.filter(function(x) { return x && x.kind === 'toolCall'; }).length;
+         _snapHasAssistant = _snapAssistantCount > 0;
+         _snapHasThoughts = preLoadChatHistorySnapshot.some(function(x) { return x && x.kind === 'thought'; });
+         _snapshotMoreComplete = (_snapAssistantCount > _loadedAssistantCount) ||
+                                  (_snapToolCount > _loadedToolCount);
+       }
      }
      if (_snapshotMoreComplete && (_snapHasAssistant || _snapHasThoughts)) {
        var _loadedHistoryForMerge = chatHistory.slice();
@@ -7978,11 +8002,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       currentAssistantText = '';
       if (currentTurnEl) { currentTurnEl = null; }
        }
-    } else if (!_loadedHasCompaction) {
-      // Skip mergePreLoadInterruptedTurn when the loaded history has a
-      // compaction notice — the snapshot contains pre-compaction items that
-      // are no longer valid. Restoring them would resurrect stale tools and
-      // push the user message down.
+    } else {
       mergePreLoadInterruptedTurn(preLoadChatHistorySnapshot);
      }
    }
