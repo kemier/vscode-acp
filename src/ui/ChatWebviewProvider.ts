@@ -10751,6 +10751,16 @@ function orderCompactFoldContents(body) {
         return;
       }
       vscode.postMessage({ type: 'debugLog', message: '[WV-ADDTC] title="' + title + '" id=' + (toolCallId || '').slice(0, 12) + ' chatHistoryLen BEFORE=' + chatHistory.length + ' currentAssistantTextLen=' + currentAssistantText.length + ' hasCurrentAssistantEl=' + !!currentAssistantEl });
+      // Commit any in-progress thought BEFORE assistant text and tool call
+      // so chatHistory order stays thought → text → tools. Without this,
+      // commitOrDiscardCurrentThought runs later in ensureTurnTools (called
+      // from addToolCallInline) — AFTER the tool call is already pushed to
+      // chatHistory, giving the thought a higher index than the tools it
+      // precedes. This was the root cause of thinking blocks appearing at
+      // the bottom of collapsed turns in ericli.
+      if (currentThoughtEl || currentThoughtText || thoughtDomBase) {
+        commitOrDiscardCurrentThought();
+      }
       // Top-level tools must commit any in-flight assistant text so history
       // order stays text → tools.
       if (currentAssistantText) {
