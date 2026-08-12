@@ -88,6 +88,22 @@ export type { SelectionContext } from './ContextBlockBuilder';
 import { buildSelectionBlock, type SelectionContext } from './ContextBlockBuilder';
 import { shouldInjectMemoryForTurn } from './MemoryCacheStability';
 import type { SharedMemoryProvider } from './memory/SharedMemoryProvider';
+import { readMemorySettings, resolveMemoryAgentId } from './memory/MemoryConfig';
+
+function memoryBlockTextBytes(blocks: ContentBlock[]): number {
+  let bytes = 0;
+  for (const block of blocks) {
+    if (block.type === 'text' && 'text' in block && typeof block.text === 'string') {
+      bytes += block.text.length;
+    } else if (block.type === 'resource' && 'resource' in block) {
+      const text = (block as { resource?: { text?: string } }).resource?.text;
+      if (typeof text === 'string') {
+        bytes += text.length;
+      }
+    }
+  }
+  return bytes;
+}
 
 /**
  * Why an agent expansion failed (used to surface a useful tree placeholder).
@@ -756,6 +772,16 @@ export class SessionManager extends EventEmitter {
         if (memoryBlocks.length > 0) {
           prompt.push(...memoryBlocks);
         }
+        const memorySettings = readMemorySettings();
+        const memoryAgentId = resolveMemoryAgentId(session.agentName, memorySettings.agentIdMap);
+        const blobBytes = memoryBlockTextBytes(memoryBlocks);
+        const blockKind = memoryBlocks.length > 0 ? memoryBlocks[0].type : 'none';
+        log(
+          memoryBlocks.length > 0
+            ? `Memory inject: ${memoryBlocks.length} block(s), ${blobBytes} bytes, kind=${blockKind} ` +
+                `(agent=${session.agentName}→${memoryAgentId}, session=${sessionId})`
+            : `Memory inject: none (agent=${session.agentName}→${memoryAgentId}, session=${sessionId})`,
+        );
       } catch (e) {
         logError('Memory recall failed', e);
       }
