@@ -7216,70 +7216,94 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         // Thoughts belong BEFORE the next snapshot row already present in merged
         // (e.g. the tool call they precede). Backward-only anchoring after the
         // previous tool made thoughts appear after tools in the fold.
-        if (snapItem.kind === 'thought') {
-          for (var after = snapIndex + 1; after < snapshot.length; after++) {
-            var next = snapshot[after];
-            if (!next) continue;
-            if (next.kind === 'message' && (next.role === 'system' || next.role === 'user') &&
-                isSessionInterruptNotice(next.text)) {
-              continue;
-            }
-            var nextAnchor = findMergedHistoryAnchor(merged, next);
-            if (nextAnchor >= 0) {
-              merged.splice(nextAnchor, 0, Object.assign({}, snapItem));
-              return;
-            }
-          }
-        }
+       if (snapItem.kind === 'thought') {
+         for (var after = snapIndex + 1; after < snapshot.length; after++) {
+           var next = snapshot[after];
+           if (!next) continue;
+           // STOP at user-turn boundaries: a thought must only anchor to items
+           // within its OWN turn. Without this, a thought from turn 2 could be
+           // inserted before a tool from turn 5 if the snapshot's turn 2 tools
+           // were not replayed by session/load.
+           if (next.kind === 'message' && next.role === 'user' &&
+               !isSessionInterruptNotice(next.text)) {
+             break;
+           }
+           if (next.kind === 'message' && (next.role === 'system' || next.role === 'user') &&
+               isSessionInterruptNotice(next.text)) {
+             continue;
+           }
+           var nextAnchor = findMergedHistoryAnchor(merged, next);
+           if (nextAnchor >= 0) {
+             merged.splice(nextAnchor, 0, Object.assign({}, snapItem));
+             return;
+           }
+         }
+       }
 
-        var insertAt = merged.length;
-        for (var before = snapIndex - 1; before >= 0; before--) {
-          var prev = snapshot[before];
-          if (!prev) continue;
-          if (prev.kind === 'message' && (prev.role === 'system' || prev.role === 'user') &&
-              isSessionInterruptNotice(prev.text)) {
-            continue;
-          }
-          var anchor = findMergedHistoryAnchor(merged, prev);
-          if (anchor >= 0) {
-            insertAt = anchor + 1;
-            break;
-          }
-        }
-        // If no backward anchor was found, try a forward anchor: the next
-        // snapshot item that IS in the merged timeline. Insert before it.
-        // This prevents items from earlier turns (whose neighbours are all
-        // absent from the compacted loaded timeline) from being appended
-        // at the tail — after the end_turn summary.
-        if (insertAt === merged.length) {
-          for (var after2 = snapIndex + 1; after2 < snapshot.length; after2++) {
-            var nextItem = snapshot[after2];
-            if (!nextItem) continue;
-            if (nextItem.kind === 'message' && (nextItem.role === 'system' || nextItem.role === 'user') &&
-                isSessionInterruptNotice(nextItem.text)) {
-              continue;
-            }
-            var fwdAnchor = findMergedHistoryAnchor(merged, nextItem);
-            if (fwdAnchor >= 0) {
-              insertAt = fwdAnchor;
-              break;
-            }
-          }
-        }
-        // If still no anchor found (neither backward nor forward), skip
-        // the item — the loaded timeline has no reference point for it.
-        // Exception: if there are no more snapshot items after this one
-        // (i.e. this is in the last turn), appending at the tail IS correct
-        // — the loaded timeline's tail is also the last turn.
-        var hasMoreSnapshotItems = false;
-        for (var _hsi = snapIndex + 1; _hsi < snapshot.length; _hsi++) {
-          if (snapshot[_hsi]) { hasMoreSnapshotItems = true; break; }
-        }
-        if (insertAt === merged.length && hasMoreSnapshotItems) {
-          return;
-        }
-        merged.splice(insertAt, 0, Object.assign({}, snapItem));
-      }
+       var insertAt = merged.length;
+       for (var before = snapIndex - 1; before >= 0; before--) {
+         var prev = snapshot[before];
+         if (!prev) continue;
+         // STOP at user-turn boundaries: when walking backward to find an
+         // anchor, we must NOT cross into a previous user turn. Without this,
+         // a tool call from turn 3 (not replayed by session/load) would be
+         // anchored after an assistant message from turn 1, placing it in the
+         // wrong turn group. reconcileInterleavedOrderFromSnapshot only sorts
+         // within user-message buckets, so items in the wrong bucket stay there.
+         if (prev.kind === 'message' && prev.role === 'user' &&
+             !isSessionInterruptNotice(prev.text)) {
+           break;
+         }
+         if (prev.kind === 'message' && (prev.role === 'system' || prev.role === 'user') &&
+             isSessionInterruptNotice(prev.text)) {
+           continue;
+         }
+         var anchor = findMergedHistoryAnchor(merged, prev);
+         if (anchor >= 0) {
+           insertAt = anchor + 1;
+           break;
+         }
+       }
+       // If no backward anchor was found, try a forward anchor: the next
+       // snapshot item that IS in the merged timeline. Insert before it.
+       // This prevents items from earlier turns (whose neighbours are all
+       // absent from the compacted loaded timeline) from being appended
+       // at the tail — after the end_turn summary.
+       if (insertAt === merged.length) {
+         for (var after2 = snapIndex + 1; after2 < snapshot.length; after2++) {
+           var nextItem = snapshot[after2];
+           if (!nextItem) continue;
+           // STOP at user-turn boundaries in forward walk too: a tool call
+           // from turn 2 must not anchor to an item in turn 4.
+           if (nextItem.kind === 'message' && nextItem.role === 'user' &&
+               !isSessionInterruptNotice(nextItem.text)) {
+             break;
+           }
+           if (nextItem.kind === 'message' && (nextItem.role === 'system' || nextItem.role === 'user') &&
+               isSessionInterruptNotice(nextItem.text)) {
+             continue;
+           }
+           var fwdAnchor = findMergedHistoryAnchor(merged, nextItem);
+           if (fwdAnchor >= 0) {
+             insertAt = fwdAnchor;
+             break;
+           }
+         }
+       }
+       // If still no anchor found (neither backward nor forward), skip
+       // the item — the loaded timeline has no reference point for it.
+       // Exception: if there are no more snapshot items after this one
+       // (i.e. this is in the last turn), appending at the tail IS correct
+       // — the loaded timeline's tail is also the last turn.
+       var hasMoreSnapshotItems = false;
+       for (var _hsi = snapIndex + 1; _hsi < snapshot.length; _hsi++) {
+         if (snapshot[_hsi]) { hasMoreSnapshotItems = true; break; }
+       }
+       if (insertAt === merged.length && hasMoreSnapshotItems) {
+         return;
+       }
+       merged.splice(insertAt, 0, Object.assign({}, snapItem));
+     }
 
       function snapshotOrderIndex(item) {
         if (!item) return Number.MAX_SAFE_INTEGER;
