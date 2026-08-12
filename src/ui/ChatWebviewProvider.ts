@@ -7879,6 +7879,19 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      var _snapUserMsgCount = _diagSnapKinds['message:user'] || 0;
      var _snapshotMoreComplete = (_snapAssistantCount > _loadedAssistantCount) ||
                                   (_snapToolCount > _loadedToolCount);
+     // If the loaded history contains a compaction notice, the session was
+     // compacted on the agent side — all pre-compaction history is gone.
+     // The snapshot (taken before session/load) contains the OLD, pre-compaction
+     // history. Merging it back would resurrect stale items and push the
+     // user message to the end. Skip the snapshot merge entirely.
+     var _loadedHasCompaction = chatHistory.some(function(x) {
+       return x && x.kind === 'message' && x.role === 'system' &&
+         String(x.text || '').indexOf('compacted') >= 0;
+     });
+     if (_loadedHasCompaction) {
+       _snapshotMoreComplete = false;
+       vscode.postMessage({ type: 'debugLog', message: '[WV-MERGE] skipping snapshot merge: loaded history has compaction notice' });
+     }
      if (_snapshotMoreComplete && (_snapHasAssistant || _snapHasThoughts)) {
        var _loadedHistoryForMerge = chatHistory.slice();
        // session/load is authoritative for user-turn boundaries; the webview
