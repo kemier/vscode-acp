@@ -14722,6 +14722,23 @@ sessionState = {
              break;
            }
            if (!currentThoughtEl) {
+              // If there is accumulated assistant text from a previous turn
+              // (e.g. ericli replay: agent_message_chunk from turn 1 is
+              // coalesced and flushed together with turn 2's
+              // agent_thought_chunk), commit it to chatHistory NOW so it
+              // gets the correct history index -- before the new thought
+              // block is created and committed. Without this, the assistant
+              // text is only committed at finalizeCurrentAssistantTurn() at
+              // the very end of session/load, giving it a much higher index
+              // than the thoughts and tools that actually came after it.
+              // This was the root cause of thinking block always showing at
+              // the bottom in ericli collapsed mode.
+              // Gate on isLoadingSession to avoid disrupting live streaming
+              // where a second thought phase in the same turn should NOT
+              // reset the turn or commit mid-stream text prematurely.
+              if (isLoadingSession && currentAssistantText && currentAssistantEl) {
+                finalizeCurrentAssistantTurn();
+              }
               // Close the tools group so this thought (and later tools) stay in
               // chronological order. placeThoughtInTurn also clears the list.
               if (currentToolsListEl) {
