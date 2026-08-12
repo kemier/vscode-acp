@@ -24,6 +24,7 @@ import { sendEvent } from '../utils/TelemetryManager';
 import { cleanSessionTitle } from '../utils/TitleCleaner';
 import { ACP_MATH_SPLIT_RE, createMathExtension } from '../utils/markdownMath';
 import { balanceMarkdownForPartialRender } from '../utils/markdownBalance';
+import { buildSummarizeSessionUrl, readSessionSummarySettings } from '../core/SessionSummaryConfig';
 
 const execFileAsync = promisify(execFile);
 
@@ -3021,9 +3022,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   /**
    * Handle /session <name> slash command.
    * Finds renamed sessions matching the given name (fuzzy contains match),
-   * summarizes the best match via the ericai-proxy /v1/summarize-session
-   * endpoint, and posts the summary back to the webview to display as a
-   * context block in the chat.
+   * summarizes the best match via responses-vllm-proxy POST /v1/summarize-session
+   * (configured by acp.sessionSummary.endpoint), and posts the summary back to
+   * the webview to display as a context block in the chat.
    */
   private async handleSummarizeSessionCommand(sessionName: string, queryText?: string): Promise<void> {
     const historyStore = this.sessionManager.getHistoryStore();
@@ -3104,15 +3105,21 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         return;
       }
 
-      // Call the ericai-proxy summarize endpoint
-      const proxyPort = 8317;
-      const summaryResponse = await fetch('http://localhost:' + proxyPort + '/v1/summarize-session', {
+      // Call responses-vllm-proxy /v1/summarize-session (forwards to vLLM backend).
+      const summaryCfg = readSessionSummarySettings();
+      const summaryUrl = buildSummarizeSessionUrl(summaryCfg.endpoint);
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (summaryCfg.apiKey) {
+        headers.Authorization = `Bearer ${summaryCfg.apiKey}`;
+      }
+      const summaryResponse = await fetch(summaryUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers,
         body: JSON.stringify({
           title: picked.title,
           messages,
         }),
+        signal: AbortSignal.timeout(summaryCfg.timeoutMs),
       });
 
       if (!summaryResponse.ok) {

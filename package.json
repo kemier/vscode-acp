@@ -379,6 +379,22 @@
           "minimum": 50,
           "description": "Maximum number of entries kept in the ACP Traffic output channel before it is cleared. Prevents unbounded memory growth in long sessions."
         },
+        "acp.sessionSummary.endpoint": {
+          "type": "string",
+          "default": "http://127.0.0.1:8317",
+          "description": "responses-vllm-proxy base URL for /session summarization (POST /v1/summarize-session). Matches Pi vllm-proxy provider baseUrl without /v1."
+        },
+        "acp.sessionSummary.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Optional Bearer token for the vLLM proxy when api-keys are enabled."
+        },
+        "acp.sessionSummary.timeoutMs": {
+          "type": "number",
+          "default": 120000,
+          "minimum": 5000,
+          "description": "HTTP timeout for /session summarization requests (milliseconds)."
+        },
         "acp.memory.enabled": {
           "type": "boolean",
           "default": false,
