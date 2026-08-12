@@ -289,7 +289,7 @@
         },
         {
           "command": "acp.copySessionId",
-          "when": "view == acp-sessions && (viewItem == session || viewItem == session-local || viewItem == session-kiro)",
+          "when": "view == acp-sessions && viewItem =~ /^session/",
           "group": "session@1"
         },
         {
@@ -299,12 +299,12 @@
         },
         {
           "command": "acp.deleteSession",
-          "when": "view == acp-sessions && viewItem == session",
+          "when": "view == acp-sessions && viewItem =~ /^session/",
           "group": "session@2"
         },
         {
           "command": "acp.forkSession",
-          "when": "view == acp-sessions && viewItem == session",
+          "when": "view == acp-sessions && viewItem =~ /^session.*-fork$/",
           "group": "session@3"
         }
       ]

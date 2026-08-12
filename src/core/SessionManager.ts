@@ -76,6 +76,7 @@ export interface AgentCapabilitySummary {
   close: boolean;
   delete: boolean;
   additionalDirectories: boolean;
+  fork: boolean;
 }
 
 /**
@@ -252,6 +253,7 @@ export class SessionManager extends EventEmitter {
       close: !!sc?.close,
       delete: !!sc?.delete,
       additionalDirectories: !!sc?.additionalDirectories,
+      fork: !!sc?.fork,
     };
   }
 

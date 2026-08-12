@@ -52,6 +52,7 @@ export class SessionTreeItem extends vscode.TreeItem {
     description: string | undefined,
     tooltip: string,
     public readonly source: 'agent' | 'local' | 'kiro',
+    canFork: boolean,
     extensionUri: vscode.Uri,
   ) {
     super(label, vscode.TreeItemCollapsibleState.None);
@@ -61,7 +62,13 @@ export class SessionTreeItem extends vscode.TreeItem {
     // icon. The expansion state of parent agent nodes is preserved
     // separately via expandedAgentNodes tracking.
     this.id = `${agentName}:${sessionId}:${isActive ? 'a' : 'i'}`;
-    this.contextValue = source === 'kiro' ? 'session-kiro' : source === 'local' ? 'session-local' : 'session';
+    // Build contextValue from source + fork capability so the context
+    // menu "Fork Session" only appears when the agent advertises it.
+    // VS Code `when` clauses support `viewItem =~ /regex/`, so we use
+    // a suffix pattern: session, session-kiro, session-local all match
+    // `viewItem =~ /^session/`. Append `-fork` when fork is supported.
+    const base = source === 'kiro' ? 'session-kiro' : source === 'local' ? 'session-local' : 'session';
+    this.contextValue = canFork ? `${base}-fork` : base;
     this.description = description;
     this.tooltip = tooltip;
     if (isActive) {
@@ -498,18 +505,20 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<AgentNode | 
     const localEntry = this.historyStore?.get(agentName, info.sessionId);
     const title = localEntry?.title || info.title || '';
     const label = cleanSessionTitle(title) || shortSessionId(info.sessionId);
-    const description = relativeTime(info.updatedAt);
-    const tooltip = buildSessionTooltip(agentName, info.sessionId, info.cwd, info.updatedAt, 'agent');
-    return new SessionTreeItem(
-      agentName,
-      info.sessionId,
-      label,
-      info.sessionId === activeId,
-      description,
-      tooltip,
-      'agent',
-      this.extensionUri,
-    );
+   const description = relativeTime(info.updatedAt);
+   const tooltip = buildSessionTooltip(agentName, info.sessionId, info.cwd, info.updatedAt, 'agent');
+   const caps = this.sessionManager.getCachedCapabilities(agentName);
+   return new SessionTreeItem(
+     agentName,
+     info.sessionId,
+     label,
+     info.sessionId === activeId,
+     description,
+     tooltip,
+     'agent',
+     !!caps?.fork,
+     this.extensionUri,
+   );
   }
 
   private async fetchSessionList(agentName: string): Promise<void> {
@@ -734,17 +743,18 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<AgentNode | 
     const title = localEntry?.title || entry.title || '';
     const label = cleanSessionTitle(title) || shortSessionId(entry.sessionId);
     const description = relativeTime(entry.lastActiveAt);
-    const tooltip = buildSessionTooltip(agentName, entry.sessionId, entry.cwd, entry.lastActiveAt, 'kiro');
-    return new SessionTreeItem(
-      agentName,
-      entry.sessionId,
-      label,
-      entry.sessionId === activeId,
-      description,
-      tooltip,
-      'kiro',
-      this.extensionUri,
-    );
+   const tooltip = buildSessionTooltip(agentName, entry.sessionId, entry.cwd, entry.lastActiveAt, 'kiro');
+   return new SessionTreeItem(
+     agentName,
+     entry.sessionId,
+     label,
+     entry.sessionId === activeId,
+     description,
+     tooltip,
+     'kiro',
+     false,
+     this.extensionUri,
+   );
   }
   // --- Local-history-store-sourced list ---
 
@@ -797,17 +807,18 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<AgentNode | 
       (entry.firstPrompt?.trim() && truncate(entry.firstPrompt!.trim(), 60)) ||
       shortSessionId(entry.sessionId);
     const description = relativeTime(entry.lastActiveAt);
-    const tooltip = buildSessionTooltip(entry.agentName, entry.sessionId, entry.cwd, entry.lastActiveAt, 'local');
-    return new SessionTreeItem(
-      entry.agentName,
-      entry.sessionId,
-      label,
-      entry.sessionId === activeId,
-      description,
-      tooltip,
-      'local',
-      this.extensionUri,
-    );
+   const tooltip = buildSessionTooltip(entry.agentName, entry.sessionId, entry.cwd, entry.lastActiveAt, 'local');
+   return new SessionTreeItem(
+     entry.agentName,
+     entry.sessionId,
+     label,
+     entry.sessionId === activeId,
+     description,
+     tooltip,
+     'local',
+     false,
+     this.extensionUri,
+   );
   }
 
   // --- Capability probe ---
