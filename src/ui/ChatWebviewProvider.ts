@@ -565,15 +565,15 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       const filePathRegex = new RegExp(
         '(^|[^\\w\\/])' + // prefix: start or non-word, non-slash
           '(' +
-          '(?:~\\/|\\.?\\/?[\\w.-]+\\/)+' + // at least one dir separator (path with /); ~/ home-relative dir
-          '[\\w.-]*\\.' + //   filename may be a dotfile (.zshrc, .gitignore)
-          codeExt +
-          '(?::\\d+(?:-\\d+)?)?' + //   + filename.ext[:line[:-end]]
-          '(?=$|[\\s,;:\\)\\]\\}\\<|])' + //   word boundary after extension
-          '|' +
-          '[\\w.-]+\\.' +
-          codeExt +
-          '(?::\\d+(?:-\\d+)?)' + // bare filename.ext:line[:-end]
+         '(?:~\\/|\\.?\\/?[\\w.-]+\\/)+' + // at least one dir separator (path with /); ~/ home-relative dir
+         '[\\w.-]*(?:\\s+[\\w.-]+)*\\.' + //   filename may be a dotfile or have spaces (e.g. "DI_Lodge SMF BGP Route Details.txt")
+         codeExt +
+         '(?::\\d+(?:-\\d+)?)?' + //   + filename.ext[:line[:-end]]
+         '(?=$|[\\s,;:\\)\\]\\}\\<|])' + //   word boundary after extension
+         '|' +
+         '[\\w.-]+(?:\\s+[\\w.-]+)*\\.' + // bare filename.ext:line — allows spaces in filename (e.g. "DI_Lodge SMF BGP Route Details.txt:40")
+         codeExt +
+         '(?::\\d+(?:-\\d+)?)' + // bare filename.ext:line[:-end]
           '|' +
           '[\\w.-]*\\.' + //   bare filename may be a dotfile (.env, .md)
           codeExt +
