@@ -10767,8 +10767,21 @@ function orderCompactFoldContents(body) {
       const diffs = content.filter(c => c.type === 'diff' && c.path);
       if (diffs.length > 0) {
         toolCallDiffs[toolCallId] = diffs;
+        var paths = diffs.map(function(d) { return d.path; });
         const el = toolCalls[toolCallId];
-        if (el) markClickable(el, toolCallId);
+        if (el) {
+          el._diffPaths = paths;
+          markClickable(el, toolCallId);
+        }
+        // Persist diffPaths on the chatHistory entry so it survives
+        // saveState/restoreState (VS Code restart without session/load).
+        for (var i = chatHistory.length - 1; i >= 0; i--) {
+          if (chatHistory[i] && chatHistory[i].kind === 'toolCall' &&
+              chatHistory[i].toolCallId === toolCallId) {
+            chatHistory[i].diffPaths = paths;
+            break;
+          }
+        }
       }
     }
 
@@ -11007,10 +11020,22 @@ function orderCompactFoldContents(body) {
   }
 
   /** Best-effort tooltip text: rawInput, then locations, then title. */
-  function formatToolCallTooltipText(title, rawInput, locations) {
+  function formatToolCallTooltipText(title, rawInput, locations, diffPaths) {
     var parts = [];
     var formatted = formatRawInput(rawInput);
     if (formatted) parts.push(formatted);
+    // For Codex file edits (apply_patch), rawInput is empty but diff content
+    // carries the file paths. Show them so hovering "Edit 6 files" reveals
+    // which files were touched (instead of showing nothing).
+    if (!formatted && diffPaths && diffPaths.length > 0) {
+      var fileList = diffPaths.map(function(p) {
+        var base = p.split(/[\\/]/).pop() || p;
+        return base;
+      });
+      parts.push(fileList.length === 1
+        ? 'File: ' + fileList[0]
+        : 'Files (' + fileList.length + '):\\n' + fileList.map(function(f) { return '  • ' + f; }).join('\\n'));
+    }
     var locText = formatLocations(locations);
     if (locText && parts.indexOf(locText) < 0) parts.push(locText);
     if (parts.length === 0 && title) parts.push(title);
@@ -11131,9 +11156,9 @@ function orderCompactFoldContents(body) {
    var foldBody = el.closest('.turn-fold-body');
    if (foldBody && foldBody.classList.contains('collapsed')) return;
 
-   var title = (hoverTarget.textContent) || el._toolTitle || '';
-   var formatted = formatToolCallTooltipText(title, el._rawInput, el._locations);
-   if (!formatted) return;
+  var title = (hoverTarget.textContent) || el._toolTitle || '';
+  var formatted = formatToolCallTooltipText(title, el._rawInput, el._locations, el._diffPaths);
+  if (!formatted) return;
 
    // Show the tooltip when the row text is CLIPPED, or when the tooltip
    // carries detail the row does not already show.
@@ -12411,20 +12436,25 @@ if (_deduped) {
            trace('  -> thought: rendered block (textLen=' + item.text.length + ',dur=' + (item.durationSec || 0) + 's)');
          }
          break;
-      case 'toolCall': {
-        addToolCallInline(item.toolCallId, item.title, item.status,
-          item.rawInput && item.rawInput.taskResult
-            ? stripTaskResult(item.rawInput)
-            : item.rawInput,
-          item.toolKind,
-          item.locations,
-          item.parentToolUseId || null);
-        var _toolEl = toolCalls[item.toolCallId] || document.getElementById('tc-' + item.toolCallId);
-        if (_toolEl && _toolEl.setAttribute) {
-          stampToolHistoryIndex(item.toolCallId, _historyIndex);
-        }
-        break;
-      }
+     case 'toolCall': {
+       addToolCallInline(item.toolCallId, item.title, item.status,
+         item.rawInput && item.rawInput.taskResult
+           ? stripTaskResult(item.rawInput)
+           : item.rawInput,
+         item.toolKind,
+         item.locations,
+         item.parentToolUseId || null);
+       var _toolEl = toolCalls[item.toolCallId] || document.getElementById('tc-' + item.toolCallId);
+       // Restore diffPaths from persisted history so tooltips work after
+       // VS Code restart (without session/load replay).
+       if (_toolEl && item.diffPaths && item.diffPaths.length > 0) {
+         _toolEl._diffPaths = item.diffPaths;
+       }
+       if (_toolEl && _toolEl.setAttribute) {
+         stampToolHistoryIndex(item.toolCallId, _historyIndex);
+       }
+       break;
+     }
         case 'plan':
           updatePlanDOM(item.plan);
           break;
