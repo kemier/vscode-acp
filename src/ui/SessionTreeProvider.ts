@@ -505,20 +505,20 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<AgentNode | 
     const localEntry = this.historyStore?.get(agentName, info.sessionId);
     const title = localEntry?.title || info.title || '';
     const label = cleanSessionTitle(title) || shortSessionId(info.sessionId);
-   const description = relativeTime(info.updatedAt);
-   const tooltip = buildSessionTooltip(agentName, info.sessionId, info.cwd, info.updatedAt, 'agent');
-   const caps = this.sessionManager.getCachedCapabilities(agentName);
-   return new SessionTreeItem(
-     agentName,
-     info.sessionId,
-     label,
-     info.sessionId === activeId,
-     description,
-     tooltip,
-     'agent',
-     !!caps?.fork,
-     this.extensionUri,
-   );
+    const description = relativeTime(info.updatedAt);
+    const tooltip = buildSessionTooltip(agentName, info.sessionId, info.cwd, info.updatedAt, 'agent');
+    const caps = this.sessionManager.getCachedCapabilities(agentName);
+    return new SessionTreeItem(
+      agentName,
+      info.sessionId,
+      label,
+      info.sessionId === activeId,
+      description,
+      tooltip,
+      'agent',
+      !!caps?.fork,
+      this.extensionUri,
+    );
   }
 
   private async fetchSessionList(agentName: string): Promise<void> {
@@ -743,18 +743,18 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<AgentNode | 
     const title = localEntry?.title || entry.title || '';
     const label = cleanSessionTitle(title) || shortSessionId(entry.sessionId);
     const description = relativeTime(entry.lastActiveAt);
-   const tooltip = buildSessionTooltip(agentName, entry.sessionId, entry.cwd, entry.lastActiveAt, 'kiro');
-   return new SessionTreeItem(
-     agentName,
-     entry.sessionId,
-     label,
-     entry.sessionId === activeId,
-     description,
-     tooltip,
-     'kiro',
-     false,
-     this.extensionUri,
-   );
+    const tooltip = buildSessionTooltip(agentName, entry.sessionId, entry.cwd, entry.lastActiveAt, 'kiro');
+    return new SessionTreeItem(
+      agentName,
+      entry.sessionId,
+      label,
+      entry.sessionId === activeId,
+      description,
+      tooltip,
+      'kiro',
+      false,
+      this.extensionUri,
+    );
   }
   // --- Local-history-store-sourced list ---
 
@@ -807,39 +807,39 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<AgentNode | 
       (entry.firstPrompt?.trim() && truncate(entry.firstPrompt!.trim(), 60)) ||
       shortSessionId(entry.sessionId);
     const description = relativeTime(entry.lastActiveAt);
-   const tooltip = buildSessionTooltip(entry.agentName, entry.sessionId, entry.cwd, entry.lastActiveAt, 'local');
-   // For local-history sessions, check if the agent supports session/delete.
-   // If it does, "Delete Session" handles everything (agent-side + local removal).
-   // If it doesn't, "Forget Session" is the only way to remove it from the sidebar.
-   // This prevents showing both "Forget" and "Delete" for the same session.
-   const caps = this.sessionManager.getCachedCapabilities(entry.agentName);
-   const canDelete = !!caps?.delete;
-   const item = new SessionTreeItem(
-     entry.agentName,
-     entry.sessionId,
-     label,
-     entry.sessionId === activeId,
-     description,
-     tooltip,
-     'local',
-     false,
-     this.extensionUri,
-   );
-   // Override contextValue: if the agent supports delete, use 'session-local'
-   // (matches deleteSession regex but NOT forgetSession's exact match).
-   // If not, use 'session-local-no-delete' so only forgetSession shows.
-   if (!canDelete) {
-     item.contextValue = 'session-local-no-delete';
-   }
-   // Override contextValue: if the agent supports delete, use 'session-local'
-   // (matches deleteSession regex but NOT forgetSession's exact match).
-   // If not, use 'local-no-delete' (doesn't match /^session/) so only
-   // forgetSession shows — prevents duplicate Forget + Delete menu items.
-   if (!canDelete) {
-     item.contextValue = 'local-no-delete';
-   }
-  return item;
- }
+    const tooltip = buildSessionTooltip(entry.agentName, entry.sessionId, entry.cwd, entry.lastActiveAt, 'local');
+    // For local-history sessions, check if the agent supports session/delete.
+    // If it does, "Delete Session" handles everything (agent-side + local removal).
+    // If it doesn't, "Forget Session" is the only way to remove it from the sidebar.
+    // This prevents showing both "Forget" and "Delete" for the same session.
+    const caps = this.sessionManager.getCachedCapabilities(entry.agentName);
+    const canDelete = !!caps?.delete;
+    const item = new SessionTreeItem(
+      entry.agentName,
+      entry.sessionId,
+      label,
+      entry.sessionId === activeId,
+      description,
+      tooltip,
+      'local',
+      false,
+      this.extensionUri,
+    );
+    // Override contextValue: if the agent supports delete, use 'session-local'
+    // (matches deleteSession regex but NOT forgetSession's exact match).
+    // If not, use 'session-local-no-delete' so only forgetSession shows.
+    if (!canDelete) {
+      item.contextValue = 'session-local-no-delete';
+    }
+    // Override contextValue: if the agent supports delete, use 'session-local'
+    // (matches deleteSession regex but NOT forgetSession's exact match).
+    // If not, use 'local-no-delete' (doesn't match /^session/) so only
+    // forgetSession shows — prevents duplicate Forget + Delete menu items.
+    if (!canDelete) {
+      item.contextValue = 'local-no-delete';
+    }
+    return item;
+  }
 
   // --- Capability probe ---
 

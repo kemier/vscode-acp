@@ -1007,7 +1007,7 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.window.showInformationMessage('No active session to fork.');
       return;
     }
-   try {
+    try {
       await sessionManager.forkSession(agentName, sessionId);
       // After forking, load the forked session's history into the chat view
       // so the user sees the branched conversation immediately.
@@ -1017,14 +1017,16 @@ export function activate(context: vscode.ExtensionContext): void {
         if (caps?.load) {
           await vscode.window.withProgress(
             { location: vscode.ProgressLocation.Notification, title: 'Loading forked session…', cancellable: false },
-            async () => { await sessionManager.loadSession(agentName, forkedId); },
+            async () => {
+              await sessionManager.loadSession(agentName, forkedId);
+            },
           );
         }
       }
       vscode.window.showInformationMessage(`Forked session from ${agentName}.`);
-   } catch (e: any) {
-     vscode.window.showWarningMessage(`Fork not available: ${e?.message || e}`);
-   }
+    } catch (e: any) {
+      vscode.window.showWarningMessage(`Fork not available: ${e?.message || e}`);
+    }
   });
 
   // Add Agent Configuration

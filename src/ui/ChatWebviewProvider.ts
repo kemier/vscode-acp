@@ -565,15 +565,15 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       const filePathRegex = new RegExp(
         '(^|[^\\w\\/])' + // prefix: start or non-word, non-slash
           '(' +
-         '(?:~\\/|\\.?\\/?[\\w.-]+\\/)+' + // at least one dir separator (path with /); ~/ home-relative dir
-         '[\\w.-]*(?:\\s+[\\w.-]+)*\\.' + //   filename may be a dotfile or have spaces (e.g. "DI_Lodge SMF BGP Route Details.txt")
-         codeExt +
-         '(?::\\d+(?:-\\d+)?)?' + //   + filename.ext[:line[:-end]]
-         '(?=$|[\\s,;:\\)\\]\\}\\<|])' + //   word boundary after extension
-         '|' +
-         '[\\w.-]+(?:\\s+[\\w.-]+)*\\.' + // bare filename.ext:line — allows spaces in filename (e.g. "DI_Lodge SMF BGP Route Details.txt:40")
-         codeExt +
-         '(?::\\d+(?:-\\d+)?)' + // bare filename.ext:line[:-end]
+          '(?:~\\/|\\.?\\/?[\\w.-]+\\/)+' + // at least one dir separator (path with /); ~/ home-relative dir
+          '[\\w.-]*(?:\\s+[\\w.-]+)*\\.' + //   filename may be a dotfile or have spaces (e.g. "DI_Lodge SMF BGP Route Details.txt")
+          codeExt +
+          '(?::\\d+(?:-\\d+)?)?' + //   + filename.ext[:line[:-end]]
+          '(?=$|[\\s,;:\\)\\]\\}\\<|])' + //   word boundary after extension
+          '|' +
+          '[\\w.-]+(?:\\s+[\\w.-]+)*\\.' + // bare filename.ext:line — allows spaces in filename (e.g. "DI_Lodge SMF BGP Route Details.txt:40")
+          codeExt +
+          '(?::\\d+(?:-\\d+)?)' + // bare filename.ext:line[:-end]
           '|' +
           '[\\w.-]*\\.' + //   bare filename may be a dotfile (.env, .md)
           codeExt +
@@ -10635,6 +10635,14 @@ function orderCompactFoldContents(body) {
        summaryEl.innerHTML = '';
        return;
      }
+     // Pi and some agents stream assistant text before tool_call. Hide the fold
+     // header until tools/thoughts arrive — avoids flashing "Reply" then retitling
+     // to "N reads, M commands" mid-turn (same rationale as the Thought guard above).
+     if (toolCount === 0 && !hasThoughts && hasInterimAsst && isProcessing && !isLoadingSession) {
+       summaryEl.style.display = 'none';
+       summaryEl.innerHTML = '';
+       return;
+     }
      summaryEl.style.display = '';
      var body = (turn && getTurnFoldBody(turn)) || summaryEl.nextElementSibling;
      var isOpen = !!(body && (
@@ -10676,7 +10684,13 @@ function orderCompactFoldContents(body) {
      } else if (hasThoughts) {
        detail = 'Thought';
      } else if (hasInterimAsst) {
-       detail = 'Reply';
+       var interimMsg = turn.querySelector('.message.assistant.assistant-interim');
+       var interimPreview = interimMsg ? String(interimMsg.textContent || '').replace(/\\s+/g, ' ').trim() : '';
+       if (interimPreview) {
+         detail = interimPreview.length > 72 ? interimPreview.substring(0, 69) + '...' : interimPreview;
+       } else {
+         detail = 'Reply';
+       }
      } else {
        detail = 'Interrupted';
      }
