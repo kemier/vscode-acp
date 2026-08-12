@@ -10605,10 +10605,12 @@ function orderCompactFoldContents(body) {
        turn.querySelector('.message.assistant[data-interrupted="1"]')
      ));
      var hasInterim = !!(turn && turn.querySelector('.message.assistant.assistant-interim'));
-     // Show the ▸ header for tools, or for interrupted interim-only folds.
+     // Show the ▸ header for tools, thoughts, or interrupted interim-only folds.
      // Do NOT show a placeholder like "Details"/"Thought" while thinking —
      // that flashes mid-turn before the first tool arrives.
-     if (toolCount === 0 && !(isInterruptedFold && hasInterim)) {
+     var hasThoughts = !!(turn && turn.querySelector('.thought-block'));
+     var hasInterimAsst = !!(turn && turn.querySelector('.message.assistant.assistant-interim'));
+     if (toolCount === 0 && !hasThoughts && !hasInterimAsst && !(isInterruptedFold && hasInterim)) {
        summaryEl.style.display = 'none';
        summaryEl.innerHTML = '';
        return;
@@ -10651,6 +10653,10 @@ function orderCompactFoldContents(body) {
        if (!detail) {
          detail = toolCount + ' tool call' + (toolCount === 1 ? '' : 's');
        }
+     } else if (hasThoughts) {
+       detail = 'Thought';
+     } else if (hasInterimAsst) {
+       detail = 'Reply';
      } else {
        detail = 'Interrupted';
      }
