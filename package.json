@@ -289,12 +289,12 @@
         },
         {
           "command": "acp.copySessionId",
-          "when": "view == acp-sessions && viewItem =~ /^session/",
+          "when": "view == acp-sessions && (viewItem =~ /^session/ || viewItem == local-no-delete)",
           "group": "session@1"
         },
         {
           "command": "acp.forgetSession",
-          "when": "view == acp-sessions && viewItem == session-local",
+          "when": "view == acp-sessions && viewItem == local-no-delete",
           "group": "session@2"
         },
         {
