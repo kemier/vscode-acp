@@ -7978,7 +7978,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       currentAssistantText = '';
       if (currentTurnEl) { currentTurnEl = null; }
        }
-    } else {
+    } else if (!_loadedHasCompaction) {
+      // Skip mergePreLoadInterruptedTurn when the loaded history has a
+      // compaction notice — the snapshot contains pre-compaction items that
+      // are no longer valid. Restoring them would resurrect stale tools and
+      // push the user message down.
       mergePreLoadInterruptedTurn(preLoadChatHistorySnapshot);
      }
    }
