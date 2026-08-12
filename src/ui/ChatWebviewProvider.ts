@@ -7322,6 +7322,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           if (item.kind === 'message' && item.role === 'assistant') {
             if (String(item.text || '').trim() === String(s.text || '').trim()) return si;
           }
+          if (item.kind === 'message' && (item.role === 'system' || item.role === 'error')) {
+            if (String(item.text || '').trim() === String(s.text || '').trim()) return si;
+          }
         }
         return Number.MAX_SAFE_INTEGER;
       }
@@ -7349,7 +7352,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         // collapsed title shows "Interrupted" after a normal reload + resume.
         for (var ri = 0; ri < merged.length; ri++) {
           var row = merged[ri];
-          if (row && row.kind === 'message' && row.role === 'user') {
+          // System and error messages act as turn boundaries (they reset
+          // the turn in renderChatHistory), so they must also act as
+          // bucket boundaries here. Without this, compaction notices
+          // (system messages) get sorted to the end of their bucket because
+          // snapshotOrderIndex returns MAX_SAFE_INTEGER for unmatched items.
+          if (row && row.kind === 'message' && (row.role === 'user' || row.role === 'system' || row.role === 'error')) {
             flushBucket();
             rebuilt.push(row);
           } else {
