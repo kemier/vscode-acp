@@ -12455,12 +12455,19 @@ if (_deduped) {
            var turnHasAssistant = currentTurnEl && currentTurnEl.querySelector('.message.assistant');
            var turnHasTools = currentTurnEl && currentTurnEl.querySelector('.tool-call-inline');
            if (turnHasAssistant && !turnHasTools) {
-             flushTurnThought();
-             trace('  -> assistant: prior assistant without tools -> start NEW turn');
-             currentTurnEl = null;
-             currentToolsListEl = null;
-             currentToolsCountEl = null;
-             currentToolCount = 0;
+             // Back-to-back assistants with no tools between them: keep in
+             // the SAME turn and mark prior assistants as interim (folded).
+             // Previously this started a NEW turn for each assistant, which
+             // left every turn with exactly 1 assistant → promoteFinalAssistant
+             // lifted it out as a visible summary → nothing was folded.
+             Array.prototype.forEach.call(
+               currentTurnEl.querySelectorAll('.message.assistant'),
+               function(a) {
+                 a.classList.add('assistant-interim');
+                 a.classList.remove('assistant-summary');
+               }
+             );
+             trace('  -> assistant: prior assistant without tools -> same turn, mark interim');
           } else if (turnHasAssistant && turnHasTools) {
             // Prior assistant segments in this turn become interim (folded).
             Array.prototype.forEach.call(
