@@ -313,7 +313,7 @@
         },
         {
           "command": "acp.forkToAgent",
-          "when": "view == acp-sessions && viewItem =~ /^session/",
+          "when": "view == acp-sessions && (viewItem =~ /^session/ || viewItem == local-no-delete || viewItem == session-local-no-delete)",
           "group": "session@4"
         }
       ]
