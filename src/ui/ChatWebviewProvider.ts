@@ -48,6 +48,22 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   /** When true, suppress webview notifications (used during background session capture or reconnect). */
   suppressWebviewUpdates = false;
   private _hasChatContent = false;
+  /** Resolver for the pending conversation export request (fork-to-agent). */
+  private _conversationExportResolver: ((text: string) => void) | undefined = undefined;
+  /** Request the current conversation text from the webview (for fork-to-agent). */
+  async requestConversationExport(timeoutMs = 5000): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._conversationExportResolver = undefined;
+        reject(new Error('Conversation export timed out'));
+      }, timeoutMs);
+      this._conversationExportResolver = (text: string) => {
+        clearTimeout(timer);
+        resolve(text);
+      };
+      this.postMessage({ type: 'requestConversationExport' });
+    });
+  }
   private toolCallDiffs = new Map<string, Array<{ path: string; oldText?: string; newText: string }>>();
   private terminalContext = new TerminalContextProvider();
   /** Optional store that persists oversize @terminal output to a file and
@@ -1438,6 +1454,17 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           break;
         case 'toggleFollowAgent':
           this.toggleFollow();
+          break;
+        case 'requestConversationExport':
+          // Extension host requests the current conversation for forking to
+          // another agent. Forward to webview which has chatHistory access.
+          this.postMessage({ type: 'requestConversationExport' });
+          break;
+        case 'conversationExported':
+          // Webview responded with the formatted conversation text — forward
+          // to whoever is waiting (the forkToAgent command).
+          this._conversationExportResolver?.(message.text);
+          this._conversationExportResolver = undefined;
           break;
         case 'renderMarkdown': {
           // Webview requests markdown rendering for history items
@@ -14044,6 +14071,31 @@ sessionState = {
         handleKiroClearStatus(msg.params);
         break;
 
+      case 'requestConversationExport': {
+        // Extension host wants the conversation text for fork-to-agent.
+        // Collect user + assistant messages from chatHistory, skipping
+        // tool calls, thoughts, and system messages.
+        var _exportParts = [];
+        for (var _ei = 0; _ei < chatHistory.length; _ei++) {
+          var _item = chatHistory[_ei];
+          if (!_item) continue;
+          if (_item.kind === 'message') {
+            if (_item.role === 'user') {
+              var _utext = typeof _item.text === 'string' ? _item.text : '';
+              // Skip empty, slash-command-only, or internal markers
+              if (!_utext.trim()) continue;
+              if (_utext.startsWith('[Subagent result]')) continue;
+              _exportParts.push('User: ' + _utext);
+            } else if (_item.role === 'assistant') {
+              var _atext = typeof _item.text === 'string' ? _item.text : '';
+              if (!_atext.trim()) continue;
+              _exportParts.push('Assistant: ' + _atext);
+            }
+          }
+        }
+        vscode.postMessage({ type: 'conversationExported', text: _exportParts.join('\n\n') });
+        break;
+      }
       case 'kiroGoalStatus':
         // Kiro CLI goal status — update goal chip
         if (msg.goalSnapshot) {

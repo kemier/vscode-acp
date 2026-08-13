@@ -25,6 +25,7 @@ import * as vscode from 'vscode';
 
 import { AgentManager } from './core/AgentManager';
 import { ConnectionManager } from './core/ConnectionManager';
+import { getAgentConfigs } from './config/AgentConfig';
 import { SessionManager } from './core/SessionManager';
 import { LocalAgentManager } from './core/LocalAgentManager';
 import { NESManager } from './core/NESManager';
@@ -1130,6 +1131,81 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   });
 
+  // Fork to Another Agent — takes the current conversation and continues it
+  // in a different agent. Unlike acp.forkSession (same-agent fork via ACP
+  // session/fork), this creates a NEW session in a DIFFERENT agent and sends
+  // the conversation history as the first prompt.
+  const forkToAgentCmd = vscode.commands.registerCommand('acp.forkToAgent', async (arg?: any) => {
+    const sourceAgentName = arg?.agentName || sessionManager.getActiveAgentName();
+    const sessionId = arg?.sessionId || sessionManager.getActiveSession()?.sessionId;
+    if (!sourceAgentName || !sessionId) {
+      vscode.window.showInformationMessage('No active session to fork.');
+      return;
+    }
+
+    // Get available agents (exclude the source agent)
+    const configs = getAgentConfigs();
+    const otherAgents = Object.entries(configs)
+      .filter(([name]) => name !== sourceAgentName)
+      .map(([name, cfg]) => ({
+        label: cfg.displayName || name,
+        description: name,
+        detail: cfg.command + ' ' + (cfg.args || []).join(' '),
+      }));
+
+    if (otherAgents.length === 0) {
+      vscode.window.showInformationMessage('No other agents configured. Add agents in settings (acp.agents).');
+      return;
+    }
+
+    const picked = await vscode.window.showQuickPick(otherAgents, {
+      placeHolder: `Continue conversation from ${sourceAgentName} in...`,
+      title: 'Fork to Another Agent',
+    });
+    if (!picked) return;
+
+    const targetAgentName = picked.description!;
+
+    try {
+      // 1. Export the conversation from the webview
+      const conversationText = await chatWebviewProvider.requestConversationExport(10000);
+      if (!conversationText.trim()) {
+        vscode.window.showWarningMessage('No conversation to fork — the session is empty.');
+        return;
+      }
+
+      // 2. Connect to the target agent and create a new session
+      await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: `Starting session with ${targetAgentName}...`, cancellable: false },
+        async () => {
+          await sessionManager.connectToAgent(targetAgentName);
+        },
+      );
+
+      // 3. Send the conversation as a continuation prompt
+      const forkPrompt = [
+        'The following is a conversation from another agent. Please continue this conversation:',
+        '',
+        '---',
+        '',
+        conversationText,
+        '',
+        '---',
+        '',
+        'Please continue from where the conversation left off.',
+      ].join('\n');
+
+      const activeSession = sessionManager.getActiveSession();
+      if (activeSession) {
+        await sessionManager.sendPrompt(activeSession.sessionId, forkPrompt);
+      }
+
+      vscode.window.showInformationMessage(`Forked conversation from ${sourceAgentName} to ${targetAgentName}.`);
+    } catch (e: any) {
+      vscode.window.showErrorMessage(`Failed to fork to ${targetAgentName}: ${e?.message || e}`);
+    }
+  });
+
   // Add Agent Configuration
   const addAgentCmd = vscode.commands.registerCommand('acp.addAgent', async () => {
     const name = await vscode.window.showInputBox({
@@ -1287,6 +1363,7 @@ export function activate(context: vscode.ExtensionContext): void {
     deleteSessionCmd,
     logoutCmd,
     forkSessionCmd,
+    forkToAgentCmd,
     nesRegistration,
     nesAcceptCmd,
     nesRejectCmd,
