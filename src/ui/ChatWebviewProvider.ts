@@ -10825,17 +10825,32 @@ function orderCompactFoldContents(body) {
        summaryEl.innerHTML = '';
        return;
      }
-    // Pi and some agents stream assistant text before tool_call. Hide the fold
-    // header until tools/thoughts arrive — avoids flashing "Reply" then retitling
-    // to "N reads, M commands" mid-turn (same rationale as the Thought guard above).
-    // Also hide when only thoughts exist (no tools, no assistant text yet) —
-    // avoids flashing "Thought" as the collapsed title before tools arrive.
-    if (toolCount === 0 && (hasThoughts || hasInterimAsst) && isProcessing && !isLoadingSession) {
-      summaryEl.style.display = 'none';
-      summaryEl.innerHTML = '';
-      return;
-    }
-     summaryEl.style.display = '';
+   // Pi and some agents stream assistant text before tool_call. Hide the fold
+   // header until tools/thoughts arrive — avoids flashing "Reply" then retitling
+   // to "N reads, M commands" mid-turn (same rationale as the Thought guard above).
+   // Also hide when only thoughts exist (no tools, no assistant text yet) —
+   // avoids flashing "Thought" as the collapsed title before tools arrive.
+   // Also hide when the only interim assistant message has no text content
+   // (empty "Reply" placeholder) — this happens after end_turn with no
+   // assistant text, or during replay of an empty assistant turn.
+   var _interimHasText = false;
+   if (hasInterimAsst && turn) {
+     var _im = turn.querySelector('.message.assistant.assistant-interim');
+     _interimHasText = _im && String(_im.textContent || '').replace(/\\s+/g, '').length > 0;
+   }
+   if (toolCount === 0 && (hasThoughts || hasInterimAsst) && isProcessing && !isLoadingSession) {
+     summaryEl.style.display = 'none';
+     summaryEl.innerHTML = '';
+     return;
+   }
+   // After processing ends: hide header if the only content is an empty
+   // interim assistant message (no text, no tools, no thoughts).
+   if (toolCount === 0 && hasInterimAsst && !_interimHasText && !isProcessing && !isLoadingSession) {
+     summaryEl.style.display = 'none';
+     summaryEl.innerHTML = '';
+     return;
+   }
+    summaryEl.style.display = '';
      var body = (turn && getTurnFoldBody(turn)) || summaryEl.nextElementSibling;
      var isOpen = !!(body && (
        body.classList.contains('expanded') ||
@@ -10894,9 +10909,21 @@ function orderCompactFoldContents(body) {
      * @param opts.interim  when true (mid-turn, before more tools), tuck the
      *   segment into the collapse fold so only the final summary stays visible.
      */
-  function commitCurrentTextSegment(opts) {
-    if (!currentAssistantText) return;
-    cancelProvisionalSummaryPromote();
+ function commitCurrentTextSegment(opts) {
+   if (!currentAssistantText) {
+     // Empty assistant text: still clean up the interim element so it
+     // doesn't linger as an empty "Reply" placeholder in collapsed mode.
+     // Without this, the assistant-interim element stays in the DOM with
+     // no text, and updateToolGroupSummary renders "Reply" as the fold title.
+     if (currentAssistantEl) {
+       currentAssistantEl.remove();
+       currentAssistantEl = null;
+     }
+     currentMessageId = null;
+     reactivatedHistoryIndex = -1;
+     return;
+   }
+   cancelProvisionalSummaryPromote();
     var asInterim = !!(opts && opts.interim);
     var asInterrupted = !!(opts && opts.interrupted);
     var _commitPreview = currentAssistantText.replace(/\\s+/g, ' ').slice(0, 80);
