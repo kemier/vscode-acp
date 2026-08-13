@@ -14093,7 +14093,7 @@ sessionState = {
             }
           }
         }
-        vscode.postMessage({ type: 'conversationExported', text: _exportParts.join('\n\n') });
+        vscode.postMessage({ type: 'conversationExported', text: _exportParts.join('\\n\\n') });
         break;
       }
       case 'kiroGoalStatus':
