@@ -1569,15 +1569,24 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       const id = updateData.toolCallId;
       const content = updateData.content as
         Array<{ type: string; path?: string; oldText?: string; newText?: string }> | undefined;
-      if (id && content) {
-        const diffs = content.filter((c: any) => c.type === 'diff' && c.path);
-        if (diffs.length > 0) {
-          this.toolCallDiffs.set(
-            id,
-            diffs.map((d: any) => ({ path: d.path, oldText: d.oldText, newText: d.newText })),
-          );
-        }
-      }
+     if (id && content) {
+        // Codex apply_patch sends {"type":"diff","oldText":"...","newText":"..."}
+        // without a "path" field. Extract path from the tool call title so
+        // the diff viewer and tooltip still work.
+        const tcTitle = (updateData as any)?.title || '';
+        const titlePath = tcTitle.match(/'([^']+)'|"([^"]+)"/);
+        const fallbackPath = titlePath ? (titlePath[1] || titlePath[2] || '') : '';
+        const diffs = content
+          .filter((c: any) => c.type === 'diff')
+          .map((c: any) => c.path ? c : { ...c, path: c.path || fallbackPath })
+          .filter((c: any) => c.path);
+       if (diffs.length > 0) {
+         this.toolCallDiffs.set(
+           id,
+           diffs.map((d: any) => ({ path: d.path, oldText: d.oldText, newText: d.newText })),
+         );
+       }
+     }
 
       // Follow Agent: every tool call may include `locations: ToolCallLocation[]`.
       // When following, open the first location in the editor. See
@@ -10843,20 +10852,20 @@ function orderCompactFoldContents(body) {
         parentToolUseId: null,
       });
       saveState();
-     var _tcHistoryIndex = chatHistory.length - 1;
-     storeDiffContent(toolCallId, content);
+    var _tcHistoryIndex = chatHistory.length - 1;
+     storeDiffContent(toolCallId, content, title);
      // For edit tool calls with a generic title (e.g. "Editing files"),
      // extract the file path from diff content to show in the title.
      var _editPath = null;
      if (content && Array.isArray(content)) {
        for (var _ci = 0; _ci < content.length; _ci++) {
-         var _c = content[_ci];
-         if (_c && (_c.type === 'diff' || _c.type === 'text') && _c.path) {
-           _editPath = _c.path;
-           break;
-         }
-       }
-     }
+        var _c = content[_ci];
+        if (_c && (_c.type === 'diff' || _c.type === 'text')) {
+          _editPath = _c.path || extractPathFromTitle(title) || '';
+          if (_editPath) break;
+        }
+      }
+    }
      // If the title is generic and we found a path from diff content, use it.
      if (_editPath && (title === 'Editing files' || title === 'Edit file' || !title)) {
        var _baseName = _editPath.split('/').pop() || _editPath;
@@ -10870,17 +10879,26 @@ function orderCompactFoldContents(body) {
       vscode.postMessage({ type: 'debugLog', message: '[WV-ADDTC] AFTER push chatHistoryLen=' + chatHistory.length });
     }
 
-    function storeDiffContent(toolCallId, content) {
+    function storeDiffContent(toolCallId, content, title) {
       if (!content || !Array.isArray(content)) return;
-      const diffs = content.filter(c => c.type === 'diff' && c.path);
-      if (diffs.length > 0) {
-        toolCallDiffs[toolCallId] = diffs;
-        var paths = diffs.map(function(d) { return d.path; });
-        const el = toolCalls[toolCallId];
-        if (el) {
-          el._diffPaths = paths;
-          markClickable(el, toolCallId);
-        }
+      // Codex apply_patch sends {"type":"diff","oldText":"...","newText":"..."}
+      // without a "path" field. Extract the path from the tool call title
+      // (e.g. "Edit 'ChatWebviewProvider.ts'" → "ChatWebviewProvider.ts")
+      // so the tooltip and diff viewer still work.
+      var tcEl = toolCalls[toolCallId];
+      if (tcEl && tcEl._toolTitle) title = title || tcEl._toolTitle;
+      var titlePath = extractPathFromTitle(title);
+      const diffs = content
+        .filter(c => c.type === 'diff')
+        .map(c => c.path ? c : Object.assign({}, c, { path: titlePath || c.path || '' }))
+        .filter(c => c.path);
+     if (diffs.length > 0) {
+       toolCallDiffs[toolCallId] = diffs;
+      var paths = diffs.map(function(d) { return d.path; });
+      if (tcEl) {
+        el._diffPaths = paths;
+        markClickable(el, toolCallId);
+      }
         // Persist diffPaths on the chatHistory entry so it survives
         // saveState/restoreState (VS Code restart without session/load).
         for (var i = chatHistory.length - 1; i >= 0; i--) {
@@ -10950,17 +10968,40 @@ function orderCompactFoldContents(body) {
     return slim;
   }
 
-  function isEmptyRawInput(rawInput) {
-    if (rawInput == null) return true;
-    if (typeof rawInput === 'string') return !rawInput.trim();
-    if (typeof rawInput !== 'object') return false;
-    try {
-      var keys = Object.keys(rawInput);
-      if (keys.length === 0) return true;
-      // Cursor placeholder task tool_call: { _toolName: "task" } only.
-      if (keys.length === 1 && keys[0] === '_toolName') return true;
-      return false;
-    } catch (e) { return true; }
+ function isEmptyRawInput(rawInput) {
+   if (rawInput == null) return true;
+   if (typeof rawInput === 'string') return !rawInput.trim();
+   if (typeof rawInput !== 'object') return false;
+   try {
+     var keys = Object.keys(rawInput);
+     if (keys.length === 0) return true;
+     // Cursor placeholder task tool_call: { _toolName: "task" } only.
+     if (keys.length === 1 && keys[0] === '_toolName') return true;
+     return false;
+   } catch (e) { return true; }
+ }
+  /**
+   * Extract a file path from a tool call title.
+   * Handles patterns like:
+   *   Edit 'ChatWebviewProvider.ts'  -> ChatWebviewProvider.ts
+   *   Edit "main.rs"                 -> main.rs
+   *   Editing src/foo.ts             -> src/foo.ts
+   *   Write 'config.yaml'            -> config.yaml
+   * Returns '' if no path can be extracted.
+   */
+  function extractPathFromTitle(title) {
+    if (!title || typeof title !== 'string') return '';
+    // Match quoted path: Edit 'file.ext' or Edit "file.ext"
+    var quoted = title.match(/'([^']+)'|"([^"]+)"/);
+    if (quoted) return quoted[1] || quoted[2] || '';
+    // Match unquoted path after edit/write keywords: Editing src/foo.ts
+    var unquoted = title.match(/(?:Edit|Write|Editing|Writing)\s+(.+)/i);
+    if (unquoted) {
+      var p = unquoted[1].trim();
+      // Only accept if it looks like a path (has a file extension)
+      if (p && /\\.[a-z]{1,10}$/i.test(p)) return p;
+    }
+    return '';
   }
 
   /**
@@ -12655,8 +12696,8 @@ forceCollapseTurnFolds();
          break;
        }
      }
-     saveState();
-     storeDiffContent(toolCallId, content);
+    saveState();
+     storeDiffContent(toolCallId, content, title);
 
     // Crew stage: update spinner + fill tooltip from late rawInput (Claude/Codex
     // often send empty rawInput first, then prompt/description on update).
