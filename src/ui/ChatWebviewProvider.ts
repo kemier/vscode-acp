@@ -11699,13 +11699,28 @@ function orderCompactFoldContents(body) {
    }
 
    function crewStageLabel(rawInput, title, index) {
+     // Prefer the subagent's identity fields over the spawn task text. For Codex
+     // spawnAgent / Claude Agent Task, rawInput.prompt holds the PARENT's task
+     // sent to the subagent, NOT the subagent's own name — using it made the
+     // first stage show the parent's prompt and then flip to "parent" once the
+     // spawnAgent completion update landed. Only fall back to task/description
+     // text for NON-spawn tools (where the label is genuinely descriptive).
      var desc = rawInput && (
-       rawInput.description || rawInput.task || rawInput.prompt ||
-       rawInput.subagent_type || rawInput.name || rawInput.agent_name
+       rawInput.agentPath || rawInput.agent_path || rawInput.subagent_type ||
+       rawInput.name || rawInput.agent_name || rawInput.role
      );
      if (typeof desc === 'string' && desc.trim()) {
-       var s = desc.trim();
-       return s.length > 60 ? s.substring(0, 57) + '...' : s;
+       var sd = desc.trim();
+       return sd.length > 60 ? sd.substring(0, 57) + '...' : sd;
+     }
+     if (!isSubagentSpawnTitle(title, rawInput)) {
+       var taskDesc = rawInput && (
+         rawInput.description || rawInput.task || rawInput.prompt
+       );
+       if (typeof taskDesc === 'string' && taskDesc.trim()) {
+         var ts = taskDesc.trim();
+         return ts.length > 60 ? ts.substring(0, 57) + '...' : ts;
+       }
      }
      var t = (title || '').trim();
      if (t && !isSubagentSpawnTitle(t)) {
