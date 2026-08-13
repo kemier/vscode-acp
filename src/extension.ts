@@ -870,8 +870,15 @@ export function activate(context: vscode.ExtensionContext): void {
       }
     } catch (e: any) {
       logError('Failed to open session', e);
-      const errDetail = e?.data ? `${e.message}: ${e.data}` : e?.message || 'Unknown error';
-      const errDataStr = typeof e?.data === 'string' ? e.data : e?.data ? String(e.data) : '';
+      // Stringify error data properly — e.data can be an object like
+      // {details: "thread xxx already has an active writer"}, which would
+      // otherwise show as "[object Object]".
+      const errDataStr = typeof e?.data === 'string'
+        ? e.data
+        : e?.data && typeof e?.data === 'object'
+          ? JSON.stringify(e.data)
+          : e?.data ? String(e.data) : '';
+      const errDetail = errDataStr ? `${e?.message || 'Error'}: ${errDataStr}` : e?.message || 'Unknown error';
       const combinedMsg = `${e?.message || ''} ${errDataStr}`;
 
       // Kiro enforces a single owner per session: a terminal `kiro-cli chat`
@@ -887,6 +894,32 @@ export function activate(context: vscode.ExtensionContext): void {
           'Start New Session Here',
         );
         if (choice === 'Start New Session Here') {
+          try {
+            await vscode.commands.executeCommand('acp.newConversation');
+          } catch (innerErr: any) {
+            vscode.window.showErrorMessage(`Failed to start new session: ${innerErr?.message || innerErr}`);
+          }
+        }
+        return;
+      }
+
+      // Codex: thread is actively streaming (has an active writer). The
+      // session can't be loaded until the current turn finishes. Show a
+      // clear message and offer to retry.
+      const activeWriter = /already has an active writer/i.exec(combinedMsg);
+      if (activeWriter) {
+        const choice = await vscode.window.showErrorMessage(
+          `Session is actively streaming. Wait for the current turn to finish, then retry.`,
+          'Retry Now',
+          'Start New Session',
+        );
+        if (choice === 'Retry Now') {
+          try {
+            await vscode.commands.executeCommand('acp.openSession', { sessionId: params?.sessionId, agentName: params?.agentName });
+          } catch (innerErr: any) {
+            vscode.window.showErrorMessage(`Retry failed: ${innerErr?.message || innerErr}`);
+          }
+        } else if (choice === 'Start New Session') {
           try {
             await vscode.commands.executeCommand('acp.newConversation');
           } catch (innerErr: any) {
