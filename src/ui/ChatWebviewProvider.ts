@@ -10642,14 +10642,16 @@ function orderCompactFoldContents(body) {
        summaryEl.innerHTML = '';
        return;
      }
-     // Pi and some agents stream assistant text before tool_call. Hide the fold
-     // header until tools/thoughts arrive — avoids flashing "Reply" then retitling
-     // to "N reads, M commands" mid-turn (same rationale as the Thought guard above).
-     if (toolCount === 0 && !hasThoughts && hasInterimAsst && isProcessing && !isLoadingSession) {
-       summaryEl.style.display = 'none';
-       summaryEl.innerHTML = '';
-       return;
-     }
+    // Pi and some agents stream assistant text before tool_call. Hide the fold
+    // header until tools/thoughts arrive — avoids flashing "Reply" then retitling
+    // to "N reads, M commands" mid-turn (same rationale as the Thought guard above).
+    // Also hide when only thoughts exist (no tools, no assistant text yet) —
+    // avoids flashing "Thought" as the collapsed title before tools arrive.
+    if (toolCount === 0 && (hasThoughts || hasInterimAsst) && isProcessing && !isLoadingSession) {
+      summaryEl.style.display = 'none';
+      summaryEl.innerHTML = '';
+      return;
+    }
      summaryEl.style.display = '';
      var body = (turn && getTurnFoldBody(turn)) || summaryEl.nextElementSibling;
      var isOpen = !!(body && (
