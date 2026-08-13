@@ -5506,9 +5506,17 @@ return true;
   let savedPlaceholder = 'Type a message...';
   let sessionNames = [];
   let sessionNamesRequested = false;
-  let isSessionAutocomplete = false;
-  let sessionAutocompleteSelectedIdx = -1;
-  let sessionAutocompleteFiltered = [];
+ let isSessionAutocomplete = false;
+ let sessionAutocompleteSelectedIdx = -1;
+ let sessionAutocompleteFiltered = [];
+ var goalSubcommands = [
+   { name: 'clear', description: 'Clear the active goal' },
+   { name: 'pause', description: 'Pause the active goal' },
+   { name: 'resume', description: 'Resume a paused goal' },
+ ];
+ let isGoalSubcommandAutocomplete = false;
+ let goalSubcommandSelectedIdx = -1;
+ let goalSubcommandFiltered = [];
 
   /** Built-in client-side slash commands (always available). */
 const builtinCommands = [
@@ -6431,10 +6439,53 @@ var end = displayText.length;
           slashPopup.classList.remove('open');
           isSessionAutocomplete = false;
         }
-      } else {
-        slashPopup.classList.remove('open');
-        isSessionAutocomplete = false;
-      }
+     } else {
+       slashPopup.classList.remove('open');
+       isSessionAutocomplete = false;
+     }
+     } else if (firstSpace > 0 && query === 'goal') {
+       // /goal <partial> — autocomplete subcommands (clear, pause, resume)
+       var goalPartial = text.substring(firstSpace + 1).toLowerCase().trim();
+       if (goalPartial === '' || goalSubcommands.some(function(sc) { return sc.name.startsWith(goalPartial); })) {
+         isGoalSubcommandAutocomplete = true;
+         isSessionAutocomplete = false;
+         goalSubcommandFiltered = goalSubcommands.filter(function(sc) {
+           return sc.name.startsWith(goalPartial);
+         });
+         if (goalSubcommandFiltered.length > 0) {
+           slashPopup.innerHTML = '<div class="slash-popup-header">Goal Subcommands</div>';
+           goalSubcommandFiltered.forEach(function(sc, i) {
+             var item = document.createElement('div');
+             item.className = 'slash-popup-item' + (i === 0 ? ' active' : '');
+             item.dataset.index = String(i);
+             item.innerHTML =
+               '<span class="cmd-name">/goal ' + escapeHtml(sc.name) + '</span>' +
+               '<span class="cmd-desc">' + escapeHtml(sc.description) + '</span>';
+            item.addEventListener('click', function() {
+              promptInput.value = '/goal ' + sc.name;
+              slashPopup.classList.remove('open');
+              isGoalSubcommandAutocomplete = false;
+              promptInput.focus();
+              handleSend();
+            });
+             item.addEventListener('mouseenter', function() {
+               goalSubcommandSelectedIdx = i;
+               var items = slashPopup.querySelectorAll('.slash-popup-item');
+               items.forEach(function(el, j) { el.classList.toggle('active', j === i); });
+             });
+             slashPopup.appendChild(item);
+           });
+           slashPopup.classList.add('open');
+           goalSubcommandSelectedIdx = 0;
+         } else {
+           slashPopup.classList.remove('open');
+           isGoalSubcommandAutocomplete = false;
+         }
+       } else {
+         // User is typing an objective (not a subcommand) — close popup
+         slashPopup.classList.remove('open');
+         isGoalSubcommandAutocomplete = false;
+       }
     } else if (text.startsWith('/session')) {
       // /session autocomplete even when no agent commands are available
       var sFirstSpace = text.indexOf(' ');
@@ -6474,9 +6525,53 @@ var end = displayText.length;
     });
 
    // Send on Enter (Shift+Enter for newline)
-   promptInput.addEventListener('keydown', (e) => {
-     // Session name autocomplete navigation
-     if (slashPopup.classList.contains('open') && isSessionAutocomplete) {
+  promptInput.addEventListener('keydown', (e) => {
+    // Session name autocomplete navigation
+    if (slashPopup.classList.contains('open') && isSessionAutocomplete) {
+      // (handled below)
+    }
+    // /goal subcommand autocomplete navigation
+    if (slashPopup.classList.contains('open') && isGoalSubcommandAutocomplete) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        goalSubcommandSelectedIdx = Math.min(goalSubcommandSelectedIdx + 1, goalSubcommandFiltered.length - 1);
+        var gsItems = slashPopup.querySelectorAll('.slash-popup-item');
+        gsItems.forEach(function(el, i) { el.classList.toggle('active', i === goalSubcommandSelectedIdx); });
+        if (gsItems[goalSubcommandSelectedIdx]) gsItems[goalSubcommandSelectedIdx].scrollIntoView({ block: 'nearest' });
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        goalSubcommandSelectedIdx = Math.max(goalSubcommandSelectedIdx - 1, 0);
+        var gsItems2 = slashPopup.querySelectorAll('.slash-popup-item');
+        gsItems2.forEach(function(el, i) { el.classList.toggle('active', i === goalSubcommandSelectedIdx); });
+        return;
+      }
+     if (e.key === 'Tab' || (e.key === 'Enter' && !e.shiftKey)) {
+       e.preventDefault();
+       if (goalSubcommandFiltered.length > 0) {
+         var sc = goalSubcommandFiltered[goalSubcommandSelectedIdx];
+         promptInput.value = '/goal ' + sc.name;
+         slashPopup.classList.remove('open');
+         isGoalSubcommandAutocomplete = false;
+         promptInput.focus();
+         // For Tab: just fill in the text. For Enter: also send immediately
+         // since clear/pause/resume need no further input.
+         if (e.key === 'Enter') {
+           handleSend();
+         }
+       }
+       return;
+     }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        slashPopup.classList.remove('open');
+        isGoalSubcommandAutocomplete = false;
+        return;
+      }
+    }
+    // Session name autocomplete navigation
+    if (slashPopup.classList.contains('open') && isSessionAutocomplete) {
        if (e.key === 'ArrowDown') {
          e.preventDefault();
          sessionAutocompleteSelectedIdx = Math.min(sessionAutocompleteSelectedIdx + 1, sessionAutocompleteFiltered.length - 1);
