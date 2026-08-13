@@ -26,14 +26,15 @@ import * as vscode from 'vscode';
 import { AgentManager } from './core/AgentManager';
 import { ConnectionManager } from './core/ConnectionManager';
 import { SessionManager } from './core/SessionManager';
+import { LocalAgentManager } from './core/LocalAgentManager';
 import { NESManager } from './core/NESManager';
 import { NESInlineCompletionProvider } from './core/NESInlineCompletionProvider';
 import { SessionHistoryStore } from './core/SessionHistoryStore';
 import { TerminalOutputStore } from './core/TerminalOutputStore';
 import { KiroSessionDiscovery } from './core/KiroSessionDiscovery';
+import { SessionUpdateHandler } from './handlers/SessionUpdateHandler';
 import { SharedMemoryProvider } from './core/memory/SharedMemoryProvider';
 import { describeMemoryConfigSources, isMemoryConfigured, readMemorySettings } from './core/memory/MemoryConfig';
-import { SessionUpdateHandler } from './handlers/SessionUpdateHandler';
 import { SessionTreeProvider } from './ui/SessionTreeProvider';
 import { StatusBarManager } from './ui/StatusBarManager';
 import { ChatWebviewProvider } from './ui/ChatWebviewProvider';
@@ -84,6 +85,28 @@ export function activate(context: vscode.ExtensionContext): void {
   const sessionManager = new SessionManager(agentManager, connectionManager, sessionUpdateHandler);
   _sessionManager = sessionManager;
 
+  // --- Local A2A agent management ---
+  // When ericli sends `_ericli/a2a/spawn_local`, the IDE spawns a new ACP
+  // session (visible chat panel) and routes delegation requests to it.
+  const localAgentManager = new LocalAgentManager(
+    sessionManager,
+    agentManager,
+    connectionManager,
+    sessionUpdateHandler,
+  );
+  sessionManager.setLocalAgentManager(localAgentManager);
+
+  // --- NES (Next Edit Suggestions) ---
+  // NES is an experimental ACP feature. codex-acp does NOT currently support
+  // it; NESManager.start() will log a warning and return false in that case.
+  const nesManager = new NESManager();
+
+  // Persistent client-side session-history cache (used as the tier-2 tree
+  // source for agents that support session/load or session/resume but not
+  // session/list).
+  const historyStore = new SessionHistoryStore(context.workspaceState);
+  sessionManager.setHistoryStore(historyStore);
+
   // --- Shared memory (TencentDB Agent Memory, Model B) ---
   // team_id shared across agents; agent_id mapped per ACP agent type.
   const memoryProvider = new SharedMemoryProvider(sessionUpdateHandler);
@@ -119,16 +142,6 @@ export function activate(context: vscode.ExtensionContext): void {
     );
   }
 
-  // --- NES (Next Edit Suggestions) ---
-  // NES is an experimental ACP feature. codex-acp does NOT currently support
-  // it; NESManager.start() will log a warning and return false in that case.
-  const nesManager = new NESManager();
-
-  // Persistent client-side session-history cache (used as the tier-2 tree
-  // source for agents that support session/load or session/resume but not
-  // session/list).
-  const historyStore = new SessionHistoryStore(context.workspaceState);
-  sessionManager.setHistoryStore(historyStore);
   // --- Kiro session discovery ---
   // Reads ~/.kiro/sessions/ to surface CLI-spawned sessions in the tree.
   // Kiro CLI does not implement ACP session/list, so without this the only
@@ -933,6 +946,56 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   });
 
+  // Open a local A2A agent session — loads history WITHOUT switching the
+  // active session / disconnecting the parent agent. The local A2A agent
+  // runs in its own subprocess; clicking it in the tree should show its
+  // conversation history in a read-only view (or switch focus).
+  const openLocalAgentSessionCmd = vscode.commands.registerCommand('acp.openLocalAgentSession', async (arg?: any) => {
+    const agentName: string | undefined = arg?.agentName;
+    const sessionId: string | undefined = arg?.sessionId;
+    if (!agentName || !sessionId) {
+      return;
+    }
+    try {
+      await vscode.commands.executeCommand('acp-chat.focus');
+
+      // Check if the local A2A agent is dead (process exited). If so,
+      // respawn it before loading the session — otherwise loadSession →
+      // ensureConnected throws "Unknown agent" because the process is gone
+      // and there's no config for dynamically-spawned agents.
+      const localAgentMgr = sessionManager.getLocalAgentManager();
+      if (localAgentMgr) {
+        const localAgent = localAgentMgr.findByAgentName(agentName);
+        if (localAgent && localAgent.state === 'dead') {
+          log(`openLocalAgentSession: agent '${agentName}' is dead, respawning...`);
+          const respawn = await localAgentMgr.respawnDeadAgent(agentName);
+          if (!respawn.success) {
+            vscode.window.showErrorMessage(
+              `Failed to respawn agent '${agentName}': ${respawn.error || 'Unknown error'}`,
+            );
+            return;
+          }
+          // The respawned agent has a new session ID — load that instead
+          // of the stale one from the tree item.
+          if (respawn.sessionId) {
+            await sessionManager.loadSession(agentName, respawn.sessionId);
+            return;
+          }
+        }
+      }
+
+      // Load the session on the SPAWNED agent's connection.
+      // We call loadSession directly — the spawned agent is already
+      // connected (registered via registerExternalSession), so
+      // ensureConnected will find its connection without spawning a
+      // new process. We DO NOT disconnect the parent agent.
+      await sessionManager.loadSession(agentName, sessionId);
+    } catch (e: any) {
+      logError('Failed to open local agent session', e);
+      vscode.window.showErrorMessage(`Failed to load local agent session: ${e?.message || 'Unknown error'}`);
+    }
+  });
+
   // Pagination cursor: append the next page to the agent-sourced list.
   const loadMoreSessionsCmd = vscode.commands.registerCommand('acp.loadMoreSessions', async (agentName?: string) => {
     if (!agentName) {
@@ -1217,6 +1280,7 @@ export function activate(context: vscode.ExtensionContext): void {
     refreshAgentsCmd,
     refreshSessionsCmd,
     openSessionCmd,
+    openLocalAgentSessionCmd,
     loadMoreSessionsCmd,
     copySessionIdCmd,
     forgetSessionCmd,
