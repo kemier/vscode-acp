@@ -1168,7 +1168,31 @@ export class SessionManager extends EventEmitter {
       }
       // Persist even in the fallback path (Kiro etc.)
       this.persistConfigValue(session, configId, value);
-      return session.configOptions;
+     return session.configOptions;
+   }
+ }
+
+  /**
+   * Send a goal control action (pause/clear) to the agent via the
+   * `_codex/session/goal_control` extension method.
+   * Currently only supported by codex-acp. Other agents will throw silently.
+   */
+  async goalControl(sessionId: string, action: 'pause' | 'clear'): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      log(`goalControl: session ${sessionId} not found`);
+      return;
+    }
+    const connInfo = this.connectionManager.getConnection(session.agentId);
+    if (!connInfo) {
+      log(`goalControl: no connection for agent ${session.agentId}`);
+      return;
+    }
+    try {
+      await connInfo.connection.request('_codex/session/goal_control', { sessionId, action });
+      log(`goalControl: ${action} sent for session ${sessionId}`);
+    } catch (e: any) {
+      log(`goalControl: ${action} failed for session ${sessionId}: ${e?.message ?? e}`);
     }
   }
 

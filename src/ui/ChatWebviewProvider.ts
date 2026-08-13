@@ -1389,6 +1389,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         case 'setConfigOption':
           await this.handleSetConfigOption(message.configId, message.value);
           break;
+        case 'goalControl':
+          if (this.sessionManager.getActiveSessionId()) {
+            await this.sessionManager.goalControl(this.sessionManager.getActiveSessionId()!, message.action);
+          }
+          break;
         case 'executeCommand':
           if (message.command) {
             await vscode.commands.executeCommand(message.command, ...(message.args || []));
@@ -1519,6 +1524,16 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         title: updateData.title,
         updatedAt: updateData.updatedAt,
       });
+      // Forward goal snapshot from _meta.codex.goal (codex-acp extension).
+      // The raw update is already forwarded to the webview below, but we
+      // also store it on the session for the webview restore path.
+      const goalMeta = (update as any)?._meta?.codex?.goal;
+      if (goalMeta !== undefined) {
+        const session = this.sessionManager.getSession(update.sessionId);
+        if (session) {
+          (session as any).goalSnapshot = goalMeta;
+        }
+      }
     }
 
     // Only forward to the webview if this is the active session — the
@@ -3313,8 +3328,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             currentModelImageSupport: session.models?.currentModelId
               ? this.modelSupportsImage(session.models.currentModelId, session.agentName)
               : undefined,
-            modelImageMap: this.getModelImageMap(),
-          }
+           modelImageMap: this.getModelImageMap(),
+           goalSnapshot: (session as any)?.goalSnapshot ?? null,
+         }
         : null,
       lastAgent: lastAgent || undefined,
       lastAgentDisplay: lastAgentDisplay || undefined,
@@ -3688,6 +3704,48 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       flex-shrink: 0;
     }
     .session-banner .follow-toggle:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
+    .session-banner .goal-chip {
+      display: none;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 8px;
+      font-size: 0.82em;
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+      border-radius: 10px;
+      border: 1px solid transparent;
+      max-width: 300px;
+      overflow: hidden;
+      white-space: nowrap;
+      flex-shrink: 0;
+      cursor: default;
+    }
+    .session-banner .goal-chip.visible { display: inline-flex; }
+    .session-banner .goal-chip .goal-icon { flex-shrink: 0; font-size: 0.9em; }
+    .session-banner .goal-chip .goal-text { overflow: hidden; text-overflow: ellipsis; }
+    .session-banner .goal-chip .goal-status {
+      flex-shrink: 0;
+      font-size: 0.85em;
+      opacity: 0.8;
+      text-transform: capitalize;
+    }
+    .session-banner .goal-chip .goal-btn {
+      flex-shrink: 0;
+      background: none;
+      border: none;
+      color: inherit;
+      cursor: pointer;
+      font-size: 0.9em;
+      padding: 0 2px;
+      opacity: 0.6;
+    }
+    .session-banner .goal-chip .goal-btn:hover { opacity: 1; }
+    .session-banner .goal-chip.status-active { border-color: var(--vscode-charts-blue, #3794ff); }
+    .session-banner .goal-chip.status-paused { border-color: var(--vscode-charts-yellow, #e2c08d); opacity: 0.75; }
+    .session-banner .goal-chip.status-blocked { border-color: var(--vscode-charts-red, #f48771); }
+    .session-banner .goal-chip.status-complete { border-color: var(--vscode-charts-green, #89d185); }
+    .session-banner .goal-chip.status-budgetLimited,
+    .session-banner .goal-chip.status-usageLimited { border-color: var(--vscode-charts-orange, #d18616); }
     .session-banner .follow-toggle[aria-pressed="true"] {
       color: var(--vscode-charts-blue, var(--vscode-button-background));
       opacity: 1;
@@ -4924,6 +4982,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     <span class="label">Follow</span>
   </button>
   <span class="status" id="status"></span>
+  <div class="goal-chip" id="goalChip">
+    <span class="goal-icon">🎯</span>
+    <span class="goal-text" id="goalText"></span>
+    <span class="goal-status" id="goalStatus"></span>
+    <button class="goal-btn" id="goalPauseBtn" title="Pause goal">⏸</button>
+    <button class="goal-btn" id="goalClearBtn" title="Clear goal">✕</button>
+  </div>
  </div>
 
  <div class="messages-wrap">
@@ -13235,11 +13300,16 @@ sessionState = {
           lastConnectedAgentDisplay = null;
           lastConnectedSessionId = null;
         }
-        if (msg.session) {
-          showSessionConnected(msg.session);
-        } else {
-          showNoSession();
-        }
+       if (msg.session) {
+         showSessionConnected(msg.session);
+         // Restore goal snapshot from session state (if any)
+         goalSnapshot = msg.session.goalSnapshot || null;
+         renderGoalChip();
+       } else {
+         showNoSession();
+         goalSnapshot = null;
+         renderGoalChip();
+       }
         updateWelcomeButton();
          setFollowingUI(!!msg.isFollowing);
          // Restore processing state if the agent is mid-turn. The webview's
@@ -14230,7 +14300,8 @@ sessionState = {
    let streamingRenderGen = 0; // generation counter to discard stale renders
 
     // Token usage state
-    let tokenUsage = null;
+   let tokenUsage = null;
+   let goalSnapshot = null; // {objective, status, tokenBudget, timeUsedSeconds, createdAt, controlMethod}
     const tokenUsageRing = document.getElementById('tokenUsageRing');
     const tokenUsageRingFg = document.getElementById('tokenUsageRingFg');
     const tokenUsageRingLabel = document.getElementById('tokenUsageRingLabel');
@@ -15176,19 +15247,82 @@ sessionState = {
          updatePlaceholder();
          break;
 
-       case 'usage_update':
-         updateTokenUsage(update);
-         break;
+      case 'usage_update':
+        updateTokenUsage(update);
+        break;
+
+      case 'session_info_update': {
+        // Extract goal snapshot from _meta.codex.goal (codex-acp extension).
+        var _goalMeta = update._meta && update._meta.codex && update._meta.codex.goal;
+        if (_goalMeta !== undefined) {
+          goalSnapshot = _goalMeta;
+          renderGoalChip();
+        }
+        break;
+      }
       }
     }
 
-   function updateTokenUsage(update) {
-     tokenUsage = { used: update.used, size: update.size, cost: update.cost };
-     if (!tokenUsageRing) return;
-     updateTokenUsageDOM();
-   }
+  function updateTokenUsage(update) {
+    tokenUsage = { used: update.used, size: update.size, cost: update.cost };
+    if (!tokenUsageRing) return;
+    updateTokenUsageDOM();
+  }
 
-   // Handle _kiro.dev/metadata notification (Kiro CLI specific).
+  // ── Goal chip rendering ──────────────────────────────────────────
+  // Renders the current goal snapshot (from _meta.codex.goal in
+  // session_info_update) as a chip in the session banner.
+  // Supports pause/clear buttons that send goalControl messages.
+  var goalChipEl = document.getElementById('goalChip');
+  var goalTextEl = document.getElementById('goalText');
+  var goalStatusEl = document.getElementById('goalStatus');
+  var goalPauseBtn = document.getElementById('goalPauseBtn');
+  var goalClearBtn = document.getElementById('goalClearBtn');
+
+  if (goalPauseBtn) {
+    goalPauseBtn.addEventListener('click', function() {
+      vscode.postMessage({ type: 'goalControl', action: 'pause' });
+    });
+  }
+  if (goalClearBtn) {
+    goalClearBtn.addEventListener('click', function() {
+      vscode.postMessage({ type: 'goalControl', action: 'clear' });
+    });
+  }
+
+  function renderGoalChip() {
+    if (!goalChipEl) return;
+    if (!goalSnapshot) {
+      goalChipEl.classList.remove('visible');
+      return;
+    }
+    goalChipEl.classList.add('visible');
+    // Remove all status-* classes
+    goalChipEl.className = 'goal-chip visible status-' + (goalSnapshot.status || 'active');
+    if (goalTextEl) {
+      var text = goalSnapshot.objective || '';
+      if (text.length > 80) text = text.substring(0, 77) + '...';
+      goalTextEl.textContent = text;
+      goalTextEl.title = goalSnapshot.objective || '';
+    }
+    if (goalStatusEl) {
+      var statusLabels = {
+        active: '',
+        paused: '(paused)',
+        blocked: '(blocked)',
+        complete: '(done)',
+        budgetLimited: '(budget)',
+        usageLimited: '(usage)'
+      };
+      goalStatusEl.textContent = statusLabels[goalSnapshot.status] || '';
+    }
+    // Show/hide pause button based on status
+    if (goalPauseBtn) {
+      goalPauseBtn.style.display = (goalSnapshot.status === 'active') ? '' : 'none';
+    }
+  }
+
+  // Handle _kiro.dev/metadata notification (Kiro CLI specific).
    // params.contextUsagePercentage is a float (0-100), params.effort is a string like "high".
   function handleKiroMetadata(params) {
     if (!params) return;
