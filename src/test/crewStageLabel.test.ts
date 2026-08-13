@@ -1,0 +1,143 @@
+import * as assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
+
+/**
+ * Regression test for `crewStageLabel` (Codex spawnAgent / Claude Agent stage
+ * titles). The function lives inside the ChatWebviewProvider template literal,
+ * so it cannot be imported — we extract the real `crewStageLabel` plus its
+ * dependency closures (`looksLikeClaudeAgentSpawn`, `isSubagentSpawnTitle`)
+ * from source and evaluate them in a fresh scope (the same technique used by
+ * foldOrdering.test.ts).
+ *
+ * The bug it guards: for Codex spawnAgent / Claude Agent Task, `rawInput.prompt`
+ * holds the PARENT's task sent to the subagent, NOT the subagent's own name.
+ * Using prompt made the first stage show the parent's task and then flip to
+ * "parent" once the spawnAgent completion update landed. The fix prefers the
+ * subagent identity fields (agentPath/agent_path/subagent_type/name/agent_name/
+ * role) and only falls back to task/description/prompt text for NON-spawn tools.
+ */
+
+const SOURCE = path.resolve(__dirname, '../../src/ui/ChatWebviewProvider.ts');
+
+interface RawInput {
+  [key: string]: unknown;
+}
+
+type LabelFn = (rawInput: RawInput | undefined, title?: string | null, index?: number) => string;
+type ClaudeLabelFn = (rawInput: RawInput | undefined, index?: number) => string;
+
+// Extract a single top-level function declaration by name. `sigStart` is the
+// exact `function <name>(` opener; the declaration ends at the next `function`
+// opener at the same brace depth (webview functions are uniformly indented with
+// a leading two/three spaces, and a closing `}` at that same indent).
+function extractFunction(src: string, sigStart: string): string {
+  const startIdx = src.indexOf(sigStart);
+  assert.ok(startIdx >= 0, `'${sigStart.replace(/\s+/g, ' ')}' not found in ChatWebviewProvider.ts`);
+  // Find the next top-level `function` opener after startIdx — the boundary of
+  // the current declaration.
+  const nextFn = /^(\n\s*)function\s+[A-Za-z_]/m.exec(src.slice(startIdx + sigStart.length));
+  let endIdx = nextFn ? startIdx + sigStart.length + nextFn.index + 1 : -1;
+  if (endIdx < 0) {
+    // Fallback: no next function — pull to end of file.
+    endIdx = src.length;
+  }
+  return src.slice(startIdx, endIdx).trim();
+}
+
+function extractLabelScope(): { crewStageLabel: LabelFn; claudeStageLabel: ClaudeLabelFn } {
+  const src = fs.readFileSync(SOURCE, 'utf8');
+  const looksLikeClaudeAgentSpawn = extractFunction(
+    src,
+    'function looksLikeClaudeAgentSpawn(title, rawInput, toolName) {',
+  );
+  const isSubagentSpawnTitle = extractFunction(src, 'function isSubagentSpawnTitle(title, rawInput, toolName) {');
+  const crewStageLabel = extractFunction(src, 'function crewStageLabel(rawInput, title, index) {');
+  const claudeStageLabel = extractFunction(src, 'function claudeStageLabel(rawInput, index) {');
+  const body = looksLikeClaudeAgentSpawn + '\n' + isSubagentSpawnTitle + '\n' + crewStageLabel +
+    '\n' + claudeStageLabel + '\nreturn { crewStageLabel, claudeStageLabel };';
+  const factory = new Function(body) as () => { crewStageLabel: LabelFn; claudeStageLabel: ClaudeLabelFn };
+  return factory();
+}
+
+suite('crewStageLabel (subagent stage title)', () => {
+  const { crewStageLabel: label } = extractLabelScope();
+
+  test('Codex spawnAgent with only prompt uses "Subagent N", not the parent task', () => {
+    // Regression: rawInput.prompt on spawnAgent is the PARENT's task, so it must
+    // NOT be used as the stage label. Falls through to the generic Subagent N.
+    assert.strictEqual(
+      label({ prompt: 'Find the weather in Paris.' }, 'spawnAgent', 1),
+      'Subagent 1',
+    );
+  });
+
+  test('Codex spawnAgent with agentPath shows the subagent path', () => {
+    // agentPath is an identity field → preferred over prompt for spawn titles.
+    const name = label(
+      { prompt: 'Analyze traffic.', agentPath: '/root/weather_research' },
+      'spawnAgent',
+      2,
+    );
+    assert.strictEqual(name, '/root/weather_research');
+  });
+
+  test('agent_path and subagent_type identity fields are preferred over prompt', () => {
+    assert.strictEqual(
+      label({ prompt: 'do x', agent_path: 'explore' }, 'spawnAgent', 1),
+      'explore',
+    );
+    assert.strictEqual(
+      label({ prompt: 'do x', subagent_type: 'file-analyzer' }, 'Task', 1),
+      'file-analyzer',
+    );
+  });
+
+  test('ericli spawn_agent with {name, role} shows the subagent name', () => {
+    assert.strictEqual(
+      label({ name: 'explore', role: 'agent', prompt: 'do x' }, 'spawn_agent', 3),
+      'explore',
+    );
+    // role is a lower-precedence fallback for spawn titles.
+    assert.strictEqual(
+      label({ role: 'web-researcher', prompt: 'find docs' }, 'spawn_agent', 1),
+      'web-researcher',
+    );
+  });
+
+  test('non-spawn tool with description/task/prompt keeps that descriptive text', () => {
+    // Fallback to task text is preserved for NON-spawn tools.
+    assert.strictEqual(
+      label({ description: 'Read config to find server port' }, 'Read', 1),
+      'Read config to find server port',
+    );
+    assert.strictEqual(
+      label({ task: 'Update roadmap' }, 'Edit', 1),
+      'Update roadmap',
+    );
+    // Non-spawn title + prompt → prompt text is the label.
+    assert.strictEqual(
+      label({ prompt: 'grep for sessionUsage', directory: '/x' }, 'grep_files', 1),
+      'grep for sessionUsage',
+    );
+  });
+
+  test('long identity values are truncated to 60 chars with ellipsis', () => {
+    const long = 'x'.repeat(80);
+    const name = label({ name: long }, 'spawn_agent', 4);
+    assert.strictEqual(name, 'x'.repeat(57) + '...');
+    assert.strictEqual(name.length, 60);
+  });
+
+  test('falls back to Subagent N when no identity and title is a spawn title', () => {
+    assert.strictEqual(label({}, 'spawnAgent', 7), 'Subagent 7');
+    // Default index is 1 when not supplied.
+    assert.strictEqual(label(undefined, 'spawn_agent'), 'Subagent 1');
+  });
+
+  test('claudeStageLabel delegates to crewStageLabel (null title)', () => {
+    const { claudeStageLabel: claude } = extractLabelScope();
+    assert.strictEqual(claude({ name: 'deep-dive' }, 2), 'deep-dive');
+    assert.strictEqual(claude({}, 5), 'Subagent 5');
+  });
+});
