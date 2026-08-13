@@ -180,6 +180,10 @@
         "title": "ACP: Fork Session"
       },
       {
+        "command": "acp.forkToAgent",
+        "title": "ACP: Fork to Another Agent"
+      },
+      {
         "command": "acp.restartAgent",
         "title": "ACP: Restart Agent",
         "icon": "$(debug-restart)"
