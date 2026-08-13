@@ -23,9 +23,11 @@ export interface ConnectionInfo {
   onKiroCommandsAvailable?: (params: any) => void;
   /** `_kiro.dev/compaction/status` — context compaction progress. */
   onKiroCompactionStatus?: (params: any) => void;
-  /** `_kiro.dev/clear/status` — session history clear progress. */
-  onKiroClearStatus?: (params: any) => void;
-  /** `_session/terminate` — subagent session terminated. */
+ /** `_kiro.dev/clear/status` — session history clear progress. */
+ onKiroClearStatus?: (params: any) => void;
+  /** `_kiro.dev/goal/status` — Kiro CLI goal lifecycle notification. */
+  onKiroGoalStatus?: (params: any) => void;
+ /** `_session/terminate` — subagent session terminated. */
   onSessionTerminate?: (params: any) => void;
   /**
    * Cursor ACP extension methods (`cursor/*`). Notifications have no `id`;
@@ -199,9 +201,11 @@ export class ConnectionManager {
               info.onKiroCommandsAvailable(params);
             } else if (method === '_kiro.dev/compaction/status' && info?.onKiroCompactionStatus) {
               info.onKiroCompactionStatus(params);
-            } else if (method === '_kiro.dev/clear/status' && info?.onKiroClearStatus) {
-              info.onKiroClearStatus(params);
-            } else if (method === '_session/terminate' && info?.onSessionTerminate) {
+           } else if (method === '_kiro.dev/clear/status' && info?.onKiroClearStatus) {
+             info.onKiroClearStatus(params);
+            } else if (method === '_kiro.dev/goal/status' && info?.onKiroGoalStatus) {
+              info.onKiroGoalStatus(params);
+           } else if (method === '_session/terminate' && info?.onSessionTerminate) {
               info.onSessionTerminate(params);
             }
           } else if (params && method.startsWith('cursor/') && info?.onCursorMethod) {

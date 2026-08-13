@@ -326,6 +326,11 @@ export function activate(context: vscode.ExtensionContext): void {
     chatWebviewProvider.notifyKiroClearStatus(params);
   });
 
+  // Forward _kiro.dev/goal/status (Kiro CLI goal lifecycle)
+  sessionManager.on('kiro-goal-status', (params: any) => {
+    chatWebviewProvider.notifyKiroGoalStatus(params);
+  });
+
   // Forward _session/terminate (subagent session ended)
   sessionManager.on('session-terminate', (params: any) => {
     chatWebviewProvider.notifySessionTerminate(params);

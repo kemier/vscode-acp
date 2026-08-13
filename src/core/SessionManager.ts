@@ -136,6 +136,7 @@ export interface SessionManagerEvents {
   'kiro-commands-available': [params: any];
   'kiro-compaction-status': [params: any];
   'kiro-clear-status': [params: any];
+  'kiro-goal-status': [params: { sessionId: string; goalSnapshot: any }];
   'session-terminate': [params: any];
   'cursor-task': [params: any];
   'cursor-update-todos': [params: any];
@@ -1884,6 +1885,33 @@ export class SessionManager extends EventEmitter {
 
     connInfo.onKiroClearStatus = (params: any) => {
       this.emit('kiro-clear-status', params);
+    };
+
+   connInfo.onKiroGoalStatus = (params: any) => {
+     // Kiro CLI sends _kiro.dev/goal/status with {state, iteration, maxIterations, message, elapsedSecs, sessionId}
+     // Convert to the same goal snapshot format used by codex-acp's session_info_update _meta.codex.goal
+     const sessionId = params.sessionId || this.activeSessionId;
+     const session = this.sessions.get(sessionId);
+      if (session) {
+        const kiroGoalStatusMap: Record<string, string> = {
+          active: 'active',
+          paused: 'paused',
+          completed: 'complete',
+          blocked: 'blocked',
+          cancelled: 'complete',
+        };
+        const goalSnapshot = {
+          objective: params.message || '',
+          status: kiroGoalStatusMap[params.state] || params.state || 'active',
+          tokenBudget: null,
+          timeUsedSeconds: params.elapsedSecs || 0,
+          createdAt: null,
+          controlMethod: '_kiro.dev/goal/control',
+        };
+        (session as any).goalSnapshot = goalSnapshot;
+        // Emit so ChatWebviewProvider can forward to webview
+        this.emit('kiro-goal-status', { sessionId, goalSnapshot });
+      }
     };
 
     connInfo.onSessionTerminate = (params: any) => {

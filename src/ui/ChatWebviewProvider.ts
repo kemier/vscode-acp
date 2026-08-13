@@ -3462,6 +3462,15 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     this.postMessage({ type: 'kiroClearStatus', params });
   }
 
+  /** Notify webview of _kiro.dev/goal/status (Kiro CLI goal lifecycle). */
+  notifyKiroGoalStatus(params: any): void {
+    const { sessionId, goalSnapshot } = params;
+    // Forward goal snapshot to webview as a session_info_update-like message
+    this.postMessage({ type: 'kiroGoalStatus', sessionId, goalSnapshot });
+    // Also update the session's goalSnapshot for webview restore
+    this.sendCurrentState();
+  }
+
   /** Notify webview of `_session/terminate` (subagent ended). */
   notifySessionTerminate(params: any): void {
     this.postMessage({ type: 'sessionTerminate', params });
@@ -5381,10 +5390,12 @@ let isCompacting = false;  // true while /compact is running
     } else {
       addUserBubbleForQueuedEntry(entry);
       hasSentPrompt = true;
-      // Guard the transition tick: the sendPrompt is now in flight host-side
-      // and until promptStart lands, new input must queue, not send.
-      isSendingPrompt = true;
-      vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
+     // Guard the transition tick: the sendPrompt is now in flight host-side
+     // and until promptStart lands, new input must queue, not send.
+     isSendingPrompt = true;
+     // Optimistically set processing=true so the Stop button shows immediately.
+     setProcessing(true);
+     vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
     }
   }
 }
@@ -5470,9 +5481,12 @@ hasSentPrompt = true;
    // The sendPrompt is now in flight — a message typed in the transition
    // tick (before promptStart arrives) must queue, and the next queued
    // message must wait for THIS turn's promptEnd (strict FIFO, one per turn).
-   isSendingPrompt = true;
-   vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
- }
+  isSendingPrompt = true;
+  // Optimistically set processing=true so the Stop button shows immediately.
+  // See handleSend() for rationale (VS Code webview postMessage throttling).
+  setProcessing(true);
+  vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
+}
 return true;
 }
 
@@ -7066,15 +7080,23 @@ function handleSend() {
      return;
    }
 
-   addMessage('user', text || '(image)');
-    promptInput.value = '';
-    const images = pendingImages.splice(0);
-    imagePreviewStrip.innerHTML = '';
-    updateSendButton();
-  hasSentPrompt = true;
-  lastPromptWasSlash = !!(text && text.startsWith('/') && !text.startsWith('/rename') && !text.startsWith('/session'));
-  vscode.postMessage({ type: 'sendPrompt', text: text || ' ', images });
- }
+  addMessage('user', text || '(image)');
+   promptInput.value = '';
+   const images = pendingImages.splice(0);
+   imagePreviewStrip.innerHTML = '';
+   updateSendButton();
+ hasSentPrompt = true;
+ lastPromptWasSlash = !!(text && text.startsWith('/') && !text.startsWith('/rename') && !text.startsWith('/session'));
+  // Optimistically set processing=true so the Stop button shows immediately.
+  // The extension host will send promptStart back, but postMessage round-trips
+  // can be delayed by VS Code webview iframe throttling (observed 16-second
+  // delay in some sessions). Setting isProcessing here ensures the user sees
+  // the Stop button without waiting for the round-trip.
+  // isSendingPrompt guards against concurrent sends; promptStart will clear it.
+  isSendingPrompt = true;
+  setProcessing(true);
+ vscode.postMessage({ type: 'sendPrompt', text: text || ' ', images });
+}
 
     function handleCancel() {
       vscode.postMessage({ type: 'cancelTurn' });
@@ -13859,8 +13881,13 @@ sessionState = {
               break;
             }
           }
-          addMessage('error', msg.message || 'An error occurred');
-          break;
+         addMessage('error', msg.message || 'An error occurred');
+         // Reset processing state in case the error prevents promptEnd from firing
+         // (e.g. early return in handleSendPrompt before slash command path).
+         if (isProcessing && !isCompacting && !isClearing) {
+           setProcessing(false);
+         }
+         break;
 
        case 'showSystemMessage':
          addMessage('system', msg.text || '');
@@ -14008,6 +14035,14 @@ sessionState = {
 
       case 'kiroClearStatus':
         handleKiroClearStatus(msg.params);
+        break;
+
+      case 'kiroGoalStatus':
+        // Kiro CLI goal status — update goal chip
+        if (msg.goalSnapshot) {
+          goalSnapshot = msg.goalSnapshot;
+          renderGoalChip();
+        }
         break;
 
       case 'sessionTerminate':
