@@ -6270,11 +6270,11 @@ var end = displayText.length;
     });
 
     // --- Auto-resize textarea (within the input area constraints) ---
-    function updateSendButton() {
-      if (isProcessing) return; // Stop button is always enabled
-      const hasText = promptInput.value.trim().length > 0;
-      sendStopBtn.disabled = !hasText;
-    }
+   function updateSendButton() {
+     if (isProcessing) return; // Stop button is always enabled
+     const hasText = promptInput.value.trim().length > 0;
+     sendStopBtn.disabled = !hasText || !hasActiveSession;
+   }
 
     promptInput.addEventListener('input', () => {
     // @mention autocomplete
@@ -6855,9 +6855,17 @@ function handleLocalSlashCommand(cmdText) {
   return false;
 }
 
- function handleSend() {
-   const text = promptInput.value.trim();
-   if (!text && pendingImages.length === 0) return;
+function handleSend() {
+  const text = promptInput.value.trim();
+  if (!text && pendingImages.length === 0) return;
+  // Guard: don't send if there's no active agent session (e.g. after reload
+  // before reconnecting). The Send button is also disabled via
+  // updateSendButton, but this catches edge cases like Enter key.
+  if (!hasActiveSession) {
+    // Show the resume bar instead
+    updateResumeBar();
+    return;
+  }
    // Transition-tick guard: a sendPrompt was just posted by drainQueue /
    // Send Now but the turn hasn't started yet (promptStart not received).
    // Sending now would race the in-flight session/prompt. Queue instead.
