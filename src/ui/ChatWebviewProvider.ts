@@ -1527,7 +1527,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // Forward goal snapshot from _meta.codex.goal (codex-acp extension).
       // The raw update is already forwarded to the webview below, but we
       // also store it on the session for the webview restore path.
-      const goalMeta = (update as any)?._meta?.codex?.goal;
+      // Read _meta from the UPDATE DATA level (updateData), not the
+      // notification level. The ACP SDK wraps agent updates as:
+      //   { sessionId, update: { sessionUpdate: "...", _meta: {...} } }
+      // SessionInfoUpdate._meta lives inside update.update, so we must
+      // read updateData._meta, NOT update._meta (which is the notification-
+      // level _meta and is typically undefined for session_info_update).
+      const goalMeta = updateData?._meta?.codex?.goal;
       if (goalMeta !== undefined) {
         const session = this.sessionManager.getSession(update.sessionId);
         if (session) {
