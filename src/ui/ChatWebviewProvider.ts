@@ -11347,6 +11347,16 @@ function orderCompactFoldContents(body) {
         result = pathLine;
       }
     }
+    else if (typeof rawInput.directory === 'string' && rawInput.directory) {
+      var dirLine = rawInput.directory;
+      if (typeof rawInput.pattern === 'string' && rawInput.pattern) {
+        result = dirLine + '\\npattern: ' + rawInput.pattern;
+      } else if (typeof rawInput.query === 'string' && rawInput.query) {
+        result = dirLine + '\\nquery: ' + rawInput.query;
+      } else {
+        result = dirLine;
+      }
+    }
     else if (typeof rawInput.pattern === 'string' && rawInput.pattern) {
       result = rawInput.pattern;
     }
