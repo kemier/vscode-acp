@@ -73,13 +73,11 @@ suite('crewStageLabel (subagent stage title)', () => {
   });
 
   test('Codex spawnAgent with agentPath shows the subagent path', () => {
-    // agentPath is an identity field → preferred over prompt for spawn titles.
-    const name = label(
-      { prompt: 'Analyze traffic.', agentPath: '/root/weather_research' },
-      'spawnAgent',
-      2,
-    );
-    assert.strictEqual(name, '/root/weather_research');
+    // agentPath is an identity field → basename it, preferred over prompt.
+    const name = label({ prompt: 'Analyze traffic.', agentPath: '/root/weather_research' }, 'spawnAgent', 2);
+    assert.strictEqual(name, 'weather_research');
+    // agent_path also basenames.
+    assert.strictEqual(label({ agent_path: 'a/b/c/explore' }, 'spawnAgent', 1), 'explore');
   });
 
   test('agent_path and subagent_type identity fields are preferred over prompt', () => {

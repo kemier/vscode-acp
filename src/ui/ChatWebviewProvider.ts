@@ -11709,10 +11709,17 @@ function orderCompactFoldContents(body) {
        rawInput.agentPath || rawInput.agent_path || rawInput.subagent_type ||
        rawInput.name || rawInput.agent_name || rawInput.role
      );
-     if (typeof desc === 'string' && desc.trim()) {
-       var sd = desc.trim();
-       return sd.length > 60 ? sd.substring(0, 57) + '...' : sd;
-     }
+    if (typeof desc === 'string' && desc.trim()) {
+      var sd = desc.trim();
+      // agentPath/agent_path carry a full filesystem path; basename it so the
+      // stage shows the subagent's directory name instead of the whole path
+      // (mirrors codex-acp's agentPath.split('/').filter(Boolean).at(-1)).
+      if (rawInput.agentPath === sd || rawInput.agent_path === sd) {
+        var base = sd.split('\\').join('/').split('/').filter(Boolean).pop();
+        if (base) sd = String(base);
+      }
+      return sd.length > 60 ? sd.substring(0, 57) + '...' : sd;
+    }
      if (!isSubagentSpawnTitle(title, rawInput)) {
        var taskDesc = rawInput && (
          rawInput.description || rawInput.task || rawInput.prompt
