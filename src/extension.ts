@@ -27,7 +27,6 @@ import { AgentManager } from './core/AgentManager';
 import { ConnectionManager } from './core/ConnectionManager';
 import { getAgentConfigs } from './config/AgentConfig';
 import { SessionManager } from './core/SessionManager';
-import { LocalAgentManager } from './core/LocalAgentManager';
 import { NESManager } from './core/NESManager';
 import { NESInlineCompletionProvider } from './core/NESInlineCompletionProvider';
 import { SessionHistoryStore } from './core/SessionHistoryStore';
@@ -85,17 +84,6 @@ export function activate(context: vscode.ExtensionContext): void {
   const connectionManager = new ConnectionManager(sessionUpdateHandler);
   const sessionManager = new SessionManager(agentManager, connectionManager, sessionUpdateHandler);
   _sessionManager = sessionManager;
-
-  // --- Local A2A agent management ---
-  // When ericli sends `_ericli/a2a/spawn_local`, the IDE spawns a new ACP
-  // session (visible chat panel) and routes delegation requests to it.
-  const localAgentManager = new LocalAgentManager(
-    sessionManager,
-    agentManager,
-    connectionManager,
-    sessionUpdateHandler,
-  );
-  sessionManager.setLocalAgentManager(localAgentManager);
 
   // --- NES (Next Edit Suggestions) ---
   // NES is an experimental ACP feature. codex-acp does NOT currently support
@@ -929,7 +917,7 @@ export function activate(context: vscode.ExtensionContext): void {
         );
         if (choice === 'Retry Now') {
           try {
-            await vscode.commands.executeCommand('acp.openSession', { sessionId: params?.sessionId, agentName: params?.agentName });
+            await vscode.commands.executeCommand('acp.openSession', { sessionId, agentName });
           } catch (innerErr: any) {
             vscode.window.showErrorMessage(`Retry failed: ${innerErr?.message || innerErr}`);
           }
@@ -959,31 +947,6 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     try {
       await vscode.commands.executeCommand('acp-chat.focus');
-
-      // Check if the local A2A agent is dead (process exited). If so,
-      // respawn it before loading the session — otherwise loadSession →
-      // ensureConnected throws "Unknown agent" because the process is gone
-      // and there's no config for dynamically-spawned agents.
-      const localAgentMgr = sessionManager.getLocalAgentManager();
-      if (localAgentMgr) {
-        const localAgent = localAgentMgr.findByAgentName(agentName);
-        if (localAgent && localAgent.state === 'dead') {
-          log(`openLocalAgentSession: agent '${agentName}' is dead, respawning...`);
-          const respawn = await localAgentMgr.respawnDeadAgent(agentName);
-          if (!respawn.success) {
-            vscode.window.showErrorMessage(
-              `Failed to respawn agent '${agentName}': ${respawn.error || 'Unknown error'}`,
-            );
-            return;
-          }
-          // The respawned agent has a new session ID — load that instead
-          // of the stale one from the tree item.
-          if (respawn.sessionId) {
-            await sessionManager.loadSession(agentName, respawn.sessionId);
-            return;
-          }
-        }
-      }
 
       // Load the session on the SPAWNED agent's connection.
       // We call loadSession directly — the spawned agent is already
