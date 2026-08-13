@@ -13732,19 +13732,33 @@ sessionState = {
    }
   // Auto-collapse completed turns (respect compact mode): hide thought +
   // tools behind the summary line. Clear sticky expand — turn is done.
-   if (currentTurnEl) {
-       if (currentToolsCountEl) currentToolsCountEl.dataset.count = String(currentToolCount);
-       var _hasSubagent = currentToolsCountEl && currentToolsCountEl._hasSubagent;
-       var _shouldCollapse = compactMode || _hasSubagent || currentToolCount > 3;
-       if (_shouldCollapse) {
-         var _endBody = getTurnFoldBody(currentTurnEl);
-         if (_endBody) _endBody._userExpanded = false;
-         ensureTurnFoldStructure(currentTurnEl, true);
-         _endBody = getTurnFoldBody(currentTurnEl);
-         if (_endBody) setFoldExpanded(_endBody, false);
-        } else if (currentToolsCountEl && currentToolsCountEl.classList.contains('turn-tools-summary')) {
-          updateToolGroupSummary(currentToolsCountEl, currentToolCount, currentToolsCountEl._titles || [], currentToolsCountEl._kinds || [], currentToolsCountEl._rawInputs || []);
+  if (currentTurnEl) {
+      if (currentToolsCountEl) currentToolsCountEl.dataset.count = String(currentToolCount);
+      var _hasSubagent = currentToolsCountEl && currentToolsCountEl._hasSubagent;
+      var _shouldCollapse = compactMode || _hasSubagent || currentToolCount > 3;
+      if (_shouldCollapse) {
+        var _endBody = getTurnFoldBody(currentTurnEl);
+        // Respect user's manual expand: if the user opened this fold during
+        // streaming to read thoughts/tools, don't snap it shut at promptEnd.
+        // The fold will still collapse on the next renderChatHistory /
+        // forceCollapseTurnFolds (session switch, reload) if needed.
+        var _userOpened = _endBody && _endBody._userExpanded && !isLoadingSession;
+        ensureTurnFoldStructure(currentTurnEl, true);
+        _endBody = getTurnFoldBody(currentTurnEl);
+        if (_endBody) {
+          if (_userOpened) {
+            // Keep expanded — preserve _userExpanded so sticky logic in
+            // ensureTurnFoldStructure continues to honor it.
+            _endBody._userExpanded = true;
+            setFoldExpanded(_endBody, true);
+          } else {
+            _endBody._userExpanded = false;
+            setFoldExpanded(_endBody, false);
+          }
         }
+      } else if (currentToolsCountEl && currentToolsCountEl.classList.contains('turn-tools-summary')) {
+        updateToolGroupSummary(currentToolsCountEl, currentToolCount, currentToolsCountEl._titles || [], currentToolsCountEl._kinds || [], currentToolsCountEl._rawInputs || []);
+      }
         }
           currentToolsListEl = null;
           currentToolsCountEl = null;
