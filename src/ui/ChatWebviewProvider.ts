@@ -3738,13 +3738,19 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     .session-banner .goal-chip.visible { display: inline-flex; }
     .session-banner .goal-chip .goal-icon { flex-shrink: 0; font-size: 0.9em; }
     .session-banner .goal-chip .goal-text { overflow: hidden; text-overflow: ellipsis; }
-    .session-banner .goal-chip .goal-status {
-      flex-shrink: 0;
-      font-size: 0.85em;
-      opacity: 0.8;
-      text-transform: capitalize;
-    }
-    .session-banner .goal-chip .goal-btn {
+   .session-banner .goal-chip .goal-status {
+     flex-shrink: 0;
+     font-size: 0.85em;
+     opacity: 0.8;
+     text-transform: capitalize;
+   }
+   .session-banner .goal-chip .goal-progress {
+     flex-shrink: 0;
+     font-size: 0.8em;
+     opacity: 0.7;
+     font-variant-numeric: tabular-nums;
+   }
+   .session-banner .goal-chip .goal-btn {
       flex-shrink: 0;
       background: none;
       border: none;
@@ -4997,13 +5003,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     <span class="label">Follow</span>
   </button>
   <span class="status" id="status"></span>
-  <div class="goal-chip" id="goalChip">
-    <span class="goal-icon">🎯</span>
-    <span class="goal-text" id="goalText"></span>
-    <span class="goal-status" id="goalStatus"></span>
-    <button class="goal-btn" id="goalPauseBtn" title="Pause goal">⏸</button>
-    <button class="goal-btn" id="goalClearBtn" title="Clear goal">✕</button>
-  </div>
+ <div class="goal-chip" id="goalChip">
+   <span class="goal-icon">🎯</span>
+   <span class="goal-text" id="goalText"></span>
+   <span class="goal-status" id="goalStatus"></span>
+   <span class="goal-progress" id="goalProgress"></span>
+   <button class="goal-btn" id="goalPauseBtn" title="Pause goal">⏸</button>
+   <button class="goal-btn" id="goalClearBtn" title="Clear goal">✕</button>
+ </div>
  </div>
 
  <div class="messages-wrap">
@@ -15438,11 +15445,26 @@ sessionState = {
   // Supports pause/clear buttons that send goalControl messages.
   var goalChipEl = document.getElementById('goalChip');
   var goalTextEl = document.getElementById('goalText');
-  var goalStatusEl = document.getElementById('goalStatus');
-  var goalPauseBtn = document.getElementById('goalPauseBtn');
-  var goalClearBtn = document.getElementById('goalClearBtn');
+ var goalStatusEl = document.getElementById('goalStatus');
+ var goalProgressEl = document.getElementById('goalProgress');
+ var goalPauseBtn = document.getElementById('goalPauseBtn');
+ var goalClearBtn = document.getElementById('goalClearBtn');
 
-  if (goalPauseBtn) {
+ // Tick the goal chip elapsed time every second while active.
+ var goalTickInterval = null;
+ function startGoalTick() {
+   if (goalTickInterval) return;
+   goalTickInterval = setInterval(function() {
+     if (goalSnapshot && goalSnapshot.status === 'active') {
+       renderGoalChip();
+     }
+   }, 1000);
+ }
+ function stopGoalTick() {
+   if (goalTickInterval) { clearInterval(goalTickInterval); goalTickInterval = null; }
+ }
+
+ if (goalPauseBtn) {
     goalPauseBtn.addEventListener('click', function() {
       vscode.postMessage({ type: 'goalControl', action: 'pause' });
     });
@@ -15453,14 +15475,18 @@ sessionState = {
     });
   }
 
-  function renderGoalChip() {
-    if (!goalChipEl) return;
-    if (!goalSnapshot) {
-      goalChipEl.classList.remove('visible');
-      return;
-    }
-    goalChipEl.classList.add('visible');
-    // Remove all status-* classes
+ function renderGoalChip() {
+   if (!goalChipEl) return;
+   if (!goalSnapshot) {
+     goalChipEl.classList.remove('visible');
+     stopGoalTick();
+     return;
+   }
+   goalChipEl.classList.add('visible');
+   // Start live elapsed-time tick while goal is active
+   if (goalSnapshot.status === 'active') startGoalTick();
+   else stopGoalTick();
+   // Remove all status-* classes
     goalChipEl.className = 'goal-chip visible status-' + (goalSnapshot.status || 'active');
     if (goalTextEl) {
       var text = goalSnapshot.objective || '';
@@ -15468,18 +15494,42 @@ sessionState = {
       goalTextEl.textContent = text;
       goalTextEl.title = goalSnapshot.objective || '';
     }
-    if (goalStatusEl) {
-      var statusLabels = {
-        active: '',
-        paused: '(paused)',
-        blocked: '(blocked)',
-        complete: '(done)',
-        budgetLimited: '(budget)',
-        usageLimited: '(usage)'
-      };
-      goalStatusEl.textContent = statusLabels[goalSnapshot.status] || '';
-    }
-    // Show/hide pause button based on status
+   if (goalStatusEl) {
+     var statusLabels = {
+       active: '',
+       paused: '(paused)',
+       blocked: '(blocked)',
+       complete: '(done)',
+       budgetLimited: '(budget)',
+       usageLimited: '(usage)'
+     };
+     goalStatusEl.textContent = statusLabels[goalSnapshot.status] || '';
+   }
+   // Show real-time progress info (iteration, elapsed time, token budget)
+   if (goalProgressEl) {
+     var parts = [];
+     // Kiro: iteration / maxIterations
+     if (typeof goalSnapshot.iteration === 'number' && typeof goalSnapshot.maxIterations === 'number') {
+       parts.push('iter ' + goalSnapshot.iteration + '/' + goalSnapshot.maxIterations);
+     }
+     // Elapsed time -- use live tick for active goals
+     var secs = goalSnapshot.timeUsedSeconds || goalSnapshot.elapsedSecs || 0;
+     if (goalSnapshot.status === 'active' && goalSnapshot.createdAt) {
+       secs = Math.max(secs, Math.floor((Date.now() / 1000) - goalSnapshot.createdAt));
+     }
+     if (secs > 0) {
+       if (secs < 60) parts.push(secs + 's');
+       else parts.push(Math.floor(secs / 60) + 'm' + String(secs % 60).padStart(2, '0') + 's');
+     }
+     // Codex: token budget usage
+     if (typeof goalSnapshot.tokenBudget === 'number' && goalSnapshot.tokenBudget > 0) {
+       var used = goalSnapshot.tokensUsed || 0;
+       var pct = Math.round((used / goalSnapshot.tokenBudget) * 100);
+       parts.push(pct + '% budget');
+     }
+     goalProgressEl.textContent = parts.length ? '\\u00b7 ' + parts.join(' \\u00b7 ') : '';
+   }
+   // Show/hide pause button based on status
     if (goalPauseBtn) {
       goalPauseBtn.style.display = (goalSnapshot.status === 'active') ? '' : 'none';
     }
