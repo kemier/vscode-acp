@@ -11045,8 +11045,11 @@ function orderCompactFoldContents(body) {
      * @param opts.interim  when true (mid-turn, before more tools), tuck the
      *   segment into the collapse fold so only the final summary stays visible.
      */
- function commitCurrentTextSegment(opts) {
-   if (!currentAssistantText) {
+function commitCurrentTextSegment(opts) {
+   // Skip whitespace-only text — DeepSeek-V4-Flash emits whitespace
+   // between tool calls (empty streams), which would create empty
+   // bubbles in the chat. Treat whitespace-only like empty text.
+   if (!currentAssistantText || !currentAssistantText.trim()) {
      // Empty assistant text: still clean up the interim element so it
      // doesn't linger as an empty "Reply" placeholder in collapsed mode.
      // Without this, the assistant-interim element stays in the DOM with
