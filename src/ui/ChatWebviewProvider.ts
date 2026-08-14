@@ -6337,6 +6337,18 @@ var end = displayText.length;
     let lastCommittedAssistantEl = null;  // last bubble committed by a tool-call split
     let lastCommittedMessageId = null;    // its messageId
     let lastCommittedText = '';           // its text (to resume appending)
+    // Synthetic per-turn messageId for agents that never emit one (legacy
+    // Kiro CLI, older ericli builds). kiro-cli streams agent_message_chunk
+    // without messageId, so every sentence lands as its OWN bubble
+    // (hasCurrentAssistantEl=false on every chunk). Assigning a stable
+    // per-turn id lets vscode-acp group the whole turn into one bubble and
+    // reattach text after a tool-call split (text→tool→text), same as agents
+    // that send a real messageId. Reset to a fresh value at each promptStart.
+    let fallbackMessageId = 'turn-' + (Date.now().toString(36)) + '-' + (Math.random().toString(36).slice(2, 8));
+    // Set true as soon as a chunk carrying a REAL (agent-provided) messageId
+    // arrives in this turn. While true we trust the agent's ids and never
+    // synthesise; agents that mix none+real ids fall back to real only.
+    let sawRealMessageIdThisTurn = false;
     // When a reactivated bubble is committed again, update this chatHistory
     // entry in place instead of pushing a new one (avoids duplicate entries +
     // index drift from splicing). -1 = not reactivated (normal push).
@@ -13592,6 +13604,9 @@ sessionState = {
          lastCommittedMessageId = null;
          lastCommittedText = '';
          reactivatedHistoryIndex = -1;
+         // Fresh synthetic id per turn for agents without real messageIds.
+         fallbackMessageId = 'turn-' + (Date.now().toString(36)) + '-' + (Math.random().toString(36).slice(2, 8));
+         sawRealMessageIdThisTurn = false;
          currentTurnEl = null;
         currentThoughtText = '';
         thoughtDomBase = '';
@@ -15016,6 +15031,15 @@ sessionState = {
           // one continuous assistant message. Without messageId (legacy agents),
           // lastCommittedMessageId is null and this never matches → old behavior.
           var _incomingMessageId = typeof update.messageId === 'string' ? update.messageId : null;
+          if (_incomingMessageId) {
+            sawRealMessageIdThisTurn = true;
+          } else if (!sawRealMessageIdThisTurn) {
+            // The agent never sent a real messageId yet in this turn (legacy
+            // kiro-cli / old ericli). Use the synthetic per-turn id so all
+            // chunks of the turn group into one bubble and text reattaches
+            // after a tool-call split.
+            _incomingMessageId = fallbackMessageId;
+          }
           if (
             !currentAssistantEl &&
             _incomingMessageId &&
