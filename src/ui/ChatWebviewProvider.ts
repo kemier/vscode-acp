@@ -11152,6 +11152,16 @@ function orderCompactFoldContents(body) {
       if (currentAssistantText) {
         commitCurrentTextSegment({ interim: true });
       }
+      // A tool call splits the assistant message. Clear reattach state so
+      // post-tool text starts a FRESH bubble instead of concatenating back
+      // into the pre-tool bubble. Without this, agents that use a turn-scoped
+      // messageId (e.g. Codex sends the same messageId for all chunks in a
+      // turn) would reattach every post-tool segment to the first bubble,
+      // grouping all assistant text at the top before all tool calls.
+      lastCommittedAssistantEl = null;
+      lastCommittedMessageId = null;
+      lastCommittedText = '';
+      reactivatedHistoryIndex = -1;
       chatHistory.push({
         kind: 'toolCall',
         toolCallId: toolCallId,
