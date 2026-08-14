@@ -6345,6 +6345,10 @@ var end = displayText.length;
     // reattach text after a tool-call split (text→tool→text), same as agents
     // that send a real messageId. Reset to a fresh value at each promptStart.
     let fallbackMessageId = 'turn-' + (Date.now().toString(36)) + '-' + (Math.random().toString(36).slice(2, 8));
+    // Counter for per-segment fallback messageIds (agents without real messageId).
+    // Each post-tool-call text block gets a unique fallback so it creates a NEW
+    // bubble instead of reattaching to (and concatenating with) the prior one.
+    let messageSegmentCounter = 0;
     // Set true as soon as a chunk carrying a REAL (agent-provided) messageId
     // arrives in this turn. While true we trust the agent's ids and never
     // synthesise; agents that mix none+real ids fall back to real only.
@@ -13637,9 +13641,10 @@ sessionState = {
          lastCommittedText = '';
          reactivatedHistoryIndex = -1;
          // Fresh synthetic id per turn for agents without real messageIds.
-         fallbackMessageId = 'turn-' + (Date.now().toString(36)) + '-' + (Math.random().toString(36).slice(2, 8));
-         sawRealMessageIdThisTurn = false;
-         currentTurnEl = null;
+        fallbackMessageId = 'turn-' + (Date.now().toString(36)) + '-' + (Math.random().toString(36).slice(2, 8));
+        sawRealMessageIdThisTurn = false;
+        messageSegmentCounter = 0;
+        currentTurnEl = null;
         currentThoughtText = '';
         thoughtDomBase = '';
         thoughtStartTime = null;
@@ -15065,13 +15070,16 @@ sessionState = {
           var _incomingMessageId = typeof update.messageId === 'string' ? update.messageId : null;
           if (_incomingMessageId) {
             sawRealMessageIdThisTurn = true;
-          } else if (!sawRealMessageIdThisTurn) {
-            // The agent never sent a real messageId yet in this turn (legacy
-            // kiro-cli / old ericli). Use the synthetic per-turn id so all
-            // chunks of the turn group into one bubble and text reattaches
-            // after a tool-call split.
-            _incomingMessageId = fallbackMessageId;
-          }
+         } else if (!sawRealMessageIdThisTurn) {
+           // The agent never sent a real messageId yet in this turn (legacy
+           // kiro-cli / old ericli). Use the synthetic per-turn id for bubble
+           // grouping within a single message segment, but do NOT use it for
+           // cross-tool-call reattachment — that would concatenate ALL
+           // assistant text in a turn into one giant bubble (text→tool→text
+           // →tool→text all in one). Instead, generate a fresh fallback per
+           // segment so each post-tool text block gets its own bubble.
+           _incomingMessageId = fallbackMessageId + '-seg-' + messageSegmentCounter++;
+         }
           if (
             !currentAssistantEl &&
             _incomingMessageId &&
