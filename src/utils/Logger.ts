@@ -1,4 +1,7 @@
 import * as vscode from 'vscode';
+import { formatAcpErrorMessage } from './formatAcpErrorMessage';
+
+export { formatAcpErrorMessage } from './formatAcpErrorMessage';
 
 let _outputChannel: vscode.OutputChannel | undefined;
 let _trafficChannel: vscode.OutputChannel | undefined;
@@ -71,11 +74,8 @@ export function log(message: string, ...args: unknown[]): void {
 
 export function logError(message: string, error?: unknown): void {
   const timestamp = new Date().toISOString();
-  const errMsg = error instanceof Error ? error.message : String(error ?? '');
-  // Include JSON-RPC error data if present (RequestError has a .data property)
-  const errData = (error as any)?.data;
-  const fullMsg = errData ? `${errMsg}: ${typeof errData === 'string' ? errData : JSON.stringify(errData)}` : errMsg;
-  getOutputChannel().appendLine(`[${timestamp}] ERROR: ${message} ${fullMsg}`);
+  const fullMsg = formatAcpErrorMessage(error, '');
+  getOutputChannel().appendLine(`[${timestamp}] ERROR: ${message}${fullMsg ? ` ${fullMsg}` : ''}`);
   if (error instanceof Error && error.stack) {
     getOutputChannel().appendLine(error.stack);
   }

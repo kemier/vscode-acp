@@ -19,7 +19,7 @@ import { TerminalOutputStore } from '../core/TerminalOutputStore';
 import { StreamCoalescer } from '../core/StreamCoalescer';
 import { FollowCoalescer, pickFollowTarget, type ToolCallLocationLike } from '../core/FollowAgent';
 import { needsRestoreAfterCapture } from '../core/SessionCaptureRestore';
-import { log, logError, getOutputChannel } from '../utils/Logger';
+import { log, logError, formatAcpErrorMessage, getOutputChannel } from '../utils/Logger';
 import { sendEvent } from '../utils/TelemetryManager';
 import { cleanSessionTitle } from '../utils/TitleCleaner';
 import { ACP_MATH_SPLIT_RE, createMathExtension } from '../utils/markdownMath';
@@ -1779,7 +1779,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         }
       } catch (e: any) {
         logError('Slash command failed', e);
-        this.postMessage({ type: 'error', message: e.message || 'Command failed' });
+        this.postMessage({ type: 'error', message: formatAcpErrorMessage(e, 'Command failed') });
       } finally {
         // Flush any buffered streaming text before sending promptEnd.
         // Without this, the coalescer's 8ms timer may still be holding
@@ -2024,8 +2024,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         return;
       }
       logError('Prompt failed', e);
-      const dataStr = e.data ? (typeof e.data === 'string' ? e.data : JSON.stringify(e.data)) : '';
-      const errMsg = dataStr ? `${e.message}: ${dataStr}` : e.message || 'Prompt failed';
+      const errMsg = formatAcpErrorMessage(e, 'Prompt failed');
       // Suppress the error if the connection was closed because the user
       // started a new conversation or switched sessions — the old session's
       // in-flight prompt is expected to fail during teardown.
@@ -2144,7 +2143,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       await this.handleExecuteKiroCommand(command, args);
     } catch (e: any) {
       logError('Kiro command failed', e);
-      this.postMessage({ type: 'error', message: e.message || 'Command failed' });
+      this.postMessage({ type: 'error', message: formatAcpErrorMessage(e, 'Command failed') });
     } finally {
       this.streamCoalescer.flush(activeId);
       this.postMessage({ type: 'promptEnd', stopReason: 'end_turn' });
@@ -14114,6 +14113,21 @@ sessionState = {
                 flushCompactionMessages();
               }
               break;
+            }
+            // Real compact failure (e.g. Pi "Nothing to compact") — drop the
+            // "Compacting conversation..." spinner. Leaving isCompacting true
+            // after the error message would block handleSend forever.
+            if (isCompacting) {
+              if (kiroCompactWatchdog) { clearTimeout(kiroCompactWatchdog); kiroCompactWatchdog = null; }
+              if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+              isCompacting = false;
+              manualCompacting = false;
+              compactedWarningText = '';
+              compactedNoticeText = '';
+              pendingPostCompactChunks = [];
+              hideCompactionProgress();
+              if (statusEl) statusEl.innerHTML = '';
+              setProcessing(false);
             }
           }
          addMessage('error', msg.message || 'An error occurred');
