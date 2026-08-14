@@ -29,14 +29,14 @@ suite('formatRawInput directory tooltip', () => {
   test('has a rawInput.directory branch', () => {
     const body = formatRawInputSource();
     assert.ok(
-      body.indexOf('typeof rawInput.directory === \'string\'') >= 0,
+      body.indexOf("typeof rawInput.directory === 'string'") >= 0,
       'formatRawInput has no rawInput.directory branch',
     );
   });
 
   test('directory branch mirrors the path branch (dir + pattern / dir + query)', () => {
     const body = formatRawInputSource();
-    const dirStart = body.indexOf('else if (typeof rawInput.directory === \'string\'');
+    const dirStart = body.indexOf("else if (typeof rawInput.directory === 'string'");
     assert.ok(dirStart >= 0, 'directory if-branch not found');
     // The webview template literal writes newlines as "\\n" (double backslash),
     // so the source contains two backslash chars before the "n".
@@ -50,10 +50,10 @@ suite('formatRawInput directory tooltip', () => {
 
   test('directory branch comes before the bare pattern fallback branch', () => {
     const body = formatRawInputSource();
-    const dirIdx = body.indexOf('else if (typeof rawInput.directory === \'string\'');
+    const dirIdx = body.indexOf("else if (typeof rawInput.directory === 'string'");
     // The last `typeof rawInput.pattern` is the top-level bare fallback (the
     // earlier matches are nested inside the path/directory branches).
-    const barePatternIdx = body.lastIndexOf('else if (typeof rawInput.pattern === \'string\'');
+    const barePatternIdx = body.lastIndexOf("else if (typeof rawInput.pattern === 'string'");
     assert.ok(dirIdx >= 0 && barePatternIdx >= 0, 'expected branches missing');
     assert.ok(dirIdx < barePatternIdx, 'directory branch must come before the bare pattern fallback');
   });

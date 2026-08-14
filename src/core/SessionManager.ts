@@ -1169,9 +1169,9 @@ export class SessionManager extends EventEmitter {
       }
       // Persist even in the fallback path (Kiro etc.)
       this.persistConfigValue(session, configId, value);
-     return session.configOptions;
-   }
- }
+      return session.configOptions;
+    }
+  }
 
   /**
    * Send a goal control action (pause/clear) to the agent via the
@@ -1887,11 +1887,11 @@ export class SessionManager extends EventEmitter {
       this.emit('kiro-clear-status', params);
     };
 
-   connInfo.onKiroGoalStatus = (params: any) => {
-     // Kiro CLI sends _kiro.dev/goal/status with {state, iteration, maxIterations, message, elapsedSecs, sessionId}
-     // Convert to the same goal snapshot format used by codex-acp's session_info_update _meta.codex.goal
-     const sessionId = params.sessionId || this.activeSessionId;
-     const session = this.sessions.get(sessionId);
+    connInfo.onKiroGoalStatus = (params: any) => {
+      // Kiro CLI sends _kiro.dev/goal/status with {state, iteration, maxIterations, message, elapsedSecs, sessionId}
+      // Convert to the same goal snapshot format used by codex-acp's session_info_update _meta.codex.goal
+      const sessionId = params.sessionId || this.activeSessionId;
+      const session = this.sessions.get(sessionId);
       if (session) {
         const kiroGoalStatusMap: Record<string, string> = {
           active: 'active',
@@ -1900,16 +1900,16 @@ export class SessionManager extends EventEmitter {
           blocked: 'blocked',
           cancelled: 'complete',
         };
-       const goalSnapshot = {
-         objective: params.message || '',
-         status: kiroGoalStatusMap[params.state] || params.state || 'active',
-         tokenBudget: null,
-         iteration: params.iteration,
-         maxIterations: params.maxIterations,
-         timeUsedSeconds: params.elapsedSecs || 0,
-         createdAt: null,
-         controlMethod: '_kiro.dev/goal/control',
-       };
+        const goalSnapshot = {
+          objective: params.message || '',
+          status: kiroGoalStatusMap[params.state] || params.state || 'active',
+          tokenBudget: null,
+          iteration: params.iteration,
+          maxIterations: params.maxIterations,
+          timeUsedSeconds: params.elapsedSecs || 0,
+          createdAt: null,
+          controlMethod: '_kiro.dev/goal/control',
+        };
         (session as any).goalSnapshot = goalSnapshot;
         // Emit so ChatWebviewProvider can forward to webview
         this.emit('kiro-goal-status', { sessionId, goalSnapshot });

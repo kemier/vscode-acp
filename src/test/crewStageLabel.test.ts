@@ -54,8 +54,15 @@ function extractLabelScope(): { crewStageLabel: LabelFn; claudeStageLabel: Claud
   const isSubagentSpawnTitle = extractFunction(src, 'function isSubagentSpawnTitle(title, rawInput, toolName) {');
   const crewStageLabel = extractFunction(src, 'function crewStageLabel(rawInput, title, index) {');
   const claudeStageLabel = extractFunction(src, 'function claudeStageLabel(rawInput, index) {');
-  const body = looksLikeClaudeAgentSpawn + '\n' + isSubagentSpawnTitle + '\n' + crewStageLabel +
-    '\n' + claudeStageLabel + '\nreturn { crewStageLabel, claudeStageLabel };';
+  const body =
+    looksLikeClaudeAgentSpawn +
+    '\n' +
+    isSubagentSpawnTitle +
+    '\n' +
+    crewStageLabel +
+    '\n' +
+    claudeStageLabel +
+    '\nreturn { crewStageLabel, claudeStageLabel };';
   const factory = new Function(body) as () => { crewStageLabel: LabelFn; claudeStageLabel: ClaudeLabelFn };
   return factory();
 }
@@ -66,10 +73,7 @@ suite('crewStageLabel (subagent stage title)', () => {
   test('Codex spawnAgent with only prompt uses "Subagent N", not the parent task', () => {
     // Regression: rawInput.prompt on spawnAgent is the PARENT's task, so it must
     // NOT be used as the stage label. Falls through to the generic Subagent N.
-    assert.strictEqual(
-      label({ prompt: 'Find the weather in Paris.' }, 'spawnAgent', 1),
-      'Subagent 1',
-    );
+    assert.strictEqual(label({ prompt: 'Find the weather in Paris.' }, 'spawnAgent', 1), 'Subagent 1');
   });
 
   test('Codex spawnAgent with agentPath shows the subagent path', () => {
@@ -81,26 +85,14 @@ suite('crewStageLabel (subagent stage title)', () => {
   });
 
   test('agent_path and subagent_type identity fields are preferred over prompt', () => {
-    assert.strictEqual(
-      label({ prompt: 'do x', agent_path: 'explore' }, 'spawnAgent', 1),
-      'explore',
-    );
-    assert.strictEqual(
-      label({ prompt: 'do x', subagent_type: 'file-analyzer' }, 'Task', 1),
-      'file-analyzer',
-    );
+    assert.strictEqual(label({ prompt: 'do x', agent_path: 'explore' }, 'spawnAgent', 1), 'explore');
+    assert.strictEqual(label({ prompt: 'do x', subagent_type: 'file-analyzer' }, 'Task', 1), 'file-analyzer');
   });
 
   test('ericli spawn_agent with {name, role} shows the subagent name', () => {
-    assert.strictEqual(
-      label({ name: 'explore', role: 'agent', prompt: 'do x' }, 'spawn_agent', 3),
-      'explore',
-    );
+    assert.strictEqual(label({ name: 'explore', role: 'agent', prompt: 'do x' }, 'spawn_agent', 3), 'explore');
     // role is a lower-precedence fallback for spawn titles.
-    assert.strictEqual(
-      label({ role: 'web-researcher', prompt: 'find docs' }, 'spawn_agent', 1),
-      'web-researcher',
-    );
+    assert.strictEqual(label({ role: 'web-researcher', prompt: 'find docs' }, 'spawn_agent', 1), 'web-researcher');
   });
 
   test('non-spawn tool with description/task/prompt keeps that descriptive text', () => {
@@ -109,10 +101,7 @@ suite('crewStageLabel (subagent stage title)', () => {
       label({ description: 'Read config to find server port' }, 'Read', 1),
       'Read config to find server port',
     );
-    assert.strictEqual(
-      label({ task: 'Update roadmap' }, 'Edit', 1),
-      'Update roadmap',
-    );
+    assert.strictEqual(label({ task: 'Update roadmap' }, 'Edit', 1), 'Update roadmap');
     // Non-spawn title + prompt → prompt text is the label.
     assert.strictEqual(
       label({ prompt: 'grep for sessionUsage', directory: '/x' }, 'grep_files', 1),
