@@ -9315,15 +9315,47 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         if (!willExpand && isProcessing && currentAssistantEl && turn &&
             turn.contains(currentAssistantEl) &&
             !currentAssistantEl.classList.contains('md-committed')) {
-          if (isLikelyFinalSummaryStreaming(turn)) {
-            placeSummaryAssistant(currentAssistantEl);
-          } else {
-            moveAssistantIntoFold(currentAssistantEl);
-          }
-        }
-        hideTcTooltip();
-        var count = parseInt(summary.dataset.count || '0', 10);
-        updateToolGroupSummary(summary, count, summary._titles || [], summary._kinds || [], summary._rawInputs || []);
+         if (isLikelyFinalSummaryStreaming(turn)) {
+           placeSummaryAssistant(currentAssistantEl);
+         } else {
+           moveAssistantIntoFold(currentAssistantEl);
+         }
+       }
+       // When expanding a completed turn, move the assistant-summary (which
+       // sits outside the fold for collapsed display) back INTO the fold body
+       // as an interim segment, then re-sort by history index so it appears at
+       // its correct chronological position (e.g. thought → tools → assistant
+       // → tools → assistant) instead of floating at the top or bottom.
+       // When collapsing, promote the last assistant back outside as the
+       // visible summary.
+       // Gate: only skip for the LIVE streaming turn (currentTurnEl === turn
+       // with in-flight tools or uncommitted assistant). Completed turns —
+       // even earlier ones expanded while the current turn is streaming —
+       // always get the full interleave treatment.
+       var _isLiveTurn = isProcessing && !isLoadingSession &&
+         currentTurnEl && turn === currentTurnEl &&
+         (turnElHasRunningTools(turn) ||
+          (currentAssistantEl && turn.contains(currentAssistantEl) &&
+           !currentAssistantEl.classList.contains('md-committed')));
+       if (!_isLiveTurn) {
+         if (willExpand) {
+           var _outsideAsst = turn.querySelectorAll(':scope > .message.assistant.assistant-summary');
+           if (_outsideAsst.length && body) {
+             _outsideAsst.forEach(function(a) {
+               a.classList.add('assistant-interim');
+               a.classList.remove('assistant-summary');
+               body.appendChild(a);
+             });
+             orderCompactFoldContents(body);
+           }
+         } else {
+           // Collapse: re-promote the last assistant outside the fold.
+           promoteFinalAssistantForTurn(turn);
+         }
+       }
+       hideTcTooltip();
+       var count = parseInt(summary.dataset.count || '0', 10);
+       updateToolGroupSummary(summary, count, summary._titles || [], summary._kinds || [], summary._rawInputs || []);
       });
     }
 
