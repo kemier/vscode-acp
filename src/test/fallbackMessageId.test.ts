@@ -49,14 +49,24 @@ suite('fallbackMessageId', () => {
       'update',
       'fallbackMessageId',
       'sawRealMessageIdThisTurn',
+      'messageSegmentCounter',
       `
         ${extractFallbackFragment()}
         return _incomingMessageId;
       `,
     );
-    assert.strictEqual(fn({}, fallbackMessageId, sawRealMessageIdThisTurn), 'turn-fallback-xyz');
-    assert.strictEqual(fn({ messageId: undefined }, fallbackMessageId, sawRealMessageIdThisTurn), 'turn-fallback-xyz');
-    assert.strictEqual(fn({ messageId: null }, fallbackMessageId, sawRealMessageIdThisTurn), 'turn-fallback-xyz');
+    assert.strictEqual(fn({}, fallbackMessageId, sawRealMessageIdThisTurn, 0), 'turn-fallback-xyz-seg-0');
+    assert.strictEqual(
+      fn({ messageId: undefined }, fallbackMessageId, sawRealMessageIdThisTurn, 0),
+      'turn-fallback-xyz-seg-0',
+    );
+    assert.strictEqual(
+      fn({ messageId: null }, fallbackMessageId, sawRealMessageIdThisTurn, 0),
+      'turn-fallback-xyz-seg-0',
+    );
+    // Consecutive chunks in the same segment MUST share the id (no per-token ++).
+    assert.strictEqual(fn({}, fallbackMessageId, sawRealMessageIdThisTurn, 0), 'turn-fallback-xyz-seg-0');
+    assert.strictEqual(fn({}, fallbackMessageId, sawRealMessageIdThisTurn, 1), 'turn-fallback-xyz-seg-1');
   });
 
   test('real messageId wins once seen (agents control grouping)', () => {
@@ -67,6 +77,7 @@ suite('fallbackMessageId', () => {
       'update',
       'fallbackMessageId',
       'sawRealMessageIdThisTurn',
+      'messageSegmentCounter',
       `
         ${extractFallbackFragment()}
         return { _incomingMessageId: _incomingMessageId, saw: sawRealMessageIdThisTurn };

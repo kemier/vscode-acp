@@ -1572,10 +1572,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // level _meta and is typically undefined for session_info_update).
       const goalMeta = updateData?._meta?.codex?.goal;
       if (goalMeta !== undefined) {
-        const session = this.sessionManager.getSession(update.sessionId);
-        if (session) {
-          (session as any).goalSnapshot = goalMeta;
-        }
+        this.applyGoalSnapshot(update.sessionId, goalMeta);
       }
     }
 
@@ -2002,10 +1999,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // already switched to the new agent. Posting promptEnd: cancelled would
       // render "— Conversation interrupted —" in the WRONG agent's panel.
       if (this.sessionManager.getActiveSessionId() === activeId) {
+        const session = this.sessionManager.getSession(activeId);
         this.postMessage({
           type: 'promptEnd',
           stopReason: response.stopReason,
           usage: (response as any).usage,
+          goalSnapshot: (session as any)?.goalSnapshot ?? null,
         });
       }
       this.sessionManager.touchHistory(activeId);
@@ -3521,6 +3520,20 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   /** Notify webview of _kiro.dev/clear/status progress. */
   notifyKiroClearStatus(params: any): void {
     this.postMessage({ type: 'kiroClearStatus', params });
+  }
+
+  /** Store and forward a Codex/Kiro goal snapshot so the chip can leave `active`. */
+  private applyGoalSnapshot(sessionId: string, goalSnapshot: any): void {
+    const session = this.sessionManager.getSession(sessionId);
+    if (session) {
+      (session as any).goalSnapshot = goalSnapshot;
+    }
+    const status = goalSnapshot?.status ?? 'cleared';
+    const objective = typeof goalSnapshot?.objective === 'string' ? goalSnapshot.objective.slice(0, 80) : '';
+    log(`goal snapshot: session=${sessionId} status=${status} objective="${objective}"`);
+    if (sessionId === this.sessionManager.getActiveSessionId()) {
+      this.postMessage({ type: 'kiroGoalStatus', sessionId, goalSnapshot });
+    }
   }
 
   /** Notify webview of _kiro.dev/goal/status (Kiro CLI goal lifecycle). */
@@ -11201,6 +11214,9 @@ function commitCurrentTextSegment(opts) {
       lastCommittedMessageId = null;
       lastCommittedText = '';
       reactivatedHistoryIndex = -1;
+      // Next post-tool text (no real messageId) gets a new synthetic segment
+      // so it cannot reattach to the pre-tool bubble.
+      messageSegmentCounter++;
       chatHistory.push({
         kind: 'toolCall',
         toolCallId: toolCallId,
@@ -13729,6 +13745,10 @@ sessionState = {
 
      case 'promptEnd':
      vscode.postMessage({ type: 'debugLog', message: '[WV-PROMPTEND] promptEnd received. chatHistoryLen=' + chatHistory.length + ' currentAssistantTextLen=' + currentAssistantText.length + ' hasCurrentAssistantEl=' + !!currentAssistantEl });
+      if (msg.goalSnapshot !== undefined) {
+        goalSnapshot = msg.goalSnapshot;
+        renderGoalChip();
+      }
       // Capture whether this promptEnd is for a compaction cycle — if so,
       // the turn is NOT actually finished (auto-compact resumes the same
       // turn) and we must NOT drain the message queue.
@@ -14278,8 +14298,9 @@ sessionState = {
         break;
       }
       case 'kiroGoalStatus':
-        // Kiro CLI goal status — update goal chip
-        if (msg.goalSnapshot) {
+        // Kiro CLI / Codex _meta.codex.goal — update goal chip.
+        // null clears the chip; do not treat it as missing.
+        if (msg.goalSnapshot !== undefined) {
           goalSnapshot = msg.goalSnapshot;
           renderGoalChip();
         }
@@ -15145,13 +15166,13 @@ sessionState = {
             sawRealMessageIdThisTurn = true;
          } else if (!sawRealMessageIdThisTurn) {
            // The agent never sent a real messageId yet in this turn (legacy
-           // kiro-cli / old ericli). Use the synthetic per-turn id for bubble
-           // grouping within a single message segment, but do NOT use it for
-           // cross-tool-call reattachment — that would concatenate ALL
-           // assistant text in a turn into one giant bubble (text→tool→text
-           // →tool→text all in one). Instead, generate a fresh fallback per
-           // segment so each post-tool text block gets its own bubble.
-           _incomingMessageId = fallbackMessageId + '-seg-' + messageSegmentCounter++;
+           // kiro-cli / old ericli / pi-acp). Use a stable synthetic id for
+           // bubble grouping within a single text segment. Do NOT increment
+           // here — ++ on every chunk made each token a new messageId, so
+           // the mid-stream "id changed" branch committed one word per bubble
+           // (Pi "hi" rendered as one word per line). Bump the counter only
+           // when a tool call splits the turn (addToolCall).
+           _incomingMessageId = fallbackMessageId + '-seg-' + messageSegmentCounter;
          }
           if (
             !currentAssistantEl &&
