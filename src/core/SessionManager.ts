@@ -31,7 +31,8 @@ import { AgentManager } from './AgentManager';
 import { ConnectionManager, ConnectionInfo } from './ConnectionManager';
 import { SessionUpdateHandler } from '../handlers/SessionUpdateHandler';
 import { SessionHistoryStore } from './SessionHistoryStore';
-import { getAgentConfigs } from '../config/AgentConfig';
+import { getAgentConfig, getAgentConfigs } from '../config/AgentConfig';
+import { resolveAgentDisplayName } from '../config/agentDisplayName';
 import { log, logError } from '../utils/Logger';
 import { sendEvent, sendError } from '../utils/TelemetryManager';
 
@@ -547,7 +548,7 @@ export class SessionManager extends EventEmitter {
       sessionId: sessionResponse.sessionId,
       agentId,
       agentName,
-      agentDisplayName: connInfo.initResponse.agentInfo?.title || connInfo.initResponse.agentInfo?.name || agentName,
+      agentDisplayName: this.displayNameFor(agentName, connInfo.initResponse),
       cwd,
       createdAt: new Date().toISOString(),
       initResponse: connInfo.initResponse,
@@ -2081,7 +2082,7 @@ export class SessionManager extends EventEmitter {
       sessionId,
       agentId,
       agentName,
-      agentDisplayName: conn.initResponse.agentInfo?.title || conn.initResponse.agentInfo?.name || agentName,
+      agentDisplayName: this.displayNameFor(agentName, conn.initResponse),
       cwd,
       createdAt: new Date().toISOString(),
       initResponse: conn.initResponse,
@@ -2282,7 +2283,7 @@ export class SessionManager extends EventEmitter {
       sessionId,
       agentId,
       agentName,
-      agentDisplayName: conn.initResponse.agentInfo?.title || conn.initResponse.agentInfo?.name || agentName,
+      agentDisplayName: this.displayNameFor(agentName, conn.initResponse),
       cwd,
       createdAt: new Date().toISOString(),
       initResponse: conn.initResponse,
@@ -2450,7 +2451,7 @@ export class SessionManager extends EventEmitter {
       sessionId: forkedSessionId,
       agentId: this.findAgentIdForConnection(conn) ?? '',
       agentName,
-      agentDisplayName: conn.initResponse.agentInfo?.title || conn.initResponse.agentInfo?.name || agentName,
+      agentDisplayName: this.displayNameFor(agentName, conn.initResponse),
       cwd,
       createdAt: new Date().toISOString(),
       initResponse: conn.initResponse,
@@ -2470,6 +2471,13 @@ export class SessionManager extends EventEmitter {
   }
 
   // --- Cleanup ---
+
+  private displayNameFor(agentName: string, initResponse: InitializeResponse): string {
+    return resolveAgentDisplayName(agentName, {
+      displayName: getAgentConfig(agentName)?.displayName,
+      agentInfo: initResponse.agentInfo,
+    });
+  }
 
   dispose(): void {
     this.agentManager.killAll();
