@@ -11242,13 +11242,13 @@ function commitCurrentTextSegment(opts) {
         .filter(c => c.type === 'diff')
         .map(c => c.path ? c : Object.assign({}, c, { path: titlePath || c.path || '' }))
         .filter(c => c.path);
-     if (diffs.length > 0) {
-       toolCallDiffs[toolCallId] = diffs;
-      var paths = diffs.map(function(d) { return d.path; });
-      if (tcEl) {
-        el._diffPaths = paths;
-        markClickable(el, toolCallId);
-      }
+    if (diffs.length > 0) {
+      toolCallDiffs[toolCallId] = diffs;
+     var paths = diffs.map(function(d) { return d.path; });
+     if (tcEl) {
+       tcEl._diffPaths = paths;
+       markClickable(tcEl, toolCallId);
+     }
         // Persist diffPaths on the chatHistory entry so it survives
         // saveState/restoreState (VS Code restart without session/load).
         for (var i = chatHistory.length - 1; i >= 0; i--) {
