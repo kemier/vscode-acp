@@ -69,6 +69,47 @@ After`);
     });
   });
 
+  test('does not treat escaped-punctuation prose as math (regex char class)', () => {
+    // LLM describes regex metacharacters with LaTeX-escaped punctuation.
+    // Regression: this used to swallow the whole span into \(...\) KaTeX.
+    const html = parse(String.raw`matches a single char that is \(, \[, 0-9, a-f, \{, 8, or \). I need`);
+    assert.ok(!html.includes('<acp-math'), html);
+    // marked de-escapes the \( to ( — the key regression check is that the
+    // span is NOT swallowed by the math tokenizer and prose survives verbatim.
+    assert.ok(html.includes('matches a single char that is'), html);
+    assert.ok(html.includes('0-9') && html.includes('a-f') && html.includes('or )'), html);
+  });
+
+  test('does not treat a wrapped regex as display math', () => {
+    // Model wraps the whole char class in \[...\].
+    const html = parse(String.raw`I need \[[([0-9a-f]{8})]\] for the UUID pattern.`);
+    assert.ok(!html.includes('<acp-math'), html);
+    assert.ok(html.includes('[([0-9a-f]{8})]'), html);
+    assert.ok(html.includes('for the UUID pattern'), html);
+  });
+
+  test('still renders genuine math with commands', () => {
+    const html = parse(String.raw`Score \(S=QK^\top/\sqrt{d}\) in HBM`);
+    assert.ok(html.includes('<acp-math>'), html);
+    assert.ok(html.includes('katex'), html);
+  });
+
+  test('still renders inline math with superscript', () => {
+    const html = parse(String.raw`From \(O(N^2)\) down to \(O(Nd)\).`);
+    assert.strictEqual((html.match(/<acp-math>/g) ?? []).length, 2, html);
+  });
+
+  test('still renders display math with \text', () => {
+    const html = parse(String.raw`Before
+
+\[
+\text{hello}
+\]
+
+After`);
+    assert.ok(html.includes('<acp-math data-display="1">'), html);
+    assert.ok(html.includes('Before') && html.includes('After'), html);
+  });
   test('mixed markdown keeps headings/lists around math', () => {
     const html = parse(String.raw`## Idea
 
