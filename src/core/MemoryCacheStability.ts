@@ -1,30 +1,28 @@
 /**
- * Pure helper for the codex-acp KV-cache-stability gate.
+ * Memory injection policy for ACP prompts.
  *
- * codex-acp is the only ACP agent on the OpenAI Responses-API incremental path
- * (`previous_response_id`). The proxy maintains a server-side prefix cache
- * keyed on the exact byte sequence of the conversation. vscode-acp injects the
- * shared-memory recall blob at the *prefix* of every prompt
- * (`SessionManager.sendPrompt` pushes `memoryBlocks` before the user text),
- * and the recall content varies turn-to-turn (the L1 vector search shifts as
- * L0 captures accumulate). Re-injecting a different blob at the prefix of every
- * user turn diverges the prefix at the first memory block and invalidates the
- * entire cached history — the proxy warns
- * `msg_diff: PREFIX CHANGED (KV-cache break!)` and the backend must re-prefill
- * the full context.
+ * Two layers:
  *
- * The first turn's memory block is already carried forward in the cached prefix
- * via `previous_response_id`, so re-injecting on later turns is both redundant
- * AND destabilizing for codex-acp specifically. claude-code-acp and ericli
- * re-send the full conversation every turn (no server cache), so they are
- * unaffected and continue to receive fresh recall each turn.
+ * - **L3 persona + L2 scene nav** are agent-profile scoped and do not depend
+ *   on the current question. They go on the first real (non-slash) prompt so
+ *   later turns reuse them from conversation history.
+ * - **L1 atomics** are a semantic search against the current user text
+ *   (`/v3/atomic/search`, top-k). Those are injected every real user prompt.
+ *
+ * Placement (KV-cache):
+ * - `full` — prepend persona/scenes/L1 before the user text (first real turn).
+ * - `l1-only` — **append** L1 after the user text. For codex-acp this becomes
+ *   extra `input` items on a `previous_response_id` request, which the proxy
+ *   concatenates onto the cached conversation (pure append — no prefix change).
+ *   Prepending L1 would still append at the Responses-API item list, but
+ *   putting it after the user text keeps the new turn's leading bytes stable
+ *   if blocks are concatenated into one user message (Pi / Claude).
  */
 
-/**
- * Agent names matching this pattern are treated as codex-acp (the Responses-API
- * incremental path). `/codex/i` mirrors the MemoryAgentId built-in heuristic.
- */
 const CODEX_ACP_PATTERN = /codex/i;
+
+/** What recall to attach on this user turn. */
+export type MemoryInjectMode = 'none' | 'full' | 'l1-only';
 
 /** True for agents on the OpenAI Responses-API incremental path (codex-acp). */
 export function isIncrementalCacheAgent(agentName: string): boolean {
@@ -32,25 +30,21 @@ export function isIncrementalCacheAgent(agentName: string): boolean {
 }
 
 /**
- * Decide whether memory recall should be injected for this turn.
+ * Decide what memory to attach for this turn.
  *
- * Returns true (inject memory) when:
- *  - the agent is NOT on the incremental cache path (claude-code-acp, ericli,
- *    kiro, …) — they have no server-side prefix cache, so fresh recall every
- *    turn is free; OR
- *  - the agent IS on the incremental path but this is its first prompt in the
- *    session (no cached prefix exists yet to invalidate).
- *
- * Returns false (skip injection) when the agent is on the incremental path AND
- * the session has already been prompted (or loaded/resumed with prior turns) —
- * the memory block from the first turn is already in the cached prefix via
- * `previous_response_id`, and re-injecting would shift the prefix and break
- * the KV cache.
+ * All agents: persona+scenes+L1 until the profile blob has been sent, then
+ * L1 only. Codex is included — later L1 is appended, not prepended, so the
+ * cached prefix from `previous_response_id` stays intact.
  */
-export function shouldInjectMemoryForTurn(agentName: string, sessionAlreadyPrompted: boolean): boolean {
-  if (!isIncrementalCacheAgent(agentName)) {
-    return true;
-  }
-  // codex-acp: only inject on the first turn of the session.
-  return !sessionAlreadyPrompted;
+export function resolveMemoryInjectMode(
+  _agentName: string,
+  opts: { sessionAlreadyPrompted: boolean; profileAlreadyInjected: boolean },
+): MemoryInjectMode {
+  void opts.sessionAlreadyPrompted;
+  return opts.profileAlreadyInjected ? 'l1-only' : 'full';
+}
+
+/** True when any recall blob should be attached (full or L1-only). */
+export function shouldInjectMemoryForTurn(_agentName: string, _sessionAlreadyPrompted: boolean): boolean {
+  return true;
 }

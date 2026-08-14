@@ -87,7 +87,7 @@ export interface AgentCapabilitySummary {
  */
 export type { SelectionContext } from './ContextBlockBuilder';
 import { buildSelectionBlock, type SelectionContext } from './ContextBlockBuilder';
-import { shouldInjectMemoryForTurn } from './MemoryCacheStability';
+import { resolveMemoryInjectMode } from './MemoryCacheStability';
 import type { SharedMemoryProvider } from './memory/SharedMemoryProvider';
 import { readMemorySettings, resolveMemoryAgentId } from './memory/MemoryConfig';
 
@@ -208,6 +208,8 @@ export class SessionManager extends EventEmitter {
    * `sendPrompt` and the `firstTurnOfIncrementalSession` comment.
    */
   private promptedSessions: Set<string> = new Set();
+  /** Sessions that already got L3 persona + L2 scene nav on a real prompt. */
+  private memoryProfileInjectedSessions: Set<string> = new Set();
 
   /**
    * Returns true if the given session has an in-flight `session/prompt`
@@ -330,6 +332,7 @@ export class SessionManager extends EventEmitter {
             this.sessions.delete(sessionId);
             this.agentSessions.delete(agentName);
             this.promptedSessions.delete(sessionId);
+            this.memoryProfileInjectedSessions.delete(sessionId);
             if (this.activeSessionId === sessionId) {
               this.activeSessionId = null;
             }
@@ -461,6 +464,7 @@ export class SessionManager extends EventEmitter {
     this.sessions.delete(sessionId);
     this.agentSessions.delete(agentName);
     this.promptedSessions.delete(sessionId);
+    this.memoryProfileInjectedSessions.delete(sessionId);
 
     if (this.activeSessionId === sessionId) {
       this.activeSessionId = null;
@@ -501,6 +505,7 @@ export class SessionManager extends EventEmitter {
     if (sessionId) {
       this.sessions.delete(sessionId);
       this.promptedSessions.delete(sessionId);
+      this.memoryProfileInjectedSessions.delete(sessionId);
       if (agentName) {
         this.agentSessions.delete(agentName);
       }
@@ -734,45 +739,46 @@ export class SessionManager extends EventEmitter {
 
     const prompt: ContentBlock[] = [];
 
-    // Shared memory recall (Model B) — inject before workspace context so the
-    // agent sees durable team/agent memory ahead of ephemeral @file/@terminal.
-    //
-    // KV-cache stability gate: codex-acp is the only agent on the OpenAI
-    // Responses-API incremental path (`previous_response_id`). Its server-side
-    // prefix cache keys on the exact byte sequence of the conversation prefix.
-    // The memory recall blob is re-fetched every turn (L1 vector search shifts
-    // as L0 captures accumulate), so re-injecting it at the prefix of *every*
-    // user turn makes the leading bytes vary turn-to-turn — which diverges the
-    // prefix at the first memory block and invalidates the entire cached
-    // history (proxy warns "msg_diff: PREFIX CHANGED (KV-cache break!)"). The
-    // first turn's memory block is already carried forward in the cached prefix
-    // via `previous_response_id`, so re-injecting on later turns is both
-    // redundant AND destabilizing for codex-acp specifically. Skip it. See
-    // `MemoryCacheStability` for the pure helper + full rationale.
-    const sessionAlreadyPrompted = this.promptedSessions.has(sessionId);
-    const injectMemoryThisTurn = shouldInjectMemoryForTurn(session.agentName, sessionAlreadyPrompted);
-    const skipMemoryForCacheStability = !injectMemoryThisTurn;
+    // Shared memory: first real prompt prepends L3 persona + L2 scenes + L1.
+    // Later turns append L1 only (query-related). Codex included: L1 is new
+    // incremental input items (pure append), so previous_response_id prefix
+    // is unchanged. Slash commands skip inject and do not mark the profile sent.
+    const profileAlreadyInjected = this.memoryProfileInjectedSessions.has(sessionId);
+    const memoryInjectMode =
+      isSlashCommand || !this.memoryProvider?.isEnabled()
+        ? 'none'
+        : resolveMemoryInjectMode(session.agentName, {
+            sessionAlreadyPrompted: this.promptedSessions.has(sessionId),
+            profileAlreadyInjected,
+          });
     const memDebug = !isSlashCommand && this.memoryProvider?.isEnabled() && this.memoryProvider.isDebug();
     const sendT0 = memDebug ? performance.now() : 0;
     if (memDebug) {
       log(`Memory inject: recall dispatch @+${(performance.now() - sendT0).toFixed(1)}ms (session=${sessionId})`);
     }
-    if (!isSlashCommand && this.memoryProvider?.isEnabled() && !skipMemoryForCacheStability) {
+    let pendingL1Blocks: ContentBlock[] = [];
+    if (memoryInjectMode !== 'none' && this.memoryProvider) {
       try {
         const memoryBlocks = await this.memoryProvider.buildRecallBlocks({
           sessionId,
           agentName: session.agentName,
           query: text,
           supportsEmbedded: supportsEmbeddedContext,
+          ...(memoryInjectMode === 'l1-only' ? { includePersona: false, includeSceneNav: false } : {}),
         });
         if (memDebug) {
           log(
             `Memory inject: recall resolved @+${(performance.now() - sendT0).toFixed(1)}ms ` +
-              `(blocks=${memoryBlocks.length}, session=${sessionId})`,
+              `(blocks=${memoryBlocks.length}, mode=${memoryInjectMode}, session=${sessionId})`,
           );
         }
         if (memoryBlocks.length > 0) {
-          prompt.push(...memoryBlocks);
+          if (memoryInjectMode === 'full') {
+            prompt.push(...memoryBlocks);
+            this.memoryProfileInjectedSessions.add(sessionId);
+          } else {
+            pendingL1Blocks = memoryBlocks;
+          }
         }
         const memorySettings = readMemorySettings();
         const memoryAgentId = resolveMemoryAgentId(session.agentName, memorySettings.agentIdMap);
@@ -781,17 +787,12 @@ export class SessionManager extends EventEmitter {
         log(
           memoryBlocks.length > 0
             ? `Memory inject: ${memoryBlocks.length} block(s), ${blobBytes} bytes, kind=${blockKind} ` +
-                `(agent=${session.agentName}→${memoryAgentId}, session=${sessionId})`
-            : `Memory inject: none (agent=${session.agentName}→${memoryAgentId}, session=${sessionId})`,
+                `mode=${memoryInjectMode} (agent=${session.agentName}→${memoryAgentId}, session=${sessionId})`
+            : `Memory inject: none mode=${memoryInjectMode} (agent=${session.agentName}→${memoryAgentId}, session=${sessionId})`,
         );
       } catch (e) {
         logError('Memory recall failed', e);
       }
-    } else if (skipMemoryForCacheStability && !isSlashCommand && this.memoryProvider?.isEnabled()) {
-      log(
-        `Memory inject: skipped for codex-acp session ${sessionId} (incremental-path KV-cache stability; ` +
-          `memory already in cached prefix via previous_response_id)`,
-      );
     }
 
     // Caller-built context blocks (file/directory/terminal/diagnostics
@@ -827,12 +828,11 @@ export class SessionManager extends EventEmitter {
       }
     }
     prompt.push({ type: 'text', text });
+    if (pendingL1Blocks.length > 0) {
+      prompt.push(...pendingL1Blocks);
+    }
 
     this.inFlightPromptSessions.add(sessionId);
-    // Record that this session has now been prompted at least once, so the
-    // codex-acp KV-cache-stability gate above knows subsequent turns should
-    // skip memory re-injection (the first turn's block is carried forward in
-    // the Responses-API prefix cache via previous_response_id).
     this.promptedSessions.add(sessionId);
     if (!isSlashCommand && this.memoryProvider?.isEnabled()) {
       this.memoryProvider.beginTurn(sessionId, session.agentName, text);
@@ -2143,6 +2143,7 @@ export class SessionManager extends EventEmitter {
       // stability gate in sendPrompt skips memory re-injection (re-injecting
       // would shift the prefix and invalidate the cached history).
       this.promptedSessions.add(sessionId);
+      this.memoryProfileInjectedSessions.add(sessionId);
     } catch (e: any) {
       this.loadingSessionIds.delete(sessionId);
       this.sessions.delete(sessionId);
@@ -2304,6 +2305,7 @@ export class SessionManager extends EventEmitter {
     // continuation. Mark as prompted so the KV-cache-stability gate in
     // sendPrompt skips memory re-injection (would shift the prefix otherwise).
     this.promptedSessions.add(sessionId);
+    this.memoryProfileInjectedSessions.add(sessionId);
     // Set activeSessionId BEFORE drainPending so the 'available-commands-changed'
     // event drainPending emits (for commands buffered during session/new)
     // passes the active-session guard in the extension listener and reaches
@@ -2485,5 +2487,6 @@ export class SessionManager extends EventEmitter {
     this.sessions.clear();
     this.agentSessions.clear();
     this.promptedSessions.clear();
+    this.memoryProfileInjectedSessions.clear();
   }
 }

@@ -95,6 +95,10 @@ export class SharedMemoryProvider {
     agentName: string;
     query: string;
     supportsEmbedded: boolean;
+    /** Override settings.includePersona for this call (L1-only later turns). */
+    includePersona?: boolean;
+    /** Override settings.includeSceneNav for this call. */
+    includeSceneNav?: boolean;
   }): Promise<ContentBlock[]> {
     const settings = this.getSettings();
     if (!isMemoryConfigured(settings)) {
@@ -124,10 +128,12 @@ export class SharedMemoryProvider {
 
     try {
       const armT0 = settings.debug ? performance.now() : 0;
+      const includePersona = opts.includePersona ?? settings.includePersona;
+      const includeSceneNav = opts.includeSceneNav ?? settings.includeSceneNav;
       const [searchResult, personaResult, scenesResult] = await Promise.allSettled([
         client.searchAtomic(iso, { query, limit: settings.recallMaxResults }),
-        settings.includePersona ? client.readCore(iso) : Promise.resolve(null),
-        settings.includeSceneNav ? client.listScenarios(iso) : Promise.resolve(null),
+        includePersona ? client.readCore(iso) : Promise.resolve(null),
+        includeSceneNav ? client.listScenarios(iso) : Promise.resolve(null),
       ]);
       if (settings.debug) {
         // Per-arm wall time (all three ran concurrently, so each is the time
