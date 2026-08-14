@@ -6513,10 +6513,6 @@ var end = displayText.length;
           slashPopup.classList.remove('open');
           isSessionAutocomplete = false;
         }
-     } else {
-       slashPopup.classList.remove('open');
-       isSessionAutocomplete = false;
-     }
      } else if (firstSpace > 0 && query === 'goal') {
        // /goal <partial> — autocomplete subcommands (clear, pause, resume)
        var goalPartial = text.substring(firstSpace + 1).toLowerCase().trim();
