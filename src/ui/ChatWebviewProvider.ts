@@ -15541,10 +15541,19 @@ sessionState = {
       }
     }
 
+  // Debounce token usage updates: during multi-iteration tool loops
+  // (especially after compaction), the agent sends multiple usage_update
+  // events in rapid succession. Without debouncing, the ring flickers
+  // between values faster than the 0.3s CSS transition can animate.
+  var _tokenUsageDebounce = null;
   function updateTokenUsage(update) {
     tokenUsage = { used: update.used, size: update.size, cost: update.cost };
     if (!tokenUsageRing) return;
-    updateTokenUsageDOM();
+    if (_tokenUsageDebounce) clearTimeout(_tokenUsageDebounce);
+    _tokenUsageDebounce = setTimeout(function() {
+      _tokenUsageDebounce = null;
+      updateTokenUsageDOM();
+    }, 400);
   }
 
   // ── Goal chip rendering ──────────────────────────────────────────
