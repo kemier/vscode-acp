@@ -812,8 +812,13 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<AgentNode | 
     // If it does, "Delete Session" handles everything (agent-side + local removal).
     // If it doesn't, "Forget Session" is the only way to remove it from the sidebar.
     // This prevents showing both "Forget" and "Delete" for the same session.
+    //
+    // When capabilities are unknown (agent not yet connected, e.g. after VS Code
+    // restart), default to showing "Delete Session". The deleteSession command
+    // calls ensureConnected() which spawns the agent, and if the agent doesn't
+    // support delete, it falls back to local-only removal with a warning.
     const caps = this.sessionManager.getCachedCapabilities(entry.agentName);
-    const canDelete = !!caps?.delete;
+    const canDelete = !caps || !!caps.delete;
     const item = new SessionTreeItem(
       entry.agentName,
       entry.sessionId,
@@ -825,16 +830,8 @@ export class SessionTreeProvider implements vscode.TreeDataProvider<AgentNode | 
       false,
       this.extensionUri,
     );
-    // Override contextValue: if the agent supports delete, use 'session-local'
-    // (matches deleteSession regex but NOT forgetSession's exact match).
-    // If not, use 'session-local-no-delete' so only forgetSession shows.
-    if (!canDelete) {
-      item.contextValue = 'session-local-no-delete';
-    }
-    // Override contextValue: if the agent supports delete, use 'session-local'
-    // (matches deleteSession regex but NOT forgetSession's exact match).
-    // If not, use 'local-no-delete' (doesn't match /^session/) so only
-    // forgetSession shows — prevents duplicate Forget + Delete menu items.
+    // If the agent is known to NOT support delete, switch to a contextValue
+    // that only matches forgetSession (not the deleteSession regex).
     if (!canDelete) {
       item.contextValue = 'local-no-delete';
     }
