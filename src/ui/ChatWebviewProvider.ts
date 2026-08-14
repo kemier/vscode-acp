@@ -15110,10 +15110,20 @@ sessionState = {
             // bubble so the new message starts fresh.
             commitCurrentTextSegment({ interim: true });
             currentMessageId = _incomingMessageId;
-          } else if (!currentMessageId && _incomingMessageId) {
-            // First chunk of a messageId-carrying message.
-            currentMessageId = _incomingMessageId;
-          }
+         } else if (!currentMessageId && _incomingMessageId) {
+           // First chunk of a messageId-carrying message.
+           currentMessageId = _incomingMessageId;
+         } else if (
+           !currentAssistantEl &&
+           _incomingMessageId &&
+           _incomingMessageId !== lastCommittedMessageId
+         ) {
+           // After a tool-call split, currentAssistantEl is null and
+           // currentMessageId was cleared. If the incoming messageId is
+           // DIFFERENT from the last committed one (a new message, not a
+           // reattach), start a fresh bubble with the new messageId.
+           currentMessageId = _incomingMessageId;
+         }
           currentAssistantText += content.text;
                     // Flush /ps panel — assistant is producing content
                     dismissPsPanel(false);
