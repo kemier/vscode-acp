@@ -11242,13 +11242,21 @@ function commitCurrentTextSegment(opts) {
         .filter(c => c.type === 'diff')
         .map(c => c.path ? c : Object.assign({}, c, { path: titlePath || c.path || '' }))
         .filter(c => c.path);
-    if (diffs.length > 0) {
-      toolCallDiffs[toolCallId] = diffs;
-     var paths = diffs.map(function(d) { return d.path; });
-     if (tcEl) {
-       tcEl._diffPaths = paths;
-       markClickable(tcEl, toolCallId);
-     }
+      if (diffs.length > 0) {
+        toolCallDiffs[toolCallId] = diffs;
+        var paths = diffs.map(function(d) { return d.path; });
+        // The tool-call element may not exist yet on the LIVE path:
+        // storeDiffContent(...) is invoked from addToolCall() BEFORE
+        // addToolCallInline() creates the element and assigns
+        // toolCalls[toolCallId]. In that case just stash the paths here —
+        // applyStoredDiffContent() runs at every element-creation site and
+        // applies them as soon as the element exists. (This was the bug:
+        // _diffPaths / markClickable were silently skipped on the live path,
+        // so hovering "Edit 3 files" showed no file list in the tooltip.)
+        if (tcEl) {
+          tcEl._diffPaths = paths;
+          markClickable(tcEl, toolCallId);
+        }
         // Persist diffPaths on the chatHistory entry so it survives
         // saveState/restoreState (VS Code restart without session/load).
         for (var i = chatHistory.length - 1; i >= 0; i--) {
@@ -11258,6 +11266,23 @@ function commitCurrentTextSegment(opts) {
             break;
           }
         }
+      }
+    }
+
+    /**
+     * Apply stashed diff paths to a tool-call element once it exists.
+     * storeDiffContent() may stash toolCallDiffs[toolCallId] before the
+     * element is created (live addToolCall() path); every site that creates
+     * the element and assigns toolCalls[toolCallId] = el must call this so
+     * _diffPaths + markClickable (diff icon + click-to-open) are attached.
+     * Idempotent: markClickable early-returns when has-diff is already set.
+     */
+    function applyStoredDiffContent(el, toolCallId) {
+      if (!el) return;
+      var stored = toolCallDiffs[toolCallId];
+      if (stored && stored.length > 0) {
+        el._diffPaths = stored.map(function(d) { return d.path; });
+        markClickable(el, toolCallId);
       }
     }
 
@@ -12481,6 +12506,7 @@ function commitCurrentTextSegment(opts) {
      attachToolCallTooltip(el);
      if (currentToolsListEl) currentToolsListEl.appendChild(el);
      toolCalls[toolCallId] = el;
+     applyStoredDiffContent(el, toolCallId);
      subagentCrewPrimaryId = toolCallId;
      if (compactMode && currentTurnEl) {
        ensureTurnFoldStructure(currentTurnEl, true);
@@ -12718,6 +12744,7 @@ function commitCurrentTextSegment(opts) {
        currentToolsListEl.appendChild(el);
      }
      toolCalls[toolCallId] = el;
+     applyStoredDiffContent(el, toolCallId);
      flushPendingNestedTools(toolCallId);
      // Keep fold structure updated but honor sticky user expand while streaming.
      if (compactMode && currentTurnEl) {
@@ -12740,6 +12767,7 @@ function commitCurrentTextSegment(opts) {
       attachToolCallTooltip(el);
      messagesEl.appendChild(el);
      toolCalls[toolCallId] = el;
+     applyStoredDiffContent(el, toolCallId);
      autoScrollIfAtBottom();
    }
 
