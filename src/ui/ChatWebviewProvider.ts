@@ -3584,7 +3584,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
   /** Notify webview that session title / metadata changed. */
   notifySessionInfoUpdate(title: string | undefined | null): void {
-    this.postMessage({ type: 'sessionInfoUpdate', title: title ?? null });
+    // Only send when title is explicitly a string or null. When undefined
+    // (e.g. session_info_update carrying only _meta.codex.goal with no title
+    // field), do NOT post — the webview would interpret null as "delete
+    // title" and fall back to the agent name ("Codex"), losing the real title.
+    if (title !== undefined) {
+      this.postMessage({ type: 'sessionInfoUpdate', title });
+    }
   }
 
   /**

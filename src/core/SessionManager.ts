@@ -1665,7 +1665,14 @@ export class SessionManager extends EventEmitter {
     if (this.historyStore && session) {
       this.historyStore.setTitle(session.agentName, sessionId, update.title);
     }
-    this.emit('session-info-changed', sessionId, update);
+    // Only emit session-info-changed when the update actually carries a
+    // title (string or null). When title is undefined (e.g. session_info_update
+    // carrying only _meta.codex.goal), emitting would cause the webview to
+    // receive title=null and delete the existing title, falling back to the
+    // agent name ("Codex") instead of showing the real session title.
+    if (update.title !== undefined) {
+      this.emit('session-info-changed', sessionId, update);
+    }
   }
 
   /**
