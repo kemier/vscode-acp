@@ -1954,10 +1954,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       }
     }
 
+    // Capture the generation at prompt start so we can detect stale
+    // promptEnd responses from a previous turn's sendPrompt promise.
+    this._cancelGeneration++;
+    const promptGeneration = this._cancelGeneration;
     try {
-      // Increment the cancel generation so any stale cancel fallback timer
-      // from a previous turn won't fire during this new prompt.
-      this._cancelGeneration++;
       this._pendingPromptSessionId = activeId;
       const response = await this.sessionManager.sendPrompt(
         activeId,
@@ -1978,6 +1979,19 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         this._cancelFallbackTimer = null;
       }
       this._pendingPromptSessionId = null;
+      // ── Stale promptEnd guard ───────────────────────────────────────────
+      // When "Send Now" fires the cancel fallback, forceAbortPrompt removes
+      // the session from the in-flight set, allowing a NEW sendPrompt to
+      // start (which increments _cancelGeneration again). But the OLD
+      // sendPrompt promise is still alive — when the agent finally processes
+      // the cancel (can be 60-90s later for long-running commands), the old
+      // promise resolves and would post a STALE promptEnd(cancelled) that
+      // kills the new turn ("— Conversation interrupted —"). Guard: if the
+      // generation changed since this prompt started, the response is stale.
+      if (promptGeneration !== this._cancelGeneration) {
+        log(`handleSendPrompt: stale response (gen ${promptGeneration} → ${this._cancelGeneration}), suppressing promptEnd`);
+        return;
+      }
       // Render the accumulated assistant text as markdown
       // The webview will have sent us the raw text via promptEnd handling
       // Only deliver promptEnd to the webview if this session is still the
@@ -2000,6 +2014,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         this._cancelFallbackTimer = null;
       }
       this._pendingPromptSessionId = null;
+      // Stale promptEnd guard (error path): same race as the success path.
+      if (promptGeneration !== this._cancelGeneration) {
+        log(`handleSendPrompt: stale error (gen ${promptGeneration} → ${this._cancelGeneration}), suppressing promptEnd`);
+        this.streamCoalescer.flush(activeId);
+        return;
+      }
       logError('Prompt failed', e);
       const dataStr = e.data ? (typeof e.data === 'string' ? e.data : JSON.stringify(e.data)) : '';
       const errMsg = dataStr ? `${e.message}: ${dataStr}` : e.message || 'Prompt failed';
