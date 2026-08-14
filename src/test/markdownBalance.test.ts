@@ -55,11 +55,12 @@ suite('markdownBalance', () => {
       assert.ok(out.endsWith('```'), `expected trailing fence: ${JSON.stringify(out)}`);
     });
 
-    test('closes an unbalanced single inline backtick', () => {
-      // Mid-stream: `` `code `` span opened but not closed.
-      const partial = 'Use `variable name here';
-      const out = balanceMarkdownForPartialRender(partial);
-      assert.ok(out.endsWith('`'), `expected trailing backtick: ${JSON.stringify(out)}`);
+    test('leaves a trailing lone inline backtick untouched (no false code span)', () => {
+      // A stray backtick at the end (e.g. quoting user input that ends with
+      // `) renders literally in marked. Auto-closing it would create a false
+      // <code> capsule (`"), I need` -> <code>"), I need</code>).
+      const partial = 'The character class ... or ). I need `';
+      assert.strictEqual(balanceMarkdownForPartialRender(partial), partial);
     });
 
     test('leaves balanced inline backticks alone', () => {
@@ -77,11 +78,12 @@ suite('markdownBalance', () => {
       assert.ok(!out.endsWith('````'), 'must not over-close');
     });
 
-    test('closes an inline backtick that follows a closed fence', () => {
-      // Closed fence (even, 6 backticks total) + one lone inline backtick.
+    test('leaves an inline backtick after a closed fence untouched', () => {
+      // Closed fence + one lone inline backtick. The backtick renders
+      // literally in marked; no auto-close (which would create a capsule).
       const partial = '```\ncode\n```\nthen `unmatched';
       const out = balanceMarkdownForPartialRender(partial);
-      assert.ok(out.endsWith('`') && !out.endsWith('```'), `expected single inline close: ${JSON.stringify(out)}`);
+      assert.strictEqual(out, partial);
     });
   });
 
@@ -100,15 +102,15 @@ suite('markdownBalance', () => {
       assert.ok(/<p>/.test(html), `expected a paragraph for trailing prose: ${html}`);
     });
 
-    test('unbalanced inline backtick does not turn the rest into inline code', () => {
-      const partial = 'Use `myVar then more text after';
+    test('a stray trailing backtick renders literally, not as a code capsule', () => {
+      // Regression: the old balancer appended a closing backtick to "`), I need",
+      // turning it into <code>"), I need</code> — a false capsule. marked renders
+      // a trailing lone backtick literally, so leave it alone.
+      const partial =
+        'The character class [([0-9a-f]{8})] matches a single char that is (, [, 0-9, a-f, {, 8, or ). I need `';
       const html = parse(balanceMarkdownForPartialRender(partial));
-      // Without balancing, "then more text after" would be inside <code>.
-      // After balancing, only "myVar then more text after" is code (closed) and
-      // the whole thing is a paragraph — but crucially it does not run on to
-      // swallow subsequent content. Here we just assert it parses to a <p>
-      // without leaving an open code context.
-      assert.ok(/<p>/.test(html), `expected a paragraph: ${html}`);
+      assert.ok(html.includes('I need `'), `expected literal backtick: ${html}`);
+      assert.ok(!html.includes('<code>'), `no code capsule expected: ${html}`);
     });
 
     test('complete balanced reply renders identically with and without balancing', () => {

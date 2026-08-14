@@ -8,20 +8,28 @@
  *    reset the buffer — so any closing fence/backtick that arrives later
  *    lands in a SEPARATE history entry.
  *
- * If the model is mid-way through writing a fenced block (```` ``` ````) or an
- * inline code span (`` ` ``), the partial text has an unbalanced delimiter.
- * marked then treats everything after the opening delimiter as code and
- * renders the assistant's prose as a code block — permanently, for an
- * interim-committed segment. This appends the missing closing delimiter(s) so
- * the partial text is always well-formed markdown. A complete, balanced reply
- * has matching open/close counts, so nothing is appended and the final render
- * is unaffected.
+ * If the model is mid-way through writing a fenced block (```` ``` ````), the
+ * partial text has an unbalanced `` ``` `` run. marked then treats everything
+ * after the opening fence as code — including the assistant's trailing prose —
+ * until a closing fence arrives. This closes the open fence so the partial
+ * text is always well-formed markdown.
+ *
+ * NOTE: inline code spans (single `` ` `` backticks) are deliberately NOT
+ * auto-balanced. marked renders a trailing lone backtick as literal text
+ * (verified: `` `stray `` -> ``<p>... `stray</p>``, it never swallows
+ * following prose into a <code> span). Closing an odd inline backtick instead
+ * CREATES a false <code> capsule: quoting user input that itself ends with a
+ * stray backtick (e.g. `` `"), I need ``) gets "balanced" into
+ * <code>"), I need</code> — exactly the false "capsule" rendering users
+ * reported on messages like `The character class ... or ). I need ``.
+ * Fences are the only delimiter where marked swallows trailing prose, so
+ * fences are the only thing we balance.
  */
 
 /**
- * Returns text with any open fenced code block closed and any unbalanced
- * inline code backticks closed, so marked.parse renders it without treating
- * trailing prose as code.
+ * Returns text with any open fenced code block closed, so marked.parse
+ * renders it without treating trailing prose as code. Inline code backticks
+ * are left alone — marked renders stray backticks literally (see above).
  */
 export function balanceMarkdownForPartialRender(text: string): string {
   // --- Fenced code blocks (``` or longer runs) ---
@@ -45,13 +53,5 @@ export function balanceMarkdownForPartialRender(text: string): string {
     }
   }
 
-  // --- Inline code spans (single backtick, not part of a ```+ run) ---
-  // Strip fence runs first so their backticks aren't counted here, then close
-  // a lone opening backtick so marked doesn't render the rest as inline code.
-  const withoutFences = text.replace(/```+/g, '');
-  const inlineBackticks = (withoutFences.match(/`/g) || []).length;
-  if (inlineBackticks % 2 !== 0) {
-    return text + '`';
-  }
   return text;
 }
