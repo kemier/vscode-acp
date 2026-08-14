@@ -1627,24 +1627,24 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       const id = updateData.toolCallId;
       const content = updateData.content as
         Array<{ type: string; path?: string; oldText?: string; newText?: string }> | undefined;
-     if (id && content) {
+      if (id && content) {
         // Codex apply_patch sends {"type":"diff","oldText":"...","newText":"..."}
         // without a "path" field. Extract path from the tool call title so
         // the diff viewer and tooltip still work.
         const tcTitle = (updateData as any)?.title || '';
         const titlePath = tcTitle.match(/'([^']+)'|"([^"]+)"/);
-        const fallbackPath = titlePath ? (titlePath[1] || titlePath[2] || '') : '';
+        const fallbackPath = titlePath ? titlePath[1] || titlePath[2] || '' : '';
         const diffs = content
           .filter((c: any) => c.type === 'diff')
-          .map((c: any) => c.path ? c : { ...c, path: c.path || fallbackPath })
+          .map((c: any) => (c.path ? c : { ...c, path: c.path || fallbackPath }))
           .filter((c: any) => c.path);
-       if (diffs.length > 0) {
-         this.toolCallDiffs.set(
-           id,
-           diffs.map((d: any) => ({ path: d.path, oldText: d.oldText, newText: d.newText })),
-         );
-       }
-     }
+        if (diffs.length > 0) {
+          this.toolCallDiffs.set(
+            id,
+            diffs.map((d: any) => ({ path: d.path, oldText: d.oldText, newText: d.newText })),
+          );
+        }
+      }
 
       // Follow Agent: every tool call may include `locations: ToolCallLocation[]`.
       // When following, open the first location in the editor. See
@@ -1989,7 +1989,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // kills the new turn ("— Conversation interrupted —"). Guard: if the
       // generation changed since this prompt started, the response is stale.
       if (promptGeneration !== this._cancelGeneration) {
-        log(`handleSendPrompt: stale response (gen ${promptGeneration} → ${this._cancelGeneration}), suppressing promptEnd`);
+        log(
+          `handleSendPrompt: stale response (gen ${promptGeneration} → ${this._cancelGeneration}), suppressing promptEnd`,
+        );
         return;
       }
       // Render the accumulated assistant text as markdown
@@ -2016,7 +2018,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       this._pendingPromptSessionId = null;
       // Stale promptEnd guard (error path): same race as the success path.
       if (promptGeneration !== this._cancelGeneration) {
-        log(`handleSendPrompt: stale error (gen ${promptGeneration} → ${this._cancelGeneration}), suppressing promptEnd`);
+        log(
+          `handleSendPrompt: stale error (gen ${promptGeneration} → ${this._cancelGeneration}), suppressing promptEnd`,
+        );
         this.streamCoalescer.flush(activeId);
         return;
       }
@@ -3391,9 +3395,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             currentModelImageSupport: session.models?.currentModelId
               ? this.modelSupportsImage(session.models.currentModelId, session.agentName)
               : undefined,
-           modelImageMap: this.getModelImageMap(),
-           goalSnapshot: (session as any)?.goalSnapshot ?? null,
-         }
+            modelImageMap: this.getModelImageMap(),
+            goalSnapshot: (session as any)?.goalSnapshot ?? null,
+          }
         : null,
       lastAgent: lastAgent || undefined,
       lastAgentDisplay: lastAgentDisplay || undefined,
@@ -6612,11 +6616,17 @@ var end = displayText.length;
         isSessionAutocomplete = false;
       }
     } else {
+      // Other slash commands with args — close popup
       slashPopup.classList.remove('open');
       isSessionAutocomplete = false;
-      if (!text.startsWith('/')) {
-        promptInput.placeholder = savedPlaceholder;
-      }
+      isGoalSubcommandAutocomplete = false;
+    }
+    } else {
+      // Neither @mention nor slash — reset autocomplete UI
+      slashPopup.classList.remove('open');
+      isSessionAutocomplete = false;
+      isGoalSubcommandAutocomplete = false;
+      promptInput.placeholder = savedPlaceholder;
     }
     });
 
