@@ -875,11 +875,14 @@ export function activate(context: vscode.ExtensionContext): void {
       // Stringify error data properly — e.data can be an object like
       // {details: "thread xxx already has an active writer"}, which would
       // otherwise show as "[object Object]".
-      const errDataStr = typeof e?.data === 'string'
-        ? e.data
-        : e?.data && typeof e?.data === 'object'
-          ? JSON.stringify(e.data)
-          : e?.data ? String(e.data) : '';
+      const errDataStr =
+        typeof e?.data === 'string'
+          ? e.data
+          : e?.data && typeof e?.data === 'object'
+            ? JSON.stringify(e.data)
+            : e?.data
+              ? String(e.data)
+              : '';
       const errDetail = errDataStr ? `${e?.message || 'Error'}: ${errDataStr}` : e?.message || 'Unknown error';
       const combinedMsg = `${e?.message || ''} ${errDataStr}`;
 
@@ -1139,7 +1142,11 @@ export function activate(context: vscode.ExtensionContext): void {
 
       // 2. Connect to the target agent and create a new session
       await vscode.window.withProgress(
-        { location: vscode.ProgressLocation.Notification, title: `Starting session with ${targetAgentName}...`, cancellable: false },
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `Starting session with ${targetAgentName}...`,
+          cancellable: false,
+        },
         async () => {
           await sessionManager.connectToAgent(targetAgentName);
         },

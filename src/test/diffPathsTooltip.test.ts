@@ -40,8 +40,7 @@ suite('tool call diff-paths tooltip', () => {
     // live addToolCall() where the element does not exist yet still records
     // the paths for later application.
     assert.ok(
-      fnBody.indexOf('toolCallDiffs[toolCallId] = diffs;') <
-      fnBody.indexOf('if (tcEl) {'),
+      fnBody.indexOf('toolCallDiffs[toolCallId] = diffs;') < fnBody.indexOf('if (tcEl) {'),
       'toolCallDiffs stash must precede the tcEl existence check',
     );
     // persist to chatHistory too (reload path)
@@ -63,7 +62,10 @@ suite('tool call diff-paths tooltip', () => {
     assert.ok(sites.length >= 3, 'expected multiple toolCalls[toolCallId] = el sites, got ' + sites.length);
     for (const line of sites) {
       const lineNo = body.split('\n').indexOf(line);
-      const window = body.split('\n').slice(lineNo, lineNo + 4).join('\n');
+      const window = body
+        .split('\n')
+        .slice(lineNo, lineNo + 4)
+        .join('\n');
       assert.ok(
         window.indexOf('applyStoredDiffContent(el, toolCallId);') >= 0,
         'missing applyStoredDiffContent call after creation site at line ' + (lineNo + 1),
@@ -81,8 +83,7 @@ suite('tool call diff-paths tooltip', () => {
       'addToolCall must pass the raw diff content to storeDiffContent',
     );
     assert.ok(
-      seg.indexOf('toolCallDiffs[toolCallId]') >= 0 ||
-      seg.indexOf('applyStoredDiffContent') >= 0,
+      seg.indexOf('toolCallDiffs[toolCallId]') >= 0 || seg.indexOf('applyStoredDiffContent') >= 0,
       'addToolCall must participate in the toolCallDiffs stash/apply flow',
     );
   });
