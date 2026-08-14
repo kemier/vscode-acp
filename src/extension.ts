@@ -1158,10 +1158,13 @@ export function activate(context: vscode.ExtensionContext): void {
         'Please continue from where the conversation left off.',
       ].join('\n');
 
-      const activeSession = sessionManager.getActiveSession();
-      if (activeSession) {
-        await sessionManager.sendPrompt(activeSession.sessionId, forkPrompt);
-      }
+      // 3. Send the conversation as a continuation prompt.
+      // Dispatch through the webview (not sessionManager.sendPrompt directly)
+      // so the webview sets up its streaming lifecycle (promptStart →
+      // isProcessing → streaming chunks → promptEnd). Calling sendPrompt
+      // directly from the extension host bypasses the webview's prompt
+      // setup, causing the agent's streaming response to not render.
+      chatWebviewProvider.dispatchPrompt(forkPrompt);
 
       vscode.window.showInformationMessage(`Forked conversation from ${sourceAgentName} to ${targetAgentName}.`);
     } catch (e: any) {

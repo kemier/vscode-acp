@@ -64,6 +64,16 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       this.postMessage({ type: 'requestConversationExport' });
     });
   }
+
+  /**
+   * Dispatch a prompt to the webview so it goes through the normal
+   * handleSendPrompt flow (promptStart → streaming → promptEnd).
+   * Used by fork-to-agent and other extension-host commands that need
+   * the webview's streaming lifecycle set up properly.
+   */
+  dispatchPrompt(text: string): void {
+    this.postMessage({ type: 'sendPrompt', text });
+  }
   private toolCallDiffs = new Map<string, Array<{ path: string; oldText?: string; newText: string }>>();
   private terminalContext = new TerminalContextProvider();
   /** Optional store that persists oversize @terminal output to a file and
