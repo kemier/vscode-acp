@@ -25,7 +25,9 @@ import * as path from 'path';
 const SOURCE = path.resolve(__dirname, '../../src/ui/ChatWebviewProvider.ts');
 
 function sourceText(): string {
-  return fs.readFileSync(SOURCE, 'utf8');
+  // Normalize EOLs: with git core.autocrlf the working copy is CRLF on
+  // Windows, which would break the '\n'-based markers below.
+  return fs.readFileSync(SOURCE, 'utf8').replace(/\r\n/g, '\n');
 }
 
 suite('tool call diff-paths tooltip', () => {

@@ -20,7 +20,9 @@ import * as path from 'path';
 const SOURCE = path.resolve(__dirname, '../../src/ui/ChatWebviewProvider.ts');
 
 function extractFallbackFragment(): string {
-  const src = fs.readFileSync(SOURCE, 'utf8');
+  // Normalize EOLs: with git core.autocrlf the working copy is CRLF on
+  // Windows, which would break the '\n'-based markers below.
+  const src = fs.readFileSync(SOURCE, 'utf8').replace(/\r\n/g, '\n');
   // Exact opener of the decision fragment in the agent_message_chunk handler.
   const sig = "var _incomingMessageId = typeof update.messageId === 'string' ? update.messageId : null;";
   const startIdx = src.indexOf(sig);
