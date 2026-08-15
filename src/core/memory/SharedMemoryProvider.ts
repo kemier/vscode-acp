@@ -23,12 +23,18 @@ import {
   stripCodeBlocks,
   truncateForCapture,
 } from './MemorySanitize';
+import {
+  buildSkillConversationMessages,
+  type SkillToolCall,
+} from './SkillFeed';
 
 interface PendingTurn {
   agentName: string;
   memoryAgentId: string;
   userText: string;
   assistantText: string;
+  /** Tool calls seen during this turn (feed the skill pipeline's tool-call threshold). */
+  toolCalls: SkillToolCall[];
   startedAt: number;
 }
 
@@ -241,6 +247,7 @@ export class SharedMemoryProvider {
       memoryAgentId,
       userText,
       assistantText: '',
+      toolCalls: [],
       startedAt: Date.now(),
     });
   }
@@ -291,17 +298,19 @@ export class SharedMemoryProvider {
           `(agent=${turn.agentName}→${turn.memoryAgentId}, session=${sessionId})`,
       );
 
-      // Skill extraction pipeline: feed the same messages to the skill
-      // conversation-add endpoint. The gateway buffers them and triggers
-      // LLM-based skill extraction when thresholds are exceeded.
+      // Skill extraction pipeline: feed the same messages plus the turn's
+      // tool calls to the skill conversation-add endpoint. The gateway
+      // archives the per-session buffer and triggers LLM-based skill
+      // extraction once ≥10 tool_call messages (or ≥40KB) accumulate.
       // Non-fatal: skill extraction is best-effort and independent from
       // memory capture.
       try {
-        await client.skillConversationAdd(iso, {
-          sessionId,
-          messages: messages.map((m) => ({ role: m.role, content: m.content, timestamp: m.timestamp })),
-        });
-        log(`Skill conversation-add: ${messages.length} msg(s) sent (session=${sessionId})`);
+        const skillMessages = buildSkillConversationMessages(messages, turn.toolCalls);
+        await client.skillConversationAdd(iso, { sessionId, messages: skillMessages });
+        log(
+          `Skill conversation-add: ${skillMessages.length} msg(s) sent ` +
+            `(${turn.toolCalls.length} tool call(s)) (session=${sessionId})`,
+        );
       } catch (skillErr) {
         log(`Skill conversation-add failed (non-fatal): ${(skillErr as Error)?.message ?? skillErr}`);
       }
@@ -317,8 +326,26 @@ export class SharedMemoryProvider {
     }
     const data = update.update as {
       sessionUpdate?: string;
+      toolCallId?: string;
+      title?: string;
       content?: { type?: string; text?: string };
     };
+    // Tool calls feed the skill pipeline: the gateway archives a session
+    // buffer once it holds ≥10 `tool_call`-role messages (or ≥40KB), and only
+    // then runs LLM skill extraction. Without them the threshold is
+    // unreachable. The initial `tool_call` update carries the title; dedupe
+    // by toolCallId so follow-up updates don't double-count.
+    if (
+      data?.sessionUpdate === 'tool_call' &&
+      typeof data.toolCallId === 'string' &&
+      data.toolCallId &&
+      typeof data.title === 'string'
+    ) {
+      if (!turn.toolCalls.some((tc) => tc.id === data.toolCallId)) {
+        turn.toolCalls.push({ id: data.toolCallId, title: data.title, timestamp: new Date().toISOString() });
+      }
+      return;
+    }
     if (data?.sessionUpdate !== 'agent_message_chunk') {
       return;
     }

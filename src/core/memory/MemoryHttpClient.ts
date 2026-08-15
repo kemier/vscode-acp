@@ -203,7 +203,10 @@ export class MemoryHttpClient {
    */
   skillConversationAdd(
     iso: MemoryIsolation,
-    params: { sessionId: string; messages: Array<{ role: string; content: string; timestamp?: string }> },
+    params: {
+      sessionId: string;
+      messages: Array<{ role: string; content: string; timestamp?: string; tool_call_id?: string }>;
+    },
   ): Promise<{ status: string }> {
     const { sessionId: _sessionId, ...rest } = iso;
     return this.post('/v3/skill/conversation/add', {
@@ -213,6 +216,7 @@ export class MemoryHttpClient {
         role: m.role,
         content: m.content,
         timestamp: m.timestamp,
+        tool_call_id: m.tool_call_id,
       })),
     });
   }

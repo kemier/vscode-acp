@@ -2,6 +2,11 @@ import * as assert from 'assert';
 import { resolveMemoryAgentId } from '../core/memory/MemoryAgentId';
 import { formatL1Memories, formatRecallContext, formatSkills } from '../core/memory/MemoryFormat';
 import {
+  MAX_SKILL_TOOL_CALLS_PER_TURN,
+  buildSkillConversationMessages,
+  type SkillToolCall,
+} from '../core/memory/SkillFeed';
+import {
   CAPTURE_CONTENT_MAX_CHARS,
   RECALL_QUERY_MAX_CHARS,
   buildRecallQuery,
@@ -177,6 +182,71 @@ suite('MemorySanitize.truncateForCapture', () => {
   test('leaves exactly-at-limit content untouched', () => {
     const raw = 'y'.repeat(CAPTURE_CONTENT_MAX_CHARS);
     assert.strictEqual(truncateForCapture(raw), raw);
+  });
+});
+
+suite('MemorySkillFeed.buildSkillConversationMessages', () => {
+  const text = { role: 'user' as const, content: 'fix the bug', timestamp: 't0' };
+  const reply = { role: 'assistant' as const, content: 'done', timestamp: 't1' };
+  const toolCalls: SkillToolCall[] = [
+    { id: 'call_1', title: "Read file 'src/a.ts'", timestamp: 't2' },
+    { id: 'call_2', title: 'PowerShell', timestamp: 't3' },
+  ];
+
+  test('orders user → tool_call → assistant', () => {
+    const msgs = buildSkillConversationMessages([text, reply], toolCalls);
+    assert.deepStrictEqual(
+      msgs.map((m) => m.role),
+      ['user', 'tool_call', 'tool_call', 'assistant'],
+    );
+  });
+
+  test('tool_call messages carry id, title, and timestamp', () => {
+    const msgs = buildSkillConversationMessages([text, reply], toolCalls);
+    assert.strictEqual(msgs[1].role, 'tool_call');
+    assert.strictEqual(msgs[1].tool_call_id, 'call_1');
+    assert.strictEqual(msgs[1].content, "Read file 'src/a.ts'");
+    assert.strictEqual(msgs[1].timestamp, 't2');
+    assert.strictEqual(msgs[2].tool_call_id, 'call_2');
+  });
+
+  test('dedupes tool calls by id', () => {
+    const msgs = buildSkillConversationMessages([text, reply], [
+      ...toolCalls,
+      { id: 'call_1', title: 'duplicate', timestamp: 't4' },
+    ]);
+    assert.strictEqual(msgs.filter((m) => m.role === 'tool_call').length, 2);
+  });
+
+  test('drops tool calls without id or title', () => {
+    const msgs = buildSkillConversationMessages([text, reply], [
+      { id: '', title: 'no id', timestamp: 't' },
+      { id: 'call_x', title: '', timestamp: 't' },
+    ]);
+    assert.strictEqual(msgs.filter((m) => m.role === 'tool_call').length, 0);
+  });
+
+  test('caps tool calls per turn', () => {
+    const many = Array.from({ length: MAX_SKILL_TOOL_CALLS_PER_TURN + 50 }, (_, i) => ({
+      id: `call_${i}`,
+      title: `tool ${i}`,
+      timestamp: 't',
+    }));
+    const msgs = buildSkillConversationMessages([text, reply], many);
+    assert.strictEqual(msgs.filter((m) => m.role === 'tool_call').length, MAX_SKILL_TOOL_CALLS_PER_TURN);
+  });
+
+  test('works when user or assistant text is missing', () => {
+    const onlyReply = buildSkillConversationMessages([reply], toolCalls);
+    assert.deepStrictEqual(
+      onlyReply.map((m) => m.role),
+      ['tool_call', 'tool_call', 'assistant'],
+    );
+    const onlyUser = buildSkillConversationMessages([text], toolCalls);
+    assert.deepStrictEqual(
+      onlyUser.map((m) => m.role),
+      ['user', 'tool_call', 'tool_call'],
+    );
   });
 });
 
