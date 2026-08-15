@@ -1,6 +1,6 @@
 import * as assert from 'assert';
 import { resolveMemoryAgentId } from '../core/memory/MemoryAgentId';
-import { formatL1Memories, formatRecallContext } from '../core/memory/MemoryFormat';
+import { formatL1Memories, formatRecallContext, formatSkills } from '../core/memory/MemoryFormat';
 import {
   CAPTURE_CONTENT_MAX_CHARS,
   RECALL_QUERY_MAX_CHARS,
@@ -56,6 +56,69 @@ suite('MemoryFormat', () => {
 
   test('formatRecallContext returns undefined when empty', () => {
     assert.strictEqual(formatRecallContext([], null, []), undefined);
+  });
+
+  test('formatRecallContext includes skills when provided', () => {
+    const skills = [
+      { skill_id: 's1', name: 'deploy-flow', description: 'How to deploy', version: 1 },
+      { skill_id: 's2', name: 'test-first', description: 'Write tests first', version: 2 },
+    ];
+    const formatted = formatRecallContext([], null, [], skills);
+    assert.ok(formatted);
+    assert.ok(formatted!.text.includes('<available_skills>'));
+    assert.ok(formatted!.text.includes('deploy-flow'));
+    assert.ok(formatted!.text.includes('test-first'));
+    assert.strictEqual(formatted!.skillCount, 2);
+  });
+
+  test('formatRecallContext works without skills (backward compat)', () => {
+    const formatted = formatRecallContext([{ content: 'uses pnpm', type: 'fact' }], null, []);
+    assert.ok(formatted);
+    assert.ok(!formatted!.text.includes('<available_skills>'));
+    assert.strictEqual(formatted!.skillCount, 0);
+  });
+
+  test('formatRecallContext returns undefined when only empty skills', () => {
+    assert.strictEqual(formatRecallContext([], null, [], []), undefined);
+  });
+});
+
+suite('MemoryFormat.formatSkills', () => {
+  test('returns undefined for empty list', () => {
+    assert.strictEqual(formatSkills([]), undefined);
+  });
+
+  test('formats skills with names, versions, and descriptions', () => {
+    const text = formatSkills([
+      { skill_id: 's1', name: 'deploy-flow', description: 'Deploy the project', version: 1 },
+    ]);
+    assert.ok(text);
+    assert.ok(text!.includes('<available_skills>'));
+    assert.ok(text!.includes('deploy-flow'));
+    assert.ok(text!.includes('v1'));
+    assert.ok(text!.includes('Deploy the project'));
+    assert.ok(text!.includes('</available_skills>'));
+  });
+
+  test('clarifies memory vs filesystem skills', () => {
+    const text = formatSkills([
+      { skill_id: 's1', name: 'test', description: 'a test', version: 1 },
+    ]);
+    assert.ok(text);
+    assert.ok(text!.includes('memory-injected'));
+    assert.ok(text!.includes('Skill tool'));
+  });
+
+  test('handles multiple skills', () => {
+    const text = formatSkills([
+      { skill_id: 's1', name: 'a', description: 'first', version: 1 },
+      { skill_id: 's2', name: 'b', description: 'second', version: 2 },
+      { skill_id: 's3', name: 'c', description: 'third', version: 3 },
+    ]);
+    assert.ok(text);
+    assert.ok(text!.includes('a'));
+    assert.ok(text!.includes('b'));
+    assert.ok(text!.includes('c'));
   });
 });
 
