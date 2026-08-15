@@ -12697,7 +12697,11 @@ function commitCurrentTextSegment(opts) {
             var baseNameLower = '';
             // Windows paths use backslashes; without them the basename never
             // matches, so the verb-bearing title is clobbered by the bare path.
-            var slashIdx = Math.max(firstLineLower.lastIndexOf('/'), firstLineLower.lastIndexOf('\\'));
+            // NOTE: this block lives inside the webview HTML template literal —
+            // '\\' here would collapse to '\' and emit lastIndexOf('\') with an
+            // unescaped quote, killing the whole script with 'Invalid or
+            // unexpected token'. Four backslashes emit a valid '\\'.
+            var slashIdx = Math.max(firstLineLower.lastIndexOf('/'), firstLineLower.lastIndexOf('\\\\'));
             if (slashIdx >= 0 && slashIdx < firstLineLower.length - 1) {
               baseNameLower = firstLineLower.substring(slashIdx + 1);
             }
