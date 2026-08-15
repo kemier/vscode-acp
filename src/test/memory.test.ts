@@ -89,9 +89,7 @@ suite('MemoryFormat.formatSkills', () => {
   });
 
   test('formats skills with names, versions, and descriptions', () => {
-    const text = formatSkills([
-      { skill_id: 's1', name: 'deploy-flow', description: 'Deploy the project', version: 1 },
-    ]);
+    const text = formatSkills([{ skill_id: 's1', name: 'deploy-flow', description: 'Deploy the project', version: 1 }]);
     assert.ok(text);
     assert.ok(text!.includes('<available_skills>'));
     assert.ok(text!.includes('deploy-flow'));
@@ -101,9 +99,7 @@ suite('MemoryFormat.formatSkills', () => {
   });
 
   test('clarifies memory vs filesystem skills', () => {
-    const text = formatSkills([
-      { skill_id: 's1', name: 'test', description: 'a test', version: 1 },
-    ]);
+    const text = formatSkills([{ skill_id: 's1', name: 'test', description: 'a test', version: 1 }]);
     assert.ok(text);
     assert.ok(text!.includes('memory-injected'));
     assert.ok(text!.includes('Skill tool'));

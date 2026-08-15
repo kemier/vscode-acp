@@ -134,7 +134,9 @@ export class SharedMemoryProvider {
         client.searchAtomic(iso, { query, limit: settings.recallMaxResults }),
         includePersona ? client.readCore(iso) : Promise.resolve(null),
         includeSceneNav ? client.listScenarios(iso) : Promise.resolve(null),
-        settings.includeSkills ? client.listSkills(iso, { query, charBudget: settings.skillCharBudget }) : Promise.resolve(null),
+        settings.includeSkills
+          ? client.listSkills(iso, { query, charBudget: settings.skillCharBudget })
+          : Promise.resolve(null),
       ]);
       if (settings.debug) {
         // Per-arm wall time (all three ran concurrently, so each is the time
@@ -180,9 +182,7 @@ export class SharedMemoryProvider {
       }
 
       const skills: SkillEntry[] =
-        skillsResult.status === 'fulfilled' && skillsResult.value
-          ? (skillsResult.value.items ?? [])
-          : [];
+        skillsResult.status === 'fulfilled' && skillsResult.value ? (skillsResult.value.items ?? []) : [];
       if (skillsResult.status === 'rejected') {
         logError('Memory recall skill list failed', skillsResult.reason);
       }
