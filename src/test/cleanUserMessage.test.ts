@@ -522,8 +522,24 @@ suite('cleanUserMessage', () => {
     // Extracted from the real webview source so it cannot drift from production.
     const src = fs.readFileSync(path.resolve(__dirname, '../../src/ui/ChatWebviewProvider.ts'), 'utf8');
     const startIdx = src.indexOf('function isMachineContextOnly(rawText) {');
-    const endIdx = src.indexOf('\n    }', startIdx);
-    const fnSrc = src.slice(startIdx, endIdx + '\n    }'.length);
+    if (startIdx < 0) {
+      throw new Error('isMachineContextOnly() not found in ChatWebviewProvider.ts');
+    }
+    // Match braces from the opening one instead of guessing the closing
+    // brace's indentation, so extraction survives prettier reformatting.
+    let depth = 0;
+    let endIdx = -1;
+    for (let i = startIdx; i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}' && --depth === 0) {
+        endIdx = i;
+        break;
+      }
+    }
+    if (endIdx < 0) {
+      throw new Error('unbalanced braces while extracting isMachineContextOnly()');
+    }
+    const fnSrc = src.slice(startIdx, endIdx + 1);
     const isMachineContextOnly = new Function('return (' + fnSrc + ')')() as (raw: string) => boolean;
 
     test('a complete recall blob is machine context', () => {

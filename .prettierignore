@@ -4,3 +4,6 @@ out/
 resources/
 *.vsix
 *.log
+# Embedded 16k-line webview blob: prettier reformats it wholesale, breaking
+# the source-extraction tests in src/test and churning the file every deploy.
+src/ui/ChatWebviewProvider.ts
