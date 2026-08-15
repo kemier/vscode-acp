@@ -4,7 +4,8 @@
  * `error.message` is a generic "Internal error" — prefer details when present.
  */
 export function formatAcpErrorMessage(error: unknown, fallback = 'Error'): string {
-  const errMsg = error instanceof Error ? error.message : error != null && error !== '' ? String(error) : '';
+  const errMsg =
+    error instanceof Error ? error.message : error !== null && error !== undefined && error !== '' ? String(error) : '';
   const errData = (error as { data?: unknown } | null | undefined)?.data;
   let detail = '';
   if (typeof errData === 'string') {

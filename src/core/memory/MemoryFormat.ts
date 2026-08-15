@@ -59,12 +59,6 @@ export function formatL1Memories(items: L1MemoryItem[]): string | undefined {
  *  chars (~750 tokens) to keep the overhead bounded. */
 const MAX_PERSONA_CHARS = 2000;
 
-/** Maximum character budget for the skills block. Skills are class-level
- *  reusable workflows (e.g. "k8s-crashloop-triage"). The listing endpoint
- *  returns names + descriptions; full SKILL.md content is fetched on demand
- *  via /skill command. Cap the listing to keep the recall blob bounded. */
-const MAX_SKILLS_CHARS = 4000;
-
 export function formatPersona(persona: string | null | undefined): string | undefined {
   if (!persona?.trim()) {
     return undefined;

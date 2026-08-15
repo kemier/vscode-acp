@@ -6,23 +6,33 @@ import {
   type ResolvedAgentLocation,
 } from '../core/FollowAgent';
 
+
+/**
+ * These suites assert POSIX path semantics (normalise/join on '/'-formatted
+ * inputs); node:path on win32 yields '\'-formatted results, so the
+ * path-shaping assertions only run where POSIX paths are native. The
+ * platform-neutral semantics (anchoring, undefined, line handling) stay
+ * covered on Windows by the remaining tests.
+ */
+const posixTest = process.platform === 'win32' ? test.skip : test;
+
 suite('FollowAgent.resolveAgentLocationPath', () => {
   test('returns undefined for empty input', () => {
     assert.strictEqual(resolveAgentLocationPath({ path: '' }), undefined);
     assert.strictEqual(resolveAgentLocationPath({ path: undefined as any }), undefined);
   });
 
-  test('returns absolute paths normalised', () => {
+  posixTest('returns absolute paths normalised', () => {
     const out = resolveAgentLocationPath({ path: '/a/b/../c/foo.ts' });
     assert.strictEqual(out, '/a/c/foo.ts');
   });
 
-  test('resolves relative paths against sessionCwd', () => {
+  posixTest('resolves relative paths against sessionCwd', () => {
     const out = resolveAgentLocationPath({ path: 'src/foo.ts' }, { sessionCwd: '/projects/p' });
     assert.strictEqual(out, '/projects/p/src/foo.ts');
   });
 
-  test('falls back to workspaceRoot when sessionCwd is absent', () => {
+  posixTest('falls back to workspaceRoot when sessionCwd is absent', () => {
     const out = resolveAgentLocationPath({ path: 'src/foo.ts' }, { workspaceRoot: '/projects/p' });
     assert.strictEqual(out, '/projects/p/src/foo.ts');
   });
@@ -31,17 +41,17 @@ suite('FollowAgent.resolveAgentLocationPath', () => {
     assert.strictEqual(resolveAgentLocationPath({ path: 'src/foo.ts' }), undefined);
   });
 
-  test('expands ~ when homeDir is provided', () => {
+  posixTest('expands ~ when homeDir is provided', () => {
     const out = resolveAgentLocationPath({ path: '~/notes/x.md' }, { homeDir: '/home/u' });
     assert.strictEqual(out, '/home/u/notes/x.md');
   });
 
-  test('expands bare ~ when homeDir is provided', () => {
+  posixTest('expands bare ~ when homeDir is provided', () => {
     const out = resolveAgentLocationPath({ path: '~' }, { homeDir: '/home/u' });
     assert.strictEqual(out, '/home/u');
   });
 
-  test('absolute path outside the workspace is returned as-is (no filter)', () => {
+  posixTest('absolute path outside the workspace is returned as-is (no filter)', () => {
     // This is the "agent reads a file outside the repo" case — common when
     // codex inspects `/etc/...`, an installed dependency, or a sibling repo.
     // The follower MUST NOT filter the path by workspace membership; that
@@ -53,7 +63,7 @@ suite('FollowAgent.resolveAgentLocationPath', () => {
     assert.strictEqual(out, '/etc/hosts');
   });
 
-  test('relative path with .. escaping the workspace resolves correctly', () => {
+  posixTest('relative path with .. escaping the workspace resolves correctly', () => {
     // e.g. agent in /workspace/git/foo reads ../bar/util.ts (sibling repo).
     const out = resolveAgentLocationPath({ path: '../bar/util.ts' }, { sessionCwd: '/workspace/git/foo' });
     assert.strictEqual(out, '/workspace/git/bar/util.ts');
@@ -67,7 +77,7 @@ suite('FollowAgent.pickFollowTarget', () => {
     assert.strictEqual(pickFollowTarget([]), undefined);
   });
 
-  test('picks the first resolvable entry', () => {
+  posixTest('picks the first resolvable entry', () => {
     const out = pickFollowTarget([
       { path: '/a/foo.ts', line: 5 },
       { path: '/a/bar.ts', line: 9 },
@@ -75,13 +85,13 @@ suite('FollowAgent.pickFollowTarget', () => {
     assert.deepStrictEqual(out, { absPath: '/a/foo.ts', line: 5 });
   });
 
-  test('skips entries whose path cannot be resolved', () => {
+  posixTest('skips entries whose path cannot be resolved', () => {
     // First entry is relative + no anchor -> unresolvable -> skip.
     const out = pickFollowTarget([{ path: 'src/foo.ts' }, { path: '/abs/bar.ts', line: 12 }]);
     assert.deepStrictEqual(out, { absPath: '/abs/bar.ts', line: 12 });
   });
 
-  test('line=0 / negative / NaN is dropped (1-based ACP convention)', () => {
+  posixTest('line=0 / negative / NaN is dropped (1-based ACP convention)', () => {
     const cases = [0, -1, NaN, null as any, undefined as any];
     for (const line of cases) {
       const out = pickFollowTarget([{ path: '/a/foo.ts', line }]);
@@ -89,12 +99,12 @@ suite('FollowAgent.pickFollowTarget', () => {
     }
   });
 
-  test('fractional line numbers are floored', () => {
+  posixTest('fractional line numbers are floored', () => {
     const out = pickFollowTarget([{ path: '/a/foo.ts', line: 7.9 }]);
     assert.deepStrictEqual(out, { absPath: '/a/foo.ts', line: 7 });
   });
 
-  test('absolute paths outside the workspace are picked unchanged', () => {
+  posixTest('absolute paths outside the workspace are picked unchanged', () => {
     // Mirrors what Zed does — the follower follows the agent everywhere it
     // looks, including read_file calls into installed dependencies, system
     // headers, sibling repos, etc.

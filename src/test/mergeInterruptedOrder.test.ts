@@ -230,7 +230,7 @@ suite('merge interrupt-notice ordering (resume regression)', () => {
     const lastRealUser = (() => {
       for (let i = history.length - 1; i >= 0; i--) {
         const it = history[i];
-        if (it && it.kind === 'message' && it.role === 'user' && !isInterruptLike(it.text)) return i;
+        if (it && it.kind === 'message' && it.role === 'user' && !isInterruptLike(it.text)) {return i;}
       }
       return -1;
     })();
@@ -254,7 +254,7 @@ suite('merge interrupt-notice ordering (resume regression)', () => {
     const lastRealUser = (() => {
       for (let i = history.length - 1; i >= 0; i--) {
         const it = history[i];
-        if (it && it.kind === 'message' && it.role === 'user' && !isInterruptLike(it.text)) return i;
+        if (it && it.kind === 'message' && it.role === 'user' && !isInterruptLike(it.text)) {return i;}
       }
       return -1;
     })();
