@@ -212,7 +212,9 @@ export function cleanSessionTitle(title: string | null | undefined): string {
   if (cleaned.length > MAX_TITLE_LEN) {
     // Try to break at a word boundary near the limit.
     let cut = cleaned.lastIndexOf(' ', MAX_TITLE_LEN);
-    if (cut < MAX_TITLE_LEN * 0.6) cut = MAX_TITLE_LEN;
+    if (cut < MAX_TITLE_LEN * 0.6) {
+      cut = MAX_TITLE_LEN;
+    }
     cleaned = cleaned.slice(0, cut) + '…';
   }
   return cleaned;

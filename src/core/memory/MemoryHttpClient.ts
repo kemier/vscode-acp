@@ -182,6 +182,43 @@ export class MemoryHttpClient {
     return this.post('/v3/scenario/ls', this.isolationBody({ ...iso, sessionId: undefined }));
   }
 
+  listSkills(
+    iso: MemoryIsolation,
+    params?: { query?: string; charBudget?: number },
+  ): Promise<{ items: Array<{ skill_id: string; name: string; description: string; version: number }> }> {
+    const { sessionId: _sessionId, ...rest } = iso;
+    return this.post('/v3/skill/listing', {
+      ...this.isolationBody(rest),
+      query: params?.query,
+      char_budget: params?.charBudget ?? 8000,
+    });
+  }
+
+  getSkill(
+    iso: MemoryIsolation,
+    skillId: string,
+  ): Promise<{ skill_id: string; name: string; description: string; content: string; version: number }> {
+    const { sessionId: _sessionId, ...rest } = iso;
+    return this.post('/v3/skill/get', {
+      ...this.isolationBody(rest),
+      skill_id: skillId,
+      include_content: true,
+      include_manifest: false,
+    });
+  }
+
+  searchSkills(
+    iso: MemoryIsolation,
+    params: { query: string; topK?: number },
+  ): Promise<{ items: Array<{ skill_id: string; name: string; description: string; score?: number }> }> {
+    const { sessionId: _sessionId, ...rest } = iso;
+    return this.post('/v3/skill/search', {
+      ...this.isolationBody(rest),
+      query: params.query,
+      top_k: params.topK ?? 5,
+    });
+  }
+
   addConversation(
     iso: MemoryIsolation,
     params: { sessionId: string; messages: ConversationMessage[] },

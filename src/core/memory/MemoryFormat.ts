@@ -13,12 +13,20 @@ export interface SceneNavEntry {
   path: string;
 }
 
+export interface SkillEntry {
+  skill_id: string;
+  name: string;
+  description: string;
+  version: number;
+}
+
 export interface FormattedRecall {
   /** Combined markdown injected as an ACP memory ContentBlock. */
   text: string;
   l1Count: number;
   hasPersona: boolean;
   sceneCount: number;
+  skillCount: number;
 }
 
 /** Maximum character length per individual L1 memory item. Some memories
@@ -51,6 +59,12 @@ export function formatL1Memories(items: L1MemoryItem[]): string | undefined {
  *  chars (~750 tokens) to keep the overhead bounded. */
 const MAX_PERSONA_CHARS = 2000;
 
+/** Maximum character budget for the skills block. Skills are class-level
+ *  reusable workflows (e.g. "k8s-crashloop-triage"). The listing endpoint
+ *  returns names + descriptions; full SKILL.md content is fetched on demand
+ *  via /skill command. Cap the listing to keep the recall blob bounded. */
+const MAX_SKILLS_CHARS = 4000;
+
 export function formatPersona(persona: string | null | undefined): string | undefined {
   if (!persona?.trim()) {
     return undefined;
@@ -60,6 +74,22 @@ export function formatPersona(persona: string | null | undefined): string | unde
     trimmed = trimmed.slice(0, MAX_PERSONA_CHARS) + '\n…(persona truncated)';
   }
   return `<user-persona>\n${trimmed}\n</user-persona>`;
+}
+
+export function formatSkills(skills: SkillEntry[]): string | undefined {
+  if (skills.length === 0) {
+    return undefined;
+  }
+  const lines: string[] = ['<available_skills>', ''];
+  for (const s of skills) {
+    lines.push(`- **${s.name}** (v${s.version}): ${s.description}`);
+  }
+  lines.push('');
+  lines.push('These are memory-injected skills extracted from past conversations.');
+  lines.push('Their full instructions are already loaded in this block — follow them when relevant.');
+  lines.push('Filesystem skills (e.g. ~/.codex/skills/) are loaded separately via the Skill tool.');
+  lines.push('</available_skills>');
+  return lines.join('\n');
 }
 
 /** Maximum number of scene nav entries to include. Each entry is a path +
@@ -97,12 +127,13 @@ const MAX_TOTAL_BLOB_CHARS = 8000;
 
 /**
  * Build a single injectable recall blob for ACP ContentBlocks.
- * Combines L1 (dynamic) + L3 persona + L2 scene nav (Model B agent profile).
+ * Combines L1 (dynamic) + L3 persona + L2 scene nav + skills (Model B agent profile).
  */
 export function formatRecallContext(
   l1Items: L1MemoryItem[],
   persona: string | null | undefined,
   scenes: SceneNavEntry[],
+  skills: SkillEntry[] = [],
 ): FormattedRecall | undefined {
   const parts: string[] = [];
   const l1 = formatL1Memories(l1Items);
@@ -116,6 +147,10 @@ export function formatRecallContext(
   const sceneBlock = formatSceneNav(scenes);
   if (sceneBlock && (!persona || !persona.includes('Scene Navigation'))) {
     parts.push(sceneBlock);
+  }
+  const skillBlock = formatSkills(skills);
+  if (skillBlock) {
+    parts.push(skillBlock);
   }
   if (parts.length === 0) {
     return undefined;
@@ -132,5 +167,6 @@ export function formatRecallContext(
     l1Count: l1Items.length,
     hasPersona: !!personaBlock,
     sceneCount: scenes.length,
+    skillCount: skills.length,
   };
 }

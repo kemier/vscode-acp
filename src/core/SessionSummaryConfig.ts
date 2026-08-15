@@ -12,9 +12,12 @@ export interface SessionSummarySettings {
   /** Optional Bearer token when the proxy has api-keys configured. */
   apiKey: string;
   timeoutMs: number;
+  /** Model alias to use for summarization (resolved by the proxy). Empty = auto-select. */
+  model: string;
 }
 
 const DEFAULT_ENDPOINT = 'http://127.0.0.1:8317';
+const DEFAULT_MODEL = 'qwen38-27b';
 
 export function readSessionSummarySettings(): SessionSummarySettings {
   const cfg = vscode.workspace.getConfiguration('acp');
@@ -22,6 +25,7 @@ export function readSessionSummarySettings(): SessionSummarySettings {
     endpoint: (cfg.get<string>('sessionSummary.endpoint') || DEFAULT_ENDPOINT).replace(/\/+$/, ''),
     apiKey: (cfg.get<string>('sessionSummary.apiKey') || '').trim(),
     timeoutMs: Math.max(5000, cfg.get<number>('sessionSummary.timeoutMs') ?? 120_000),
+    model: (cfg.get<string>('sessionSummary.model') || DEFAULT_MODEL).trim(),
   };
 }
 

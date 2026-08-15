@@ -23,6 +23,8 @@ export interface MemorySettings {
   recallMaxResults: number;
   includePersona: boolean;
   includeSceneNav: boolean;
+  includeSkills: boolean;
+  skillCharBudget: number;
   captureEnabled: boolean;
   timeoutMs: number;
   /** Verbose timing/debug logging for recall + injection. Off by default. */
@@ -60,6 +62,8 @@ export function readMemorySettings(): MemorySettings {
     recallMaxResults: Math.max(1, cfg.get<number>('memory.recallMaxResults') ?? 5),
     includePersona: cfg.get<boolean>('memory.includePersona') !== false,
     includeSceneNav: cfg.get<boolean>('memory.includeSceneNav') !== false,
+    includeSkills: cfg.get<boolean>('memory.includeSkills') !== false,
+    skillCharBudget: Math.max(0, cfg.get<number>('memory.skillCharBudget') ?? 8000),
     captureEnabled: cfg.get<boolean>('memory.captureEnabled') !== false,
     timeoutMs: Math.max(1000, cfg.get<number>('memory.timeoutMs') ?? 15_000),
     debug: cfg.get<boolean>('memory.debug') === true,

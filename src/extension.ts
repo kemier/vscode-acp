@@ -1128,7 +1128,9 @@ export function activate(context: vscode.ExtensionContext): void {
       placeHolder: `Continue conversation from ${sourceAgentName} in...`,
       title: 'Fork to Another Agent',
     });
-    if (!picked) return;
+    if (!picked) {
+      return;
+    }
 
     const targetAgentName = picked.description!;
 

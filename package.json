@@ -404,6 +404,11 @@
           "minimum": 5000,
           "description": "HTTP timeout for /session summarization requests (milliseconds)."
         },
+        "acp.sessionSummary.model": {
+          "type": "string",
+          "default": "qwen38-27b",
+          "description": "Model alias (resolved by the proxy) used for /session summarization. Set empty to use the proxy's auto-selection (largest context)."
+        },
         "acp.memory.enabled": {
           "type": "boolean",
           "default": false,
@@ -455,6 +460,17 @@
           "type": "boolean",
           "default": true,
           "description": "Include L2 scenario navigation index for the agent profile on recall."
+        },
+        "acp.memory.includeSkills": {
+          "type": "boolean",
+          "default": true,
+          "description": "Include extracted skills (names + descriptions) in the recall blob on every prompt."
+        },
+        "acp.memory.skillCharBudget": {
+          "type": "number",
+          "default": 8000,
+          "minimum": 0,
+          "description": "Maximum character budget for the skills section in the recall blob."
         },
         "acp.memory.captureEnabled": {
           "type": "boolean",

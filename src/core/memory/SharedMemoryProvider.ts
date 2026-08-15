@@ -14,7 +14,7 @@ import type { SessionUpdateHandler } from '../../handlers/SessionUpdateHandler';
 import { log, logError } from '../../utils/Logger';
 import { isMemoryConfigured, readMemorySettings, type MemorySettings } from './MemoryConfig';
 import { resolveMemoryAgentId } from './MemoryAgentId';
-import { formatRecallContext } from './MemoryFormat';
+import { formatRecallContext, type SkillEntry } from './MemoryFormat';
 import { MemoryHttpClient, type MemoryIsolation } from './MemoryHttpClient';
 import {
   buildRecallQuery,
@@ -130,10 +130,11 @@ export class SharedMemoryProvider {
       const armT0 = settings.debug ? performance.now() : 0;
       const includePersona = opts.includePersona ?? settings.includePersona;
       const includeSceneNav = opts.includeSceneNav ?? settings.includeSceneNav;
-      const [searchResult, personaResult, scenesResult] = await Promise.allSettled([
+      const [searchResult, personaResult, scenesResult, skillsResult] = await Promise.allSettled([
         client.searchAtomic(iso, { query, limit: settings.recallMaxResults }),
         includePersona ? client.readCore(iso) : Promise.resolve(null),
         includeSceneNav ? client.listScenarios(iso) : Promise.resolve(null),
+        settings.includeSkills ? client.listSkills(iso, { query, charBudget: settings.skillCharBudget }) : Promise.resolve(null),
       ]);
       if (settings.debug) {
         // Per-arm wall time (all three ran concurrently, so each is the time
@@ -178,7 +179,15 @@ export class SharedMemoryProvider {
         logError('Memory recall scenario list failed', scenesResult.reason);
       }
 
-      const formatted = formatRecallContext(l1Items, persona, scenes);
+      const skills: SkillEntry[] =
+        skillsResult.status === 'fulfilled' && skillsResult.value
+          ? (skillsResult.value.items ?? [])
+          : [];
+      if (skillsResult.status === 'rejected') {
+        logError('Memory recall skill list failed', skillsResult.reason);
+      }
+
+      const formatted = formatRecallContext(l1Items, persona, scenes, skills);
       if (!formatted) {
         if (settings.debug) {
           log(
@@ -193,13 +202,13 @@ export class SharedMemoryProvider {
 
       if (settings.debug) {
         log(
-          `Memory recall END: L1=${formatted.l1Count} persona=${formatted.hasPersona} scenes=${formatted.sceneCount} ` +
+          `Memory recall END: L1=${formatted.l1Count} persona=${formatted.hasPersona} scenes=${formatted.sceneCount} skills=${formatted.skillCount} ` +
             `blobBytes=${formatted.text.length} in ${(performance.now() - recallT0).toFixed(1)}ms ` +
             `(agent=${opts.agentName}→${memoryAgentId})`,
         );
       } else {
         log(
-          `Memory recall: L1=${formatted.l1Count} persona=${formatted.hasPersona} scenes=${formatted.sceneCount} ` +
+          `Memory recall: L1=${formatted.l1Count} persona=${formatted.hasPersona} scenes=${formatted.sceneCount} skills=${formatted.skillCount} ` +
             `(agent=${opts.agentName}→${memoryAgentId})`,
         );
       }

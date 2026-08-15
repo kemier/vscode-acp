@@ -3207,6 +3207,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         body: JSON.stringify({
           title: picked.title,
           messages,
+          model: summaryCfg.model || undefined,
         }),
         signal: AbortSignal.timeout(summaryCfg.timeoutMs),
       });
@@ -3308,7 +3309,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // agent (e.g. a /session lookup that matched a Kiro CLI session would morph
     // an EricLI session's picker to Kiro/Claude models and never switch back).
     const restoreTarget = { agent: activeAgent, sessionId: originalSessionId };
-    let restoreError: unknown = null;
 
     try {
       // Load the session — this replays all messages as session/update

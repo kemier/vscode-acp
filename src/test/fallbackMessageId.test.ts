@@ -43,8 +43,7 @@ suite('fallbackMessageId', () => {
 
   test('chunks without a real messageId get the synthetic per-turn id', () => {
     const fallbackMessageId = 'turn-fallback-xyz';
-    let sawRealMessageIdThisTurn = false;
-    // eslint-disable-next-line no-new-func
+    const sawRealMessageIdThisTurn = false;
     const fn = new Function(
       'update',
       'fallbackMessageId',
@@ -72,7 +71,6 @@ suite('fallbackMessageId', () => {
   test('real messageId wins once seen (agents control grouping)', () => {
     const fallbackMessageId = 'turn-fallback-xyz';
     let sawRealMessageIdThisTurn = false;
-    // eslint-disable-next-line no-new-func
     const fn = new Function(
       'update',
       'fallbackMessageId',
