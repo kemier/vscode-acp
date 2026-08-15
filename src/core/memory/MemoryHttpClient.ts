@@ -194,6 +194,29 @@ export class MemoryHttpClient {
     });
   }
 
+  /**
+   * Skill conversation-add: feed each turn's messages into the skill
+   * extraction pipeline. The gateway buffers messages and triggers
+   * LLM-based skill extraction when thresholds (bytes/tool-call count)
+   * are exceeded. This is a separate pipeline from /v3/conversation/add
+   * (memory L1 extraction).
+   */
+  skillConversationAdd(
+    iso: MemoryIsolation,
+    params: { sessionId: string; messages: Array<{ role: string; content: string; timestamp?: string }> },
+  ): Promise<{ status: string }> {
+    const { sessionId: _sessionId, ...rest } = iso;
+    return this.post('/v3/skill/conversation/add', {
+      ...this.isolationBody(rest),
+      session_id: params.sessionId,
+      messages: params.messages.map((m) => ({
+        role: m.role,
+        content: m.content,
+        timestamp: m.timestamp,
+      })),
+    });
+  }
+
   getSkill(
     iso: MemoryIsolation,
     skillId: string,

@@ -290,6 +290,21 @@ export class SharedMemoryProvider {
         `Memory capture: ${messages.length} msg(s) → total=${result.total_count} ` +
           `(agent=${turn.agentName}→${turn.memoryAgentId}, session=${sessionId})`,
       );
+
+      // Skill extraction pipeline: feed the same messages to the skill
+      // conversation-add endpoint. The gateway buffers them and triggers
+      // LLM-based skill extraction when thresholds are exceeded.
+      // Non-fatal: skill extraction is best-effort and independent from
+      // memory capture.
+      try {
+        await client.skillConversationAdd(iso, {
+          sessionId,
+          messages: messages.map((m) => ({ role: m.role, content: m.content, timestamp: m.timestamp })),
+        });
+        log(`Skill conversation-add: ${messages.length} msg(s) sent (session=${sessionId})`);
+      } catch (skillErr) {
+        log(`Skill conversation-add failed (non-fatal): ${(skillErr as Error)?.message ?? skillErr}`);
+      }
     } catch (e) {
       logError('Memory capture failed', e);
     }
