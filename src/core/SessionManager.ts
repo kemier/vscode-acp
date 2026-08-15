@@ -1112,6 +1112,15 @@ export class SessionManager extends EventEmitter {
         value,
       });
       const options = (response as any)?.configOptions ?? null;
+      // Pi's response may have a stale currentValue for the option we just set
+      // (get_state is called before the change is reflected). Fix it optimistically.
+      if (Array.isArray(options)) {
+        for (const opt of options) {
+          if (opt && opt.id === configId) {
+            opt.currentValue = value;
+          }
+        }
+      }
       this.applyConfigOptions(sessionId, options);
       // Persist the config value so it can be restored on resume/load.
       this.persistConfigValue(session, configId, value);

@@ -15730,6 +15730,14 @@ sessionState = {
             modePickerLabel.textContent = current.name;
             renderModeDropdown();
           }
+          // Also update configOptions if they're being used (Pi uses configOptions)
+          if (configOptions.length > 0) {
+            const modeOpt = configOptions.find(o => o.category === 'mode' || o.category === 'thought_level');
+            if (modeOpt) {
+              modeOpt.selected = update.currentModeId || update.modeId;
+              renderConfigPickers(configOptions);
+            }
+          }
           break;
         }
 
