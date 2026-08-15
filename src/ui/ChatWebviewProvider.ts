@@ -13792,7 +13792,7 @@ sessionState = {
        if (isCompacting) {
          if (compactedWarningText || compactedNoticeText) {
            flushCompactionMessages();
-         } else if (isClaudeAgent()) {
+         } else if (isClaudeAgent() || isPiAgent()) {
            compactedNoticeText = 'Compacting completed.';
            flushCompactionMessages();
          }
@@ -14139,7 +14139,7 @@ sessionState = {
             var _errMsg = String(msg.message || '');
             if (/AbortError:\\s*Compaction cancel/i.test(_errMsg) ||
                 /Compaction cancel(l)?ed/i.test(_errMsg)) {
-              if (isCompacting && (compactedWarningText || compactedNoticeText || isClaudeAgent())) {
+              if (isCompacting && (compactedWarningText || compactedNoticeText || isClaudeAgent() || isPiAgent())) {
                 if (!compactedNoticeText) compactedNoticeText = 'Compacting completed.';
                 flushCompactionMessages();
               }
@@ -14952,6 +14952,12 @@ sessionState = {
 
     function isClaudeAgent() {
       return /claude/i.test(currentAgentLabel());
+    }
+
+    /** Pi (pi-acp) signals /compact completion via agent_message_chunk + end_turn,
+     *  same pattern as Claude — no _meta.contextCompaction meta. */
+    function isPiAgent() {
+      return /pi\s*agent|pi-acp/i.test(currentAgentLabel());
     }
 
     /** Agent post-compact noise that must not land in the chat panel. */
