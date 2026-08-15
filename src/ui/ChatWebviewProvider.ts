@@ -12695,7 +12695,9 @@ function commitCurrentTextSegment(opts) {
             // mismatch and would clobber the verb with a bare path. Also
             // compare against the basename so a descriptive title is preserved.
             var baseNameLower = '';
-            var slashIdx = firstLineLower.lastIndexOf('/');
+            // Windows paths use backslashes; without them the basename never
+            // matches, so the verb-bearing title is clobbered by the bare path.
+            var slashIdx = Math.max(firstLineLower.lastIndexOf('/'), firstLineLower.lastIndexOf('\\'));
             if (slashIdx >= 0 && slashIdx < firstLineLower.length - 1) {
               baseNameLower = firstLineLower.substring(slashIdx + 1);
             }
