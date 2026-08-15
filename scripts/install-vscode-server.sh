@@ -5,9 +5,9 @@ set -euo pipefail
 # Defaults (when present):
 #   - ~/.vscode/extensions         (desktop VS Code)
 #   - ~/.vscode-server/extensions  (local vscode-server / some remote helpers)
-#   - ~/.cursor/extensions         (Cursor)
+# (Cursor is intentionally NOT a default target; set ACP_INSTALL_TARGETS to
+# opt in: ACP_INSTALL_TARGETS="$HOME/.cursor/extensions" ...)
 # Usage: ./scripts/install-vscode-server.sh
-#        ACP_INSTALL_TARGETS="$HOME/.cursor/extensions" ./scripts/install-vscode-server.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
@@ -45,8 +45,7 @@ else
   TARGETS=()
   for candidate in \
     "$HOME/.vscode/extensions" \
-    "$HOME/.vscode-server/extensions" \
-    "$HOME/.cursor/extensions"
+    "$HOME/.vscode-server/extensions"
   do
     if [[ -d "$candidate" || "$candidate" == "$HOME/.vscode/extensions" ]]; then
       TARGETS+=("$candidate")
