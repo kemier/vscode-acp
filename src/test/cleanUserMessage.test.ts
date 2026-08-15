@@ -530,8 +530,9 @@ suite('cleanUserMessage', () => {
     let depth = 0;
     let endIdx = -1;
     for (let i = startIdx; i < src.length; i++) {
-      if (src[i] === '{') depth++;
-      else if (src[i] === '}' && --depth === 0) {
+      if (src[i] === '{') {
+        depth++;
+      } else if (src[i] === '}' && --depth === 0) {
         endIdx = i;
         break;
       }

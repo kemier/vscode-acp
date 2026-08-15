@@ -12,9 +12,19 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
 
-VERSION=$(node -p "require('$REPO_DIR/package.json').version")
-PUBLISHER=$(node -p "require('$REPO_DIR/package.json').publisher")
-NAME=$(node -p "require('$REPO_DIR/package.json').name")
+# Node on Windows can't resolve MSYS POSIX paths (/e/...), so convert for
+# the require() calls below; bash-side uses ($REPO_DIR, $VSIX) keep POSIX.
+# Use -m (forward slashes): -w backslashes get eaten as JS escape
+# sequences inside the require() string literal.
+if command -v cygpath >/dev/null 2>&1; then
+  REPO_DIR_NODE="$(cygpath -m "$REPO_DIR")"
+else
+  REPO_DIR_NODE="$REPO_DIR"
+fi
+
+VERSION=$(node -p "require('$REPO_DIR_NODE/package.json').version")
+PUBLISHER=$(node -p "require('$REPO_DIR_NODE/package.json').publisher")
+NAME=$(node -p "require('$REPO_DIR_NODE/package.json').name")
 EXT_ID="$PUBLISHER.$NAME"
 REL="$EXT_ID-$VERSION"
 
