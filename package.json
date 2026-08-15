@@ -409,6 +409,21 @@
           "default": "qwen38-27b",
           "description": "Model alias (resolved by the proxy) used for /session summarization. Set empty to use the proxy's auto-selection (largest context)."
         },
+        "acp.sessionSummary.fallbackEndpoint": {
+          "type": "string",
+          "default": "",
+          "description": "OpenAI-compatible base URL used as fallback when the primary summarize endpoint fails (proxy down, timeout, non-OK response). Recommended: https://api.deepseek.com (official DeepSeek API, POST /v1/chat/completions — verified via api-docs.deepseek.com). Empty = fallback disabled."
+        },
+        "acp.sessionSummary.fallbackApiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Bearer token for the fallback endpoint (a DeepSeek API key from platform.deepseek.com). Empty = fallback disabled."
+        },
+        "acp.sessionSummary.fallbackModel": {
+          "type": "string",
+          "default": "deepseek-v4-flash",
+          "description": "Model id used by the fallback endpoint (DeepSeek-V4-Flash-0731, 1M-token context)."
+        },
         "acp.memory.enabled": {
           "type": "boolean",
           "default": false,
@@ -501,7 +516,7 @@
     "lint": "eslint src --max-warnings 0",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "test": "vscode-test",
-    "test:unit": "npm run compile-tests && mocha --ui tdd 'out/test/markdownMath.test.js' 'out/test/markdownBalance.test.js' 'out/test/linkifier.test.js' 'out/test/titleCleaner.test.js' 'out/test/toolCallTitleCleaner.test.js' 'out/test/streamCoalescer.test.js' 'out/test/cleanUserMessage.test.js' 'out/test/followAgent.test.js' 'out/test/memory.test.js' 'out/test/messageQueue.test.js' 'out/test/mergeInterruptedOrder.test.js' 'out/test/sessionCaptureRestore.test.js' 'out/test/memoryCacheStability.test.js' 'out/test/crewStageLabel.test.js' 'out/test/rawInputDirectoryTooltip.test.js' 'out/test/fallbackMessageId.test.js' 'out/test/diffPathsTooltip.test.js' 'out/test/agentDisplayName.test.js' 'out/test/formatAcpErrorMessage.test.js'",
+    "test:unit": "npm run compile-tests && mocha --ui tdd 'out/test/markdownMath.test.js' 'out/test/markdownBalance.test.js' 'out/test/linkifier.test.js' 'out/test/titleCleaner.test.js' 'out/test/toolCallTitleCleaner.test.js' 'out/test/streamCoalescer.test.js' 'out/test/cleanUserMessage.test.js' 'out/test/followAgent.test.js' 'out/test/memory.test.js' 'out/test/messageQueue.test.js' 'out/test/mergeInterruptedOrder.test.js' 'out/test/sessionCaptureRestore.test.js' 'out/test/sessionSummaryFallback.test.js' 'out/test/memoryCacheStability.test.js' 'out/test/crewStageLabel.test.js' 'out/test/rawInputDirectoryTooltip.test.js' 'out/test/fallbackMessageId.test.js' 'out/test/diffPathsTooltip.test.js' 'out/test/agentDisplayName.test.js' 'out/test/formatAcpErrorMessage.test.js'",
     "deploy": "bash scripts/deploy-all.sh",
     "deploy:fast": "bash scripts/deploy-all.sh --skip-tests --skip-lint",
     "install:local": "bash scripts/install-vscode-server.sh",

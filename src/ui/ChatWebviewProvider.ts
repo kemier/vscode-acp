@@ -25,6 +25,7 @@ import { cleanSessionTitle } from '../utils/TitleCleaner';
 import { ACP_MATH_SPLIT_RE, createMathExtension } from '../utils/markdownMath';
 import { balanceMarkdownForPartialRender } from '../utils/markdownBalance';
 import { buildSummarizeSessionUrl, readSessionSummarySettings } from '../core/SessionSummaryConfig';
+import { summarizeViaChatCompletions } from '../core/SessionSummaryFallback';
 
 const execFileAsync = promisify(execFile);
 
@@ -3194,35 +3195,59 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         return;
       }
 
-      // Call responses-vllm-proxy /v1/summarize-session (forwards to vLLM backend).
       const summaryCfg = readSessionSummarySettings();
-      const summaryUrl = buildSummarizeSessionUrl(summaryCfg.endpoint);
-      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-      if (summaryCfg.apiKey) {
-        headers.Authorization = `Bearer ${summaryCfg.apiKey}`;
-      }
-      const summaryResponse = await fetch(summaryUrl, {
-        method: 'POST',
-        headers,
-        body: JSON.stringify({
-          title: picked.title,
-          messages,
-          model: summaryCfg.model || undefined,
-        }),
-        signal: AbortSignal.timeout(summaryCfg.timeoutMs),
-      });
 
-      if (!summaryResponse.ok) {
-        const errText = await summaryResponse.text();
-        this.postMessage({
-          type: 'sessionSummary',
-          error: 'Summary failed: ' + summaryResponse.status + ' ' + errText.slice(0, 200),
-          queryText,
+      // Primary: responses-vllm-proxy /v1/summarize-session (forwards to vLLM backend).
+      const summarizePrimary = async (): Promise<{ summary: string; model: string }> => {
+        const summaryUrl = buildSummarizeSessionUrl(summaryCfg.endpoint);
+        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+        if (summaryCfg.apiKey) {
+          headers.Authorization = `Bearer ${summaryCfg.apiKey}`;
+        }
+        const summaryResponse = await fetch(summaryUrl, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            title: picked.title,
+            messages,
+            model: summaryCfg.model || undefined,
+          }),
+          signal: AbortSignal.timeout(summaryCfg.timeoutMs),
         });
-        return;
+        if (!summaryResponse.ok) {
+          const errText = await summaryResponse.text();
+          throw new Error('Summary failed: ' + summaryResponse.status + ' ' + errText.slice(0, 200));
+        }
+        return (await summaryResponse.json()) as { summary: string; model: string };
+      };
+
+      // Fallback: OpenAI-compatible chat completions (configured per-install,
+      // recommended DeepSeek V4 Flash). Only active when a fallback endpoint
+      // AND API key are configured — without a key, a bearer-less request
+      // would just fail with 401 and mask the real error.
+      const fallbackEnabled = !!(summaryCfg.fallbackEndpoint && summaryCfg.fallbackApiKey);
+
+      let result: { summary: string; model: string };
+      let primaryError: string | undefined;
+      try {
+        result = await summarizePrimary();
+      } catch (e: any) {
+        primaryError = e?.message || String(e);
+        if (!fallbackEnabled) {
+          throw e;
+        }
+        try {
+          result = await summarizeViaChatCompletions(picked.title, messages, summaryCfg);
+        } catch (f: any) {
+          this.postMessage({
+            type: 'sessionSummary',
+            error: 'Primary summarize failed (' + primaryError + '); DeepSeek fallback failed: ' + (f?.message || f),
+            queryText,
+          });
+          return;
+        }
       }
 
-      const result = (await summaryResponse.json()) as { summary: string; model: string };
       this.postMessage({
         type: 'sessionSummary',
         summary: result.summary,
