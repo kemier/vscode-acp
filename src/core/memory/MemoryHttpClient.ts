@@ -187,10 +187,37 @@ export class MemoryHttpClient {
     params?: { query?: string; charBudget?: number },
   ): Promise<{ items: Array<{ skill_id: string; name: string; description: string; version: number }> }> {
     const { sessionId: _sessionId, ...rest } = iso;
-    return this.post('/v3/skill/listing', {
+    // The gateway's /v3/skill/listing answers with a pre-rendered
+    // `<available_skills>` markdown block (`listing`) plus structured `hits`
+    // (skill_id/name/version). The recall formatter wants structured entries,
+    // so parse the block back into items — reading `.items` off the raw
+    // response always came up empty (skills=0 in every recall).
+    return this.post<{
+      mode: 'full' | 'search';
+      listing: string;
+      hits?: Array<{ skill_id: string; name: string; version: number }>;
+    }>('/v3/skill/listing', {
       ...this.isolationBody(rest),
       query: params?.query,
       char_budget: params?.charBudget ?? 8000,
+    }).then((res) => {
+      const byName = new Map((res.hits ?? []).map((h) => [h.name, h]));
+      const items: Array<{ skill_id: string; name: string; description: string; version: number }> = [];
+      for (const line of (res.listing ?? '').split('\n')) {
+        const m = /^-\s+([^:]+):\s*(.*)$/.exec(line.trim());
+        if (!m) {
+          continue;
+        }
+        const name = m[1].trim();
+        const hit = byName.get(name);
+        items.push({
+          skill_id: hit?.skill_id ?? name,
+          name,
+          description: m[2].trim(),
+          version: hit?.version ?? 0,
+        });
+      }
+      return { items };
     });
   }
 
