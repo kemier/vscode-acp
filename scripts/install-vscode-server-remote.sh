@@ -17,6 +17,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
+# Git Bash on Windows reports POSIX-style paths (/e/...) that node.exe cannot
+# resolve; convert to the native form (E:\...) before passing them to node.
+if command -v cygpath >/dev/null 2>&1; then
+  REPO_DIR="$(cygpath -m "$REPO_DIR")"
+fi
 
 VERSION=$(node -p "require('$REPO_DIR/package.json').version")
 PUBLISHER=$(node -p "require('$REPO_DIR/package.json').publisher")
@@ -93,9 +98,17 @@ install_local_vscode_server() {
 if [[ -n "${ACP_SSH_HOST:-}" ]]; then
   echo "📦 Installing $EXT_ID v$VERSION on SSH host: $ACP_SSH_HOST"
   echo "   Targets: ~/.vscode-server/extensions, ~/.vscode/extensions, ~/.cursor/extensions (if present)"
-  scp -o BatchMode=yes "$VSIX" "$ACP_SSH_HOST:/tmp/$NAME-$VERSION.vsix"
+  # BatchMode prevents interactive prompts, but also suppresses the askpass
+  # program even with SSH_ASKPASS_REQUIRE=force on Git Bash's OpenSSH build.
+  # For the password-based flow (SSH_ASKPASS set) drop it so auth can run;
+  # key-based hosts keep batch mode so the command never hangs on a prompt.
+  BATCH_FLAGS=(-o BatchMode=yes)
+  if [[ -n "${SSH_ASKPASS:-}" ]]; then
+    BATCH_FLAGS=()
+  fi
+  scp "${BATCH_FLAGS[@]}" "$VSIX" "$ACP_SSH_HOST:/tmp/$NAME-$VERSION.vsix"
   # shellcheck disable=SC2087
-  ssh -o BatchMode=yes "$ACP_SSH_HOST" bash -s <<EOF
+  ssh "${BATCH_FLAGS[@]}" "$ACP_SSH_HOST" bash -s <<EOF
 set -euo pipefail
 VSIX="/tmp/$NAME-$VERSION.vsix"
 EXT_ID="$EXT_ID"
