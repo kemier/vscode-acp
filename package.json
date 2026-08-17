@@ -520,7 +520,7 @@
     "deploy": "bash scripts/deploy-all.sh",
     "deploy:fast": "bash scripts/deploy-all.sh --skip-tests --skip-lint",
     "install:local": "bash scripts/install-vscode-server.sh",
-    "install:server": "bash scripts/install-vscode-server-remote.sh",
+    "install:server": "bash scripts/install-vscode-server.sh",
     "format": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\""
   },

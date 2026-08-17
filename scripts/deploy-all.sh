@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # ╔══════════════════════════════════════════════════════════════════╗
-# ║  All-in-one: typecheck → test → lint → build → pkg → local → remote ║
+# ║  All-in-one: typecheck → test → lint → build → pkg → install    ║
 # ╚══════════════════════════════════════════════════════════════════╝
 # Deploys what is committed; it does NOT reformat sources. (Run
 # `npx prettier --write "src/**/*.ts"` yourself if you want to reformat —
@@ -11,7 +11,8 @@ set -euo pipefail
 # Usage:  ./scripts/deploy-all.sh
 #         ./scripts/deploy-all.sh --skip-tests   # skip test step
 #         ./scripts/deploy-all.sh --skip-lint    # skip lint step
-#         ./scripts/deploy-all.sh --skip-remote  # skip remote SSH deploy
+# Installs the packaged VSIX into local ~/.vscode-server/extensions only
+# (no remote SSH deploy).
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
@@ -75,33 +76,10 @@ step "5/7  Packaging VSIX"
 npx vsce package --no-git-tag-version || fail "VSIX packaging failed"
 ok "VSIX packaged"
 
-# ─── 6. Install into local editors (VS Code + Cursor) ──────────────
-step "6/7  Installing to local editors (~/.vscode + ~/.vscode-server)"
+# ─── 6. Install into local vscode-server ──────────────────────────
+step "6/7  Installing to local vscode-server (~/.vscode-server/extensions)"
 bash "$SCRIPT_DIR/install-vscode-server.sh" || fail "Local deploy failed"
-ok "Local editors installed"
-
-# ─── 7. Install on remote SSH host (server + local) ────────────────
-# Default host: workstation. Override with ACP_SSH_HOST=... or skip with
-# ACP_SSH_HOST= (empty) / --skip-remote.
-SKIP_REMOTE=false
-for arg in "$@"; do
-  case "$arg" in
-    --skip-remote) SKIP_REMOTE=true ;;
-  esac
-done
-
-if [ "$SKIP_REMOTE" = false ]; then
-  SSH_HOST="${ACP_SSH_HOST:-workstation}"
-  if [ -n "$SSH_HOST" ]; then
-    step "7/7  Installing on remote ($SSH_HOST: server + local VS Code/Cursor)"
-    ACP_SSH_HOST="$SSH_HOST" bash "$SCRIPT_DIR/install-vscode-server-remote.sh" || fail "Remote deploy failed"
-    ok "Remote installed ($SSH_HOST)"
-  else
-    warn "Skipping remote (ACP_SSH_HOST empty)"
-  fi
-else
-  warn "Skipping remote (--skip-remote)"
-fi
+ok "Local vscode-server installed"
 
 # ─── Summary ───────────────────────────────────────────────────────
 echo ""

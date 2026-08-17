@@ -111,16 +111,16 @@ When debugging agent-side issues (cancel not working, turn not interrupting, etc
 - `vsce package` — Produce `.vsix` package
 - `npm run format` — Format code with Prettier (like clang-format)
 - `npm run format:check` — Check formatting without writing
-- `npm run deploy` — All-in-one: format → typecheck → test → lint → build → package → deploy
+- `npm run deploy` — All-in-one: typecheck → test → lint → build → package → install to `~/.vscode-server/extensions/`
 - `npm run deploy:fast` — Same but skip tests and lint
 
 ## Deploy to Local VS Code
 
-This extension runs on a local desktop VS Code installation. Deployment is done by packaging a VSIX and extracting it into `~/.vscode/extensions/`.
+This extension runs on the VS Code extension host (desktop, Remote SSH, or vscode-server). Deployment is done by packaging a VSIX and extracting it into `~/.vscode-server/extensions/`.
 
 ### One-command build + deploy
 
-The all-in-one deploy script runs: Prettier format → TypeScript typecheck → Mocha tests → ESLint → Webpack build → VSIX package → install to `~/.vscode/extensions/`.
+The all-in-one deploy script runs: TypeScript typecheck → Mocha tests → ESLint → Webpack build → VSIX package → install to `~/.vscode-server/extensions/`. There is no remote-SSH deploy step — this extension is driven from the VS Code Remote / vscode-server extension host, so the VSIX is only installed into the local `~/.vscode-server/extensions`.
 
 ```bash
 npm run deploy
@@ -144,36 +144,16 @@ Then reload VS Code: `⌘⇧P` (Mac) / `Ctrl+Shift+P` (Win/Linux) → `Reload Wi
 
 ### What the install script does
 
-`scripts/install-vscode-server.sh` reads `publisher`, `name`, and `version` from `package.json`, locates the built `*.vsix`, removes the old extension directory at `~/.vscode/extensions/<publisher>.<name>-<version>/`, and extracts the new VSIX contents there.
+`scripts/install-vscode-server.sh` reads `publisher`, `name`, and `version` from `package.json`, locates the built `*.vsix`, removes the old extension directory at `~/.vscode-server/extensions/<publisher>.<name>-<version>/`, and extracts the new VSIX contents there. It installs **only** into `~/.vscode-server/extensions` (override the target list with `ACP_INSTALL_TARGETS` for desktop VS Code / Cursor).
 
-## Deploy to VS Code Server (`~/.vscode-server`)
+## Install target at a glance
 
-For remote sessions (VS Code Remote SSH, code-server, vscode.dev), extensions install into `~/.vscode-server/extensions/` instead of `~/.vscode/extensions/`. Package the VSIX, then extract it there:
-
-```bash
-npm run package && npx vsce package && bash scripts/install-vscode-server-remote.sh
-```
-
-Or use the npm target (equivalent):
-
-```bash
-npm run package && npx vsce package && npm run install:server
-```
-
-Then reload the remote VS Code window: `⌘⇧P` (Mac) / `Ctrl+Shift+P` (Win/Linux) → `Reload Window`.
-
-`scripts/install-vscode-server-remote.sh` reads `publisher`, `name`, and `version` from `package.json`, locates the built `*.vsix`, removes the old extension directory at `~/.vscode-server/extensions/<publisher>.<name>-<version>/`, and extracts the new VSIX contents there.
-
-### Install targets at a glance
-
-| Target | npm script | Install location | Use when |
+| Target | Command | Install location | Use when |
 |---|---|---|---|
-| Mac desktop | `npm run install:local` | `~/.vscode/extensions/`, `~/.vscode-server/extensions/` (if present), `~/.cursor/extensions/` | Local VS Code / vscode-server / Cursor |
-| Remote (all) | `ACP_SSH_HOST=workstation npm run install:server` | remote `~/.vscode-server/extensions/`, `~/.vscode/extensions/`, `~/.cursor/extensions/` | Remote SSH + local editors on that host |
+| vscode-server (default) | `npm run install:local` / `npm run deploy` | `~/.vscode-server/extensions/` | VS Code Remote SSH / code-server / vscode.dev |
+| Override | `ACP_INSTALL_TARGETS="/path/to/ext /other" npm run install:local` | any dirs you specify | desktop VS Code / Cursor |
 
-`npm run deploy` installs Mac local **and** remote (`ACP_SSH_HOST`, default `workstation`). Skip remote with `--skip-remote`.
-
-Both require a packaged VSIX first (`npm run package && npx vsce package`, or `npm run deploy`).
+`npm run deploy` installs **only** into local `~/.vscode-server/extensions` — there is no remote-SSH deploy. Each target requires a packaged VSIX first (`npm run package && npx vsce package`, or `npm run deploy`). After installing, reload the editor: `⌘⇧P` (Mac) / `Ctrl+Shift+P` (Win/Linux) → `Reload Window`.
 
 ## Checking Logs
 
