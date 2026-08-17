@@ -44,6 +44,36 @@ export function resolveMemoryInjectMode(
   return opts.profileAlreadyInjected ? 'l1-only' : 'full';
 }
 
+/** The two per-session gates that `resolveMemoryInjectMode` keys off. */
+export interface MemoryInjectGates {
+  promptedSessions: Set<string>;
+  memoryProfileInjectedSessions: Set<string>;
+}
+
+/**
+ * Reset the memory-inject gates for a session after its context was
+ * compacted. Compaction summarizes/truncates the previously injected
+ * profile block (persona + scenes + `<available_skills>`) away, so the next
+ * prompt must take the `full` path again — keeping the gates set would send
+ * only `l1-only` forever (until a brand-new session).
+ *
+ * Implemented as a pure function (per the team's pure-function SOP) so it
+ * can be unit-tested without instantiating the dependency-heavy
+ * `SessionManager`. `SessionManager.onContextCompacted` delegates here.
+ *
+ * No-op for empty `sessionId` or sessions not present in either set.
+ */
+export function resetMemoryInjectGates(
+  sessionId: string,
+  gates: MemoryInjectGates,
+): void {
+  if (!sessionId) {
+    return;
+  }
+  gates.promptedSessions.delete(sessionId);
+  gates.memoryProfileInjectedSessions.delete(sessionId);
+}
+
 /** True when any recall blob should be attached (full or L1-only). */
 export function shouldInjectMemoryForTurn(_agentName: string, _sessionAlreadyPrompted: boolean): boolean {
   return true;

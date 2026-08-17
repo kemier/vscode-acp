@@ -87,7 +87,7 @@ export interface AgentCapabilitySummary {
  */
 export type { SelectionContext } from './ContextBlockBuilder';
 import { buildSelectionBlock, type SelectionContext } from './ContextBlockBuilder';
-import { resolveMemoryInjectMode } from './MemoryCacheStability';
+import { resolveMemoryInjectMode, resetMemoryInjectGates } from './MemoryCacheStability';
 import type { SharedMemoryProvider } from './memory/SharedMemoryProvider';
 import { readMemorySettings, resolveMemoryAgentId } from './memory/MemoryConfig';
 
@@ -243,6 +243,31 @@ export class SessionManager extends EventEmitter {
   /** Wire in shared memory (called once at startup when configured). */
   setMemoryProvider(provider: SharedMemoryProvider): void {
     this.memoryProvider = provider;
+  }
+
+  /**
+   * Notify that the agent-side conversation context was compacted for the
+   * given session (manual `/compact` or engine auto-compaction).
+   *
+   * Compaction replaces the conversation with an LLM summary, so the
+   * previously injected memory/profile block (L3 persona, L2 scenes, and the
+   * `<available_skills>` block) is summarized away or truncated — the cached
+   * prefix no longer contains it. The KV-cache-stability gate in `sendPrompt`
+   * would otherwise keep returning `l1-only` because the sessionId is still
+   * present in {@link memoryProfileInjectedSessions}, and the next turn would
+   * never re-inject the profile/skills until a brand-new session.
+   *
+   * Clearing both gates on compaction makes the next real (non-slash) prompt
+   * take the `full` path again: persona + scenes + `<available_skills>` are
+   * re-fetched from the gateway and injected.
+   *
+   * Safe to call more than once and for unknown sessions (no-op).
+   */
+  onContextCompacted(sessionId: string): void {
+    resetMemoryInjectGates(sessionId, {
+      promptedSessions: this.promptedSessions,
+      memoryProfileInjectedSessions: this.memoryProfileInjectedSessions,
+    });
   }
 
   /** Public accessor for downstream UI. */

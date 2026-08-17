@@ -1477,6 +1477,25 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           this._conversationExportResolver?.(message.text);
           this._conversationExportResolver = undefined;
           break;
+        case 'compactionCompleted':
+          // The webview finished wiping the conversation after compaction
+          // (manual /compact or engine auto-compaction). The previously
+          // injected memory profile + skills block was summarized away with
+          // the wiped history, so reset the memory-inject gates for this
+          // session — the next real prompt will do a full re-inject (persona
+          // + scenes + <available_skills>) instead of being gated to l1-only.
+          if (message.sessionId || this.sessionManager.getActiveSessionId()) {
+            this.sessionManager.onContextCompacted(
+              (message.sessionId as string) || this.sessionManager.getActiveSessionId()!,
+            );
+            if (DEBUG) {
+              log(
+                `[MEM-CACHE] compaction completed → reset memory-inject gates for ` +
+                  `session=${(message.sessionId as string) || this.sessionManager.getActiveSessionId()}`,
+              );
+            }
+          }
+          break;
         case 'renderMarkdown': {
           // Webview requests markdown rendering for history items
           const items: Array<{ index: number; text: string; gen?: number; hgen?: number }> = message.items || [];
@@ -14894,6 +14913,16 @@ sessionState = {
     // drop them. currentAssistantText was just reset to '' by the wipe, so
     // appending here renders them cleanly in the fresh panel.
     drainPendingPostCompactChunks();
+
+    // Compaction wiped the conversation, which also removed the previously
+    // injected memory/profile block (persona + scenes + <available_skills>)
+    // from the model context. Tell the extension host to reset the memory-
+    // inject gates for this session so the next real prompt does a full
+    // re-inject instead of being gated to l1-only by stale session state.
+    vscode.postMessage({
+      type: 'compactionCompleted',
+      sessionId: (sessionState && sessionState.sessionId) || undefined,
+    });
   }
 
     /** Bare spinner while the turn is still running (no "Compacting…" label). */
