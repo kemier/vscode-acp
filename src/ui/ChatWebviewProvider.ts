@@ -14338,8 +14338,10 @@ sessionState = {
 
       case 'requestConversationExport': {
         // Extension host wants the conversation text for fork-to-agent.
-        // Collect user + assistant messages from chatHistory, skipping
-        // tool calls, thoughts, and system messages.
+        // Collect user + assistant messages, tool calls, and reasoning
+        // blocks from chatHistory so the target agent gets structured
+        // context (not just a flat prose dump). Tool calls carry the
+        // action taken and its result; thoughts carry the reasoning trail.
         var _exportParts = [];
         for (var _ei = 0; _ei < chatHistory.length; _ei++) {
           var _item = chatHistory[_ei];
@@ -14347,7 +14349,6 @@ sessionState = {
           if (_item.kind === 'message') {
             if (_item.role === 'user') {
               var _utext = typeof _item.text === 'string' ? _item.text : '';
-              // Skip empty, slash-command-only, or internal markers
               if (!_utext.trim()) continue;
               if (_utext.startsWith('[Subagent result]')) continue;
               _exportParts.push('User: ' + _utext);
@@ -14356,6 +14357,24 @@ sessionState = {
               if (!_atext.trim()) continue;
               _exportParts.push('Assistant: ' + _atext);
             }
+          } else if (_item.kind === 'thought') {
+            var _ttext = typeof _item.text === 'string' ? _item.text : '';
+            if (_ttext.trim()) {
+              _exportParts.push('(reasoning) ' + _ttext);
+            }
+          } else if (_item.kind === 'toolCall') {
+            var _tname = _item.title || _item.toolCallId || 'tool';
+            var _tstatus = _item.status || '';
+            var _tinput = '';
+            if (typeof _item.rawInput === 'string') {
+              _tinput = _item.rawInput;
+            } else if (_item.rawInput && typeof _item.rawInput === 'object') {
+              try { _tinput = JSON.stringify(_item.rawInput); } catch (e) { _tinput = ''; }
+            }
+            var _tline = 'Tool: ' + _tname;
+            if (_tstatus) _tline += ' [' + _tstatus + ']';
+            if (_tinput && _tinput.trim()) _tline += '\\n' + _tinput;
+            _exportParts.push(_tline);
           }
         }
         vscode.postMessage({ type: 'conversationExported', text: _exportParts.join('\\n\\n') });
