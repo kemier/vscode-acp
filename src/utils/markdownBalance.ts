@@ -55,3 +55,36 @@ export function balanceMarkdownForPartialRender(text: string): string {
 
   return text;
 }
+
+/**
+ * True if `text` ends inside an unclosed fenced code block (an open ``` run
+ * with no matching close). Used to decide whether an INTERIM commit is safe.
+ *
+ * The fence-swallow bug: when an assistant message is split across a tool
+ * boundary (text → tool → text) and the model had opened a fenced block in
+ * the first segment, the closing fence lands in a LATER segment. Interim-
+ * committing the first segment traps everything after the opening fence
+ * (including trailing prose) inside a <pre><code> block — the dark "shadow"
+ * box users reported, with the in-fence content wrapping across lines.
+ *
+ * The fix: don't interim-commit a segment that ends mid-fence. Keep it
+ * buffered in currentAssistantText (the streaming render still shows it,
+ * balanced) and let it commit at the next boundary — or at promptEnd, where
+ * the full text is available and the fence is either genuinely closed by
+ * the model or balanced for the final render.
+ */
+export function hasOpenFence(text: string): boolean {
+  const fenceMatches = text.match(/```+/g);
+  if (!fenceMatches) { return false; }
+  let openFenceLen = 0;
+  for (const f of fenceMatches) {
+    if (f.length >= 3) {
+      if (openFenceLen === f.length) {
+        openFenceLen = 0; // closes the open fence
+      } else if (openFenceLen === 0) {
+        openFenceLen = f.length; // opens a fence
+      }
+    }
+  }
+  return openFenceLen > 0;
+}

@@ -6482,6 +6482,56 @@ var end = displayText.length;
      if (psPanel) psPanel.style.display = "none";
    }
 
+   /**
+    * Re-render the /ps panel from the CURRENT chatHistory state if it is
+    * visible. The /ps panel is a snapshot taken at /ps-invocation time —
+    * without this, it keeps showing processes as "running" long after they
+    * completed/failed (only cleared on the next turn's drainQueue, which
+    * under rate-limiting can be a long time). Called from promptEnd (after
+    * the in-flight tool status sync) and from updateToolCall (when a listed
+    * tool transitions to a terminal status).
+    *
+    * If no tool calls remain running, dismisses the panel (respecting the
+    * min-display window). Otherwise re-renders the running list in place so
+    * the user sees the live set without re-typing /ps.
+    */
+   function refreshPsPanelIfVisible() {
+     if (!psPanel || psPanel.style.display === 'none') return;
+     var running = [];
+     for (var ri = 0; ri < chatHistory.length; ri++) {
+       var rItem = chatHistory[ri];
+       if (rItem && rItem.kind === 'toolCall' &&
+           (rItem.status === 'in_progress' || rItem.status === 'running' || rItem.status === 'pending')) {
+         running.push(rItem);
+       }
+     }
+     if (running.length === 0) {
+       // Nothing left running — dismiss (respect min-display window).
+       dismissPsPanel(false);
+       return;
+     }
+     // Re-render the running list in place. Preserve the /ps command header
+     // styling; only the item list changes.
+     var bullet = String.fromCharCode(8226);
+     psPanel.innerHTML = '';
+     var cmdLine = document.createElement('div');
+     cmdLine.className = 'ps-cmd';
+     cmdLine.textContent = '/ps';
+     psPanel.appendChild(cmdLine);
+     var header = document.createElement('div');
+     header.className = 'ps-header';
+     header.textContent = 'Background terminals';
+     psPanel.appendChild(header);
+     for (var bi = 0; bi < running.length; bi++) {
+       var item = document.createElement('div');
+       item.className = 'ps-item';
+       var cmd = running[bi].title || running[bi].toolCallId || '(unknown)';
+       item.textContent = bullet + ' ' + cmd;
+       psPanel.appendChild(item);
+     }
+     currentPsEl = psPanel;
+   }
+
     // --- Resize handle ---
     let inputAreaHeight = 140;
     const MIN_INPUT_HEIGHT = 90;
@@ -11111,6 +11161,31 @@ function orderCompactFoldContents(body) {
      * @param opts.interim  when true (mid-turn, before more tools), tuck the
      *   segment into the collapse fold so only the final summary stays visible.
      */
+function hasOpenFence(text) {
+  // True if text ends inside an unclosed triple-backtick fenced code block.
+  // Used by commitCurrentTextSegment to DEFER an interim commit when the
+  // model has opened a fence whose closing fence will arrive in a later
+  // segment — committing now would trap trailing prose inside a pre/code
+  // block (the dark "shadow" box, with in-fence content wrapping across
+  // lines). Mirrors src/utils/markdownBalance.ts hasOpenFence, inlined here
+  // because the webview script runs in its own JS context (no module import).
+  // NOTE: the backtick char is built via String.fromCharCode(96) because a
+  // literal backtick anywhere in this body would terminate the template
+  // literal that wraps the entire webview script.
+  var bt = String.fromCharCode(96);
+  var fenceRe = new RegExp(bt + '{3,}', 'g');
+  var m = text.match(fenceRe);
+  if (!m) return false;
+  var openLen = 0;
+  for (var i = 0; i < m.length; i++) {
+    var f = m[i];
+    if (f.length >= 3) {
+      if (openLen === f.length) { openLen = 0; }
+      else if (openLen === 0) { openLen = f.length; }
+    }
+  }
+  return openLen > 0;
+}
 function commitCurrentTextSegment(opts) {
    // Skip whitespace-only text — DeepSeek-V4-Flash emits whitespace
    // between tool calls (empty streams), which would create empty
@@ -11131,6 +11206,21 @@ function commitCurrentTextSegment(opts) {
    cancelProvisionalSummaryPromote();
     var asInterim = !!(opts && opts.interim);
     var asInterrupted = !!(opts && opts.interrupted);
+    // Fence-swallow guard: if this is an INTERIM commit (a tool/message
+    // boundary split the assistant message) and the text ends inside an
+    // unclosed triple-backtick fence, DON'T commit yet. The model opened a
+    // code block and the closing fence will arrive in a LATER segment —
+    // committing now would trap trailing prose inside a pre/code block (the
+    // dark "shadow" box, with in-fence content wrapping across lines). Keep
+    // the text buffered: the streaming render still shows it (balanced), and
+    // it commits at the next boundary — or at promptEnd, where the full text
+    // is available and the fence is either genuinely closed or balanced.
+    // Interrupted commits (cancelled turn) must still go through so the
+    // partial reply is preserved.
+    if (asInterim && !asInterrupted && hasOpenFence(currentAssistantText)) {
+      vscode.postMessage({ type: 'debugLog', message: '[WV-COMMIT] deferring interim commit: text ends inside an open fence (textLen=' + currentAssistantText.length + ')' });
+      return;
+    }
     var _commitPreview = currentAssistantText.replace(/\\s+/g, ' ').slice(0, 80);
     vscode.postMessage({ type: 'debugLog', message: '[WV-COMMIT] commitCurrentTextSegment: textLen=' + currentAssistantText.length + ' hasEl=' + !!currentAssistantEl + ' interim=' + asInterim + ' chatHistoryLen BEFORE=' + chatHistory.length + ' preview="' + _commitPreview + '"' });
     streamingRenderGen++; // invalidate any in-flight streaming renders
@@ -13173,16 +13263,28 @@ forceCollapseTurnFolds();
  }
 
    function updateToolCall(toolCallId, status, title, content, rawInput) {
+     var _wasTerminal = false;
      for (let i = chatHistory.length - 1; i >= 0; i--) {
        if (chatHistory[i].kind === 'toolCall' && chatHistory[i].toolCallId === toolCallId) {
+         var _prevStatus = chatHistory[i].status;
          chatHistory[i].status = status;
          if (title) chatHistory[i].title = title;
          if (rawInput) chatHistory[i].rawInput = rawInput;
+         // Detect a transition INTO a terminal status (completed/failed/error)
+         // from a running one — used to live-refresh the /ps panel so a tool
+         // that ends mid-turn disappears from the running list immediately,
+         // without waiting for the next turn's drainQueue.
+         if (status !== _prevStatus &&
+             (status === 'completed' || status === 'failed' || status === 'error') &&
+             (_prevStatus === 'in_progress' || _prevStatus === 'running' || _prevStatus === 'pending')) {
+           _wasTerminal = true;
+         }
          break;
        }
      }
     saveState();
      storeDiffContent(toolCallId, content, title);
+     if (_wasTerminal) refreshPsPanelIfVisible();
 
     // Crew stage: update spinner + fill tooltip from late rawInput (Claude/Codex
     // often send empty rawInput first, then prompt/description on update).
@@ -13893,6 +13995,9 @@ sessionState = {
          }
          saveState();
          if (currentTurnEl) currentTurnEl.setAttribute('data-turn-interrupted', '1');
+         // Cancelled turn: in-flight tools are now failed — refresh /ps so it
+         // doesn't keep showing them as running.
+         refreshPsPanelIfVisible();
        } else if (!isLoadingSession) {
          clearSessionInterrupted();
          // Mirror completed status into chatHistory so that re-renders
@@ -13910,6 +14015,10 @@ sessionState = {
         }
         saveState();
       }
+      // /ps panel is a snapshot — refresh it now that in-flight tools have
+      // been resolved to completed/failed, so it doesn't show stale "running"
+      // processes until the next turn. No-op if the panel is hidden.
+      refreshPsPanelIfVisible();
       // Arm the turn-tail grace window BEFORE dropping isProcessing. Agents
       // (Codex, EricCLI, Claude Code, Kiro) can emit the final text chunk a
       // few ms after the session/prompt response carrying end_turn resolves —

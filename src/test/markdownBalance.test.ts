@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import { Marked } from 'marked';
 import { createMathExtension } from '../utils/markdownMath';
-import { balanceMarkdownForPartialRender } from '../utils/markdownBalance';
+import { balanceMarkdownForPartialRender, hasOpenFence } from '../utils/markdownBalance';
 
 // Mirrors the production marked configuration in ChatWebviewProvider.
 const parse = (md: string): string => {
@@ -116,6 +116,54 @@ suite('markdownBalance', () => {
     test('complete balanced reply renders identically with and without balancing', () => {
       const md = '## Title\n\n`inline` code and\n\n```\nfenced\n```\n\nFinal line.';
       assert.strictEqual(parse(balanceMarkdownForPartialRender(md)), parse(md));
+    });
+  });
+
+  suite('hasOpenFence', () => {
+    test('true when text ends inside an unclosed fence', () => {
+      // The fence-swallow hazard: model opened ```regex with a .+" inside and
+      // a tool-call boundary committed before the closing fence arrived.
+      assert.ok(hasOpenFence('Here is the pattern:\n\n```regex\n.+"'));
+      assert.ok(hasOpenFence('```\ncode line'));
+    });
+
+    test('false when the fence is properly closed', () => {
+      assert.ok(!hasOpenFence('```\ncode\n```\nnow prose'));
+      assert.ok(!hasOpenFence('```regex\n.+"\n```\ntrailing prose'));
+    });
+
+    test('false for plain prose with no fence at all', () => {
+      assert.ok(!hasOpenFence('just a normal sentence'));
+      assert.ok(!hasOpenFence('inline `code` only'));
+    });
+
+    test('false when multiple open/close pairs are all balanced', () => {
+      assert.ok(!hasOpenFence('```\na\n```\nprose\n```\nb\n```'));
+    });
+
+    test('true when only the first of two fences is closed', () => {
+      assert.ok(hasOpenFence('```\na\n```\nprose\n```\nb'));
+    });
+
+    test('agrees with balanceMarkdownForPartialRender on when to close', () => {
+      // hasOpenFence must return true exactly when the balancer would append a
+      // closer — they share the same pairing logic.
+      const cases = [
+        '```\ncode',
+        '```\ncode\n```',
+        'intro\n```regex\n.+"\nstill code',
+        'plain prose',
+        '```\na\n```\n```\nb',
+      ];
+      for (const c of cases) {
+        const balanced = balanceMarkdownForPartialRender(c);
+        const expectedOpen = balanced !== c; // balancer appended a closer
+        assert.strictEqual(
+          hasOpenFence(c),
+          expectedOpen,
+          `mismatch for ${JSON.stringify(c)}: hasOpenFence=${hasOpenFence(c)} balancerChanged=${expectedOpen}`,
+        );
+      }
     });
   });
 });
