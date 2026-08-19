@@ -271,6 +271,83 @@ suite('merge interrupt-notice ordering (resume regression)', () => {
     assert.ok(!hasCompletedAssistantAfter, 'no completed assistant after interrupt');
     // This scenario SHOULD mark the session as interrupted.
   });
+
+  test('same-turn terminal assistant is not duplicated when loaded replay text differs from snapshot', () => {
+    const merge = loadMerge();
+    // Regression for the resume bug: after a VS Code restart + session/load,
+    // the snapshot (webview-persisted full reply) and the loaded replay
+    // (e.g. Codex's compacted/truncated reply) both carry an assistant in the
+    // same turn but with DIFFERENT text. The exact-text dedup used to miss
+    // this, leaving TWO assistant messages in the last turn — collapsed mode
+    // promoted the wrong (shorter) copy, expand showed both, and collapsing
+    // again re-promoted the trailing copy.
+    const loaded = [
+      user('last query'),
+      asst('Done. Short summary.'),
+    ];
+    const snapshot = [
+      user('last query'),
+      asst('Here is the full summary with all the details the user asked for.'),
+    ];
+    const merged = merge(loaded, snapshot);
+    const assistants = merged.filter(
+      (it: any) => it && it.kind === 'message' && it.role === 'assistant',
+    );
+    assert.strictEqual(assistants.length, 1, 'same-turn terminal assistant must not be duplicated');
+    assert.strictEqual(assistants[0].text, 'Done. Short summary.', 'loaded replay wins for the terminal reply');
+  });
+
+  test('interim assistant before tools stays, terminal assistant not duplicated', () => {
+    const merge = loadMerge();
+    // A turn with interim chatter + tools + final reply: the snapshot interim
+    // ("Let me check...") must be preserved (loaded replay has no interim),
+    // and the terminal reply must appear exactly once.
+    const loaded = [
+      user('q4'),
+      tool('t4', 'grep'),
+      asst('final answer'),
+    ];
+    const snapshot = [
+      user('q4'),
+      asst('Let me check that...'),
+      tool('t4', 'grep'),
+      asst('final answer'),
+    ];
+    const merged = merge(loaded, snapshot);
+    const assistants = merged.filter(
+      (it: any) => it && it.kind === 'message' && it.role === 'assistant',
+    );
+    assert.deepStrictEqual(
+      assistants.map((a: any) => a.text),
+      ['Let me check that...', 'final answer'],
+      'interim assistant preserved; terminal reply appears once',
+    );
+  });
+
+  test('snapshot terminal assistant survives when loaded turn ends with a tool', () => {
+    const merge = loadMerge();
+    // Loaded replay ended mid-turn (tool only, no final reply) and the
+    // snapshot has the committed final — the snapshot copy must be kept.
+    const loaded = [
+      user('q5'),
+      tool('t5', 'grep'),
+    ];
+    const snapshot = [
+      user('q5'),
+      asst('Let me check that...'),
+      tool('t5', 'grep'),
+      asst('here is the answer'),
+    ];
+    const merged = merge(loaded, snapshot);
+    const assistants = merged.filter(
+      (it: any) => it && it.kind === 'message' && it.role === 'assistant',
+    );
+    assert.deepStrictEqual(
+      assistants.map((a: any) => a.text),
+      ['Let me check that...', 'here is the answer'],
+      'snapshot final is kept when the loaded turn has no terminal reply',
+    );
+  });
 });
 
 /** Local mirror of isSessionInterruptNotice for test assertions. */

@@ -2288,6 +2288,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * list the model with `input_modalities` including `"image"`. Unknown
    * models and text-only entries return false (hide upload).
    * For Kiro CLI: Claude models support images; others are text-only.
+   * For EricCLI: vision support is derived from the model id because ericli
+   * does not publish per-model modality info (its picker sends a flat string
+   * list). Mirror the capability table in ericli's
+   * `src/ericai/model-capabilities.ts` (patterns with `vision: 'full'`):
+   * kimi, qwen3.5/3.6/3.8, gemma-4 (and claude for safety).
    */
   private modelSupportsImage(modelId: string, agentName?: string): boolean {
     // Strip effort suffix: "glm-5.2[high]" → "glm-5.2"
@@ -2295,6 +2300,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // For Kiro CLI, determine from model name — no catalog file.
     if (agentName && /kiro/i.test(agentName)) {
       return /claude/i.test(base);
+    }
+    // For EricCLI, determine from model name — ericli does not emit
+    // per-model input_modalities; derive image support from the model id so
+    // the attach button shows for ericli vision models (e.g. kimi-k2.6)
+    // without a ~/.codex catalog entry.
+    if (agentName && /(ericli|eric-cli|ericcli)/i.test(agentName)) {
+      return /(^|[^a-z])(kimi|qwen3\.5|qwen3\.6|qwen3\.8|gemma-4|claude)/i.test(base);
     }
     this.loadModelImageSupport();
     if (!this.modelImageSupport || this.modelImageSupport.size === 0) {
@@ -7796,8 +7808,70 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        if (snapItem.kind === 'message' && snapItem.role === 'assistant') {
          var ak = String(snapItem.text || '').trim();
          if (!ak || mergedAsstKeys[ak]) continue;
+         // A turn has ONE final reply. When this snapshot assistant is the
+         // TERMINAL assistant of its snapshot turn and the merged timeline's
+         // corresponding turn ALREADY ends with a terminal assistant, the
+         // loaded replay is authoritative for the final reply — skip the
+         // snapshot copy. Otherwise (the merged turn ends with a tool or has
+         // no assistant) the snapshot supplies the final reply.
+         //
+         // Without this, session/load resume left TWO assistant messages in
+         // the last turn whenever the loaded replay's final text differed
+         // from the webview snapshot's (e.g. Codex compacts the reply):
+         // collapsed mode promoted the wrong (shorter) copy, expand showed
+         // both copies, and collapsing again re-promoted the trailing copy.
+         if (snapshotAssistantHasMergedCounterpart(merged, snapItem, ti, snapshot)) continue;
          insertSnapshotItem(snapItem, ti);
          mergedAsstKeys[ak] = true;
+       }
+
+       /**
+        * True when this snapshot assistant is the terminal reply of its
+        * snapshot turn AND the merged timeline's corresponding turn already
+        * ends with a terminal assistant (its last meaningful item — ignoring
+        * trailing thoughts — is an assistant, i.e. no tool call follows it).
+        * In that case the loaded (agent replay) copy wins and the snapshot
+        * copy must not be re-inserted. Mid-turn interim assistants (followed
+        * by tools / another assistant) are never suppressed.
+        */
+       function snapshotAssistantHasMergedCounterpart(merged, snapItem, snapIndex, snapshot) {
+         // Snapshot side: terminal only if no assistant follows within the turn.
+         for (var s2 = snapIndex + 1; s2 < snapshot.length; s2++) {
+           var nx = snapshot[s2];
+           if (!nx) continue;
+           if (nx.kind === 'message' && (nx.role === 'user' || nx.role === 'system' || nx.role === 'error')) break;
+           if (nx.kind === 'message' && nx.role === 'assistant') return false;
+         }
+         // Preceding user/system/error boundary in the snapshot.
+         var snapBase = -1;
+         for (var b2 = snapIndex - 1; b2 >= 0; b2--) {
+           var pb = snapshot[b2];
+           if (!pb) continue;
+           if (pb.kind === 'message' && (pb.role === 'user' || pb.role === 'system' || pb.role === 'error')) {
+             snapBase = b2;
+             break;
+           }
+         }
+         // Walk the merged timeline to the matching turn and check whether it
+         // ends with a terminal assistant (no tool call after the last one).
+         var seenTurn = snapBase < 0;
+         var lastMeaningfulWasAsst = false;
+         for (var m3 = 0; m3 < merged.length; m3++) {
+           var mm = merged[m3];
+           if (!mm) continue;
+           if (!seenTurn) {
+             if (mm.kind === snapshot[snapBase].kind && mm.role === snapshot[snapBase].role &&
+                 String(mm.text || '').trim() === String(snapshot[snapBase].text || '').trim()) {
+               seenTurn = true;
+             }
+             continue;
+           }
+           if (mm.kind === 'message' && (mm.role === 'user' || mm.role === 'system' || mm.role === 'error')) break;
+           if (mm.kind === 'toolCall') lastMeaningfulWasAsst = false;
+           if (mm.kind === 'thought') { /* ignore trailing thoughts */ }
+           if (mm.kind === 'message' && mm.role === 'assistant') lastMeaningfulWasAsst = true;
+         }
+         return lastMeaningfulWasAsst;
        }
         if (snapItem.kind === 'toolCall') {
           // Merge snapshot tool calls that are NOT already in the loaded
@@ -8987,6 +9061,8 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          var modelBase2 = value.replace(/\\[(?:low|medium|high|xhigh|max|none)\\]$/, '');
          if (agent && /kiro/i.test(agent)) {
            if (attachBtn) attachBtn.style.display = /claude/i.test(modelBase2) ? '' : 'none';
+         } else if (agent && /(ericli|eric-cli|ericcli)/i.test(agent)) {
+           if (attachBtn) attachBtn.style.display = ericliModelSupportsImage(modelBase2) ? '' : 'none';
          } else if (sessionState && sessionState.modelImageMap) {
            var mapped = Object.prototype.hasOwnProperty.call(sessionState.modelImageMap, modelBase2)
              ? !!sessionState.modelImageMap[modelBase2]
@@ -13760,8 +13836,22 @@ sessionState = {
    *    - explicitly includes "image" → show
    *    - text-only / missing / unknown model → hide
    * 3. Kiro CLI: Claude model names only
+   * 4. EricCLI: vision model names (kimi/qwen3.5/3.6/3.8/gemma-4/claude).
    */
- function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
+
+/**
+ * Whether an EricCLI model id supports inline images. Ericli's ACP picker
+ * sends a flat model-id list without per-model modality info, and its vision
+ * models (kimi-k2.6, Qwen3.8-27B, ...) are not in ~/.codex/model_catalog.json,
+ * so the attach button would stay hidden. Mirror ericli's
+ * MODEL_CAPABILITIES entries that carry vision: 'full'
+ * (src/ericai/model-capabilities.ts) — keep this list in sync with that table.
+ */
+function ericliModelSupportsImage(baseModelId) {
+  return /(^|[^a-z])(kimi|qwen3\\.5|qwen3\\.6|qwen3\\.8|gemma-4|claude)/i.test(baseModelId);
+}
+
+function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
    if (!attachBtn) { return; }
    const caps = promptCaps || (sessionState && sessionState.promptCapabilities) || null;
    if (!caps || !caps.image) {
@@ -13773,6 +13863,14 @@ sessionState = {
    if (agentName && /kiro/i.test(agentName) && currentModelId) {
     var kiroBase = currentModelId.replace(/\\[(?:low|medium|high|xhigh|max|none)\\]$/, '');
      attachBtn.style.display = /claude/i.test(kiroBase) ? '' : 'none';
+     return;
+   }
+   // For EricCLI, determine image support from model name — same rationale as
+   // Kiro: ericli does not publish per-model modalities, and its vision models
+   // (kimi-k2.6, qwen3.8-27B, ...) are not in ~/.codex/model_catalog.json.
+   if (agentName && /(ericli|eric-cli|ericcli)/i.test(agentName) && currentModelId) {
+     var ericBase = currentModelId.replace(/\\[(?:low|medium|high|xhigh|max|none)\\]$/, '');
+     attachBtn.style.display = ericliModelSupportsImage(ericBase) ? '' : 'none';
      return;
    }
    // Codex / catalog-backed: only show when the catalog explicitly allows image.
