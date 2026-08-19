@@ -767,16 +767,21 @@ export class SessionManager extends EventEmitter {
     // Shared memory: first real prompt prepends L3 persona + L2 scenes + L1.
     // Later turns append L1 only (query-related). Codex included: L1 is new
     // incremental input items (pure append), so previous_response_id prefix
-    // is unchanged. Slash commands skip inject and do not mark the profile sent.
+    // is unchanged. Slash commands (e.g. /compact on non-Kiro agents) are
+    // non-local prompts forwarded to the LLM, so they DO get memory injected —
+    // the LLM needs the same persona/scenes/skills context to act on them.
+    // We do NOT mark the profile as injected for a slash command, so a later
+    // real prompt still takes the 'full' path (the slash command is transient
+    // context, not the first real turn).
     const profileAlreadyInjected = this.memoryProfileInjectedSessions.has(sessionId);
     const memoryInjectMode =
-      isSlashCommand || !this.memoryProvider?.isEnabled()
+      !this.memoryProvider?.isEnabled()
         ? 'none'
         : resolveMemoryInjectMode(session.agentName, {
             sessionAlreadyPrompted: this.promptedSessions.has(sessionId),
             profileAlreadyInjected,
           });
-    const memDebug = !isSlashCommand && this.memoryProvider?.isEnabled() && this.memoryProvider.isDebug();
+    const memDebug = this.memoryProvider?.isEnabled() && this.memoryProvider.isDebug();
     const sendT0 = memDebug ? performance.now() : 0;
     if (memDebug) {
       log(`Memory inject: recall dispatch @+${(performance.now() - sendT0).toFixed(1)}ms (session=${sessionId})`);
@@ -800,7 +805,12 @@ export class SessionManager extends EventEmitter {
         if (memoryBlocks.length > 0) {
           if (memoryInjectMode === 'full') {
             prompt.push(...memoryBlocks);
-            this.memoryProfileInjectedSessions.add(sessionId);
+            // Slash commands don't mark the profile as injected — the next
+            // real prompt must still get the full re-inject (persona + scenes
+            // + skills) since the slash command was transient context.
+            if (!isSlashCommand) {
+              this.memoryProfileInjectedSessions.add(sessionId);
+            }
           } else {
             pendingL1Blocks = memoryBlocks;
           }

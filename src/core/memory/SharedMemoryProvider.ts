@@ -110,7 +110,7 @@ export class SharedMemoryProvider {
     if (!isMemoryConfigured(settings)) {
       return [];
     }
-    if (!opts.query.trim() || opts.query.startsWith('/')) {
+    if (!opts.query.trim()) {
       return [];
     }
 
@@ -119,7 +119,11 @@ export class SharedMemoryProvider {
     const iso = this.isolation(settings, memoryAgentId);
     // The raw prompt may carry a previously injected recall blob plus @file /
     // @terminal context and can exceed the gateway's 2048-char query limit.
-    const query = buildRecallQuery(opts.query);
+    // Slash commands (e.g. /compact) are non-local prompts forwarded to the
+    // LLM; strip the leading '/' so the semantic query runs on the command
+    // name (e.g. "compact") and the full profile (persona + scenes + skills)
+    // is injected — otherwise the LLM summarizes with no memory context.
+    const query = buildRecallQuery(opts.query.startsWith('/') ? opts.query.slice(1) : opts.query);
     if (!query) {
       return [];
     }
