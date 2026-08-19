@@ -111,8 +111,7 @@ When debugging agent-side issues (cancel not working, turn not interrupting, etc
 - `vsce package` — Produce `.vsix` package
 - `npm run format` — Format code with Prettier (like clang-format)
 - `npm run format:check` — Check formatting without writing
-- `npm run deploy` — All-in-one: typecheck → test → lint → build → package → install to `~/.vscode-server/extensions/`
-- `npm run deploy:fast` — Same but skip tests and lint
+- `npm run deploy` — All-in-one: build → package → install to `~/.vscode-server/extensions/` (lean: no typecheck/test/lint gates — the webpack build type-checks via ts-loader)
 
 ## Deploy to Local VS Code
 
@@ -120,19 +119,19 @@ This extension runs on the VS Code extension host (desktop, Remote SSH, or vscod
 
 ### One-command build + deploy
 
-The all-in-one deploy script runs: TypeScript typecheck → Mocha tests → ESLint → Webpack build → VSIX package → install to `~/.vscode-server/extensions/`. There is no remote-SSH deploy step — this extension is driven from the VS Code Remote / vscode-server extension host, so the VSIX is only installed into the local `~/.vscode-server/extensions`.
+The all-in-one deploy script runs: Webpack build (which type-checks via ts-loader) → VSIX package → install to `~/.vscode-server/extensions/`. It deliberately skips the separate typecheck/test/lint gates for a fast hot-deploy loop — run `npm run test:unit` / `npm run lint` yourself when you want them. There is no remote-SSH deploy step — this extension is driven from the VS Code Remote / vscode-server extension host, so the VSIX is only installed into the local `~/.vscode-server/extensions`.
 
 ```bash
 npm run deploy
 
-# Skip tests and lint for quick iteration
+# Same lean deploy (no gates to skip — deploy is already fast)
 npm run deploy:fast
 
 # Or run directly:
 bash scripts/deploy-all.sh
 ```
 
-Flags: `--skip-tests`, `--skip-lint`, `--skip-format`
+The deploy script takes no flags — it always builds, packages, and installs to `~/.vscode-server/extensions/`.
 
 ### Build + install (no checks)
 
