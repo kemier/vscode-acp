@@ -15230,6 +15230,76 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       return false;
     }
 
+    /**
+     * True when a codex-acp agent_message_chunk is the one-line "retrying"
+     * notice emitted at the START of an internal retry attempt after a
+     * transient failure (upstream 503 "model at capacity" or a transport-level
+     * stream disconnect). codex-acp retries silently inside prompt() — the
+     * extension host and the webview see NO second promptStart — so without
+     * this hook the notice text and the abandoned partial reply from the failed
+     * attempt would fuse into the current bubble, and attempt #2's fresh reply
+     * would land as a SECOND assistant message after what looked like an
+     * end_turn. Matching the exact prefix keeps false positives impossible
+     * (the notice is emitted verbatim by CodexEventHandler.createErrorEvent).
+     */
+    function isRetryBoundaryNotice(text) {
+      var t = String(text || '').trim();
+      if (!t) return false;
+      if (t.indexOf('retrying with backoff') === -1) return false;
+      // codex-acp emits exactly one of these two prefixes before the
+      // "— retrying with backoff" suffix. Match only those, so no normal
+      // assistant reply (which may plausibly quote the phrase) is swallowed.
+      return /^The (model is at capacity|connection dropped mid-stream)[^.]*[-—]\s*retrying with backoff/i.test(t);
+    }
+
+    /**
+     * Discard the abandoned partial assistant reply from the FAILED attempt of
+     * a transient-failure retry, before attempt #2 streams. codex-acp re-sends
+     * the prompt after backoff without a fresh promptStart, so the webview
+     * would otherwise keep the dead attempt's text and attempt #2 would append
+     * to it — the "two assistant messages after end_turn" symptom. This mirrors
+     * the promptStart cleanup: kill the in-flight bubble (DOM + buffer +
+     * messageId grouping) so the retried turn starts from a clean slate.
+     */
+    function discardInFlightRetryText() {
+      if (currentAssistantEl && currentAssistantText && !currentAssistantEl.classList.contains('md-committed')) {
+        if (currentAssistantEl.parentNode) {
+          currentAssistantEl.parentNode.removeChild(currentAssistantEl);
+        }
+        if (currentTurnEl && currentTurnEl.children.length === 0) {
+          if (currentTurnEl.parentNode) {
+            currentTurnEl.parentNode.removeChild(currentTurnEl);
+          }
+        }
+      }
+      // Commit any in-flight reasoning block so it survives the retry (it
+      // belongs to the turn, not the failed attempt); then clear the
+      // transient streaming state so attempt #2 starts clean.
+      commitOrDiscardCurrentThought();
+      currentThoughtText = '';
+      thoughtDomBase = '';
+      thoughtStartTime = null;
+      thoughtEndTime = null;
+      currentAssistantEl = null;
+      currentAssistantText = '';
+      currentMessageId = null;
+      lastCommittedAssistantEl = null;
+      lastCommittedMessageId = null;
+      lastCommittedText = '';
+      reactivatedHistoryIndex = -1;
+      fallbackMessageId = 'turn-' + (Date.now().toString(36)) + '-' + (Math.random().toString(36).slice(2, 8));
+      sawRealMessageIdThisTurn = false;
+      messageSegmentCounter = 0;
+      if (currentTurnEl && currentTurnEl.children.length === 0) {
+        if (currentTurnEl.parentNode) {
+          currentTurnEl.parentNode.removeChild(currentTurnEl);
+        }
+      }
+      currentTurnEl = null;
+      turnTailGraceUntil = 0;
+      streamingRenderGen++;
+    }
+
     function scheduleCompactionFlush() {
       if (compactionFlushTimer) clearTimeout(compactionFlushTimer);
       // Codex sends Warning right after thread/compacted; wait briefly so
@@ -15301,6 +15371,21 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       // effort. These are slash-command responses, not part of the conversation.
       if (content && content.type === 'text' &&
           content.text.trim().startsWith('Effort configuration is currently not available')) {
+        break;
+      }
+      // codex-acp internal retry boundary: a "retrying with backoff" notice
+      // follows a transient failure (503 model at capacity / stream
+      // disconnect). The failed attempt's partial reply is abandoned; discard
+      // it and show the notice as a transient system row so the retry is
+      // visible, then let attempt #2 stream as a fresh assistant bubble.
+      // Without this, the partial text fuses with attempt #2's reply and the
+      // retried turn renders as a SECOND assistant message after an end_turn.
+      if (!isLoadingSession && content && content.type === 'text' &&
+          isRetryBoundaryNotice(content.text)) {
+        var _retryTrim = content.text.trim();
+        vscode.postMessage({ type: 'debugLog', message: '[WV-RETRY] retry boundary notice: "' + _retryTrim.slice(0, 80) + '" discarding partial from failed attempt (currentAssistantTextLen=' + currentAssistantText.length + ')' });
+        discardInFlightRetryText();
+        showTransientNotice('Retrying after a transient failure (upstream overload or dropped stream)…');
         break;
       }
       // Drop late post-compact boilerplate so it never lands in the panel.
