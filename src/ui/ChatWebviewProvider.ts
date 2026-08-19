@@ -13540,17 +13540,21 @@ if (_deduped) {
      var _prevTurn = _allTurns[_allTurns.length - 2];
      var _orphanHasUser = !!_lastTurn.querySelector('.message.user');
      var _orphanHasAsst = !!_lastTurn.querySelector('.message.assistant');
-     var _orphanFoldables = Array.prototype.slice.call(_lastTurn.querySelectorAll(':scope > .thought-block, :scope > .turn-tools'));
+     // NOTE: the per-turn stray-thought fold (above, in the forEach) may have
+     // already wrapped the orphan's thought in its own .turn-fold-body, so the
+     // thought is NOT a direct child of .turn here. Match descendant
+     // .thought-block / .turn-tools anywhere in the orphan turn.
+     var _orphanFoldables = Array.prototype.slice.call(_lastTurn.querySelectorAll('.thought-block, .turn-tools'));
      vscode.postMessage({ type: 'debugLog', message: '[WV-ORPHAN] post-render check: totalTurns=' + _allTurns.length + ' lastTurn user=' + _orphanHasUser + ' asst=' + _orphanHasAsst + ' foldables=' + _orphanFoldables.length + ' prevTurn children=' + _prevTurn.children.length });
      if (!_orphanHasUser && !_orphanHasAsst && _orphanFoldables.length > 0) {
        ensureTurnFoldStructure(_prevTurn, true, true);
        var _prevBody = getTurnFoldBody(_prevTurn);
        if (_prevBody) {
          var _moved = 0;
-         while (_lastTurn.firstChild) {
-           _prevBody.appendChild(_lastTurn.firstChild);
+         _orphanFoldables.forEach(function(node) {
+           _prevBody.appendChild(node);
            _moved++;
-         }
+         });
          _lastTurn.remove();
          orderCompactFoldContents(_prevBody);
          var _prevSum = getTurnSummaryEl(_prevTurn);
