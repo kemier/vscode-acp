@@ -324,6 +324,84 @@ suite('merge interrupt-notice ordering (resume regression)', () => {
     );
   });
 
+  test('prior-to-last-turn assistant is not placed after the last turn summary', () => {
+    const merge = loadMerge();
+    // Regression for: after resume, an assistant from the PRIOR-to-last turn
+    // appeared AFTER the final turn's summary/end_turn message. This happens
+    // when the snapshot has a terminal assistant whose text DIFFERS from the
+    // loaded replay in an earlier turn, and the last turn's loaded copy ends
+    // with its own terminal assistant (the summary). The prior-turn snapshot
+    // copy must stay inside its own turn — never after the final summary.
+    const loaded = [
+      user('prior-turn query'),
+      tool('tc1', 'exec_command'),
+      asst('Prior turn reply (loaded version).'),
+      user('last query'),
+      asst('Final summary from the last turn.'),
+    ];
+    const snapshot = [
+      user('prior-turn query'),
+      tool('tc1', 'exec_command'),
+      asst('Prior turn reply (webview version, different text).'),
+      user('last query'),
+      asst('Final summary from the last turn (snapshot copy).'),
+    ];
+
+    const merged = merge(loaded, snapshot);
+    const assistants = merged.filter(
+      (it: any) => it && it.kind === 'message' && it.role === 'assistant',
+    );
+    // The prior turn contributes exactly ONE assistant (loaded wins), the last
+    // turn exactly ONE (loaded wins). Total = 2, never 3.
+    assert.strictEqual(assistants.length, 2, 'prior-turn assistant must not duplicate');
+
+    const lastUserIdx = merged.findIndex(
+      (it: any) => it && it.kind === 'message' && it.role === 'user' && it.text === 'last query',
+    );
+    const afterLastUser = merged.slice(lastUserIdx + 1).filter(
+      (it: any) => it && it.kind === 'message',
+    );
+    // After the last user prompt there must be exactly the final summary — no
+    // prior-turn assistant leaked into the last turn.
+    assert.strictEqual(
+      afterLastUser.filter((it: any) => it.role === 'assistant').length,
+      1,
+      'only the last-turn summary follows the last user prompt',
+    );
+    assert.strictEqual(afterLastUser[afterLastUser.length - 1]?.text, 'Final summary from the last turn.');
+  });
+
+  test('snapshot assistant from a dropped turn is not appended after the final summary', () => {
+    const merge = loadMerge();
+    // The snapshot has an assistant in a turn that the loaded replay DROPPED
+    // entirely (e.g. compaction removed the whole prior turn, or the agent
+    // truncated history). The snapshot assistant has no anchor in the merged
+    // timeline. It must NOT be appended at the tail after the final summary.
+    const loaded = [
+      user('last query'),
+      asst('Final summary.'),
+    ];
+    const snapshot = [
+      user('dropped turn query'),
+      tool('tc-dropped', 'exec_command'),
+      asst('Reply from the dropped turn.'),
+      user('last query'),
+      asst('Final summary.'),
+    ];
+
+    const merged = merge(loaded, snapshot);
+    const assistants = merged.filter(
+      (it: any) => it && it.kind === 'message' && it.role === 'assistant',
+    );
+    // Only the final summary may remain — the dropped-turn assistant has no
+    // anchor and must be skipped, never appended after the summary.
+    assert.deepStrictEqual(
+      assistants.map((a: any) => a.text),
+      ['Final summary.'],
+      'dropped-turn assistant must not leak after the final summary',
+    );
+  });
+
   test('snapshot terminal assistant survives when loaded turn ends with a tool', () => {
     const merge = loadMerge();
     // Loaded replay ended mid-turn (tool only, no final reply) and the
