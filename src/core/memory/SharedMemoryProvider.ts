@@ -105,6 +105,10 @@ export class SharedMemoryProvider {
     includePersona?: boolean;
     /** Override settings.includeSceneNav for this call. */
     includeSceneNav?: boolean;
+    /** Override settings.includeSkills for this call (L1-only later turns:
+     *  skills are agent-profile scoped and already injected on the first
+     *  full prompt — do NOT re-inject them on every l1-only turn). */
+    includeSkills?: boolean;
   }): Promise<ContentBlock[]> {
     const settings = this.getSettings();
     if (!isMemoryConfigured(settings)) {
@@ -140,11 +144,12 @@ export class SharedMemoryProvider {
       const armT0 = settings.debug ? performance.now() : 0;
       const includePersona = opts.includePersona ?? settings.includePersona;
       const includeSceneNav = opts.includeSceneNav ?? settings.includeSceneNav;
+      const includeSkills = opts.includeSkills ?? settings.includeSkills;
       const [searchResult, personaResult, scenesResult, skillsResult] = await Promise.allSettled([
         client.searchAtomic(iso, { query, limit: settings.recallMaxResults }),
         includePersona ? client.readCore(iso) : Promise.resolve(null),
         includeSceneNav ? client.listScenarios(iso) : Promise.resolve(null),
-        settings.includeSkills
+        includeSkills
           ? client.listSkills(iso, { query, charBudget: settings.skillCharBudget })
           : Promise.resolve(null),
       ]);

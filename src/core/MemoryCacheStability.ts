@@ -44,6 +44,19 @@ export function resolveMemoryInjectMode(
   return opts.profileAlreadyInjected ? 'l1-only' : 'full';
 }
 
+/**
+ * Whether the <available_skills> block should be injected on this turn.
+ *
+ * Skills are agent-profile scoped (like persona + scenes): they are injected
+ * once, on the first full prompt, and reused from conversation history on
+ * later turns. On l1-only turns we do NOT re-fetch/re-inject skills — that
+ * would duplicate the same skill list on every prompt in the session. After
+ * compaction the gates reset to 'full', so skills are re-injected then.
+ */
+export function shouldInjectSkillsForMode(mode: MemoryInjectMode): boolean {
+  return mode === 'full';
+}
+
 /** The two per-session gates that `resolveMemoryInjectMode` keys off. */
 export interface MemoryInjectGates {
   promptedSessions: Set<string>;

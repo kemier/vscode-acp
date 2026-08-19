@@ -3,6 +3,7 @@ import {
   isIncrementalCacheAgent,
   resolveMemoryInjectMode,
   shouldInjectMemoryForTurn,
+  shouldInjectSkillsForMode,
   resetMemoryInjectGates,
   type MemoryInjectGates,
 } from '../core/MemoryCacheStability';
@@ -122,6 +123,40 @@ suite('MemoryCacheStability', () => {
     test('all agents attach recall on later turns (L1); slash/disabled handled by caller', () => {
       assert.strictEqual(shouldInjectMemoryForTurn('claude-code-acp', true), true);
       assert.strictEqual(shouldInjectMemoryForTurn('codex-acp', true), true);
+    });
+  });
+
+  suite('shouldInjectSkillsForMode (one distinct skill set per session)', () => {
+    test('skills are injected only on the first full prompt', () => {
+      assert.strictEqual(shouldInjectSkillsForMode('full'), true);
+    });
+
+    test('skills are NOT re-injected on l1-only turns (dedup within a session)', () => {
+      assert.strictEqual(shouldInjectSkillsForMode('l1-only'), false);
+    });
+
+    test('no skills when memory is disabled', () => {
+      assert.strictEqual(shouldInjectSkillsForMode('none'), false);
+    });
+
+    test('after compaction the mode resets to full so skills are re-injected', () => {
+      const gates = { promptedSessions: new Set<string>(['sess-1']), memoryProfileInjectedSessions: new Set<string>(['sess-1']) };
+      // Before compaction: l1-only → no skills re-injected.
+      const before = resolveMemoryInjectMode('codex-acp', {
+        sessionAlreadyPrompted: gates.promptedSessions.has('sess-1'),
+        profileAlreadyInjected: gates.memoryProfileInjectedSessions.has('sess-1'),
+      });
+      assert.strictEqual(before, 'l1-only');
+      assert.strictEqual(shouldInjectSkillsForMode(before), false);
+
+      // After compaction the gates reset → next prompt is full → skills re-injected.
+      resetMemoryInjectGates('sess-1', gates);
+      const after = resolveMemoryInjectMode('codex-acp', {
+        sessionAlreadyPrompted: gates.promptedSessions.has('sess-1'),
+        profileAlreadyInjected: gates.memoryProfileInjectedSessions.has('sess-1'),
+      });
+      assert.strictEqual(after, 'full');
+      assert.strictEqual(shouldInjectSkillsForMode(after), true);
     });
   });
 });

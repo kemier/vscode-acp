@@ -87,7 +87,7 @@ export interface AgentCapabilitySummary {
  */
 export type { SelectionContext } from './ContextBlockBuilder';
 import { buildSelectionBlock, type SelectionContext } from './ContextBlockBuilder';
-import { resolveMemoryInjectMode, resetMemoryInjectGates } from './MemoryCacheStability';
+import { resolveMemoryInjectMode, resetMemoryInjectGates, shouldInjectSkillsForMode } from './MemoryCacheStability';
 import type { SharedMemoryProvider } from './memory/SharedMemoryProvider';
 import { readMemorySettings, resolveMemoryAgentId } from './memory/MemoryConfig';
 
@@ -794,7 +794,13 @@ export class SessionManager extends EventEmitter {
           agentName: session.agentName,
           query: text,
           supportsEmbedded: supportsEmbeddedContext,
-          ...(memoryInjectMode === 'l1-only' ? { includePersona: false, includeSceneNav: false } : {}),
+          ...(memoryInjectMode === 'l1-only'
+            ? {
+                includePersona: false,
+                includeSceneNav: false,
+                includeSkills: shouldInjectSkillsForMode(memoryInjectMode),
+              }
+            : {}),
         });
         if (memDebug) {
           log(
