@@ -1823,7 +1823,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         // new agent's panel — posting promptEnd: cancelled would leak the
         // "— Conversation interrupted —" notice into the wrong chat.
         if (this.sessionManager.getActiveSessionId() === activeId) {
-          this.postMessage({ type: 'promptEnd', stopReason: slashStopReason });
+          this.postMessage({ type: 'promptEnd', sessionId: activeId, stopReason: slashStopReason });
         }
       }
       return;
@@ -2022,6 +2022,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         const session = this.sessionManager.getSession(activeId);
         this.postMessage({
           type: 'promptEnd',
+          sessionId: activeId,
           stopReason: response.stopReason,
           usage: (response as any).usage,
           goalSnapshot: (session as any)?.goalSnapshot ?? null,
@@ -2062,7 +2063,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         message: errMsg,
       });
       this.streamCoalescer.flush(activeId);
-      this.postMessage({ type: 'promptEnd', stopReason: 'error' });
+      this.postMessage({ type: 'promptEnd', sessionId: activeId, stopReason: 'error' });
     }
   }
 
@@ -2105,7 +2106,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           // switched agents while this cancel was in flight, do not leak the
           // "— Conversation interrupted —" notice into the new agent's panel.
           if (this.sessionManager.getActiveSessionId() === activeId) {
-            this.postMessage({ type: 'promptEnd', stopReason: 'cancelled' });
+            this.postMessage({ type: 'promptEnd', sessionId: activeId, stopReason: 'cancelled' });
           }
           this._pendingPromptSessionId = null;
         }
@@ -2166,7 +2167,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       this.postMessage({ type: 'error', message: formatAcpErrorMessage(e, 'Command failed') });
     } finally {
       this.streamCoalescer.flush(activeId);
-      this.postMessage({ type: 'promptEnd', stopReason: 'end_turn' });
+      this.postMessage({ type: 'promptEnd', sessionId: activeId, stopReason: 'end_turn' });
     }
   }
 
@@ -13993,6 +13994,17 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         break;
 
      case 'promptEnd':
+     // Stale promptEnd guard: the extension host can resolve a torn-down
+     // session's in-flight prompt AFTER the user started a new conversation
+     // (disconnectAgent cancels the prompt, but the continuation races the
+     // teardown). If promptEnd carries a sessionId that no longer matches the
+     // currently displayed session (or the session was cleared), ignore it —
+     // otherwise the "— Conversation interrupted —" notice leaks into the
+     // NEW session's panel.
+     if (msg.sessionId && (!sessionState || msg.sessionId !== sessionState.sessionId)) {
+       vscode.postMessage({ type: 'debugLog', message: '[WV-PROMPTEND] stale promptEnd for session ' + msg.sessionId + ' (current=' + (sessionState ? sessionState.sessionId : 'none') + '), ignoring' });
+       break;
+     }
      vscode.postMessage({ type: 'debugLog', message: '[WV-PROMPTEND] promptEnd received. chatHistoryLen=' + chatHistory.length + ' currentAssistantTextLen=' + currentAssistantText.length + ' hasCurrentAssistantEl=' + !!currentAssistantEl });
       if (msg.goalSnapshot !== undefined) {
         goalSnapshot = msg.goalSnapshot;
