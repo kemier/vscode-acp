@@ -87,7 +87,7 @@ export interface AgentCapabilitySummary {
  */
 export type { SelectionContext } from './ContextBlockBuilder';
 import { buildSelectionBlock, type SelectionContext } from './ContextBlockBuilder';
-import { resolveMemoryInjectMode, resetMemoryInjectGates, shouldInjectSkillsForMode } from './MemoryCacheStability';
+import { isIncrementalCacheAgent, resolveMemoryInjectMode, resetMemoryInjectGates, shouldInjectSkillsForMode } from './MemoryCacheStability';
 import type { SharedMemoryProvider } from './memory/SharedMemoryProvider';
 import { readMemorySettings, resolveMemoryAgentId } from './memory/MemoryConfig';
 
@@ -2192,8 +2192,17 @@ export class SessionManager extends EventEmitter {
       // next prompt is a continuation. Mark it as prompted so the KV-cache-
       // stability gate in sendPrompt skips memory re-injection (re-injecting
       // would shift the prefix and invalidate the cached history).
-      this.promptedSessions.add(sessionId);
-      this.memoryProfileInjectedSessions.add(sessionId);
+      //
+      // For non-incremental agents (Pi, Claude, etc.) the memory block is a
+      // plain text ContentBlock prepended to each prompt — there is no KV
+      // cache to invalidate. The first prompt after session/load must take
+      // the 'full' path so persona + scenes + <available_skills> are
+      // injected (the agent has no prior memory context in its context
+      // window after a fresh process spawn).
+      if (isIncrementalCacheAgent(agentName)) {
+        this.promptedSessions.add(sessionId);
+        this.memoryProfileInjectedSessions.add(sessionId);
+      }
     } catch (e: any) {
       this.loadingSessionIds.delete(sessionId);
       this.sessions.delete(sessionId);
@@ -2354,8 +2363,15 @@ export class SessionManager extends EventEmitter {
     // Responses-API server holds a cached prefix, so the next prompt is a
     // continuation. Mark as prompted so the KV-cache-stability gate in
     // sendPrompt skips memory re-injection (would shift the prefix otherwise).
-    this.promptedSessions.add(sessionId);
-    this.memoryProfileInjectedSessions.add(sessionId);
+    //
+    // For non-incremental agents (Pi, Claude, etc.) the memory block is a
+    // plain text ContentBlock prepended to each prompt — no KV cache to
+    // invalidate. The first prompt after resume must take the 'full' path
+    // so persona + scenes + <available_skills> are injected.
+    if (isIncrementalCacheAgent(agentName)) {
+      this.promptedSessions.add(sessionId);
+      this.memoryProfileInjectedSessions.add(sessionId);
+    }
     // Set activeSessionId BEFORE drainPending so the 'available-commands-changed'
     // event drainPending emits (for commands buffered during session/new)
     // passes the active-session guard in the extension listener and reaches
