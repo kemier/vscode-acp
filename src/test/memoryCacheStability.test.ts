@@ -126,30 +126,30 @@ suite('MemoryCacheStability', () => {
     });
   });
 
-  suite('shouldInjectSkillsForMode (one distinct skill set per session)', () => {
-    test('skills are injected only on the first full prompt', () => {
+  suite('shouldInjectSkillsForMode (per-prompt semantic skills)', () => {
+    test('skills are injected on full mode', () => {
       assert.strictEqual(shouldInjectSkillsForMode('full'), true);
     });
 
-    test('skills are NOT re-injected on l1-only turns (dedup within a session)', () => {
-      assert.strictEqual(shouldInjectSkillsForMode('l1-only'), false);
+    test('skills are injected on l1-only turns (semantic-search, deduped by SharedMemoryProvider)', () => {
+      assert.strictEqual(shouldInjectSkillsForMode('l1-only'), true);
     });
 
-    test('no skills when memory is disabled', () => {
+    test('skills are NOT injected when memory is disabled', () => {
       assert.strictEqual(shouldInjectSkillsForMode('none'), false);
     });
 
-    test('after compaction the mode resets to full so skills are re-injected', () => {
+    test('after compaction skills are re-injected (dedup state cleared by resetL1Dedup)', () => {
+      // The compaction path: gates reset → full mode → skills injected.
+      // Dedup state is cleared by resetL1Dedup so all skills are fresh.
       const gates = { promptedSessions: new Set<string>(['sess-1']), memoryProfileInjectedSessions: new Set<string>(['sess-1']) };
-      // Before compaction: l1-only → no skills re-injected.
       const before = resolveMemoryInjectMode('codex-acp', {
         sessionAlreadyPrompted: gates.promptedSessions.has('sess-1'),
         profileAlreadyInjected: gates.memoryProfileInjectedSessions.has('sess-1'),
       });
       assert.strictEqual(before, 'l1-only');
-      assert.strictEqual(shouldInjectSkillsForMode(before), false);
+      assert.strictEqual(shouldInjectSkillsForMode(before), true);
 
-      // After compaction the gates reset → next prompt is full → skills re-injected.
       resetMemoryInjectGates('sess-1', gates);
       const after = resolveMemoryInjectMode('codex-acp', {
         sessionAlreadyPrompted: gates.promptedSessions.has('sess-1'),

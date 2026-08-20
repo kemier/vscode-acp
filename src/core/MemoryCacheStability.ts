@@ -47,14 +47,15 @@ export function resolveMemoryInjectMode(
 /**
  * Whether the <available_skills> block should be injected on this turn.
  *
- * Skills are agent-profile scoped (like persona + scenes): they are injected
- * once, on the first full prompt, and reused from conversation history on
- * later turns. On l1-only turns we do NOT re-fetch/re-inject skills — that
- * would duplicate the same skill list on every prompt in the session. After
- * compaction the gates reset to 'full', so skills are re-injected then.
+ * Skills are semantic-search results (query-relevant), so they are
+ * injected on every prompt — both `full` and `l1-only` modes. Dedup
+ * is handled by `SharedMemoryProvider` (tracks injected skill IDs
+ * per session, filters on subsequent recalls, resets on compaction).
+ *
+ * Returns false only for `none` mode (memory disabled).
  */
 export function shouldInjectSkillsForMode(mode: MemoryInjectMode): boolean {
-  return mode === 'full';
+  return mode !== 'none';
 }
 
 /** The two per-session gates that `resolveMemoryInjectMode` keys off. */

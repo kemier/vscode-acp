@@ -466,6 +466,13 @@
           "maximum": 50,
           "description": "Max L1 atomic memories to inject on each prompt."
         },
+        "acp.memory.minScore": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 1,
+          "description": "Minimum relevance score for L1 memory injection. Memories below this threshold are excluded. 0 = no filtering (all memories injected)."
+        },
         "acp.memory.includePersona": {
           "type": "boolean",
           "default": true,

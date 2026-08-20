@@ -5,6 +5,17 @@
  * - agent_id is per agent type (codex / claude / kiro / …)
  * - Recall injects L1 + L2/L3 for that agent profile before session/prompt
  * - Capture writes L0 conversation turns after the prompt completes
+ *
+ * Per-prompt injection: every user prompt gets a fresh recall blob (L1
+ * memories + L3 persona + L2 scenes + skills). The gateway returns
+ * query-relevant top-k memories, so the same memory can appear on
+ * consecutive prompts — that's fine. The blob is a per-prompt snapshot,
+ * not an accumulating list. After compaction, the next prompt re-injects
+ * everything (full path) since the prior blobs were summarized away.
+ *
+ * Score threshold: L1 memories below `minScore` are excluded. Items
+ * without a score (undefined) are always included (gateway may not return
+ * scores for all items).
  */
 import type { ContentBlock } from '@agentclientprotocol/sdk';
 import type { SessionNotification } from '@agentclientprotocol/sdk';
@@ -38,9 +49,27 @@ interface PendingTurn {
   startedAt: number;
 }
 
+/**
+ * Per-session L1 memory IDs that have already been injected into the
+ * conversation. Filtered from subsequent recall results to avoid
+ * accumulating duplicate `<relevant-memories>` entries across turns.
+ *
+ * Cleared on:
+ *  - Full recall (persona + scenes re-injected, e.g. after compaction)
+ *  - Session end / disposal
+ *
+ * NOT cleared on:
+ *  - l1-only recall (the full recall is still in conversation history)
+ */
+interface SessionL1State {
+  injectedIds: Set<string>;
+  injectedSkillIds: Set<string>;
+}
+
 export class SharedMemoryProvider {
   private readonly listener: (update: SessionNotification) => void;
   private readonly turns = new Map<string, PendingTurn>();
+  private readonly l1State = new Map<string, SessionL1State>();
   private client: MemoryHttpClient | null = null;
   private cachedSettingsKey = '';
 
@@ -52,6 +81,7 @@ export class SharedMemoryProvider {
   dispose(): void {
     this.sessionUpdateHandler.removeListener(this.listener);
     this.turns.clear();
+    this.l1State.clear();
     this.client = null;
   }
 
@@ -95,6 +125,10 @@ export class SharedMemoryProvider {
   /**
    * Recall memory for the agent profile and return ACP ContentBlocks to prepend.
    * Never throws — recall failures are logged and return [].
+   *
+   * Every prompt gets a fresh recall: L1 memories (semantic search, score-
+   * filtered), L3 persona, L2 scene nav, and skills. No dedup across prompts
+   * — each prompt's blob is an independent snapshot.
    */
   async buildRecallBlocks(opts: {
     sessionId: string;
@@ -170,7 +204,7 @@ export class SharedMemoryProvider {
         );
       }
 
-      const l1Items =
+      let l1Items =
         searchResult.status === 'fulfilled'
           ? (searchResult.value.items ?? []).map((i) => ({
               id: i.id,
@@ -181,6 +215,44 @@ export class SharedMemoryProvider {
           : [];
       if (searchResult.status === 'rejected') {
         logError('Memory recall L1 search failed', searchResult.reason);
+      }
+
+      // Score threshold: filter out low-relevance memories below minScore.
+      // Items without a score (undefined) are always kept (gateway may not
+      // return scores for all items).
+      const minScore = settings.minScore;
+      if (minScore > 0) {
+        const before = l1Items.length;
+        l1Items = l1Items.filter((item) => item.score === undefined || item.score >= minScore);
+        if (settings.debug && l1Items.length < before) {
+          log(`L1 score filter: ${before} → ${l1Items.length} (minScore=${minScore})`);
+        }
+      }
+
+      // L1 dedup: filter out memory IDs already injected into this session.
+      // Full recall resets the ID set (post-compaction: everything is fresh).
+      // l1-only recall filters previously-seen IDs and accumulates new ones.
+      const isFullRecall = opts.includePersona ?? settings.includePersona;
+      if (isFullRecall) {
+        this.l1State.delete(opts.sessionId);
+      }
+      const state = this.l1State.get(opts.sessionId);
+      if (state) {
+        const before = l1Items.length;
+        l1Items = l1Items.filter((item) => !item.id || !state.injectedIds.has(item.id));
+        if (settings.debug && l1Items.length < before) {
+          log(`L1 dedup: ${before} → ${l1Items.length} (filtered ${before - l1Items.length} already-injected)`);
+        }
+        for (const item of l1Items) {
+          if (item.id) {
+            state.injectedIds.add(item.id);
+          }
+        }
+      } else if (isFullRecall) {
+        this.l1State.set(opts.sessionId, {
+          injectedIds: new Set(l1Items.map((i) => i.id).filter((id): id is string => !!id)),
+          injectedSkillIds: new Set(),
+        });
       }
 
       const persona = personaResult.status === 'fulfilled' && personaResult.value ? personaResult.value.content : null;
@@ -196,10 +268,30 @@ export class SharedMemoryProvider {
         logError('Memory recall scenario list failed', scenesResult.reason);
       }
 
-      const skills: SkillEntry[] =
+      let skills: SkillEntry[] =
         skillsResult.status === 'fulfilled' && skillsResult.value ? (skillsResult.value.items ?? []) : [];
       if (skillsResult.status === 'rejected') {
         logError('Memory recall skill list failed', skillsResult.reason);
+      }
+
+      // Skill dedup: filter out skills already injected into this session.
+      // Full recall resets (post-compaction: everything is fresh).
+      // l1-only recall filters previously-seen skills and accumulates new ones.
+      if (isFullRecall) {
+        // Reset skill IDs on full recall (already done above via l1State.set)
+      }
+      const skillState = this.l1State.get(opts.sessionId);
+      if (skillState) {
+        const before = skills.length;
+        skills = skills.filter((s) => !s.skill_id || !skillState.injectedSkillIds.has(s.skill_id));
+        if (settings.debug && skills.length < before) {
+          log(`Skill dedup: ${before} → ${skills.length} (filtered ${before - skills.length} already-injected)`);
+        }
+        for (const s of skills) {
+          if (s.skill_id) {
+            skillState.injectedSkillIds.add(s.skill_id);
+          }
+        }
       }
 
       const formatted = formatRecallContext(l1Items, persona, scenes, skills);
@@ -224,7 +316,7 @@ export class SharedMemoryProvider {
       } else {
         log(
           `Memory recall: L1=${formatted.l1Count} persona=${formatted.hasPersona} scenes=${formatted.sceneCount} skills=${formatted.skillCount} ` +
-            `(agent=${opts.agentName}→${memoryAgentId})`,
+            `(agent=${opts.agentName}→${memoryAgentId}, session=${opts.sessionId})`,
         );
       }
 
@@ -240,6 +332,16 @@ export class SharedMemoryProvider {
       return [];
     }
   }
+
+  /**
+   * Reset the L1 dedup state for a session. Called after compaction (the
+   * conversation history is summarized, so previously-injected memory IDs
+   * are no longer in the context window and must be re-injected).
+   */
+  resetL1Dedup(sessionId: string): void {
+    this.l1State.delete(sessionId);
+  }
+  // (injectedSkillIds lives in the same SessionL1State — cleared together)
 
   /** Start accumulating assistant text for L0 capture after the turn ends. */
   beginTurn(sessionId: string, agentName: string, userText: string): void {

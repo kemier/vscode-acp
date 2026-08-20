@@ -21,6 +21,8 @@ export interface MemorySettings {
   /** Optional explicit overrides: ACP agent name → MemoryCore agent_id. */
   agentIdMap: Record<string, string>;
   recallMaxResults: number;
+  /** Minimum relevance score for L1 memory injection. 0 = no filtering. */
+  minScore: number;
   includePersona: boolean;
   includeSceneNav: boolean;
   includeSkills: boolean;
@@ -60,6 +62,7 @@ export function readMemorySettings(): MemorySettings {
     userId,
     agentIdMap,
     recallMaxResults: Math.max(1, cfg.get<number>('memory.recallMaxResults') ?? 5),
+    minScore: Math.max(0, Math.min(1, cfg.get<number>('memory.minScore') ?? 0)),
     includePersona: cfg.get<boolean>('memory.includePersona') !== false,
     includeSceneNav: cfg.get<boolean>('memory.includeSceneNav') !== false,
     includeSkills: cfg.get<boolean>('memory.includeSkills') !== false,

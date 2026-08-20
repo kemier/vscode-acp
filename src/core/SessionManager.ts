@@ -268,6 +268,7 @@ export class SessionManager extends EventEmitter {
       promptedSessions: this.promptedSessions,
       memoryProfileInjectedSessions: this.memoryProfileInjectedSessions,
     });
+    this.memoryProvider?.resetL1Dedup(sessionId);
   }
 
   /** Public accessor for downstream UI. */
@@ -358,6 +359,7 @@ export class SessionManager extends EventEmitter {
             this.agentSessions.delete(agentName);
             this.promptedSessions.delete(sessionId);
             this.memoryProfileInjectedSessions.delete(sessionId);
+            this.memoryProvider?.resetL1Dedup(sessionId);
             if (this.activeSessionId === sessionId) {
               this.activeSessionId = null;
             }
@@ -490,6 +492,7 @@ export class SessionManager extends EventEmitter {
     this.agentSessions.delete(agentName);
     this.promptedSessions.delete(sessionId);
     this.memoryProfileInjectedSessions.delete(sessionId);
+    this.memoryProvider?.resetL1Dedup(sessionId);
 
     if (this.activeSessionId === sessionId) {
       this.activeSessionId = null;
@@ -531,6 +534,7 @@ export class SessionManager extends EventEmitter {
       this.sessions.delete(sessionId);
       this.promptedSessions.delete(sessionId);
       this.memoryProfileInjectedSessions.delete(sessionId);
+      this.memoryProvider?.resetL1Dedup(sessionId);
       if (agentName) {
         this.agentSessions.delete(agentName);
       }
@@ -2554,5 +2558,6 @@ export class SessionManager extends EventEmitter {
     this.agentSessions.clear();
     this.promptedSessions.clear();
     this.memoryProfileInjectedSessions.clear();
+    this.memoryProvider?.dispose();
   }
 }

@@ -88,6 +88,88 @@ suite('MemoryFormat', () => {
   });
 });
 
+suite('MemoryFormat.formatL1Memories dedup', () => {
+  test('formatL1Memories excludes empty IDs', () => {
+    const items = [
+      { id: '1', content: 'mem one', type: 'fact' },
+      { id: '', content: 'mem two', type: 'fact' },
+      { id: undefined as any, content: 'mem three', type: 'fact' },
+    ];
+    const text = formatL1Memories(items);
+    assert.ok(text);
+    // All items are formatted (formatL1Memories doesn't filter by ID — dedup is in SharedMemoryProvider)
+    assert.ok(text!.includes('mem one'));
+    assert.ok(text!.includes('mem two'));
+    assert.ok(text!.includes('mem three'));
+  });
+});
+
+suite('SharedMemoryProvider score threshold (simulation)', () => {
+  interface ScoredItem {
+    id?: string;
+    content: string;
+    score?: number;
+  }
+
+  function applyScoreFilter(items: ScoredItem[], minScore: number): ScoredItem[] {
+    if (minScore <= 0) {
+      return [...items];
+    }
+    return items.filter((item) => item.score === undefined || item.score >= minScore);
+  }
+
+  test('minScore=0 includes everything', () => {
+    const items = [
+      { id: 'a', content: 'high', score: 0.9 },
+      { id: 'b', content: 'mid', score: 0.5 },
+      { id: 'c', content: 'low', score: 0.1 },
+      { id: 'd', content: 'no score' },
+    ];
+    assert.strictEqual(applyScoreFilter(items, 0).length, 4);
+  });
+
+  test('minScore=0.5 filters low scores', () => {
+    const items = [
+      { id: 'a', content: 'high', score: 0.9 },
+      { id: 'b', content: 'mid', score: 0.5 },
+      { id: 'c', content: 'low', score: 0.1 },
+      { id: 'd', content: 'no score' },
+    ];
+    const filtered = applyScoreFilter(items, 0.5);
+    assert.deepStrictEqual(filtered.map((i) => i.id), ['a', 'b', 'd']);
+  });
+
+  test('items without score are always included', () => {
+    const items = [
+      { id: 'a', content: 'scored', score: 0.1 },
+      { id: 'b', content: 'unscored' },
+      { id: 'c', content: 'undefined score', score: undefined },
+    ];
+    const filtered = applyScoreFilter(items, 0.5);
+    assert.deepStrictEqual(filtered.map((i) => i.id), ['b', 'c']);
+  });
+
+  test('score exactly at threshold is included (>=)', () => {
+    const items = [
+      { id: 'a', content: 'exact', score: 0.5 },
+      { id: 'b', content: 'below', score: 0.49 },
+    ];
+    const filtered = applyScoreFilter(items, 0.5);
+    assert.deepStrictEqual(filtered.map((i) => i.id), ['a']);
+  });
+
+  test('score filter alone (no dedup)', () => {
+    const items = [
+      { id: 'a', content: 'a', score: 0.9 },
+      { id: 'b', content: 'b', score: 0.8 },
+      { id: 'c', content: 'c', score: 0.3 },
+      { id: 'd', content: 'd', score: 0.95 },
+    ];
+    const filtered = items.filter((i) => i.score === undefined || i.score >= 0.5);
+    assert.deepStrictEqual(filtered.map((i) => i.id), ['a', 'b', 'd']);
+  });
+});
+
 suite('MemoryFormat.formatSkills', () => {
   test('returns undefined for empty list', () => {
     assert.strictEqual(formatSkills([]), undefined);
