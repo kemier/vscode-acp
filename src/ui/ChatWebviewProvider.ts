@@ -7017,53 +7017,62 @@ function handleLocalSlashCommand(cmdText) {
    // and the user can continue typing their actual prompt after it.
   var sessionMatch = text.match(/^\\/session\\s+(.+)$/);
   if (sessionMatch) {
-    // Try to match the longest known session name at the start of args.
-    // Session names can contain spaces (e.g. "ue session route path").
-    var sessionArgs = sessionMatch[1].trim();
-    var sessionName = '';
-    var remainingQuery = '';
-    var bestMatchLen = 0;
-    for (var si = 0; si < sessionNames.length; si++) {
-      var sn = sessionNames[si];
-      if (sessionArgs === sn) {
-        sessionName = sn;
-        remainingQuery = '';
-        bestMatchLen = sn.length;
-        break;
-      }
-      if (sessionArgs.length > sn.length && sessionArgs.substring(0, sn.length) === sn && sessionArgs.charCodeAt(sn.length) === 32) {
-        if (sn.length > bestMatchLen) {
+    try {
+      // Try to match the longest known session name at the start of args.
+      // Session names can contain spaces (e.g. "ue session route path").
+      var sessionArgs = sessionMatch[1].trim();
+      var sessionName = '';
+      var remainingQuery = '';
+      var bestMatchLen = 0;
+      var names = (typeof sessionNames === 'undefined' || !Array.isArray(sessionNames)) ? [] : sessionNames;
+      vscode.postMessage({ type: 'debugLog', message: '[SESSION-DBG] /session received: args="' + sessionArgs.substring(0, 80) + '" sessionNames.length=' + names.length });
+      for (var si = 0; si < names.length; si++) {
+        var sn = names[si];
+        if (sessionArgs === sn) {
           sessionName = sn;
-          remainingQuery = sessionArgs.substring(sn.length + 1).trim();
+          remainingQuery = '';
           bestMatchLen = sn.length;
+          break;
+        }
+        if (sessionArgs.length > sn.length && sessionArgs.substring(0, sn.length) === sn && sessionArgs.charCodeAt(sn.length) === 32) {
+          if (sn.length > bestMatchLen) {
+            sessionName = sn;
+            remainingQuery = sessionArgs.substring(sn.length + 1).trim();
+            bestMatchLen = sn.length;
+          }
         }
       }
+      if (!sessionName) {
+        var firstSpace = sessionArgs.indexOf(' ');
+        sessionName = firstSpace >= 0 ? sessionArgs.substring(0, firstSpace) : sessionArgs;
+        remainingQuery = firstSpace >= 0 ? sessionArgs.substring(firstSpace + 1).trim() : '';
+      }
+      promptInput.value = '';
+      updateSendButton();
+      pendingImages.splice(0);
+      imagePreviewStrip.innerHTML = '';
+      // Show the user message immediately (pill + query) so the user sees
+      // their prompt right away, before the summary is generated.
+      var mentionLink = '[@' + sessionName + '](session:' + sessionName + ')';
+      var displayText = mentionLink;
+      if (remainingQuery) {
+        displayText += ' ' + remainingQuery;
+      }
+      addMessage('user', displayText);
+      // Show a loading indicator in the status bar
+      if (statusEl) {
+        statusEl.innerHTML = '<span class="spinner"></span><span>Summarizing session...</span>';
+      }
+      hasSentPrompt = true;
+      vscode.postMessage({ type: 'summarizeSession', sessionName: sessionName, queryText: remainingQuery });
+      return true;
+    } catch (e) {
+      vscode.postMessage({ type: 'debugLog', message: '[SESSION-DBG] /session handler error: ' + (e && e.message ? e.message : String(e)) });
+      // Fall through to the agent as a normal prompt rather than silently
+      // dropping the user's input. The user can retry after the error is fixed.
+      return false;
     }
-    if (!sessionName) {
-      var firstSpace = sessionArgs.indexOf(' ');
-      sessionName = firstSpace >= 0 ? sessionArgs.substring(0, firstSpace) : sessionArgs;
-      remainingQuery = firstSpace >= 0 ? sessionArgs.substring(firstSpace + 1).trim() : '';
-    }
-   promptInput.value = '';
-   updateSendButton();
-   pendingImages.splice(0);
-   imagePreviewStrip.innerHTML = '';
-   // Show the user message immediately (pill + query) so the user sees
-   // their prompt right away, before the summary is generated.
-   var mentionLink = '[@' + sessionName + '](session:' + sessionName + ')';
-   var displayText = mentionLink;
-   if (remainingQuery) {
-     displayText += ' ' + remainingQuery;
-   }
-   addMessage('user', displayText);
-   // Show a loading indicator in the status bar
-   if (statusEl) {
-     statusEl.innerHTML = '<span class="spinner"></span><span>Summarizing session...</span>';
-   }
-   hasSentPrompt = true;
- vscode.postMessage({ type: 'summarizeSession', sessionName: sessionName, queryText: remainingQuery });
- return true;
-}
+  }
  // /compact|/summarize|/compress — context compaction where the agent
  // supports it. Kiro: _kiro.dev/commands/execute. Codex/Claude: session/prompt.
  // Cursor Agent has no compact slash command (its available_commands_update
