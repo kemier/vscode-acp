@@ -16288,11 +16288,15 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
     if (typeof params.contextUsagePercentage === 'number' && tokenUsageRing && hasSentPrompt) {
       var pct = params.contextUsagePercentage;
        // Kiro sends percentage (0-100). Synthesize used/size for the ring.
-       tokenUsage = { used: pct, size: 100, cost: null };
+       // Estimate the context window from the model name so the tooltip can
+       // show human-readable K/M token counts alongside the percentage.
+       var ctxWindow = estimateContextWindow(currentModelId);
+       var estUsed = Math.round(pct / 100 * ctxWindow);
+       tokenUsage = { used: estUsed, size: ctxWindow, cost: null };
        updateTokenUsageDOM();
        // Update tooltip
        if (tokenUsageTooltip) {
-         tokenUsageTooltip.textContent = 'Context: ' + Math.round(pct) + '% used';
+         tokenUsageTooltip.textContent = 'Context: ' + Math.round(pct) + '% \u2022 ' + humanizeTokens(estUsed) + ' / ' + humanizeTokens(ctxWindow);
        }
      }
      // Update effort display if present
@@ -16867,6 +16871,31 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       return String(n);
     }
 
+    // Estimate context window from model name (mirrors ericli model-capabilities.ts).
+    // Used by Kiro CLI which only sends a percentage, not raw token counts.
+    function estimateContextWindow(modelId) {
+      if (!modelId) return 200000;
+      var m = modelId.toLowerCase().replace(/\\[(?:low|medium|high|xhigh|max|none)\\]$/, '');
+      if (m.includes('1m') || m.includes('instruct-1m')) return 1000000;
+      if (m.includes('kimi')) return 256000;
+      if (m.includes('qwen') && (m.includes('235b') || m.includes('next'))) return 262144;
+      if (m.includes('qwen3-coder') || (m.includes('qwen') && m.includes('480b'))) return 262144;
+      if (m.includes('qwen3.8') || m.includes('qwen-3.8')) return 262144;
+      if (m.includes('gemma-4')) return 262144;
+      if (m.includes('glm-5')) return 196608;
+      if (m.includes('gpt-oss')) return 131072;
+      if (m.includes('qwen3.5') || m.includes('qwen3.6')) return 131072;
+      if (m.includes('glm-4') || m.includes('glm')) return 131072;
+      if (m.includes('llama-3.3') || m.includes('llama-3.2')) return 131072;
+      if (m.includes('gemma-3')) return 90000;
+      if (m.includes('mixtral-8x22b')) return 65536;
+      if (m.includes('deepseek')) return 262144;
+      // Claude (Kiro CLI uses Bedrock, not ericai-proxy)
+      if (m.includes('claude') || m.includes('opus')) return 200000;
+      if (m.includes('qwen')) return 32768;
+      return 200000;
+    }
+
     // --- Token usage ring hover tooltip (like Zed) ---
     if (tokenUsageRing && tokenUsageTooltip) {
       tokenUsageRing.addEventListener('mouseenter', function () {
@@ -16879,7 +16908,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         if (size > 0 && size !== 100) {
           html += pct + '% \u2022 ' + humanizeTokens(used) + ' / ' + humanizeTokens(size);
         } else if (size > 0) {
-          // Kiro CLI: percentage only, no raw token counts
+          // Kiro CLI (or any pct-only agent): percentage only, no raw token counts
           html += Math.round(used) + '% used';
         } else {
           html += humanizeTokens(used) + ' tokens';
