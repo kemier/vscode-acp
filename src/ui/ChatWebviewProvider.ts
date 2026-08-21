@@ -13369,17 +13369,22 @@ if (_deduped) {
     // fold as the visible summary.
     ensureTurnFoldStructure(turn, true);
     promoteFinalAssistantForTurn(turn);
-    // Thought/tool-only turns (interrupted turn cancelled before the agent
-    // produced any reply): promoteFinalAssistantForTurn bails out early when
-    // the turn has no assistants, so its fold-interim path never scoops the
-    // stray .thought-block into the fold body. After a resume render that
-    // stray thought rendered as its own collapsed "Thought" card floating
-    // BELOW the previous turn's promoted summary. No user bubble means the
-    // turn is orphaned (user interrupt notices are not rendered as bubbles)
-    // - so this only fires for resume-merged interrupted turns, never for
-    // live streaming (a live thought-only turn carries its user bubble).
+    // Assistant-less turn that still has a stray thought / tool group (e.g.
+    // an interrupted turn cancelled before the agent produced any reply):
+    // promoteFinalAssistantForTurn bails out early when the turn has no
+    // assistants, so its fold path never scoops the stray .thought-block /
+    // .turn-tools into the fold body. After a resume render that stray thought
+    // rendered as its own collapsed "Thought" card floating BELOW the previous
+    // turn's promoted summary. NOTE: this turn may carry a .message.user
+    // bubble (the user's own prompt that started the cancelled turn), so we
+    // gate ONLY on the absence of an assistant + the presence of foldable
+    // content (a stray thought or tool) - never on the absence of a user
+    // bubble. Live streaming is already guarded by !isProcessing (a live turn
+    // is always in-processing); this pass only runs on resume/load renders.
+    // Requiring a .thought-block/.turn-tools also avoids creating an empty
+    // fold header for a turn that has nothing but a user bubble.
     if (!turn.querySelector('.message.assistant') &&
-        !turn.querySelector('.message.user') &&
+        turn.querySelector('.thought-block, .turn-tools') &&
         !isProcessing && !isLoadingSession) {
       ensureTurnFoldStructure(turn, true, true);
       var _body = getTurnFoldBody(turn);
