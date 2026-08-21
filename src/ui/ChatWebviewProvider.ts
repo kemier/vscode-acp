@@ -10328,7 +10328,27 @@ function orderCompactFoldContents(body) {
         turn === turn.parentElement.querySelector('.turn:last-of-type');
       var turnFinished = turnLooksFinished(turn) ||
         (isLastTurn && historyLastTurnLooksFinished());
-      var forceFold = foldInterruptedAssistantsOnPromote && !turnFinished && turnLooksInterrupted(turn);
+      // An interrupted turn whose last assistant is NOT the final item (a
+      // thought/tool was still emitted after it when the reload/cancel hit)
+      // must also force-fold: promoting that mid-sentence reply to the main
+      // chat leaves the trailing thought stranded above the summary. The
+      // !turnFinished clause covers the usual case; the trailingContent check
+      // covers the reload-while-active case where the turn still "looks
+      // finished" (all tools completed) but the last bubble was cut mid-way.
+      var lastAsstIdx = assistantHistoryIndex(summaryEl);
+      var trailingContentAfterLastAsst = turnLooksInterrupted(turn) &&
+        Array.prototype.some.call(
+          turn.querySelectorAll('.thought-block, .turn-tools'),
+          function(el) {
+            var v = el && el.getAttribute ? el.getAttribute('data-history-index') : null;
+            if (v === null || v === undefined || String(v).trim() === '') return false;
+            var n = Number(v);
+            return Number.isFinite(n) && n > lastAsstIdx;
+          }
+        );
+      var forceFold = foldInterruptedAssistantsOnPromote &&
+        turnLooksInterrupted(turn) &&
+        (!turnFinished || trailingContentAfterLastAsst);
       if (forceFold) {
         assistants.forEach(function(a) {
           a.classList.add('assistant-interim');
