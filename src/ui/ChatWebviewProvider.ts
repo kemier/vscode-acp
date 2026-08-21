@@ -1529,7 +1529,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
                 message.message.indexOf('[WV-DIAG]') === 0 ||
                 message.message.indexOf('[WV-MERGE]') === 0 ||
                 message.message.indexOf('[WV-USER]') === 0 ||
-                message.message.indexOf('[WV-ORDER]') === 0 ||
                 message.message.indexOf('[WV-RENDER]') === 0 ||
                 message.message.indexOf('[WV-UPDATE]') === 0 ||
                 message.message.indexOf('[STAGE-DBG]') === 0))
@@ -10019,14 +10018,6 @@ function orderCompactFoldContents(body) {
     var turn = body.parentElement;
     if (!turn || !turn.classList.contains('turn')) return;
 
-    // Debug: snapshot the current DOM order before we re-sort.
-    var _dbgBefore = Array.prototype.map.call(body.children, function(el) {
-      var tag = el.className.split(' ')[0];
-      var idx = el.getAttribute('data-history-index');
-      var nested = el.classList.contains('turn-tools') ? (el.querySelector('[data-history-index]') ? el.querySelector('[data-history-index]').getAttribute('data-history-index') : 'none') : '';
-      return tag + (idx !== null ? '[' + idx + ']' : nested ? '[n:' + nested + ']' : '[?]');
-    });
-    vscode.postMessage({ type: 'debugLog', message: '[WV-ORDER] before sort: ' + _dbgBefore.join(' | ') });
 
     var foldables = [];
      function consider(el) {
@@ -10085,11 +10076,6 @@ function orderCompactFoldContents(body) {
       }
       return Number.MAX_SAFE_INTEGER;
     }
-    var _dbgSortKeys = foldables.map(function(el) {
-      var tag = el.className.split(' ')[0];
-      return tag + '=' + historyOrder(el);
-    });
-    vscode.postMessage({ type: 'debugLog', message: '[WV-ORDER] sort keys: ' + _dbgSortKeys.join(' | ') });
     // Nodes with no stamp (legacy groups, subagent crew rows, anything created
     // before it lands in chatHistory) must keep the position they were appended
     // at. Scoring them MAX_SAFE_INTEGER made every unstamped tool group sink to
@@ -10110,11 +10096,6 @@ function orderCompactFoldContents(body) {
     var _decorated = foldables.map(function(el, i) { return { el: el, key: _keys[i], i: i }; });
     _decorated.sort(function(a, b) { return (a.key - b.key) || (a.i - b.i); });
     foldables = _decorated.map(function(d) { return d.el; });
-    var _dbgAfter = foldables.map(function(el, i) {
-      var tag = el.className.split(' ')[0];
-      return tag + '[' + _decorated[i].key + ']';
-    });
-    vscode.postMessage({ type: 'debugLog', message: '[WV-ORDER] after sort: ' + _dbgAfter.join(' | ') });
     // Append sorted (stable) — preserves interleaved order.
     foldables.forEach(function(el) { body.appendChild(el); });
   }
