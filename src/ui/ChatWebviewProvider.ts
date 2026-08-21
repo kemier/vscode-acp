@@ -13369,6 +13369,35 @@ if (_deduped) {
     // fold as the visible summary.
     ensureTurnFoldStructure(turn, true);
     promoteFinalAssistantForTurn(turn);
+    // Thought/tool-only turns (interrupted turn cancelled before the agent
+    // produced any reply): promoteFinalAssistantForTurn bails out early when
+    // the turn has no assistants, so its fold-interim path never scoops the
+    // stray .thought-block into the fold body. After a resume render that
+    // stray thought rendered as its own collapsed "Thought" card floating
+    // BELOW the previous turn's promoted summary. No user bubble means the
+    // turn is orphaned (user interrupt notices are not rendered as bubbles)
+    // - so this only fires for resume-merged interrupted turns, never for
+    // live streaming (a live thought-only turn carries its user bubble).
+    if (!turn.querySelector('.message.assistant') &&
+        !turn.querySelector('.message.user') &&
+        !isProcessing && !isLoadingSession) {
+      ensureTurnFoldStructure(turn, true, true);
+      var _body = getTurnFoldBody(turn);
+      if (_body) {
+        orderCompactFoldContents(_body);
+        var _sum = getTurnSummaryEl(turn);
+        if (_sum) {
+          if (turn.querySelector('.thought-block')) _sum._hasThought = true;
+          updateToolGroupSummary(
+            _sum,
+            parseInt(_sum.dataset.count || '0', 10),
+            _sum._titles || [],
+            _sum._kinds || [],
+            _sum._rawInputs || []
+          );
+        }
+      }
+    }
   } else if (lists.length && summary) {
     updateToolGroupSummary(summary, parseInt(summary.dataset.count || '0', 10), summary._titles || [], summary._kinds || [], summary._rawInputs || []);
   }
