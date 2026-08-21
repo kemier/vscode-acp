@@ -236,7 +236,19 @@ export class SharedMemoryProvider {
       if (isFullRecall) {
         this.l1State.delete(opts.sessionId);
       }
-      const state = this.l1State.get(opts.sessionId);
+      // Always create the per-session dedup state on the first recall of ANY
+      // kind. The previous code only created it when isFullRecall was true,
+      // but sessions that run persona=false on every recall (the common case)
+      // never got state → the skill/L1 filter was a no-op and the full skill
+      // list was re-injected on every prompt.
+      const state = (() => {
+        let s = this.l1State.get(opts.sessionId);
+        if (!s) {
+          s = { injectedIds: new Set(), injectedSkillIds: new Set() };
+          this.l1State.set(opts.sessionId, s);
+        }
+        return s;
+      })();
       if (state) {
         const before = l1Items.length;
         l1Items = l1Items.filter((item) => !item.id || !state.injectedIds.has(item.id));
@@ -248,11 +260,6 @@ export class SharedMemoryProvider {
             state.injectedIds.add(item.id);
           }
         }
-      } else if (isFullRecall) {
-        this.l1State.set(opts.sessionId, {
-          injectedIds: new Set(l1Items.map((i) => i.id).filter((id): id is string => !!id)),
-          injectedSkillIds: new Set(),
-        });
       }
 
       const persona = personaResult.status === 'fulfilled' && personaResult.value ? personaResult.value.content : null;
@@ -277,9 +284,6 @@ export class SharedMemoryProvider {
       // Skill dedup: filter out skills already injected into this session.
       // Full recall resets (post-compaction: everything is fresh).
       // l1-only recall filters previously-seen skills and accumulates new ones.
-      if (isFullRecall) {
-        // Reset skill IDs on full recall (already done above via l1State.set)
-      }
       const skillState = this.l1State.get(opts.sessionId);
       if (skillState) {
         const before = skills.length;
