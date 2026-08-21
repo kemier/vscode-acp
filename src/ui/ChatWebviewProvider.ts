@@ -66,24 +66,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     });
   }
 
-  /**
-   * Durable diagnostic: write the webview's resume promotion-decision
-   * snapshot to a persistent file so it survives the rotating ACP output
-   * channel. Used to diagnose "completed summary stayed folded / stray
-   * assistant after resume" without relying on the ephemeral WV-DIAG logs.
-   */
-  private persistResumePromotionDiag(payload: string): void {
-    try {
-      const dir = path.join(os.homedir(), '.acp-debug');
-      fs.mkdirSync(dir, { recursive: true });
-      const file = path.join(dir, 'resume-promotion.jsonl');
-      const ts = new Date().toISOString();
-      fs.appendFileSync(file, JSON.stringify({ ts, payload }) + '\n');
-      log(`[resume-promotion] wrote diag -> ${file}`);
-    } catch (e) {
-      logError('Failed to persist resume promotion diagnostic', e);
-    }
-  }
 
   /**
    * Dispatch a prompt to the webview so it goes through the normal
@@ -1495,9 +1477,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           // to whoever is waiting (the forkToAgent command).
           this._conversationExportResolver?.(message.text);
           this._conversationExportResolver = undefined;
-          break;
-        case 'debugResumePromote':
-          this.persistResumePromotionDiag(message.payload as string);
           break;
         case 'compactionCompleted':
           // The webview finished wiping the conversation after compaction
@@ -6407,7 +6386,6 @@ var end = displayText.length;
      failRunningSubagentStagesInDom();
      failCompletedCrewsInInterruptedTurn();
      forceCollapseTurnFolds();
-     dumpResumePromotionDiag('restore');
      failRunningSubagentStagesInDom();
      failCompletedCrewsInInterruptedTurn();
      if (assistantItems.length > 0) {
@@ -8782,7 +8760,6 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     failCompletedCrewsInInterruptedTurn();
     // renderChatHistory can leave folds open after promote — force shut.
     forceCollapseTurnFolds();
-    dumpResumePromotionDiag('loadEnd');
     failRunningSubagentStagesInDom();
     failCompletedCrewsInInterruptedTurn();
     if (loadOverlay) loadOverlay.classList.remove('visible');
@@ -10032,90 +10009,6 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      * host-persisted file (not the rotating output channel) so it survives
      * the session.
      */
-    function dumpResumePromotionDiag(label) {
-      try {
-        var turns = Array.prototype.slice.call(messagesEl.querySelectorAll('.turn'));
-        var data = {
-          label: label,
-          compactMode: !!compactMode,
-          foldInterruptedAssistantsOnPromote: !!foldInterruptedAssistantsOnPromote,
-          keepAssistantsInFold: !!keepAssistantsInFold,
-          isProcessing: !!isProcessing,
-          isLoadingSession: !!isLoadingSession,
-          historyLastTurnLooksFinished: historyLastTurnLooksFinished(),
-          turnCount: turns.length,
-          turns: turns.map(function(turn, ti) {
-            var assts = Array.prototype.slice.call(turn.querySelectorAll('.message.assistant'));
-            var summaryEl = turn.querySelector('.message.assistant.assistant-summary');
-            var toolIcons = Array.prototype.slice.call(turn.querySelectorAll('.tc-icon'));
-            var isLastTurn = !turn.nextElementSibling ||
-              turn === turn.parentElement.querySelector('.turn:last-of-type');
-            var _dumpBody = getTurnFoldBody(turn);
-            var _userEl = turn.querySelector('.message.user');
-            var _thoughtEls = Array.prototype.slice.call(turn.querySelectorAll('.thought-block'));
-            return {
-              index: ti,
-              isLastTurn: !!isLastTurn,
-              userBubble: _userEl ? String(_userEl.textContent || '').replace(/\s+/g, ' ').slice(0, 100) : null,
-              turnInterrupted: turn.getAttribute('data-turn-interrupted') === '1',
-              looksFinished: turnLooksFinished(turn),
-              looksInterrupted: turnLooksInterrupted(turn),
-              hasSummary: !!summaryEl,
-              summaryPreview: summaryEl ? String(summaryEl.textContent || '').slice(0, 80) : null,
-              thoughtCount: _thoughtEls.length,
-              thoughtVisible: _thoughtEls.filter(function(t) { return !(_dumpBody && _dumpBody.contains && _dumpBody.contains(t)); }).length,
-              foldChildren: (function() {
-                var body = getTurnFoldBody(turn);
-                if (!body) return null;
-                return Array.prototype.slice.call(body.children).map(function(el) {
-                  var cls = (el.className || '').split(' ')[0];
-                  var own = el.getAttribute ? el.getAttribute('data-history-index') : null;
-                  var firstDesc = null;
-                  if (el.classList && el.classList.contains('turn-tools')) {
-                    var fd = el.querySelector('[data-history-index]');
-                    firstDesc = fd ? fd.getAttribute('data-history-index') : null;
-                  }
-                  var title = '';
-                  var t = el.querySelector ? el.querySelector('.tool-call-inline') : null;
-                  if (t) { title = (t.getAttribute('data-title') || t.getAttribute('title') || (t.querySelector('.tc-title') ? t.querySelector('.tc-title').textContent : '')).slice(0, 40); }
-                  var firstRowId = (el.classList && el.classList.contains('turn-tools')) ? ((function(){ var r = el.querySelector('.tool-call-inline'); return r ? (r.id || '') : null; })()) : null;
-                  var ownN = (own !== null && String(own).trim() !== '') ? Number(own) : null;
-                  var firstN = (firstDesc !== null && String(firstDesc).trim() !== '') ? Number(firstDesc) : null;
-                  var resolvedKey = (ownN !== null) ? ownN : (firstN !== null ? firstN : null);
-                  return {
-                    cls: cls,
-                    ownIdx: ownN,
-                    firstDescIdx: firstN,
-                    resolvedKey: resolvedKey,
-                    firstRowId: firstRowId,
-                    title: title
-                  };
-                });
-              })(),
-              assistants: assts.map(function(a) {
-                return {
-                  interrupted: a.getAttribute('data-interrupted') === '1',
-                  interim: a.classList.contains('assistant-interim'),
-                  inFold: !!( _dumpBody && _dumpBody.contains && _dumpBody.contains(a) ),
-                  histIndex: a.getAttribute('data-history-index'),
-                  preview: String(a.textContent || '').slice(0, 60)
-                };
-              }),
-              tools: toolIcons.map(function(ic) {
-                var cls = ic.className || '';
-                var st = 'running';
-                if (cls.indexOf('failed') >= 0 || cls.indexOf('error') >= 0) st = 'failed';
-                else if (cls.indexOf('completed') >= 0 || cls.indexOf('success') >= 0) st = 'completed';
-                return st;
-              })
-            };
-          })
-        };
-        vscode.postMessage({ type: 'debugResumePromote', payload: JSON.stringify(data) });
-      } catch (e) {
-        vscode.postMessage({ type: 'debugResumePromote', payload: 'dump error: ' + (e && e.message) });
-      }
-    }
 
     /**
      * Scoop foldable nodes into the fold body preserving document order:
@@ -13633,9 +13526,6 @@ if (_deduped) {
        }
        _orphanMerged++;
      }
-   }
-   if (_orphanMerged > 0) {
-     vscode.postMessage({ type: 'debugLog', message: '[WV-ORPHAN] merged ' + _orphanMerged + ' orphan turn(s) into previous turn fold(s)' });
    }
  }
  // promoteFinalAssistant / structure rebuild can leave folds open after
