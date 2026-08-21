@@ -16292,7 +16292,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        updateTokenUsageDOM();
        // Update tooltip
        if (tokenUsageTooltip) {
-         tokenUsageTooltip.textContent = 'Context: ' + pct.toFixed(1) + '% used';
+         tokenUsageTooltip.textContent = 'Context: ' + Math.round(pct) + '% used';
        }
      }
      // Update effort display if present
@@ -16876,8 +16876,11 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         var ratio = size > 0 ? used / size : 0;
         var pct = Math.round(ratio * 100);
         var html = '<div class="tooltip-header">Context</div>';
-        if (size > 0) {
+        if (size > 0 && size !== 100) {
           html += pct + '% \u2022 ' + humanizeTokens(used) + ' / ' + humanizeTokens(size);
+        } else if (size > 0) {
+          // Kiro CLI: percentage only, no raw token counts
+          html += Math.round(used) + '% used';
         } else {
           html += humanizeTokens(used) + ' tokens';
         }
