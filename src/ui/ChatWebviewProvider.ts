@@ -13983,6 +13983,21 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           setFollowingUI(!!msg.isFollowing);
           break;
 
+      // Host-initiated prompt (fork-to-agent). dispatchPrompt() posts the
+      // exported conversation text here; before this case existed the
+      // inbound switch had no 'sendPrompt' handler, so the entire fork
+      // export was silently dropped (no user bubble, no session/prompt) —
+      // every forkToAgent appeared to do nothing. Route through the same
+      // path a typed+Enter send uses: drop the text into the input and let
+      // handleSend() post it to the host (preserving queueing, compaction
+      // guards, and the user bubble).
+      case 'sendPrompt':
+        if (typeof msg.text === 'string' && msg.text.length > 0) {
+          promptInput.value = msg.text;
+          handleSend();
+        }
+        break;
+
       case 'promptStart':
        // The turn has actually started — the drain/Send-Now sendPrompt is now
        // in-flight and new input may proceed normally (will be queued because

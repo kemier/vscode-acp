@@ -140,4 +140,30 @@ suite('webviewScriptParse', () => {
     assert.strictEqual(helper('Qwen3-Coder-480B'), false, 'Qwen3-Coder-480B is text-only');
     assert.strictEqual(helper('gpt-oss-42m-v2'), false, 'gpt-oss is text-only');
   });
+
+  test('inbound message switch handles host-initiated sendPrompt (fork-to-agent)', () => {
+    // Regression: dispatchPrompt() (host -> webview) posts { type:
+    // 'sendPrompt', text } to forward the fork-to-agent export, but the
+    // webview's inbound switch had no 'sendPrompt' case, so every fork
+    // export was silently dropped (no user bubble, no session/prompt) —
+    // the user saw "Forked conversation…" but the target agent received
+    // nothing. The 'sendPrompt' case must exist in the INBOUND
+    // (window 'message') handler — not just the outbound vscode.postMessage
+    // sites, which are indistinguishable from a naive string search.
+    const source = fs.readFileSync(PROVIDER, 'utf8');
+    const emitted = decodeTemplate(extractWebviewScript(source));
+    // Isolate the inbound handler switch (starts at "switch (msg.type)")
+    // and require a 'sendPrompt' case inside it.
+    const switchIdx = emitted.indexOf('switch (msg.type)');
+    assert.ok(switchIdx >= 0, 'inbound message switch must exist');
+    // The case block: case 'sendPrompt': ... break; — search a bounded
+    // region of the switch (it is long; the case must appear before the
+    // handler's closing brace).
+    const region = emitted.slice(switchIdx, switchIdx + 60000);
+    const hasInboundCase = /case\s+'sendPrompt'[^]*?\bhandleSend\(\)/.test(region);
+    assert.ok(
+      hasInboundCase,
+      'inbound switch must route sendPrompt through handleSend() (fork-to-agent was silently dropped without it)'
+    );
+  });
 });
