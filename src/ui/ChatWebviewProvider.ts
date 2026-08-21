@@ -13523,6 +13523,56 @@ if (_deduped) {
     updateToolGroupSummary(summary, parseInt(summary.dataset.count || '0', 10), summary._titles || [], summary._kinds || [], summary._rawInputs || []);
   }
 });
+ // ORPHAN TRAILING-TURN MERGE (interrupted-resume bug):
+ // When a turn is interrupted, the interrupt-notice handling in the render
+ // loop nulls currentTurnEl; a trailing thought/tool that still belongs to
+ // the interrupted turn then lands in a brand-new .turn with NO user bubble
+ // and NO assistant. promoteFinalAssistantForTurn cannot promote (no
+ // assistant) and the per-turn stray-thought fold only targets turns that
+ // already have fold structure, so the orphan renders as a stray collapsed
+ // "Thinking" card at the very bottom AND makes the previous turn's summary
+ // look missing. Merge the orphan's foldable content into the previous
+ // turn's fold body so it displays inside the collapsed group.
+ if (compactMode && !isProcessing && !isLoadingSession) {
+   var _allTurns = Array.prototype.slice.call(messagesEl.querySelectorAll('.turn'));
+   if (_allTurns.length >= 2) {
+     var _lastTurn = _allTurns[_allTurns.length - 1];
+     var _prevTurn = _allTurns[_allTurns.length - 2];
+     var _orphanHasUser = !!_lastTurn.querySelector('.message.user');
+     var _orphanHasAsst = !!_lastTurn.querySelector('.message.assistant');
+     var _orphanFoldables = Array.prototype.slice.call(_lastTurn.querySelectorAll(':scope > .thought-block, :scope > .turn-tools'));
+     vscode.postMessage({ type: 'debugLog', message: '[WV-ORPHAN] post-render check: totalTurns=' + _allTurns.length + ' lastTurn user=' + _orphanHasUser + ' asst=' + _orphanHasAsst + ' foldables=' + _orphanFoldables.length + ' prevTurn children=' + _prevTurn.children.length });
+     if (!_orphanHasUser && !_orphanHasAsst && _orphanFoldables.length > 0) {
+       ensureTurnFoldStructure(_prevTurn, true, true);
+       var _prevBody = getTurnFoldBody(_prevTurn);
+       if (_prevBody) {
+         var _moved = 0;
+         while (_lastTurn.firstChild) {
+           _prevBody.appendChild(_lastTurn.firstChild);
+           _moved++;
+         }
+         _lastTurn.remove();
+         orderCompactFoldContents(_prevBody);
+         var _prevSum = getTurnSummaryEl(_prevTurn);
+         if (_prevSum && _prevBody.querySelector('.thought-block')) {
+           _prevSum._hasThought = true;
+           updateToolGroupSummary(
+             _prevSum,
+             parseInt(_prevSum.dataset.count || '0', 10),
+             _prevSum._titles || [],
+             _prevSum._kinds || [],
+             _prevSum._rawInputs || []
+           );
+         }
+         vscode.postMessage({ type: 'debugLog', message: '[WV-ORPHAN] merged orphan turn into previous turn fold: movedNodes=' + _moved + ' prevFoldChildren=' + _prevBody.children.length });
+       } else {
+         vscode.postMessage({ type: 'debugLog', message: '[WV-ORPHAN] ORPHAN DETECTED BUT prevBody missing - orphan NOT merged (left as stray card)' });
+       }
+     }
+   } else {
+     vscode.postMessage({ type: 'debugLog', message: '[WV-ORPHAN] post-render check skipped: totalTurns=' + _allTurns.length });
+   }
+ }
  // promoteFinalAssistant / structure rebuild can leave folds open after
  // session/load — force Collapse mode shut once the DOM is final.
 forceCollapseTurnFolds();
