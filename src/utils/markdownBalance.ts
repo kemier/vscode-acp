@@ -88,3 +88,35 @@ export function hasOpenFence(text: string): boolean {
   }
   return openFenceLen > 0;
 }
+
+/**
+ * Strip a LONE EMPTY trailing fence run from text that ends inside an open
+ * fenced code block.
+ *
+ * Used by the webview's INTERRUPTED commit path (`commitCurrentTextSegment`
+ * with `interrupted: true`). When a turn is cancelled right after the model
+ * opened a fenced block but streamed nothing after the opener (only
+ * whitespace), the final render's `balanceMarkdownForPartialRender` closes
+ * the open fence and leaves a PERMANENT empty `<pre><code>` box — the "empty
+ * code fence started block" artifact. The normal streaming path self-heals
+ * because the next chunk triggers a fresh render; an interrupted commit has
+ * no next chunk, so the empty fence must be removed at commit time.
+ *
+ * Fences that DO have real content after the opener (unterminated but
+ * non-empty code) are left intact so the partial reply is preserved as code.
+ *
+ * Returns null when there is nothing to strip (no open fence, or the trailing
+ * fence run has content after it). Otherwise returns the text with the lone
+ * trailing fence removed.
+ */
+export function stripLoneTrailingFence(text: string): string | null {
+  // Parity with hasOpenFence: only operate when the text is inside an
+  // open fence — otherwise the trailing run is part of a balanced pair and
+  // must not be touched.
+  if (!hasOpenFence(text)) { return null; }
+  // The trailing fence run may be followed only by whitespace to EOL.
+  const loneFenceRe = /```+[\s]*$/;
+  if (!loneFenceRe.test(text)) { return null; }
+  const stripped = text.replace(loneFenceRe, '').replace(/\s+$/, '');
+  return stripped;
+}

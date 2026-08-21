@@ -11292,6 +11292,42 @@ function commitCurrentTextSegment(opts) {
    cancelProvisionalSummaryPromote();
     var asInterim = !!(opts && opts.interim);
     var asInterrupted = !!(opts && opts.interrupted);
+    // Interrupted-commit empty-fence strip: when a CANCELLED turn is cut off
+    // right after the model opened a triple-backtick fence (nothing but
+    // whitespace after the opener), drop the lone empty fence instead of
+    // committing it.
+    // Otherwise the balanced final render (balanceMarkdownForPartialRender
+    // closes the open fence) produces a PERMANENT empty <pre><code> box — the
+    // "empty code fence started block" artifact. The normal streaming path
+    // self-heals because the next chunk triggers a fresh render; an
+    // interrupted commit has no next chunk, so the empty fence must be
+    // removed here. Fences that DO have real content after the opener
+    // (unterminated but non-empty code) are left intact so the partial reply
+    // is preserved as code.
+    if (asInterrupted && hasOpenFence(currentAssistantText)) {
+      var btStrip = String.fromCharCode(96);
+      // Matches a trailing fence run followed only by whitespace to EOL
+      // (note: backslash-s is double-escaped because this script lives inside
+      // the webview template literal — a single backslash-s would be eaten by
+      // the template literal and corrupt the regex).
+      var loneFenceRe = new RegExp(btStrip + '{3,}[\\s]*$');
+      if (loneFenceRe.test(currentAssistantText)) {
+        var fencedStripped = currentAssistantText.replace(loneFenceRe, '').replace(/\\s+$/, '');
+        if (!fencedStripped.trim()) {
+          // The whole segment was just the empty fence — behave like the
+          // whitespace-only early return above so no empty bubble lingers.
+          if (currentAssistantEl) {
+            currentAssistantEl.remove();
+            currentAssistantEl = null;
+          }
+          currentMessageId = null;
+          reactivatedHistoryIndex = -1;
+          return;
+        }
+        currentAssistantText = fencedStripped;
+        vscode.postMessage({ type: 'debugLog', message: '[WV-COMMIT] interrupted commit: stripped lone empty trailing fence (textLen=' + currentAssistantText.length + ')' });
+      }
+    }
     // Fence-swallow guard: if this is an INTERIM commit (a tool/message
     // boundary split the assistant message) and the text ends inside an
     // unclosed triple-backtick fence, DON'T commit yet. The model opened a

@@ -1,7 +1,11 @@
 import * as assert from 'assert';
 import { Marked } from 'marked';
 import { createMathExtension } from '../utils/markdownMath';
-import { balanceMarkdownForPartialRender, hasOpenFence } from '../utils/markdownBalance';
+import {
+  balanceMarkdownForPartialRender,
+  hasOpenFence,
+  stripLoneTrailingFence,
+} from '../utils/markdownBalance';
 
 // Mirrors the production marked configuration in ChatWebviewProvider.
 const parse = (md: string): string => {
@@ -162,8 +166,64 @@ suite('markdownBalance', () => {
           hasOpenFence(c),
           expectedOpen,
           `mismatch for ${JSON.stringify(c)}: hasOpenFence=${hasOpenFence(c)} balancerChanged=${expectedOpen}`,
-        );
-      }
+      );
+    }
+  });
+
+  suite('stripLoneTrailingFence', () => {
+    test('strips a lone empty trailing fence, keeping the prose', () => {
+      const text = 'grep -c "handleSummarizeSessionCommand" .../extension.js\n```';
+      assert.strictEqual(
+        stripLoneTrailingFence(text),
+        'grep -c "handleSummarizeSessionCommand" .../extension.js',
+      );
+    });
+
+    test('strips the fence plus trailing whitespace', () => {
+      const text = 'Actually wait — the messages showed content as multi-line:\n```\n   \n';
+      assert.strictEqual(
+        stripLoneTrailingFence(text),
+        'Actually wait — the messages showed content as multi-line:',
+      );
+    });
+
+    test('whole segment is only an empty fence — returns empty string', () => {
+      assert.strictEqual(stripLoneTrailingFence('```'), '');
+      assert.strictEqual(stripLoneTrailingFence('```\n  \n'), '');
+    });
+
+    test('unterminated fence WITH content is preserved (partial code)', () => {
+      const text = 'code:\n\n```\n<tool_call>\n<function=execute_command>\n</tool_call>';
+      assert.strictEqual(stripLoneTrailingFence(text), null);
+    });
+
+    test('properly closed fence is untouched', () => {
+      const text = '```js\nconsole.log(1);\n```';
+      assert.strictEqual(stripLoneTrailingFence(text), null);
+    });
+
+    test('plain prose with no fence is untouched', () => {
+      const text = 'Just a normal answer.';
+      assert.strictEqual(stripLoneTrailingFence(text), null);
+    });
+
+    test('fence in the middle of text (not trailing) is untouched', () => {
+      const text = 'trailing prose ``` more';
+      assert.strictEqual(stripLoneTrailingFence(text), null);
+    });
+
+    test('balanced render after strip no longer produces an empty code block', () => {
+      // The bug: balanceMarkdownForPartialRender closes an open fence and
+      // renders an empty <pre><code>. stripLoneTrailingFence removes the
+      // fence first so the final render is plain prose.
+      const interrupted = 'Actually wait — the messages showed content as multi-line:\n```';
+      const stripped = stripLoneTrailingFence(interrupted) as string;
+      assert.ok(stripped !== null);
+      assert.ok(!stripped.includes('```'), 'no fence should remain');
+      const html = parse(stripped);
+      assert.ok(!html.includes('<pre><code>'), 'no empty code block should render');
+      assert.ok(html.includes('multi-line:'), 'prose must survive');
     });
   });
+});
 });
