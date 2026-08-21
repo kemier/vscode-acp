@@ -66,6 +66,21 @@ interface SessionL1State {
   injectedSkillIds: Set<string>;
 }
 
+/**
+ * Optional storage hook so the per-session dedup state (injectedIds /
+ * injectedSkillIds) survives a VS Code reload / extension-host restart.
+ * Without it the state is in-memory only and the first prompt after a
+ * restart re-injects the full skill + L1 set even though the agent's own
+ * conversation history already contains the earlier injections.
+ */
+export interface L1StateStorage {
+  get(): Record<string, { injectedIds: string[]; injectedSkillIds: string[] }> | undefined;
+  update(value: Record<string, { injectedIds: string[]; injectedSkillIds: string[] }>): void;
+  delete(): void;
+}
+
+const L1_STATE_STORAGE_KEY = 'acp.memory.l1State';
+
 export class SharedMemoryProvider {
   private readonly listener: (update: SessionNotification) => void;
   private readonly turns = new Map<string, PendingTurn>();
@@ -73,9 +88,13 @@ export class SharedMemoryProvider {
   private client: MemoryHttpClient | null = null;
   private cachedSettingsKey = '';
 
-  constructor(private readonly sessionUpdateHandler: SessionUpdateHandler) {
+  constructor(
+    private readonly sessionUpdateHandler: SessionUpdateHandler,
+    private readonly l1StateStorage?: L1StateStorage,
+  ) {
     this.listener = (update) => this.onSessionUpdate(update);
     this.sessionUpdateHandler.addListener(this.listener);
+    this.restoreL1StateFromStorage();
   }
 
   dispose(): void {
@@ -83,6 +102,47 @@ export class SharedMemoryProvider {
     this.turns.clear();
     this.l1State.clear();
     this.client = null;
+  }
+
+  /**
+   * Load persisted l1State (if any) into memory on startup so dedup
+   * continues across reloads. A session that no longer exists in the
+   * history (e.g. deleted) simply never gets a recall call, so its stale
+   * entry is harmless; resetL1Dedup removes it on compaction / disposal.
+   */
+  private restoreL1StateFromStorage(): void {
+    if (!this.l1StateStorage) return;
+    let persisted: Record<string, { injectedIds: string[]; injectedSkillIds: string[] }> | undefined;
+    try {
+      persisted = this.l1StateStorage.get();
+    } catch {
+      return;
+    }
+    if (!persisted) return;
+    for (const [sid, st] of Object.entries(persisted)) {
+      if (!sid || !st) continue;
+      this.l1State.set(sid, {
+        injectedIds: new Set(Array.isArray(st.injectedIds) ? st.injectedIds : []),
+        injectedSkillIds: new Set(Array.isArray(st.injectedSkillIds) ? st.injectedSkillIds : []),
+      });
+    }
+  }
+
+  /** Serialize the in-memory l1State to storage (fire-and-forget). */
+  private persistL1StateToStorage(): void {
+    if (!this.l1StateStorage) return;
+    try {
+      const out: Record<string, { injectedIds: string[]; injectedSkillIds: string[] }> = {};
+      for (const [sid, st] of this.l1State.entries()) {
+        out[sid] = {
+          injectedIds: Array.from(st.injectedIds),
+          injectedSkillIds: Array.from(st.injectedSkillIds),
+        };
+      }
+      this.l1StateStorage.update(out);
+    } catch {
+      // Persistence is best-effort; the in-memory state still works.
+    }
   }
 
   isEnabled(): boolean {
@@ -297,6 +357,11 @@ export class SharedMemoryProvider {
           }
         }
       }
+      // Persist the (possibly updated) dedup state so it survives a VS Code
+      // reload / extension-host restart. The first prompt after restart then
+      // still filters already-injected skills/L1 instead of re-injecting the
+      // full set.
+      this.persistL1StateToStorage();
 
       const formatted = formatRecallContext(l1Items, persona, scenes, skills);
       if (!formatted) {
@@ -344,6 +409,9 @@ export class SharedMemoryProvider {
    */
   resetL1Dedup(sessionId: string): void {
     this.l1State.delete(sessionId);
+    // Persist the removal so it sticks across a restart (compaction or
+    // session disposal must not resurrect stale IDs on next load).
+    this.persistL1StateToStorage();
   }
   // (injectedSkillIds lives in the same SessionL1State — cleared together)
 

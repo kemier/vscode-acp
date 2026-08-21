@@ -98,7 +98,18 @@ export function activate(context: vscode.ExtensionContext): void {
 
   // --- Shared memory (TencentDB Agent Memory, Model B) ---
   // team_id shared across agents; agent_id mapped per ACP agent type.
-  const memoryProvider = new SharedMemoryProvider(sessionUpdateHandler);
+  const memoryProvider = new SharedMemoryProvider(sessionUpdateHandler, {
+    get: () =>
+      context.workspaceState.get<
+        Record<string, { injectedIds: string[]; injectedSkillIds: string[] }>
+      >('acp.memory.l1State'),
+    update: (value) => {
+      context.workspaceState.update('acp.memory.l1State', value);
+    },
+    delete: () => {
+      context.workspaceState.update('acp.memory.l1State', undefined);
+    },
+  });
   sessionManager.setMemoryProvider(memoryProvider);
   context.subscriptions.push({ dispose: () => memoryProvider.dispose() });
   {
