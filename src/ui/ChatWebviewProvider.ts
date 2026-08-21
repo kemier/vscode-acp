@@ -13543,58 +13543,59 @@ if (_deduped) {
     updateToolGroupSummary(summary, parseInt(summary.dataset.count || '0', 10), summary._titles || [], summary._kinds || [], summary._rawInputs || []);
   }
 });
- // ORPHAN TRAILING-TURN MERGE (interrupted-resume bug):
+ // ORPHAN TURN MERGE (interrupted-resume bug):
  // When a turn is interrupted, the interrupt-notice handling in the render
  // loop nulls currentTurnEl; a trailing thought/tool that still belongs to
  // the interrupted turn then lands in a brand-new .turn with NO user bubble
  // and NO assistant. promoteFinalAssistantForTurn cannot promote (no
  // assistant) and the per-turn stray-thought fold only targets turns that
  // already have fold structure, so the orphan renders as a stray collapsed
- // "Thinking" card at the very bottom AND makes the previous turn's summary
- // look missing. Merge the orphan's foldable content into the previous
- // turn's fold body so it displays inside the collapsed group.
+ // "Thinking" card. It can appear at the very bottom OR mid-conversation
+ // (an interrupted earlier turn that the session/load replay re-surfaced),
+ // so we must scan EVERY turn, not just the last. Merge the orphan's
+ // foldable content into the previous turn's fold body so it displays inside
+ // the collapsed group. Walk forward; after removing an orphan the next
+ // sibling's "previous turn" is already the correct merge target.
  if (compactMode && !isProcessing && !isLoadingSession) {
-   var _allTurns = Array.prototype.slice.call(messagesEl.querySelectorAll('.turn'));
-   if (_allTurns.length >= 2) {
-     var _lastTurn = _allTurns[_allTurns.length - 1];
-     var _prevTurn = _allTurns[_allTurns.length - 2];
-     var _orphanHasUser = !!_lastTurn.querySelector('.message.user');
-     var _orphanHasAsst = !!_lastTurn.querySelector('.message.assistant');
-     // NOTE: the per-turn stray-thought fold (above, in the forEach) may have
-     // already wrapped the orphan's thought in its own .turn-fold-body, so the
-     // thought is NOT a direct child of .turn here. Match descendant
-     // .thought-block / .turn-tools anywhere in the orphan turn.
-     var _orphanFoldables = Array.prototype.slice.call(_lastTurn.querySelectorAll('.thought-block, .turn-tools'));
-     vscode.postMessage({ type: 'debugLog', message: '[WV-ORPHAN] post-render check: totalTurns=' + _allTurns.length + ' lastTurn user=' + _orphanHasUser + ' asst=' + _orphanHasAsst + ' foldables=' + _orphanFoldables.length + ' prevTurn children=' + _prevTurn.children.length });
-     if (!_orphanHasUser && !_orphanHasAsst && _orphanFoldables.length > 0) {
-       ensureTurnFoldStructure(_prevTurn, true, true);
-       var _prevBody = getTurnFoldBody(_prevTurn);
-       if (_prevBody) {
-         var _moved = 0;
-         _orphanFoldables.forEach(function(node) {
-           _prevBody.appendChild(node);
-           _moved++;
-         });
-         _lastTurn.remove();
-         orderCompactFoldContents(_prevBody);
-         var _prevSum = getTurnSummaryEl(_prevTurn);
-         if (_prevSum && _prevBody.querySelector('.thought-block')) {
-           _prevSum._hasThought = true;
-           updateToolGroupSummary(
-             _prevSum,
-             parseInt(_prevSum.dataset.count || '0', 10),
-             _prevSum._titles || [],
-             _prevSum._kinds || [],
-             _prevSum._rawInputs || []
-           );
-         }
-         vscode.postMessage({ type: 'debugLog', message: '[WV-ORPHAN] merged orphan turn into previous turn fold: movedNodes=' + _moved + ' prevFoldChildren=' + _prevBody.children.length });
-       } else {
-         vscode.postMessage({ type: 'debugLog', message: '[WV-ORPHAN] ORPHAN DETECTED BUT prevBody missing - orphan NOT merged (left as stray card)' });
+   var _orphanMerged = 0;
+   var _turns = Array.prototype.slice.call(messagesEl.querySelectorAll('.turn'));
+   for (var _ti = 0; _ti < _turns.length; _ti++) {
+     var _turn = _turns[_ti];
+     if (_ti === 0) continue; // no previous turn to merge into
+     if (_turn.querySelector('.message.user')) continue;
+     if (_turn.querySelector('.message.assistant')) continue;
+     // The per-turn stray-thought fold (above) may already have wrapped the
+     // orphan's thought in its own .turn-fold-body, so match descendant
+     // .thought-block / .turn-tools anywhere in the orphan turn (not just
+     // direct children of .turn).
+     var _foldables = Array.prototype.slice.call(_turn.querySelectorAll('.thought-block, .turn-tools'));
+     if (_foldables.length === 0) continue;
+     // Use the live previousElementSibling (not the stale _turns[_ti - 1])
+     // because a prior iteration may have removed a turn, shifting siblings.
+     var _prev = _turn.previousElementSibling;
+     if (!_prev || !_prev.classList.contains('turn')) continue;
+     ensureTurnFoldStructure(_prev, true, true);
+     var _body = getTurnFoldBody(_prev);
+     if (_body) {
+       _foldables.forEach(function(node) { _body.appendChild(node); });
+       _turn.remove();
+       orderCompactFoldContents(_body);
+       var _sum = getTurnSummaryEl(_prev);
+       if (_sum && _body.querySelector('.thought-block')) {
+         _sum._hasThought = true;
+         updateToolGroupSummary(
+           _sum,
+           parseInt(_sum.dataset.count || '0', 10),
+           _sum._titles || [],
+           _sum._kinds || [],
+           _sum._rawInputs || []
+         );
        }
+       _orphanMerged++;
      }
-   } else {
-     vscode.postMessage({ type: 'debugLog', message: '[WV-ORPHAN] post-render check skipped: totalTurns=' + _allTurns.length });
+   }
+   if (_orphanMerged > 0) {
+     vscode.postMessage({ type: 'debugLog', message: '[WV-ORPHAN] merged ' + _orphanMerged + ' orphan turn(s) into previous turn fold(s)' });
    }
  }
  // promoteFinalAssistant / structure rebuild can leave folds open after
