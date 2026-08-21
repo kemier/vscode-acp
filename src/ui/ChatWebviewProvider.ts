@@ -7760,28 +7760,49 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        merged.splice(insertAt, 0, Object.assign({}, snapItem));
      }
 
-      function snapshotOrderIndex(item) {
+      // Resolve the snapshot position of a merged row.
+      //
+      // When "used" is supplied, snapshot slots already claimed by earlier rows
+      // are skipped, so the Nth row that matches a given signature maps to the
+      // Nth matching snapshot slot. This matters because a single turn often
+      // repeats the same tool title (several Edit of the same file). Matching on
+      // title alone always returned the FIRST such slot, so every one of those
+      // tools shared one sort key, they collapsed into a single block, and the
+      // thoughts that were interleaved between them (which keep their own,
+      // higher keys) were all pushed after the block - the "tool calls grouped
+      // at the top, thinking after" symptom on resume.
+      //
+      // Called without "used" the behaviour is unchanged (first match wins).
+      function snapshotOrderIndex(item, used) {
         if (!item) return Number.MAX_SAFE_INTEGER;
+        var firstHit = -1;
         for (var si = 0; si < snapshot.length; si++) {
           var s = snapshot[si];
           if (!s || s.kind !== item.kind) continue;
+          var hit = false;
           if (item.kind === 'thought') {
             var a = thoughtPrefixKey(item.text);
             var b = thoughtPrefixKey(s.text);
-            if (a && b && (a === b || b.indexOf(a) === 0 || a.indexOf(b) === 0)) return si;
+            if (a && b && (a === b || b.indexOf(a) === 0 || a.indexOf(b) === 0)) hit = true;
           }
           if (item.kind === 'toolCall') {
-            if (item.toolCallId && s.toolCallId && item.toolCallId === s.toolCallId) return si;
-            if (String(item.title || '').trim() === String(s.title || '').trim()) return si;
+            if (item.toolCallId && s.toolCallId && item.toolCallId === s.toolCallId) hit = true;
+            else if (String(item.title || '').trim() === String(s.title || '').trim()) hit = true;
           }
           if (item.kind === 'message' && item.role === 'assistant') {
-            if (String(item.text || '').trim() === String(s.text || '').trim()) return si;
+            if (String(item.text || '').trim() === String(s.text || '').trim()) hit = true;
           }
           if (item.kind === 'message' && (item.role === 'system' || item.role === 'error')) {
-            if (String(item.text || '').trim() === String(s.text || '').trim()) return si;
+            if (String(item.text || '').trim() === String(s.text || '').trim()) hit = true;
           }
+          if (!hit) continue;
+          if (firstHit < 0) firstHit = si;
+          if (!used || !used[si]) return si;
         }
-        return Number.MAX_SAFE_INTEGER;
+        // Every matching slot is already claimed (the merged timeline holds more
+        // copies than the snapshot). Reuse the first match rather than reporting
+        // "not found", which would fling the row to the tail of its turn.
+        return firstHit >= 0 ? firstHit : Number.MAX_SAFE_INTEGER;
       }
 
       function reconcileInterleavedOrderFromSnapshot() {
@@ -7789,13 +7810,32 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         var bucket = [];
         function flushBucket() {
           if (!bucket.length) return;
-          bucket.sort(function(a, b) {
-            var ia = snapshotOrderIndex(a);
-            var ib = snapshotOrderIndex(b);
-            if (ia !== ib) return ia - ib;
-            return 0;
+          // Score every row ONCE, walking the bucket in merged order, claiming
+          // snapshot slots as we go. Computing the key up front (instead of
+          // inside the comparator) is what makes duplicate rows resolve to
+          // distinct, ordered slots: the first Edit takes the first matching
+          // snapshot slot, the second Edit the second, and so on. The thoughts
+          // between them keep their own keys, so the sort restores the real
+          // interleaving instead of hoisting every tool into one block.
+          var used = {};
+          var decorated = [];
+          for (var bi = 0; bi < bucket.length; bi++) {
+            decorated.push({
+              row: bucket[bi],
+              key: (function(r) {
+                var k = snapshotOrderIndex(r, used);
+                if (k !== Number.MAX_SAFE_INTEGER) used[k] = true;
+                return k;
+              })(bucket[bi]),
+              idx: bi
+            });
+          }
+          decorated.sort(function(a, b) {
+            if (a.key !== b.key) return a.key - b.key;
+            // Equal keys keep merged order (rows absent from the snapshot).
+            return a.idx - b.idx;
           });
-          rebuilt = rebuilt.concat(bucket);
+          for (var di = 0; di < decorated.length; di++) rebuilt.push(decorated[di].row);
           bucket = [];
         }
         // Interrupt notices are turn artefacts, not real user prompts — they
