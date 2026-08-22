@@ -91,5 +91,33 @@ export function getAgentNames(): string[] {
  * Get a specific agent config by name.
  */
 export function getAgentConfig(name: string): AgentConfigEntry | undefined {
-  return getAgentConfigs()[name];
+  const key = resolveAgentConfigKey(name);
+  return key ? getAgentConfigs()[key] : undefined;
+}
+
+/**
+ * Map a user-facing or stale agent name to a configured `acp.agents` key.
+ * The binary name (`cursor-agent`) is not the same as the agent key (`Cursor`).
+ */
+export function resolveAgentConfigKey(name: string): string | undefined {
+  const configs = getAgentConfigs();
+  if (configs[name]) {
+    return name;
+  }
+  const lower = name.toLowerCase();
+  const aliases: Record<string, string> = {
+    'cursor-agent': 'Cursor',
+    'cursor-acp': 'Cursor',
+    cursor: 'Cursor',
+  };
+  const aliasTarget = aliases[lower];
+  if (aliasTarget && configs[aliasTarget]) {
+    return aliasTarget;
+  }
+  for (const [key, entry] of Object.entries(configs)) {
+    if (entry.command === name || entry.command.toLowerCase() === lower) {
+      return key;
+    }
+  }
+  return undefined;
 }

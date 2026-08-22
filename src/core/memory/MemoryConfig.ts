@@ -7,7 +7,6 @@
  * can still be shared via Memory Hub ACLs.
  */
 import * as vscode from 'vscode';
-import * as os from 'os';
 
 export { resolveMemoryAgentId } from './MemoryAgentId';
 
@@ -51,7 +50,9 @@ export function readMemorySettings(): MemorySettings {
   }
 
   const userIdSetting = (cfg.get<string>('memory.userId') ?? '').trim();
-  const userId = userIdSetting || os.userInfo().username || process.env.USER || process.env.USERNAME || 'default';
+  // Canonical cross-machine identity — must match Memory Panel login and Mac/Windows
+  // ACP settings. Do not fall back to OS username (e.g. zengn vs zaedinzeng splits memory).
+  const userId = userIdSetting || 'zaedinzeng';
 
   return {
     enabled: cfg.get<boolean>('memory.enabled') === true,

@@ -39,7 +39,7 @@ import { AgentManager } from './AgentManager';
 import { ConnectionManager, ConnectionInfo } from './ConnectionManager';
 import { SessionUpdateHandler } from '../handlers/SessionUpdateHandler';
 import { SessionHistoryStore } from './SessionHistoryStore';
-import { getAgentConfig, getAgentConfigs } from '../config/AgentConfig';
+import { getAgentConfig, getAgentConfigs, resolveAgentConfigKey } from '../config/AgentConfig';
 import { resolveAgentDisplayName } from '../config/agentDisplayName';
 import { log, logError } from '../utils/Logger';
 import { sendEvent, sendError } from '../utils/TelemetryManager';
@@ -324,6 +324,16 @@ export class SessionManager extends EventEmitter {
    * Internally creates a session via ACP protocol.
    */
   async connectToAgent(agentName: string): Promise<SessionInfo> {
+    const resolvedAgentName = resolveAgentConfigKey(agentName);
+    if (!resolvedAgentName) {
+      const configs = getAgentConfigs();
+      throw new Error(`Unknown agent: ${agentName}. Available: ${Object.keys(configs).join(', ')}`);
+    }
+    if (resolvedAgentName !== agentName) {
+      log(`Resolved agent name "${agentName}" → "${resolvedAgentName}"`);
+      agentName = resolvedAgentName;
+    }
+
     // If we already have a live session with this agent, reuse it
     const existingSessionId = this.agentSessions.get(agentName);
     if (existingSessionId && this.sessions.has(existingSessionId)) {
@@ -338,9 +348,9 @@ export class SessionManager extends EventEmitter {
       await this.disconnectAgent(currentAgent);
     }
 
-    const configs = getAgentConfigs();
-    const config = configs[agentName];
+    const config = getAgentConfig(agentName);
     if (!config) {
+      const configs = getAgentConfigs();
       throw new Error(`Unknown agent: ${agentName}. Available: ${Object.keys(configs).join(', ')}`);
     }
 
@@ -1805,6 +1815,15 @@ export class SessionManager extends EventEmitter {
    * teardown themselves.
    */
   async ensureConnected(agentName: string): Promise<ConnectionInfo> {
+    const resolvedAgentName = resolveAgentConfigKey(agentName);
+    if (!resolvedAgentName) {
+      throw new Error(`Unknown agent: ${agentName}.`);
+    }
+    if (resolvedAgentName !== agentName) {
+      log(`Resolved agent name "${agentName}" → "${resolvedAgentName}"`);
+      agentName = resolvedAgentName;
+    }
+
     // If we already have a live session with this agent, reuse its connection.
     const existingSessionId = this.agentSessions.get(agentName);
     if (existingSessionId) {
@@ -1830,8 +1849,7 @@ export class SessionManager extends EventEmitter {
       }
     }
 
-    const configs = getAgentConfigs();
-    const config = configs[agentName];
+    const config = getAgentConfig(agentName);
     if (!config) {
       throw new Error(`Unknown agent: ${agentName}.`);
     }

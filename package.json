@@ -473,7 +473,7 @@
         "acp.memory.userId": {
           "type": "string",
           "default": "zaedinzeng",
-          "description": "User id for memory isolation. Empty = OS username."
+          "description": "User id for memory isolation (shared across Windows/Mac). Use one canonical id (e.g. zaedinzeng). Empty defaults to zaedinzeng — not the OS username."
         },
         "acp.memory.agentIdMap": {
           "type": "object",
