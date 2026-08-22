@@ -346,6 +346,11 @@
               "command": "codex-acp",
               "args": [],
               "env": {}
+            },
+            "Cursor": {
+              "command": "cursor-acp",
+              "args": [],
+              "env": {}
             }
           }
         },
