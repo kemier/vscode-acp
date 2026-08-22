@@ -31,7 +31,7 @@ def main() -> int:
         run(
             c,
             f"cd {REPO} && git stash push -m 'pre-sync' -- "
-            f"MemoryCore/src/core/tdai-core.ts MemoryCore/tdai-gateway.mac.yaml scripts/start-memory-mac.sh 2>/dev/null; "
+            f"MemoryCore/src/core/tdai-core.ts MemoryCore/tdai-gateway.mac.yaml 2>/dev/null; "
             f"git fetch kemier local/dev && git merge --ff-only kemier/local/dev",
         )
     )
@@ -40,38 +40,8 @@ def main() -> int:
     print(run(c, f"cd {REPO} && git log -1 --oneline"))
     print(run(c, f"grep -n 'modelRef: this.cfg.extraction.model' {CORE}/src/core/tdai-core.ts"))
 
-    print("=== restart gateway ===")
-    restart = f"""python3 <<'PY'
-import os, signal, subprocess, time, urllib.request
-CORE = os.path.expanduser("{CORE}")
-env = os.environ.copy()
-env["TDAI_GATEWAY_CONFIG"] = os.path.join(CORE, "tdai-gateway.mac.yaml")
-env["TDAI_GATEWAY_API_KEY"] = env.get("TDAI_GATEWAY_API_KEY", "local")
-env["TDAI_LLM_API_KEY"] = env.get("TDAI_LLM_API_KEY", "local")
-try:
-    out = subprocess.check_output(["lsof", "-nP", "-iTCP:8420", "-sTCP:LISTEN", "-t"], text=True).strip()
-    for pid in out.splitlines():
-        os.kill(int(pid), signal.SIGTERM)
-        print("killed", pid)
-except subprocess.CalledProcessError:
-    print("no listener")
-time.sleep(2)
-logf = open("/private/tmp/tdai-gateway.log", "a")
-subprocess.Popen(
-    ["/opt/homebrew/bin/node", "--import", "tsx", "src/gateway/server.ts"],
-    cwd=CORE, env=env, stdout=logf, stderr=subprocess.STDOUT, start_new_session=True,
-)
-for _ in range(40):
-    try:
-        urllib.request.urlopen("http://127.0.0.1:8420/health", timeout=2)
-        print("health ok")
-        break
-    except Exception:
-        time.sleep(1)
-else:
-    print("health FAILED")
-PY"""
-    print(run(c, restart, timeout=60))
+    print("=== restart memory stack ===")
+    print(run(c, f"bash {REPO}/scripts/start-all.sh restart", timeout=120))
 
     print("=== extraction model in yaml ===")
     print(run(c, f"grep -A6 'extraction:' {CORE}/tdai-gateway.mac.yaml | head -8"))
