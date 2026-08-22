@@ -26,7 +26,7 @@ import * as vscode from 'vscode';
 import { AgentManager } from './core/AgentManager';
 import { ConnectionManager } from './core/ConnectionManager';
 import { getAgentConfigs } from './config/AgentConfig';
-import { SessionManager } from './core/SessionManager';
+import { SessionManager, SessionLoadCancelledError } from './core/SessionManager';
 import { NESManager } from './core/NESManager';
 import { NESInlineCompletionProvider } from './core/NESInlineCompletionProvider';
 import { SessionHistoryStore } from './core/SessionHistoryStore';
@@ -54,6 +54,63 @@ import { initTelemetry, sendEvent } from './utils/TelemetryManager';
 // Module-level reference so deactivate() can clean up even if
 // context.subscriptions disposal was skipped (e.g. VSCode force-quit).
 let _sessionManager: SessionManager | undefined;
+
+/** Coalesce duplicate session open/restore progress toasts (double-click resume). */
+let sessionOpenInFlight: { key: string; promise: Promise<unknown> } | null = null;
+
+function sessionOpenKey(agentName: string, sessionId: string): string {
+  return `${agentName}\0${sessionId}`;
+}
+
+function clearSessionOpenInFlight(): void {
+  sessionOpenInFlight = null;
+}
+
+async function withDedupedSessionOpenProgress<T>(
+  agentName: string,
+  sessionId: string,
+  title: string,
+  task: () => Thenable<T>,
+): Promise<T> {
+  const key = sessionOpenKey(agentName, sessionId);
+  if (sessionOpenInFlight?.key === key) {
+    return sessionOpenInFlight.promise as Promise<T>;
+  }
+
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const deferred = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  // Reserve synchronously before withProgress — otherwise a second click in the
+  // same event-loop turn starts a second notification (Promise.resolve runs
+  // withProgress before sessionOpenInFlight is assigned).
+  sessionOpenInFlight = { key, promise: deferred };
+
+  void Promise.resolve(
+    vscode.window.withProgress(
+      {
+        location: vscode.ProgressLocation.Notification,
+        title,
+        cancellable: false,
+      },
+      task,
+    ),
+  )
+    .then(resolve, reject)
+    .finally(() => {
+      if (sessionOpenInFlight?.key === key) {
+        sessionOpenInFlight = null;
+      }
+    });
+
+  return deferred;
+}
+
+function isSessionLoadCancelledError(e: unknown): boolean {
+  return e instanceof SessionLoadCancelledError || (e as { name?: string })?.name === 'SessionLoadCancelledError';
+}
 
 export function activate(context: vscode.ExtensionContext): void {
   log('ACP Client extension activating...');
@@ -473,6 +530,13 @@ export function activate(context: vscode.ExtensionContext): void {
 
       // If switching agents and there's chat content, confirm
       const currentAgent = sessionManager.getActiveAgentName();
+      if (currentAgent && currentAgent !== agentName) {
+        sessionManager.cancelInFlightSessionLoads();
+        clearSessionOpenInFlight();
+      }
+      if (sessionId) {
+        sessionManager.cancelInFlightSessionLoadsUnless(agentName!, sessionId);
+      }
       if (currentAgent && currentAgent !== agentName && chatWebviewProvider.hasChatContent) {
         const choice = await vscode.window.showWarningMessage(
           `Switch to ${agentName}? This will disconnect ${currentAgent} and clear the chat history.`,
@@ -485,32 +549,55 @@ export function activate(context: vscode.ExtensionContext): void {
         chatWebviewProvider.clearChat(false);
       }
 
+      // Join an in-flight restore (double-click resume) before any new progress toast.
+      if (sessionId && agentName && sessionOpenInFlight?.key === sessionOpenKey(agentName, sessionId)) {
+        await sessionOpenInFlight.promise;
+        return;
+      }
+
       try {
-        await vscode.window.withProgress(
-          {
-            location: vscode.ProgressLocation.Notification,
-            title: sessionId ? `Restoring ${agentName} session...` : `Connecting to ${agentName}...`,
-            cancellable: false,
-          },
-          async () => {
-            await sessionManager.connectToAgent(agentName!);
-            // If we have a previous session ID and the agent supports
-            // session/load, restore the session history.
-            if (sessionId) {
-              const caps = sessionManager.getCachedCapabilities(agentName!);
-              if (caps?.load) {
-                try {
-                  await sessionManager.loadSession(agentName!, sessionId);
-                } catch (e: any) {
-                  // Session may have expired or been deleted — not fatal.
-                  // The user gets a fresh session with the same agent.
-                  log(`Failed to restore session ${sessionId}: ${e?.message || e}`);
+        const runConnect = async (): Promise<void> => {
+          await sessionManager.connectToAgent(agentName!);
+          // If we have a previous session ID and the agent supports
+          // session/load, restore the session history.
+          if (sessionId) {
+            const caps = sessionManager.getCachedCapabilities(agentName!);
+            if (caps?.load) {
+              try {
+                await sessionManager.loadSession(agentName!, sessionId);
+              } catch (e: any) {
+                if (isSessionLoadCancelledError(e)) {
+                  return;
                 }
+                // Session may have expired or been deleted — not fatal.
+                // The user gets a fresh session with the same agent.
+                log(`Failed to restore session ${sessionId}: ${e?.message || e}`);
               }
             }
-          },
-        );
+          }
+        };
+
+        if (sessionId) {
+          await withDedupedSessionOpenProgress(
+            agentName!,
+            sessionId,
+            `Restoring ${agentName} session...`,
+            runConnect,
+          );
+        } else {
+          await vscode.window.withProgress(
+            {
+              location: vscode.ProgressLocation.Notification,
+              title: `Connecting to ${agentName}...`,
+              cancellable: false,
+            },
+            runConnect,
+          );
+        }
       } catch (e: any) {
+        if (isSessionLoadCancelledError(e)) {
+          return;
+        }
         logError('Failed to connect to agent', e);
         vscode.window.showErrorMessage(`Failed to connect: ${e.message}`);
       }
@@ -565,6 +652,8 @@ export function activate(context: vscode.ExtensionContext): void {
             return;
           }
         }
+        sessionManager.cancelInFlightSessionLoads();
+        clearSessionOpenInFlight();
         chatWebviewProvider.clearChat(false);
         try {
           await vscode.window.withProgress(
@@ -597,6 +686,8 @@ export function activate(context: vscode.ExtensionContext): void {
         const savedSessionId = context.workspaceState.get<string>('acp.lastConnectedSessionId');
         context.workspaceState.update('acp.lastConnectedSessionId', undefined);
         try {
+          sessionManager.cancelInFlightSessionLoads();
+          clearSessionOpenInFlight();
           await vscode.window.withProgress(
             {
               location: vscode.ProgressLocation.Notification,
@@ -633,6 +724,8 @@ export function activate(context: vscode.ExtensionContext): void {
     }
 
     try {
+      sessionManager.cancelInFlightSessionLoads();
+      clearSessionOpenInFlight();
       await vscode.window.withProgress(
         {
           location: vscode.ProgressLocation.Notification,
@@ -841,8 +934,13 @@ export function activate(context: vscode.ExtensionContext): void {
       return;
     }
 
-    // No-op if it is already the active session.
+    // No-op if it is already the active session (join an in-flight load instead).
     if (sessionManager.getActiveSessionId() === sessionId) {
+      if (sessionManager.hasInFlightSessionLoadFor(agentName, sessionId)) {
+        await withDedupedSessionOpenProgress(agentName, sessionId, `Loading session…`, async () => {
+          await sessionManager.loadSession(agentName, sessionId);
+        });
+      }
       vscode.commands.executeCommand('acp-chat.focus');
       return;
     }
@@ -861,20 +959,14 @@ export function activate(context: vscode.ExtensionContext): void {
 
     try {
       await vscode.commands.executeCommand('acp-chat.focus');
+      sessionManager.cancelInFlightSessionLoadsUnless(agentName, sessionId);
       // Decide load vs resume based on capabilities. Prefer load (replays
       // history) for the richer experience.
       const caps = sessionManager.getCachedCapabilities(agentName);
       if (caps?.load) {
-        await vscode.window.withProgress(
-          {
-            location: vscode.ProgressLocation.Notification,
-            title: `Loading session…`,
-            cancellable: false,
-          },
-          async () => {
-            await sessionManager.loadSession(agentName, sessionId);
-          },
-        );
+        await withDedupedSessionOpenProgress(agentName, sessionId, `Loading session…`, async () => {
+          await sessionManager.loadSession(agentName, sessionId);
+        });
       } else if (caps?.resume) {
         await sessionManager.resumeSession(agentName, sessionId);
         vscode.window.showInformationMessage('Resumed session (history not replayed).');
@@ -882,6 +974,9 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.window.showErrorMessage(`Agent "${agentName}" does not support loading or resuming sessions.`);
       }
     } catch (e: any) {
+      if (isSessionLoadCancelledError(e)) {
+        return;
+      }
       logError('Failed to open session', e);
       // Stringify error data properly — e.data can be an object like
       // {details: "thread xxx already has an active writer"}, which would

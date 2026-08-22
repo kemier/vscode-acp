@@ -1,4 +1,7 @@
 import * as vscode from 'vscode';
+import { execFileSync } from 'node:child_process';
+
+import { log } from '../utils/Logger';
 
 /**
  * Configuration for a single ACP agent.
@@ -12,6 +15,44 @@ export interface AgentConfigEntry {
   env?: Record<string, string>;
   /** Display name */
   displayName?: string;
+}
+
+/** True when `command` resolves on PATH (cursor-agent, codex-acp, etc.). */
+function isCommandOnPath(command: string): boolean {
+  try {
+    if (process.platform === 'win32') {
+      execFileSync('where', [command], { stdio: 'ignore' });
+    } else {
+      execFileSync('which', [command], { stdio: 'ignore' });
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Prefer `cursor-agent acp` on PATH over the `cursor-acp` wrapper script.
+ * Falls back to `cursor-acp` when cursor-agent is not installed.
+ */
+function resolveCursorAgentEntry(entry: AgentConfigEntry): AgentConfigEntry {
+  if (entry.command === 'cursor-acp') {
+    if (isCommandOnPath('cursor-agent')) {
+      return { ...entry, command: 'cursor-agent', args: ['acp'] };
+    }
+    return entry;
+  }
+  if (entry.command !== 'cursor-agent') {
+    return entry;
+  }
+  if (isCommandOnPath('cursor-agent')) {
+    return { ...entry, args: entry.args?.length ? entry.args : ['acp'] };
+  }
+  if (isCommandOnPath('cursor-acp')) {
+    log('cursor-agent not on PATH — falling back to cursor-acp');
+    return { ...entry, command: 'cursor-acp', args: [] };
+  }
+  return { ...entry, args: entry.args?.length ? entry.args : ['acp'] };
 }
 
 /**
@@ -29,7 +70,11 @@ export function getAgentConfigs(): Record<string, AgentConfigEntry> {
   const result: Record<string, AgentConfigEntry> = {};
   for (const [name, entry] of Object.entries(agents)) {
     if (entry && typeof entry === 'object' && typeof entry.command === 'string') {
-      result[name] = entry;
+      const resolved =
+        entry.command === 'cursor-agent' || entry.command === 'cursor-acp'
+          ? resolveCursorAgentEntry(entry)
+          : entry;
+      result[name] = resolved;
     }
   }
   return result;

@@ -14,7 +14,7 @@ set -euo pipefail
 #   - run a separate tsc --noEmit (the webpack build type-checks via ts-loader)
 #   - run the unit-test / lint gates (kept out of the hot deploy path; run
 #     `npm run test:unit` / `npm run lint` yourself when you want them)
-#   - deploy to remote SSH, desktop VS Code, or Cursor
+#   - deploy to remote SSH (override with ACP_INSTALL_TARGETS for desktop)
 #
 # Usage:  ./scripts/deploy-all.sh
 

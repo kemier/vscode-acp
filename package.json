@@ -335,7 +335,7 @@
       "properties": {
         "acp.agents": {
           "type": "object",
-          "description": "Agent configurations. Each key is the agent name, value has command, args, and env.",
+          "description": "Agent configurations. Each key is the agent name, value has command, args, and env. Cursor defaults to cursor-agent acp (on PATH); falls back to cursor-acp if cursor-agent is missing.",
           "default": {
             "Claude Code": {
               "command": "claude-code-acp",
@@ -348,8 +348,8 @@
               "env": {}
             },
             "Cursor": {
-              "command": "cursor-acp",
-              "args": [],
+              "command": "cursor-agent",
+              "args": ["acp"],
               "env": {}
             }
           }
@@ -392,6 +392,11 @@
           "type": "string",
           "default": "",
           "description": "Default working directory for agent sessions. Leave empty to use the current workspace folder."
+        },
+        "acp.debugResume": {
+          "type": "boolean",
+          "default": false,
+          "description": "Log session resume/load diagnostics ([WV-DIAG], [WV-MERGE], user_message_chunk turn boundaries) to the ACP Client output channel and ~/.cursor/acp-debug/resume-diag.jsonl. Enable when debugging collapsed-block splits after reload."
         },
         "acp.logTraffic": {
           "type": "boolean",

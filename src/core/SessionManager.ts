@@ -20,6 +20,14 @@ import type {
  * We keep this for backward compatibility with agents that still send
  * `models` in their responses.
  */
+/** Thrown when an in-flight `session/load` replay is aborted (e.g. agent switch). */
+export class SessionLoadCancelledError extends Error {
+  constructor() {
+    super('Session load cancelled');
+    this.name = 'SessionLoadCancelledError';
+  }
+}
+
 interface SessionModelState {
   currentModelId: string;
   availableModels: Array<{ modelId: string; name?: string; description?: string }>;
@@ -178,6 +186,12 @@ export class SessionManager extends EventEmitter {
 
   /** Set of session IDs that are currently being replayed via `session/load`. */
   private loadingSessionIds: Set<string> = new Set();
+
+  /** Session loads aborted via {@link cancelInFlightSessionLoads}. */
+  private cancelledSessionLoads: Set<string> = new Set();
+
+  /** Coalesce duplicate loadSession calls for the same agent + session. */
+  private loadSessionPromises: Map<string, Promise<SessionInfo>> = new Map();
 
   /** Set of session IDs with an in-flight `session/prompt` request. */
   private inFlightPromptSessions: Set<string> = new Set();
@@ -447,6 +461,13 @@ export class SessionManager extends EventEmitter {
 
     log(`Disconnecting agent ${agentName}`);
     sendEvent('agent/disconnect', { agentName });
+
+    for (const sid of [...this.loadingSessionIds]) {
+      const loadingSession = this.sessions.get(sid);
+      if (loadingSession?.agentName === agentName) {
+        this.cancelSessionLoad(sid);
+      }
+    }
 
     const connInfo = this.connectionManager.getConnection(session.agentId);
 
@@ -2068,8 +2089,20 @@ export class SessionManager extends EventEmitter {
    * the active-session gate in the extension host to drop replay chunks.
    */
   async loadSession(agentName: string, sessionId: string): Promise<SessionInfo> {
+    const dedupeKey = `${agentName}:${sessionId}`;
+    const existing = this.loadSessionPromises.get(dedupeKey);
+    if (existing) {
+      return existing;
+    }
+
     const prev = this.loadSerialChains.get(agentName) ?? Promise.resolve();
     const run = prev.then(() => this.loadSessionImpl(agentName, sessionId));
+    this.loadSessionPromises.set(dedupeKey, run);
+    run.finally(() => {
+      if (this.loadSessionPromises.get(dedupeKey) === run) {
+        this.loadSessionPromises.delete(dedupeKey);
+      }
+    });
     // Keep the chain alive even on rejection so a failed load does not block
     // subsequent loads forever; the error still propagates to the caller.
     this.loadSerialChains.set(
@@ -2082,7 +2115,65 @@ export class SessionManager extends EventEmitter {
     return run;
   }
 
+  /** Abort every in-flight `session/load` replay. */
+  cancelInFlightSessionLoads(): void {
+    for (const sessionId of [...this.loadingSessionIds]) {
+      this.cancelSessionLoad(sessionId);
+    }
+  }
+
+  /**
+   * Abort in-flight loads except the given target (double-click resume for the
+   * same session should coalesce, not cancel).
+   */
+  cancelInFlightSessionLoadsUnless(agentName: string, sessionId: string): void {
+    for (const sid of [...this.loadingSessionIds]) {
+      if (sid === sessionId && this.sessions.get(sid)?.agentName === agentName) {
+        continue;
+      }
+      this.cancelSessionLoad(sid);
+    }
+  }
+
+  /** True when the given session is mid-replay via `session/load`. */
+  hasInFlightSessionLoadFor(agentName: string, sessionId: string): boolean {
+    return (
+      this.loadingSessionIds.has(sessionId) && this.sessions.get(sessionId)?.agentName === agentName
+    );
+  }
+
+  private cancelSessionLoad(sessionId: string): void {
+    if (!this.loadingSessionIds.has(sessionId)) {
+      return;
+    }
+    this.cancelledSessionLoads.add(sessionId);
+    const session = this.sessions.get(sessionId);
+    const agentName = session?.agentName;
+    this.loadingSessionIds.delete(sessionId);
+    this.sessions.delete(sessionId);
+    if (agentName) {
+      this.agentSessions.delete(agentName);
+    }
+    if (this.activeSessionId === sessionId) {
+      this.activeSessionId = null;
+    }
+    if (agentName) {
+      log(`loadSession: cancelled in-flight replay for ${sessionId}`);
+      this.emit('session-load-end', sessionId, agentName, /*ok=*/ false);
+    }
+  }
+
+  private wasSessionLoadCancelled(sessionId: string): boolean {
+    return this.cancelledSessionLoads.has(sessionId);
+  }
+
+  private clearSessionLoadCancelled(sessionId: string): void {
+    this.cancelledSessionLoads.delete(sessionId);
+  }
+
   private async loadSessionImpl(agentName: string, sessionId: string): Promise<SessionInfo> {
+    this.clearSessionLoadCancelled(sessionId);
+
     // Honor the single-active-session model: if a different agent currently
     // owns the active session, disconnect it before opening this one.
     const currentAgent = this.getActiveAgentName();
@@ -2173,6 +2264,10 @@ export class SessionManager extends EventEmitter {
         cwd,
         mcpServers: [],
       });
+      if (this.wasSessionLoadCancelled(sessionId)) {
+        this.clearSessionLoadCancelled(sessionId);
+        throw new SessionLoadCancelledError();
+      }
       // The response carries the latest mode/model/configOptions snapshot.
       placeholder.modes = (response as any).modes ?? null;
       placeholder.models = (response as any).models ?? null;
@@ -2208,6 +2303,10 @@ export class SessionManager extends EventEmitter {
         this.memoryProfileInjectedSessions.add(sessionId);
       }
     } catch (e: any) {
+      if (this.wasSessionLoadCancelled(sessionId)) {
+        this.clearSessionLoadCancelled(sessionId);
+        throw new SessionLoadCancelledError();
+      }
       this.loadingSessionIds.delete(sessionId);
       this.sessions.delete(sessionId);
       this.agentSessions.delete(agentName);
@@ -2268,6 +2367,10 @@ export class SessionManager extends EventEmitter {
     await new Promise<void>((resolve) => {
       setTimeout(resolve, 100);
     });
+    if (this.wasSessionLoadCancelled(sessionId)) {
+      this.clearSessionLoadCancelled(sessionId);
+      throw new SessionLoadCancelledError();
+    }
     this.emit('session-load-end', sessionId, agentName, /*ok=*/ true);
 
     // Touch history-store activity timestamp.

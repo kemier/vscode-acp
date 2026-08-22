@@ -21,6 +21,7 @@ import { FollowCoalescer, pickFollowTarget, type ToolCallLocationLike } from '..
 import { needsRestoreAfterCapture } from '../core/SessionCaptureRestore';
 import {
   CursorSessionToolEnricher,
+  findCursorSessionStorePath,
   isCursorAgentName,
   needsCursorToolEnrichment,
 } from '../core/CursorToolEnricher';
@@ -38,6 +39,25 @@ const execFileAsync = promisify(execFile);
 // in the ACP Client output channel. Keep false in normal use — the per-chunk
 // logging floods the channel during streaming.
 const DEBUG = false;
+
+/** Webview debugLog lines forwarded when acp.debugResume is true (even if DEBUG is off). */
+const RESUME_DIAG_MARKERS = [
+  '[WV-DIAG]',
+  '[WV-MERGE]',
+  '[REPLAY-TRACE]',
+  'UMC chunk:',
+  'UMC load-turn:',
+  'restoreState',
+  'handleLoadSession',
+  'orphan merge:',
+];
+
+function isResumeDiagWebviewMessage(message: string): boolean {
+  if (!message) {
+    return false;
+  }
+  return RESUME_DIAG_MARKERS.some((marker) => message.includes(marker));
+}
 
 /**
  * WebviewViewProvider for the ACP chat sidebar.
@@ -139,6 +159,33 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
   /** Cached git branch for the active session's cwd, shown in the banner. */
   private _cachedGitBranch: string | null = null;
+
+  private isDebugResume(): boolean {
+    return vscode.workspace.getConfiguration('acp').get<boolean>('debugResume', false);
+  }
+
+  /** ACP Client + optional ~/.cursor/acp-debug/resume-diag.jsonl when acp.debugResume is on. */
+  private logResumeDiag(message: string): void {
+    log(message);
+    if (!this.isDebugResume()) {
+      return;
+    }
+    try {
+      const dir = path.join(os.homedir(), '.cursor', 'acp-debug');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.appendFileSync(
+        path.join(dir, 'resume-diag.jsonl'),
+        JSON.stringify({ ts: new Date().toISOString(), msg: message }) + '\n',
+        'utf8',
+      );
+    } catch {
+      // Best-effort diagnostic file — never block the chat UI.
+    }
+  }
+
+  private postDebugResumeConfig(): void {
+    this.postMessage({ type: 'debugResume', enabled: this.isDebugResume() });
+  }
 
   /** Refresh the cached git branch for the given cwd. Called on session switch. */
   private async refreshGitBranch(cwd?: string): Promise<void> {
@@ -1400,6 +1447,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
     webviewView.webview.html = this.getHtmlContent(webviewView.webview);
 
+    const debugResumeConfigSub = vscode.workspace.onDidChangeConfiguration((e) => {
+      if (e.affectsConfiguration('acp.debugResume')) {
+        this.postDebugResumeConfig();
+      }
+    });
+    webviewView.onDidDispose(() => debugResumeConfigSub.dispose());
+
     // Handle messages from the webview
     webviewView.webview.onDidReceiveMessage(async (message) => {
       switch (message.type) {
@@ -1445,6 +1499,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         case 'cursorRequestToolEnrich':
           this.scheduleCursorBatchEnrich(
             message.sessionId || this.sessionManager.getActiveSessionId(),
+            typeof message.reason === 'string' ? message.reason : undefined,
           );
           break;
         case 'ready':
@@ -1459,6 +1514,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           // sendCurrentState is skipped if a load is in progress (handled
           // by the isLoading guard inside sendCurrentState itself).
           this.sendCurrentState();
+          this.postDebugResumeConfig();
           this.scheduleCursorBatchEnrich(this.sessionManager.getActiveSessionId());
           break;
         case 'openDiff':
@@ -1540,14 +1596,17 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           this.postMessage({ type: 'markdownRendered', items: rendered });
           break;
         }
-        case 'debugLog':
-          // Webview debug noise — only forward when DEBUG is on.
-          // (Previously WV-RENDER / WV-UPDATE / STAGE-DBG were always-on and
-          // flooded ACP Client during session/load + every tool call.)
+        case 'debugLog': {
+          const wvMsg = message.message || '(empty)';
+          // Full webview trace only when DEBUG is on; resume/load diagnostics
+          // also forward when acp.debugResume is enabled.
           if (DEBUG) {
-            log('[DEBUG-WV] ' + (message.message || '(empty)'));
+            log('[DEBUG-WV] ' + wvMsg);
+          } else if (this.isDebugResume() && isResumeDiagWebviewMessage(wvMsg)) {
+            this.logResumeDiag('[DEBUG-WV] ' + wvMsg);
           }
           break;
+        }
       }
     });
 
@@ -1566,14 +1625,26 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     }
     const updateData = update.update as any;
 
-    // Debug: log user_message_chunk updates to trace raw context link issue
-    if (DEBUG && updateData?.sessionUpdate === 'user_message_chunk') {
+    // Debug: log user_message_chunk updates (especially during session/load replay).
+    if (updateData?.sessionUpdate === 'user_message_chunk') {
       const content = updateData.content;
       if (content?.type === 'text' && typeof content.text === 'string') {
         const preview = content.text.length > 200 ? content.text.substring(0, 200) + '...' : content.text;
-        log(
-          '[DEBUG-UMC] user_message_chunk received on ext host: len=' + content.text.length + ' text="' + preview + '"',
-        );
+        const isLoading = this.sessionManager.isLoading(update.sessionId);
+        if (DEBUG) {
+          log(
+            '[DEBUG-UMC] user_message_chunk received on ext host: len=' +
+              content.text.length +
+              ' text="' +
+              preview +
+              '"',
+          );
+        }
+        if (this.isDebugResume()) {
+          this.logResumeDiag(
+            `[WV-DIAG] ext UMC: loading=${isLoading} session=${String(update.sessionId).slice(0, 8)} len=${content.text.length} text="${preview.replace(/\n/g, '\\n')}"`,
+          );
+        }
       }
     }
 
@@ -1719,12 +1790,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // Cursor: stub tool titles / empty rawInput — recover path/pattern from store.db
     // and push a follow-up tool_call_update so the webview title + tooltip update.
     void this.maybeEnrichCursorToolCall(update.sessionId, updateData);
-    if (
-      (updateData?.sessionUpdate === 'tool_call' || updateData?.sessionUpdate === 'tool_call_update') &&
-      isCursorAgentName(this.sessionManager.getSession(update.sessionId)?.agentName)
-    ) {
-      this.scheduleCursorBatchEnrich(update.sessionId);
-    }
+    // Live tool_call: per-id enrich only (fast prefix query). Full batch enrich
+    // (listEnrichedTools scans the whole store) is reserved for post-merge/restore.
   }
 
   private getCursorToolEnricher(sessionId: string): CursorSessionToolEnricher {
@@ -1747,7 +1814,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // skip per-tool polls (batch enrich runs at loadSessionEnd instead).
       if (this.sessionManager.isLoading(sessionId)) return;
       const session = this.sessionManager.getSession(sessionId);
-      if (!isCursorAgentName(session?.agentName)) return;
+      const agentLabel = session?.agentName || session?.agentDisplayName || '';
+      if (!isCursorAgentName(agentLabel)) return;
       const toolCallId = updateData.toolCallId as string;
       if (!toolCallId || String(toolCallId).startsWith('replay-')) return;
 
@@ -1757,19 +1825,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       let enriched;
       try {
         enriched = await this.getCursorToolEnricher(sessionId).enrich(toolCallId, {
-          timeoutMs: 12000,
+          timeoutMs: 8000,
         });
       } finally {
         this.cursorToolEnrichInFlight.delete(inflightKey);
       }
 
       if (!enriched || Object.keys(enriched.args).length === 0) {
-        // Per-id lookup can miss while blobs are still landing — batch enrich
-        // uses ordinal kind-matching and often succeeds a moment later.
-        this.scheduleCursorBatchEnrich(sessionId);
-        if (DEBUG) {
-          log(`Cursor tool enrich miss: ${toolCallId.slice(0, 48).replace(/\n/g, '\\n')}`);
-        }
+        log(`Cursor tool enrich miss: ${toolCallId.slice(0, 48).replace(/\n/g, '\\n')}`);
         return;
       }
       // Session may have switched while we waited.
@@ -1780,13 +1843,18 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         sessionUpdate: 'tool_call_update',
         toolCallId,
         title: enriched.title,
-        rawInput: enriched.args,
+        rawInput: {
+          ...enriched.args,
+          _toolName: enriched.toolName,
+        },
       };
       if (enriched.locations && enriched.locations.length > 0) {
         patch.locations = enriched.locations;
       }
       if (DEBUG) {
         log(`Cursor tool enrich hit: ${enriched.title.slice(0, 80)}`);
+      } else {
+        log(`Cursor tool enrich: ${enriched.title.slice(0, 80)}`);
       }
       this.postMessage({
         type: 'sessionUpdate',
@@ -1813,14 +1881,17 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * After session/load or webview restore, push store.db tool titles so stub
    * "Read File" / "grep" rows get paths (replay-* ids cannot be looked up).
    */
-  private scheduleCursorBatchEnrich(sessionId: string | null | undefined): void {
+  private scheduleCursorBatchEnrich(
+    sessionId: string | null | undefined,
+    reason?: string,
+  ): void {
     if (!sessionId) return;
     if (this.cursorBatchEnrichTimer) {
       clearTimeout(this.cursorBatchEnrichTimer);
     }
     this.cursorBatchEnrichTimer = setTimeout(() => {
       this.cursorBatchEnrichTimer = null;
-      void this.maybeBatchEnrichCursorToolsAfterLoad(sessionId);
+      void this.maybeBatchEnrichCursorToolsAfterLoad(sessionId, reason);
     }, 40);
   }
 
@@ -1829,14 +1900,32 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * "Read File" / "grep" / "Edit File" rows get paths (replay-* ids cannot
    * be looked up individually).
    */
-  private async maybeBatchEnrichCursorToolsAfterLoad(sessionId: string | null): Promise<void> {
+  private async maybeBatchEnrichCursorToolsAfterLoad(
+    sessionId: string | null,
+    reason?: string,
+  ): Promise<void> {
+    const reasonTag = reason ? ` reason=${reason}` : '';
     try {
-      if (!sessionId) return;
+      if (!sessionId) {
+        log(`Cursor batch enrich failed: missing sessionId${reasonTag}`);
+        return;
+      }
       const session = this.sessionManager.getSession(sessionId);
-      if (!isCursorAgentName(session?.agentName)) return;
-      if (this.suppressWebviewUpdates) return;
+      const agentLabel = session?.agentName || session?.agentDisplayName || '';
+      if (!isCursorAgentName(agentLabel)) return;
+      if (this.suppressWebviewUpdates) {
+        log(`Cursor batch enrich failed: suppressWebviewUpdates active (session=${sessionId.slice(0, 8)}…${reasonTag})`);
+        return;
+      }
       const tools = await this.getCursorToolEnricher(sessionId).listEnrichedTools();
-      if (!tools.length) return;
+      if (!tools.length) {
+        const dbPath = findCursorSessionStorePath(sessionId);
+        log(
+          `Cursor batch enrich: 0 tools indexed (session=${sessionId.slice(0, 8)}… store=${dbPath || 'none'}${reasonTag})`,
+        );
+        return;
+      }
+      log(`Cursor batch enrich: ${tools.length} tools → webview (session=${sessionId.slice(0, 8)}…${reasonTag})`);
       this.postMessage({
         type: 'cursorToolEnrichBatch',
         sessionId,
@@ -1844,14 +1933,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           toolCallId: t.toolCallId,
           toolName: t.toolName,
           title: t.title,
-          rawInput: t.args,
+          rawInput: { ...t.args, _toolName: t.toolName },
           locations: t.locations,
         })),
       });
     } catch (e: any) {
-      if (DEBUG) {
-        log(`Cursor batch enrich failed: ${e?.message || e}`);
-      }
+      log(`Cursor batch enrich failed: ${e?.message || e}${reasonTag}`);
     }
   }
 
@@ -3806,10 +3893,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       this.streamCoalescer.flush(activeId);
     }
     this.postMessage({ type: 'loadSessionEnd', ok });
-    // Cursor session/load leaves stub tool titles; fill paths from store.db.
-    if (ok) {
-      this.scheduleCursorBatchEnrich(activeId);
-    }
+    // Cursor batch enrich is requested by the webview after snapshot-merge +
+    // renderChatHistory (handleLoadSessionEnd). Scheduling here races ahead of
+    // merge and enrichments get wiped when chatHistory is rebuilt.
   }
 
   /** Notify webview that session title / metadata changed. */
@@ -5403,9 +5489,25 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    window.__acpMermaidUri = ${JSON.stringify(mermaidUri.toString())};
    window.__acpNonce = ${JSON.stringify(nonce)};
    // Re-declare DEBUG inside the webview iframe (separate JS context from the
-   // extension host). The host's DEBUG flag is not visible here, so without
-   // this the replay trace (trace()) would stay silent.
+   // extension host). DEBUG_RESUME is synced from acp.debugResume via postMessage.
    const DEBUG = false;
+   var DEBUG_RESUME = false;
+   function resumeDiag(msg) {
+     if (DEBUG || DEBUG_RESUME) vscode.postMessage({ type: 'debugLog', message: msg });
+   }
+   function countRealUserMessages(arr) {
+     if (!arr) return 0;
+     var n = 0;
+     for (var i = 0; i < arr.length; i++) {
+       var it = arr[i];
+       if (!it || it.kind !== 'message' || it.role !== 'user') continue;
+       var t = String(it.text || '').trim();
+       if (/^\[Request interrupted by user\]/i.test(t)) continue;
+       if (/^Request interrupted by user\.?$/i.test(t)) continue;
+       n++;
+     }
+     return n;
+   }
   const messagesEl = document.getElementById('messages');
   const psPanel = document.getElementById('psPanel');
   const resumeBar = document.getElementById('resumeBar');
@@ -5452,6 +5554,16 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
  let lastConnectedAgent = null;
   let lastConnectedAgentDisplay = null;
  let lastConnectedSessionId = null;
+ var resumeConnectInFlight = false;
+ function requestResumeConnect() {
+   if (resumeConnectInFlight || !lastConnectedAgent) return;
+   resumeConnectInFlight = true;
+   vscode.postMessage({
+     type: 'executeCommand',
+     command: 'acp.connectAgent',
+     args: [{ agentName: lastConnectedAgent, sessionId: lastConnectedSessionId }],
+   });
+ }
 let isProcessing = false;
 let isForceCancelled = false; // true after cancel fallback forces promptEnd
 // Turn-tail grace window: agents (Codex, EricCLI, Claude Code, Kiro) can emit
@@ -6579,7 +6691,11 @@ var end = displayText.length;
   // If there's chat history but no active session, show a prominent
     // resume button in the fixed resume bar (always visible, no scroll needed).
     updateResumeBar();
-   requestCursorToolEnrichIfNeeded();
+   // Defer until renderChatHistory DOM is committed (same race as loadSessionEnd).
+   setTimeout(function() {
+     vscode.postMessage({ type: 'debugLog', message: '[WV-DIAG] post-restore cursor tool enrich request' });
+     requestCursorToolEnrichIfNeeded('post-restore');
+   }, 50);
 
    // Start with input disabled
    }
@@ -7604,7 +7720,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
   // If we have a restored session with an agent name, reconnect to
   // that agent directly instead of showing the agent picker.
   if (lastConnectedAgent) {
-    vscode.postMessage({ type: 'executeCommand', command: 'acp.connectAgent', args: [{ agentName: lastConnectedAgent, sessionId: lastConnectedSessionId }] });
+    requestResumeConnect();
   } else {
     execCmd('acp.connectAgent');
   }
@@ -7676,9 +7792,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       }
       trace('chatHistory order: [' + s.join(',') + ']');
     }
-    // Lightweight trace: only posts to the extension host when DEBUG is true.
+    // Lightweight trace: posts when DEBUG or acp.debugResume is enabled.
     function trace(msg) {
-      if (DEBUG) vscode.postMessage({ type: 'debugLog', message: '[REPLAY-TRACE] ' + msg });
+      if (DEBUG || DEBUG_RESUME) vscode.postMessage({ type: 'debugLog', message: '[REPLAY-TRACE] ' + msg });
     }
 
     /** Match a loaded history item to its index in a merged array. */
@@ -8484,6 +8600,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
 
   function handleLoadSessionEnd(ok) {
+   resumeConnectInFlight = false;
    hideEmpty();
    isLoadingSession = false;
    // DIAG: log merge diagnostics
@@ -8950,7 +9067,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      if (!ok) {
        addMessage('error', 'Failed to load session history.');
      }
-     requestCursorToolEnrichIfNeeded();
+     // Batch enrich must run AFTER snapshot-merge + renderChatHistory — not from
+     // notifyLoadSessionEnd (that fires before the webview merges/rebuilds).
+     setTimeout(function() {
+       vscode.postMessage({ type: 'debugLog', message: '[WV-DIAG] post-merge cursor tool enrich request' });
+       requestCursorToolEnrichIfNeeded('post-merge');
+     }, 50);
    }
 
    function handleSessionInfoUpdate(title) {
@@ -9766,34 +9888,40 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     return false;
   }
 
-  function requestCursorToolEnrichIfNeeded() {
+  function requestCursorToolEnrichIfNeeded(reason) {
     if (!isCursorAgentSession()) return;
     if (!hasCursorStubToolsInHistory()) return;
     vscode.postMessage({
       type: 'cursorRequestToolEnrich',
       sessionId: (sessionState && sessionState.sessionId) || null,
+      reason: reason || 'stub-tools',
     });
   }
 
   var cursorStubEnrichRetryTimer = null;
   var cursorStubEnrichRetryCount = 0;
+  var cursorStubEnrichLastApplied = 0;
   function scheduleCursorStubEnrichRetry() {
     if (!hasCursorStubToolsInHistory()) {
       cursorStubEnrichRetryCount = 0;
+      cursorStubEnrichLastApplied = 0;
       return;
     }
-    if (cursorStubEnrichRetryCount >= 30) return;
+    // Batch already ran but could not match every stub — a few retries only.
+    if (cursorStubEnrichRetryCount >= 5) return;
     if (cursorStubEnrichRetryTimer) return;
+    var delayMs = cursorStubEnrichRetryCount === 0 ? 400 : 800;
     cursorStubEnrichRetryTimer = setTimeout(function() {
       cursorStubEnrichRetryTimer = null;
       if (!hasCursorStubToolsInHistory()) {
         cursorStubEnrichRetryCount = 0;
+        cursorStubEnrichLastApplied = 0;
         return;
       }
       cursorStubEnrichRetryCount++;
-      requestCursorToolEnrichIfNeeded();
+      requestCursorToolEnrichIfNeeded('stub-retry');
       scheduleCursorStubEnrichRetry();
-    }, 200);
+    }, delayMs);
   }
 
   /** Rebuild fold summary titles from live .tc-title after store.db enrich. */
@@ -9869,13 +9997,16 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     var t = String(title || '').trim().toLowerCase();
     var k = String(toolKind || '').trim().toLowerCase();
     if (n === 'read' || n === 'read_file' || n === 'readfile' || t === 'read file' || t.indexOf('read ') === 0 || k === 'read') return 'read';
-    if (n === 'glob' || n === 'find' || n === 'listdir' || n === 'list_dir' ||
-        t === 'find' || t === 'glob' || t.indexOf('find ') === 0) return 'glob';
     if (n === 'grep' || n === 'rg' || n === 'ripgrep' ||
         t === 'grep' || t === 'search' || t.indexOf('grep ') === 0 || k === 'fetch') return 'grep';
+    if (n === 'glob' || n === 'find' || n === 'listdir' || n === 'list_dir' ||
+        t === 'find' || t === 'glob' || t.indexOf('find ') === 0) return 'glob';
+    if (n === 'write' || n === 'write_file' || n === 'writefile') return 'write';
+    if (n === 'delete' || n === 'delete_file' || n === 'deletefile' || k === 'delete') return 'delete';
     if (n === 'streplace' || n === 'strreplace' || n === 'str_replace' || n === 'edit' || n === 'applypatch' ||
         t === 'edit file' || t.indexOf('edit ') === 0 || t.indexOf('strreplace ') === 0 || k === 'edit') return 'edit';
-    if (n === 'write' || n === 'write_file' || t === 'write file' || t.indexOf('write ') === 0) return 'write';
+    if (t === 'write file' || t.indexOf('write ') === 0) return 'write';
+    if (t === 'delete file' || t.indexOf('delete ') === 0) return 'delete';
     if (n === 'shell' || n === 'bash' || n === 'run' || k === 'execute') return 'shell';
     if (k === 'search') {
       if (t.indexOf('find ') === 0) return 'glob';
@@ -9888,13 +10019,14 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
   /**
    * Apply store.db-enriched titles after session/load. Wire replay-* ids never
    * match store keys, so fall back to kind-ordered matching for stub rows.
-   * Non-stub history rows still consume a same-kind store entry so ordinal
-   * alignment stays correct when Cursor already rewrote some titles (Edit).
+   * Every history row (stub or already enriched) consumes the next same-kind
+   * store entry so ordinal alignment stays correct across mixed titles.
    */
   function handleCursorToolEnrichBatch(tools) {
     if (!tools || !tools.length) return;
     var byId = {};
-    var queues = { read: [], grep: [], glob: [], edit: [], write: [], shell: [], other: [] };
+    var queues = { read: [], grep: [], glob: [], edit: [], write: [], delete: [], shell: [], other: [] };
+    var applied = 0;
     // Preserve store.db rowid order from listEnrichedTools — do NOT sort by
     // the trailing -N suffix alone (each turn resets to -0 and scrambles grep).
     for (var i = 0; i < tools.length; i++) {
@@ -9929,7 +10061,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       return null;
     }
 
-    function takeByKind(kind) {
+    function takeFromQueue(kind) {
       var queue = queues[kind] || [];
       if (!queue.length) return null;
       var ordinal = queue.shift();
@@ -9939,41 +10071,98 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       return ordinal;
     }
 
+    function takeByKind(kind) {
+      var tryKinds = kind === 'glob' ? ['glob', 'grep'] :
+        kind === 'grep' ? ['grep', 'glob'] :
+        kind === 'edit' ? ['edit', 'write', 'delete'] :
+        kind === 'write' ? ['write', 'edit', 'delete'] :
+        kind === 'delete' ? ['delete', 'edit', 'write'] : [kind];
+      for (var ti = 0; ti < tryKinds.length; ti++) {
+        var hit = takeFromQueue(tryKinds[ti]);
+        if (hit) return hit;
+      }
+      return null;
+    }
+
+    function applyCursorEnrichedToolToDom(toolCallId, resolvedTitle, rawInput, locations) {
+      var el = lookupToolCallEl(toolCallId || '');
+      if (!el) return false;
+      if (rawInput) el._rawInput = rawInput;
+      if (locations) el._locations = locations;
+      var titleEl = el.querySelector('.tc-title');
+      if (titleEl) {
+        titleEl.textContent = resolvedTitle;
+        el._toolTitle = resolvedTitle;
+      }
+      syncToolTitleToTurnSummaries(toolCallId, resolvedTitle, rawInput);
+      return true;
+    }
+
     for (var hi = 0; hi < chatHistory.length; hi++) {
       var item = chatHistory[hi];
       if (!item || item.kind !== 'toolCall') continue;
+      var isStub = isCursorStubToolTitle(item.title);
       var histKind = cursorEnrichKind(
         (item.rawInput && (item.rawInput._toolName || item.rawInput.toolName)) || '',
         item.title,
         item.toolKind || null
       );
-      var histHit = takeById(item.toolCallId || '') || takeByKind(histKind);
+      var histHit = takeById(item.toolCallId || '');
+      if (!histHit) {
+        histHit = takeByKind(histKind);
+      }
       if (!histHit) continue;
-      // Always consume; only rewrite UI when the row is still a stub.
-      if (!isCursorStubToolTitle(item.title)) continue;
+      if (!isStub) continue;
+      var hitRaw = histHit.rawInput || null;
+      if (histHit.toolName) {
+        hitRaw = hitRaw && typeof hitRaw === 'object' ? Object.assign({}, hitRaw) : {};
+        if (!hitRaw._toolName) hitRaw._toolName = histHit.toolName;
+      }
       var resolvedTitle = resolveToolCallDisplayTitle(
         histHit.title,
-        histHit.rawInput,
+        hitRaw,
         histHit.locations,
         item.toolKind || null
       );
+      if (isCursorStubToolTitle(resolvedTitle) && histHit.title && !isCursorStubToolTitle(histHit.title)) {
+        resolvedTitle = histHit.title;
+      }
       item.title = resolvedTitle;
-      if (histHit.rawInput) item.rawInput = histHit.rawInput;
+      if (hitRaw) item.rawInput = hitRaw;
       if (histHit.locations) item.locations = histHit.locations;
       updateToolCall(
         item.toolCallId || histHit.toolCallId,
         undefined,
         resolvedTitle,
         undefined,
-        histHit.rawInput || null
+        hitRaw
       );
+      applyCursorEnrichedToolToDom(item.toolCallId || histHit.toolCallId, resolvedTitle, hitRaw, histHit.locations);
+      applied++;
     }
     refreshAllTurnToolSummaries();
     saveState();
+    cursorStubEnrichLastApplied = applied;
+    var remainingStubs = 0;
+    for (var ri = 0; ri < chatHistory.length; ri++) {
+      var ritem = chatHistory[ri];
+      if (ritem && ritem.kind === 'toolCall' && isCursorStubToolTitle(ritem.title)) remainingStubs++;
+    }
+    if (remainingStubs > 0) {
+      vscode.postMessage({
+        type: 'debugLog',
+        message: '[WV-DIAG] Cursor batch enrich: applied=' + applied + ' remainingStubs=' + remainingStubs,
+      });
+    }
     if (hasCursorStubToolsInHistory()) {
-      scheduleCursorStubEnrichRetry();
+      if (applied > 0) {
+        scheduleCursorStubEnrichRetry();
+      } else if (cursorStubEnrichRetryCount < 5) {
+        scheduleCursorStubEnrichRetry();
+      }
     } else {
       cursorStubEnrichRetryCount = 0;
+      cursorStubEnrichLastApplied = 0;
     }
   }
 
@@ -11387,12 +11576,16 @@ function orderCompactFoldContents(body) {
         }
       } else if (isWebSearchToolCall(titles[i], ri)) {
         cat = 'web_search';
-      } else if (kind && kind !== 'other' && kind !== 'think') {
-        cat = acpKindToCategory(kind);
-      } else if (kind) {
-        cat = acpKindToCategory(kind);
       } else {
-        cat = categorizeToolCall((titles[i] || '').toLowerCase());
+        var tn = ri && (ri._toolName || ri.toolName);
+        var inferred = cursorEnrichKind(tn, titles[i], kind);
+        if (inferred === 'write') cat = 'write';
+        else if (inferred === 'delete') cat = 'delete';
+        else if (inferred === 'edit') cat = 'edit';
+        else if (inferred === 'read') cat = 'read';
+        else if (kind && kind !== 'other' && kind !== 'think') cat = acpKindToCategory(kind);
+        else if (kind) cat = acpKindToCategory(kind);
+        else cat = categorizeToolCall((titles[i] || '').toLowerCase());
       }
       counts[cat] = (counts[cat] || 0) + 1;
       total++;
@@ -11402,7 +11595,9 @@ function orderCompactFoldContents(body) {
     if (spawnCount > 0) parts.push('spawned ' + spawnCount + ' subagent' + (spawnCount > 1 ? 's' : ''));
     if (agentOpCount > 0) parts.push(agentOpCount + ' subagent op' + (agentOpCount > 1 ? 's' : ''));
     if (counts.read) parts.push(counts.read + ' read' + (counts.read > 1 ? 's' : ''));
+    if (counts.write) parts.push(counts.write + ' write' + (counts.write > 1 ? 's' : ''));
     if (counts.edit) parts.push(counts.edit + ' edit' + (counts.edit > 1 ? 's' : ''));
+    if (counts.delete) parts.push(counts.delete + ' delete' + (counts.delete > 1 ? 's' : ''));
     if (counts.web_search) parts.push(counts.web_search + ' web search' + (counts.web_search > 1 ? 'es' : ''));
     if (counts.search) parts.push(counts.search + ' search' + (counts.search > 1 ? 'es' : ''));
     if (counts.command) parts.push(counts.command + ' command' + (counts.command > 1 ? 's' : ''));
@@ -11579,10 +11774,18 @@ function orderCompactFoldContents(body) {
          kw.indexOf(' read ') >= 0 || kw.indexOf(' view ') >= 0 || kw.indexOf(' read_file ') >= 0) {
        return 'read';
      }
-     if (firstWord === 'edit' || firstWord === 'write' || firstWord === 'write_file' ||
+     if (firstWord === 'write' || firstWord === 'write_file' ||
+         kw.indexOf(' write ') >= 0) {
+       return 'write';
+     }
+     if (firstWord === 'edit' ||
          firstWord === 'patch' || firstWord === 'apply' || firstWord.indexOf('edit_') === 0 ||
-         kw.indexOf(' edit ') >= 0 || kw.indexOf(' write ') >= 0 || kw.indexOf(' patch ') >= 0) {
+         kw.indexOf(' edit ') >= 0 || kw.indexOf(' patch ') >= 0) {
        return 'edit';
+     }
+     if (firstWord === 'delete' || firstWord === 'delete_file' || firstWord.indexOf('delete_') === 0 ||
+         kw.indexOf(' delete ') >= 0 || kw.indexOf(' delete_file ') >= 0) {
+       return 'delete';
      }
      if (firstWord === 'search' || firstWord === 'grep' || firstWord === 'find' || firstWord === 'glob' || firstWord === 'rg' || kw.indexOf(' search ') >= 0 || kw.indexOf(' grep ') >= 0 || kw.indexOf(' find ') >= 0) return 'search';
      if (firstWord === 'ls' || firstWord === 'command' || firstWord === 'exec' || firstWord === 'shell' || firstWord === 'run' || firstWord === 'cd' || kw.indexOf(' command ') >= 0 || kw.indexOf(' exec ') >= 0 || kw.indexOf(' run ') >= 0) return 'command';
@@ -11606,8 +11809,8 @@ function orderCompactFoldContents(body) {
     switch (kind) {
       case 'read': return 'read';
       case 'edit':
-      case 'delete':
       case 'move': return 'edit';
+      case 'delete': return 'delete';
       case 'search':
       case 'fetch': return 'search';
       case 'execute': return 'command';
@@ -12217,13 +12420,15 @@ function commitCurrentTextSegment(opts) {
  function isEmptyRawInput(rawInput) {
    if (rawInput == null) return true;
    if (typeof rawInput === 'string') return !rawInput.trim();
-   if (typeof rawInput !== 'object') return false;
+   if (typeof rawInput !== 'object' || Array.isArray(rawInput)) return false;
    try {
-     var keys = Object.keys(rawInput);
-     if (keys.length === 0) return true;
-     // Cursor placeholder task tool_call: { _toolName: "task" } only.
-     if (keys.length === 1 && keys[0] === '_toolName') return true;
-     return false;
+     if (pathFromToolRawInput(rawInput)) return false;
+     var pattern = rawInput.pattern || rawInput.query || rawInput.regex;
+     if (typeof pattern === 'string' && pattern.trim()) return false;
+     if (rawInput.command) return false;
+     var glob = rawInput.glob || rawInput.glob_pattern || rawInput.globPattern || rawInput.target_directory;
+     if (typeof glob === 'string' && glob.trim()) return false;
+     return true;
    } catch (e) { return true; }
  }
 
@@ -12289,6 +12494,38 @@ function commitCurrentTextSegment(opts) {
      s === 'apply patch' || s === 'applypatch';
  }
 
+ function isAmbiguousFileStubTitle(title) {
+   var s = String(title || '').trim().toLowerCase();
+   return isGenericEditTitle(title) || s === 'write file' || s === 'write' ||
+     s === 'delete file' || s === 'delete';
+ }
+
+ /** Cursor stubs share "Edit File" — only trust verb when toolName/title confirms it. */
+ function fileMutationKindConfirmed(toolName, title, toolKind) {
+   var n = String(toolName || '').trim().toLowerCase();
+   if (n === 'write' || n === 'write_file' || n === 'writefile') return 'write';
+   if (n === 'delete' || n === 'delete_file' || n === 'deletefile') return 'delete';
+   if (n === 'streplace' || n === 'strreplace' || n === 'str_replace' || n === 'edit' || n === 'applypatch') return 'edit';
+   var tl = String(title || '').trim().toLowerCase();
+   if (tl.indexOf('write ') === 0 && tl !== 'write file' && tl !== 'write') return 'write';
+   if (tl.indexOf('delete ') === 0 && tl !== 'delete file' && tl !== 'delete') return 'delete';
+   if ((tl.indexOf('edit ') === 0 || tl.indexOf('strreplace ') === 0) &&
+       tl !== 'edit file' && tl !== 'edit' && tl !== 'edit files') return 'edit';
+   if (String(toolKind || '').trim().toLowerCase() === 'delete') return 'delete';
+   return null;
+ }
+
+ function syncToolKindDataset(el, rawInput, title, toolKind) {
+   if (!el) return;
+   var toolName = (rawInput && (rawInput._toolName || rawInput.toolName)) || '';
+   var confirmed = fileMutationKindConfirmed(toolName, title, toolKind);
+   if (confirmed) {
+     el.dataset.toolKind = confirmed;
+   } else if (toolKind && !isAmbiguousFileStubTitle(title)) {
+     el.dataset.toolKind = toolKind;
+   }
+ }
+
  /**
   * Row title for tool calls: prefer enriched/protocol title, but when Cursor
   * sends stub "Edit file" + path in rawInput, show "Edit /full/path.ts".
@@ -12303,16 +12540,24 @@ function commitCurrentTextSegment(opts) {
      ? (rawInput.pattern || rawInput.query || rawInput.regex || '') : '';
    if (typeof pattern !== 'string') pattern = String(pattern || '');
    var toolName = (rawInput && rawInput._toolName) || (rawInput && rawInput.toolName) || '';
-   var kind = cursorEnrichKind(toolName, title, toolKind);
+   var confirmed = fileMutationKindConfirmed(toolName, t, toolKind);
+   var kind = confirmed || cursorEnrichKind(toolName, title, toolKind);
 
    if (!path && locations && locations.length && locations[0] && locations[0].path) {
      path = String(locations[0].path);
+   }
+
+   // Cursor "Edit File" stubs cover write/edit/delete — never guess "Edit" early.
+   if (isAmbiguousFileStubTitle(t) && !confirmed) {
+     if (path) return path;
+     if (isEmptyRawInput(rawInput)) return 'File';
    }
 
    if (isCursorStubToolTitle(t) || isGenericEditTitle(t)) {
      if (kind === 'read' && path) return 'Read ' + path;
      if (kind === 'edit' && path) return 'Edit ' + path;
      if (kind === 'write' && path) return 'Write ' + path;
+     if (kind === 'delete' && path) return 'Delete ' + path;
      if (kind === 'grep' || kind === 'glob') {
        var searchTitle = formatSearchStubTitle(toolName, title, rawInput, locations);
        if (searchTitle) return searchTitle;
@@ -12323,7 +12568,16 @@ function commitCurrentTextSegment(opts) {
      }
    }
 
-   if (path && isGenericEditTitle(t)) return 'Edit ' + path;
+   if (path && isGenericEditTitle(t)) {
+     if (kind === 'write') return 'Write ' + path;
+     if (kind === 'delete') return 'Delete ' + path;
+     if (confirmed === 'edit' || kind === 'edit') return 'Edit ' + path;
+     return path;
+   }
+   if (path && (tl === 'delete file' || tl.indexOf('delete ') === 0 || kind === 'delete') &&
+       tl.indexOf(path.toLowerCase()) < 0) {
+     return 'Delete ' + path;
+   }
    if (path && (kind === 'read' || tl === 'read file' || tl.indexOf('read ') === 0) &&
        tl.indexOf(path.toLowerCase()) < 0) {
      var base = path.split('/').pop() || path;
@@ -12335,6 +12589,10 @@ function commitCurrentTextSegment(opts) {
    }
 
    if (!isCursorStubToolTitle(t) && t) return t;
+
+   if (isAmbiguousFileStubTitle(t) && !path && isEmptyRawInput(rawInput)) {
+     return 'File';
+   }
 
    if (!isEmptyRawInput(rawInput)) {
      var hint = formatRawInput(rawInput);
@@ -13607,11 +13865,11 @@ function commitCurrentTextSegment(opts) {
        el.className += ' tc-subagent';
      }
      el.id = toolCallElementId(toolCallId);
-     if (toolKind) el.dataset.toolKind = toolKind;
      el._rawInput = rawInput || null;
      el._locations = locations || null;
      el._toolTitle = title || 'Tool Call';
       var displayTitle = resolveToolCallDisplayTitle(title, rawInput, locations, toolKind);
+      syncToolKindDataset(el, rawInput, displayTitle, toolKind);
      // Title itself may be a JSON operation blob from Kiro.
      var titleTrim = String(displayTitle).trim();
       if (titleTrim.charAt(0) === '{' || titleTrim.charAt(0) === '[') {
@@ -14154,6 +14412,9 @@ if (_deduped) {
        _orphanMerged++;
      }
    }
+   if (_orphanMerged > 0) {
+     resumeDiag('[WV-DIAG] orphan merge: merged ' + _orphanMerged + ' stray turn(s) into previous fold');
+   }
  }
  // promoteFinalAssistant / structure rebuild can leave folds open after
  // session/load — force Collapse mode shut once the DOM is final.
@@ -14371,6 +14632,7 @@ forceCollapseTurnFolds();
         if (titleEl && (title || rawInput)) {
           var elRawInput = rawInput || el._rawInput;
           var dt = resolveToolCallDisplayTitle(title || el._toolTitle, elRawInput, el._locations, el.dataset.toolKind || null);
+          syncToolKindDataset(el, elRawInput, dt, el.dataset.toolKind || null);
           if (isSubagentToolCall(title || el._toolTitle, el.dataset.toolKind || null, elRawInput)) {
             var sn = getSubagentSpawnCount(title || el._toolTitle, elRawInput);
             if (isSubagentSpawnTitle(title || el._toolTitle, elRawInput) && sn > 0) {
@@ -14558,6 +14820,7 @@ forceCollapseTurnFolds();
   }
 
   function showSessionConnected(session) {
+   resumeConnectInFlight = false;
    // If a load overlay is still visible (e.g. stale session was
    // replaced by a new session), dismiss it now as a safety net.
    if (isLoadingSession) {
@@ -14652,7 +14915,7 @@ sessionState = {
      resumeBtn.className = 'resume-btn';
      resumeBtn.innerHTML = '<span class="resume-icon">⟳</span> Resume ' + escapeHtml(lastConnectedAgentDisplay || lastConnectedAgent);
      resumeBtn.addEventListener('click', function() {
-       vscode.postMessage({ type: 'executeCommand', command: 'acp.connectAgent', args: [{ agentName: lastConnectedAgent, sessionId: lastConnectedSessionId }] });
+       requestResumeConnect();
      });
      resumeBar.appendChild(resumeBtn);
    } else {
@@ -14662,6 +14925,7 @@ sessionState = {
 
 
    function showNoSession() {
+     resumeConnectInFlight = false;
      if (isLoadingSession) return;
     hasActiveSession = false;
     hasSentPrompt = false;
@@ -14754,6 +15018,9 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
    window.addEventListener('message', (event) => {
       const msg = event.data;
       switch (msg.type) {
+       case 'debugResume':
+         DEBUG_RESUME = !!msg.enabled;
+         break;
        case 'state':
          // Update last-connected agent from extension host (workspaceState
          // persists across restarts, unlike webview getState).
@@ -16206,6 +16473,90 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       streamingRenderGen++;
     }
 
+    function compactionNoticeFromSummary(summary) {
+      if (!Array.isArray(summary) || !summary.length) return '';
+      var parts = [];
+      for (var si = 0; si < summary.length; si++) {
+        var block = summary[si];
+        if (block && block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
+          parts.push(block.text.trim());
+        }
+      }
+      return parts.join('\\n\\n');
+    }
+
+    /**
+     * Shared compaction lifecycle for Codex _meta.contextCompaction and ACP
+     * compaction_update (session-compaction RFD).
+     */
+    function applyCompactionLifecycleStatus(status, opts) {
+      opts = opts || {};
+      var loadingReplay = !!opts.loadingReplay;
+      var st = String(status || '').toLowerCase();
+      if (loadingReplay) {
+        if (st === 'completed' || st === 'in_progress') {
+          if (!isCompacting) {
+            addMessage('system', 'Earlier conversation was compacted — history before this point is unavailable.');
+          }
+        }
+        return;
+      }
+      if (st === 'in_progress') {
+        if (!isCompacting) {
+          isCompacting = true;
+          manualCompacting = false;
+          compactedWarningText = '';
+          compactedNoticeText = '';
+          if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+          pendingPostCompactChunks = [];
+          showCompactionProgress('Compacting conversation...', null);
+          setProcessing(true);
+        }
+        return;
+      }
+      if (st === 'failed') {
+        isCompacting = false;
+        manualCompacting = false;
+        compactedWarningText = '';
+        compactedNoticeText = '';
+        if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+        pendingPostCompactChunks = [];
+        hideCompactionProgress();
+        if (statusEl) statusEl.innerHTML = '';
+        setProcessing(false);
+        var failMsg = opts.error ? String(opts.error) : '';
+        addMessage('error', failMsg || 'Compaction failed');
+        return;
+      }
+      if (st === 'cancelled') {
+        isCompacting = false;
+        manualCompacting = false;
+        compactedWarningText = '';
+        compactedNoticeText = '';
+        if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+        pendingPostCompactChunks = [];
+        hideCompactionProgress();
+        if (statusEl) statusEl.innerHTML = '';
+        setProcessing(false);
+        return;
+      }
+      if (st === 'completed') {
+        if (!isCompacting) {
+          isCompacting = true;
+          manualCompacting = false;
+          compactedWarningText = '';
+          compactedNoticeText = '';
+          showCompactionProgress('Compacting conversation...', null);
+          setProcessing(true);
+        }
+        if (!compactedNoticeText) {
+          var fromSummary = compactionNoticeFromSummary(opts.summary);
+          compactedNoticeText = fromSummary || "*Context compacted to fit the model's context window.*";
+        }
+        scheduleCompactionFlush();
+      }
+    }
+
     function scheduleCompactionFlush() {
       if (compactionFlushTimer) clearTimeout(compactionFlushTimer);
       // Codex sends Warning right after thread/compacted; wait briefly so
@@ -16598,7 +16949,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         const content = update.content;
         if (content && content.type === 'text' && typeof content.text === 'string') {
           var _dbgChunk = content.text.length > 150 ? content.text.substring(0, 150) + '...' : content.text;
-          vscode.postMessage({ type: 'debugLog', message: 'UMC chunk: len=' + content.text.length + ' isLoading=' + isLoadingSession + ' text="' + _dbgChunk + '"' });
+          resumeDiag('UMC chunk: len=' + content.text.length + ' isLoading=' + isLoadingSession + ' text="' + _dbgChunk + '"');
         }
         if (!isLoadingSession) {
           break;
@@ -16622,6 +16973,15 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           }
           // Strip injected context blocks from replayed user messages.
           // Uses the shared cleanUserMessage helper defined above.
+         var _umcBeforeUsers = countRealUserMessages(chatHistory);
+         var _umcBeforeTurns = messagesEl.querySelectorAll('.turn').length;
+         var _umcBeforeLen = chatHistory.length;
+         resumeDiag(
+           '[WV-DIAG] UMC pre-finalize: users=' + _umcBeforeUsers +
+           ' turns=' + _umcBeforeTurns +
+           ' chatLen=' + _umcBeforeLen +
+           ' chunkLen=' + content.text.length
+         );
          finalizeCurrentAssistantTurn();
          // session/load emits one complete user turn per chunk (not streaming
          // deltas). Never coalesce onto the previous user — Codex often replays
@@ -16634,9 +16994,18 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
              cleanedNew = rawFallback;
            }
          }
-         vscode.postMessage({ type: 'debugLog', message: 'UMC load-turn: len=' + (cleanedNew ? cleanedNew.length : 0) + ' text="' + (cleanedNew && cleanedNew.length > 150 ? cleanedNew.substring(0, 150) + '...' : (cleanedNew || '')) + '"' });
+         resumeDiag(
+           'UMC load-turn: len=' + (cleanedNew ? cleanedNew.length : 0) +
+           ' text="' + (cleanedNew && cleanedNew.length > 150 ? cleanedNew.substring(0, 150) + '...' : (cleanedNew || '')) + '"'
+         );
          if (!String(cleanedNew || '').trim()) break;
          addMessage('user', cleanedNew);
+         resumeDiag(
+           '[WV-DIAG] UMC post-add: users=' + countRealUserMessages(chatHistory) +
+           ' turns=' + messagesEl.querySelectorAll('.turn').length +
+           ' chatLen=' + chatHistory.length +
+           ' (each UMC finalizeCurrentAssistantTurn → new turn boundary)'
+         );
           } else if (content && (content.type === 'resource' || content.type === 'resource_link')) {
             // ACP "resource"/"resource_link" blocks attached to a user
             // message — editor selections, file/directory mentions,
@@ -16780,42 +17149,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       // Codex contextCompaction tool cards are suppressed; completion still
       // clears history (some paths emit completed as tool_call, not update).
       if (update._meta && update._meta.contextCompaction) {
-        if (isLoadingSession) {
-          if (!isCompacting) {
-            addMessage('system', 'Earlier conversation was compacted — history before this point is unavailable.');
-          }
-          break;
-        }
-        if (!isCompacting) {
-          isCompacting = true;
-          manualCompacting = false;
-          compactedWarningText = '';
-          compactedNoticeText = '';
-          if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
-          pendingPostCompactChunks = []; // new compaction supersedes any buffered resume tokens
-          showCompactionProgress('Compacting conversation...', null);
-          setProcessing(true);
-        }
-        var _tcCcStatus = update.status || '';
-        if (_tcCcStatus === 'failed') {
-          isCompacting = false;
-          manualCompacting = false;
-          compactedWarningText = '';
-          compactedNoticeText = '';
-          if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
-          pendingPostCompactChunks = []; // compaction failed — discard any buffered resume tokens
-          hideCompactionProgress();
-          if (statusEl) statusEl.innerHTML = '';
-          setProcessing(false);
-          addMessage('error', 'Compaction failed');
-          break;
-        }
-        if (_tcCcStatus === 'completed') {
-          if (!compactedNoticeText) {
-            compactedNoticeText = "*Context compacted to fit the model's context window.*";
-          }
-          scheduleCompactionFlush();
-        }
+        applyCompactionLifecycleStatus(update.status, { loadingReplay: isLoadingSession });
         break;
       }
       // Kiro "Summarizing"/"summary" tool calls are redundant with the main
@@ -16880,10 +17214,8 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         tc.locations,
         _parentId || null,
       );
-      if (isCursorStubToolTitle(_tcTitleForUi)) {
-        requestCursorToolEnrichIfNeeded();
-        scheduleCursorStubEnrichRetry();
-      }
+      // Live stub enrich: extension host polls store.db by toolCallId and sends
+      // tool_call_update — do not trigger full batch enrich from the webview.
       break;
      }
 
@@ -16893,39 +17225,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       // auto-compact both rely on this; the text notice may arrive after
       // promptEnd or not at all).
       if (update._meta && update._meta.contextCompaction) {
-        if (isLoadingSession) {
-          break;
-        }
-        if (!isCompacting) {
-          isCompacting = true;
-          manualCompacting = false;
-          compactedWarningText = '';
-          compactedNoticeText = '';
-          if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
-          pendingPostCompactChunks = []; // new compaction supersedes any buffered resume tokens
-          showCompactionProgress('Compacting conversation...', null);
-          setProcessing(true);
-        }
-        var _ccStatus = update.status || '';
-        if (_ccStatus === 'failed') {
-          isCompacting = false;
-          manualCompacting = false;
-          compactedWarningText = '';
-          compactedNoticeText = '';
-          if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
-          pendingPostCompactChunks = []; // compaction failed — discard any buffered resume tokens
-          hideCompactionProgress();
-          if (statusEl) statusEl.innerHTML = '';
-          setProcessing(false);
-          addMessage('error', 'Compaction failed');
-          break;
-        }
-        if (_ccStatus === 'completed') {
-          if (!compactedNoticeText) {
-            compactedNoticeText = "*Context compacted to fit the model's context window.*";
-          }
-          scheduleCompactionFlush();
-        }
+        applyCompactionLifecycleStatus(update.status, { loadingReplay: isLoadingSession });
         break;
       }
       // Strip taskResult from tool_call_update rawInput too (Kiro may
@@ -17039,6 +17339,14 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
 
       case 'usage_update':
         updateTokenUsage(update);
+        break;
+
+      case 'compaction_update':
+        applyCompactionLifecycleStatus(update.status, {
+          summary: update.summary,
+          error: update.error,
+          loadingReplay: isLoadingSession,
+        });
         break;
 
       case 'session_info_update': {

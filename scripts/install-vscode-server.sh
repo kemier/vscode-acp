@@ -2,12 +2,10 @@
 set -euo pipefail
 
 # Install the built VSIX into the local vscode-server extension dir.
-# Default target:
-#   - ~/.vscode-server/extensions  (VS Code Remote SSH / code-server /
-#                                   vscode.dev extension host)
-# Desktop ~/.vscode/extensions and Cursor are intentionally NOT defaults —
-# this extension is driven from the remote/extension host. Override with
-# ACP_INSTALL_TARGETS (space-separated list of absolute dirs).
+# Default targets (when ACP_INSTALL_TARGETS is unset):
+#   - ~/.vscode-server/extensions  (Remote SSH / code-server)
+#   - ~/.vscode/extensions         (desktop VS Code — when present)
+#   - ~/.cursor/extensions         (Cursor desktop — when present)
 # Usage: ./scripts/install-vscode-server.sh
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -38,12 +36,19 @@ if [[ ! -f "$VSIX" ]]; then
 fi
 
 # Build target list. Prefer explicit ACP_INSTALL_TARGETS; otherwise install
-# only to ~/.vscode-server/extensions.
+# to vscode-server and, when present, the local Cursor extension host.
 if [[ -n "${ACP_INSTALL_TARGETS:-}" ]]; then
   # shellcheck disable=SC2206
   TARGETS=($ACP_INSTALL_TARGETS)
 else
   TARGETS=("$HOME/.vscode-server/extensions")
+  # Local desktop VS Code / Cursor (not remote vscode-server).
+  if [[ -d "$HOME/.vscode/extensions" ]]; then
+    TARGETS+=("$HOME/.vscode/extensions")
+  fi
+  if [[ -d "$HOME/.cursor/extensions" ]]; then
+    TARGETS+=("$HOME/.cursor/extensions")
+  fi
 fi
 
 register_extension() {

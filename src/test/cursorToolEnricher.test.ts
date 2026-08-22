@@ -7,12 +7,17 @@ import {
   indexToolCallsFromBlobTexts,
   isCursorAgentName,
   isCursorStubToolTitle,
+  hasActionableToolArgs,
   isEmptyRawInput,
   needsCursorToolEnrichment,
   parseCursorToolArgs,
   findCursorSessionStorePath,
   CursorSessionToolEnricher,
   cursorToolMatchKind,
+  cursorSearchKindFallback,
+  cursorFileMutateKindFallback,
+  confirmedFileMutationKind,
+  indexToolCallsFromBlobTextsOrdered,
 } from '../core/CursorToolEnricher';
 
 suite('CursorToolEnricher', () => {
@@ -27,6 +32,10 @@ suite('CursorToolEnricher', () => {
     assert.strictEqual(isEmptyRawInput({}), true);
     assert.strictEqual(isEmptyRawInput(null), true);
     assert.strictEqual(isEmptyRawInput({ path: '/x' }), false);
+    assert.strictEqual(isEmptyRawInput({ _toolName: 'read' }), true);
+    assert.strictEqual(isEmptyRawInput({ toolName: 'Grep' }), true);
+    assert.strictEqual(hasActionableToolArgs({ _toolName: 'read' }), false);
+    assert.strictEqual(hasActionableToolArgs({ pattern: 'foo' }), true);
     assert.strictEqual(isCursorStubToolTitle('Read File'), true);
     assert.strictEqual(isCursorStubToolTitle('grep'), true);
     assert.strictEqual(isCursorStubToolTitle('Find'), true);
@@ -40,6 +49,15 @@ suite('CursorToolEnricher', () => {
         toolCallId: 't1',
         title: 'Read File',
         rawInput: {},
+      }),
+      true,
+    );
+    assert.strictEqual(
+      needsCursorToolEnrichment({
+        sessionUpdate: 'tool_call',
+        toolCallId: 't1',
+        title: 'Read File',
+        rawInput: { _toolName: 'read' },
       }),
       true,
     );
@@ -80,6 +98,65 @@ suite('CursorToolEnricher', () => {
     assert.strictEqual(cursorToolMatchKind('Read', 'Read File'), 'read');
     assert.strictEqual(cursorToolMatchKind('', 'Find **/*.ts" in /tmp'), 'glob');
     assert.strictEqual(cursorToolMatchKind('', 'grep "foo"'), 'grep');
+    assert.strictEqual(cursorToolMatchKind('grep', 'Find'), 'grep');
+    assert.strictEqual(cursorToolMatchKind('Grep', 'Find'), 'grep');
+    assert.strictEqual(cursorToolMatchKind('Write', 'Edit File'), 'write');
+    assert.strictEqual(cursorToolMatchKind('write', 'Edit File'), 'write');
+    assert.strictEqual(cursorToolMatchKind('', 'Edit File'), 'edit');
+  });
+
+  test('cursorFileMutateKindFallback tries alternate edit/write/delete queue', () => {
+    assert.deepStrictEqual(cursorFileMutateKindFallback('edit'), ['edit', 'write', 'delete']);
+    assert.deepStrictEqual(cursorFileMutateKindFallback('write'), ['write', 'edit', 'delete']);
+    assert.deepStrictEqual(cursorFileMutateKindFallback('delete'), ['delete', 'edit', 'write']);
+    assert.deepStrictEqual(cursorFileMutateKindFallback('read'), ['read']);
+  });
+
+  test('confirmedFileMutationKind avoids inferring edit from stub title alone', () => {
+    assert.strictEqual(confirmedFileMutationKind('', 'Edit File', 'edit'), null);
+    assert.strictEqual(confirmedFileMutationKind('Write', 'Edit File', 'edit'), 'write');
+    assert.strictEqual(confirmedFileMutationKind('', 'Write src/foo.ts', 'edit'), 'write');
+    assert.strictEqual(confirmedFileMutationKind('StrReplace', 'Edit File', 'edit'), 'edit');
+  });
+
+  test('cursorToolMatchKind recognizes delete separately from edit', () => {
+    assert.strictEqual(cursorToolMatchKind('Delete', 'Delete File'), 'delete');
+    assert.strictEqual(cursorToolMatchKind('delete', 'Edit File'), 'delete');
+    assert.strictEqual(cursorToolMatchKind('', 'Delete e:/tmp/a.py'), 'delete');
+    assert.strictEqual(formatCursorEnrichedTitle('delete', { path: '/tmp/x.ts' }), 'Delete /tmp/x.ts');
+  });
+
+  test('cursorSearchKindFallback tries alternate search queue', () => {
+    assert.deepStrictEqual(cursorSearchKindFallback('grep'), ['grep', 'glob']);
+    assert.deepStrictEqual(cursorSearchKindFallback('glob'), ['glob', 'grep']);
+    assert.deepStrictEqual(cursorSearchKindFallback('read'), ['read']);
+  });
+
+  test('indexToolCallsFromBlobTextsOrdered preserves blob rowid order', () => {
+    const blobA = JSON.stringify({
+      content: [
+        {
+          type: 'tool-call',
+          toolCallId: 'call-a\\nfc_1',
+          toolName: 'Grep',
+          args: { pattern: 'alpha', path: '/a' },
+        },
+      ],
+    });
+    const blobB = JSON.stringify({
+      content: [
+        {
+          type: 'tool-call',
+          toolCallId: 'call-b\\nfc_2',
+          toolName: 'Read',
+          args: { path: '/b.ts' },
+        },
+      ],
+    });
+    const ordered = indexToolCallsFromBlobTextsOrdered([blobA, blobB]);
+    assert.strictEqual(ordered.length, 2);
+    assert.ok(ordered[0].title.includes('alpha'));
+    assert.ok(ordered[1].title.includes('/b.ts'));
   });
 
   test('formatCursorEnrichedTitle includes path/pattern', () => {

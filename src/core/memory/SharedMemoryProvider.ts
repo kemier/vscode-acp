@@ -478,7 +478,7 @@ export class SharedMemoryProvider {
       const result = await client.addConversation(iso, { sessionId, messages });
       log(
         `Memory capture: ${messages.length} msg(s) → total=${result.total_count} ` +
-          `(agent=${turn.agentName}→${turn.memoryAgentId}, session=${sessionId})`,
+          `(user=${iso.userId}, team=${iso.teamId}, agent=${turn.memoryAgentId}, session=${sessionId})`,
       );
 
       // Skill extraction pipeline: feed the same messages plus the turn's
@@ -492,7 +492,7 @@ export class SharedMemoryProvider {
         await client.skillConversationAdd(iso, { sessionId, messages: skillMessages });
         log(
           `Skill conversation-add: ${skillMessages.length} msg(s) sent ` +
-            `(${turn.toolCalls.length} tool call(s)) (session=${sessionId})`,
+            `(${turn.toolCalls.length} tool call(s)) (user=${iso.userId}, session=${sessionId})`,
         );
       } catch (skillErr) {
         log(`Skill conversation-add failed (non-fatal): ${(skillErr as Error)?.message ?? skillErr}`);

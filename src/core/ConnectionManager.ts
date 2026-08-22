@@ -129,6 +129,11 @@ export class ConnectionManager {
         // long shell commands. We don't consume the meta payload anywhere,
         // so the default `terminal_output_delta` (only the new bytes) is
         // strictly better.
+        // ACP session-compaction RFD: agents may emit compaction_update when
+        // supported (Codex uses _meta.contextCompaction instead).
+        session: {
+          compaction: {},
+        } as import('@agentclientprotocol/sdk').ClientSessionCapabilities,
       },
     });
 

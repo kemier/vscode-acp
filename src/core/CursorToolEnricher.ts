@@ -29,10 +29,33 @@ export function isCursorAgentName(agentName: string | null | undefined): boolean
   return !!agentName && /cursor/i.test(agentName);
 }
 
+/** True when rawInput carries enough args to render a path/pattern/command without store.db. */
+export function hasActionableToolArgs(rawInput: Record<string, unknown>): boolean {
+  if (extractPathFromArgs(rawInput)) return true;
+  for (const key of ['pattern', 'query', 'regex'] as const) {
+    const v = rawInput[key];
+    if (typeof v === 'string' && v.trim()) return true;
+  }
+  if (rawInput.command) return true;
+  for (const key of ['glob', 'glob_pattern', 'globPattern', 'target_directory'] as const) {
+    const v = rawInput[key];
+    if (typeof v === 'string' && v.trim()) return true;
+  }
+  return false;
+}
+
+/**
+ * Cursor ACP often sends `{}` or metadata-only placeholders like
+ * `{ _toolName: "read" }` without path/pattern — treat both as empty so we
+ * still poll store.db for the real args.
+ */
 export function isEmptyRawInput(rawInput: unknown): boolean {
   if (rawInput == null) return true;
+  if (typeof rawInput === 'string') return !rawInput.trim();
   if (typeof rawInput !== 'object' || Array.isArray(rawInput)) return false;
-  return Object.keys(rawInput as Record<string, unknown>).length === 0;
+  const rec = rawInput as Record<string, unknown>;
+  if (Object.keys(rec).length === 0) return true;
+  return !hasActionableToolArgs(rec);
 }
 
 /** Stub titles Cursor ACP sends before (or instead of) real args. */
@@ -137,23 +160,12 @@ export function cursorToolMatchKind(
   toolName: string | undefined,
   title: string | undefined,
   toolKind?: string | undefined,
-): 'read' | 'grep' | 'glob' | 'edit' | 'write' | 'shell' | 'other' {
+): 'read' | 'grep' | 'glob' | 'edit' | 'write' | 'delete' | 'shell' | 'other' {
   const n = (toolName || '').trim().toLowerCase();
   const t = (title || '').trim().toLowerCase();
   const k = (toolKind || '').trim().toLowerCase();
   if (n === 'read' || n === 'read_file' || n === 'readfile' || t === 'read file' || t.startsWith('read ') || k === 'read') {
     return 'read';
-  }
-  if (
-    n === 'glob' ||
-    n === 'find' ||
-    n === 'listdir' ||
-    n === 'list_dir' ||
-    t === 'find' ||
-    t === 'glob' ||
-    t.startsWith('find ')
-  ) {
-    return 'glob';
   }
   if (
     n === 'grep' ||
@@ -167,6 +179,20 @@ export function cursorToolMatchKind(
     return 'grep';
   }
   if (
+    n === 'glob' ||
+    n === 'find' ||
+    n === 'listdir' ||
+    n === 'list_dir' ||
+    t === 'find' ||
+    t === 'glob' ||
+    t.startsWith('find ')
+  ) {
+    return 'glob';
+  }
+  // toolName wins over title — Cursor often sends title "Edit File" for Write/Delete.
+  if (n === 'write' || n === 'write_file' || n === 'writefile') return 'write';
+  if (n === 'delete' || n === 'delete_file' || n === 'deletefile' || k === 'delete') return 'delete';
+  if (
     n === 'streplace' ||
     n === 'strreplace' ||
     n === 'str_replace' ||
@@ -179,7 +205,8 @@ export function cursorToolMatchKind(
   ) {
     return 'edit';
   }
-  if (n === 'write' || n === 'write_file' || t === 'write file' || t.startsWith('write ')) return 'write';
+  if (t === 'write file' || t.startsWith('write ')) return 'write';
+  if (t === 'delete file' || t.startsWith('delete ')) return 'delete';
   if (n === 'shell' || n === 'bash' || n === 'run' || k === 'execute') return 'shell';
   if (k === 'search') {
     // ACP toolKind alone — disambiguate from enriched title prefix when possible.
@@ -279,7 +306,11 @@ interface ToolCallPart {
   arguments?: unknown;
 }
 
-function collectToolCallsFromBlob(obj: unknown, into: Map<string, EnrichedCursorToolCall>): void {
+function collectToolCallsFromBlob(
+  obj: unknown,
+  into: Map<string, EnrichedCursorToolCall>,
+  order?: string[],
+): void {
   if (!obj || typeof obj !== 'object') return;
   const rec = obj as Record<string, unknown>;
   const content = rec.content;
@@ -293,6 +324,7 @@ function collectToolCallsFromBlob(obj: unknown, into: Map<string, EnrichedCursor
     if (!toolCallId) continue;
     const toolName = String(p.toolName || p.name || '').trim();
     const args = parseCursorToolArgs(p.args ?? p.input ?? p.arguments);
+    if (order && !into.has(toolCallId)) order.push(toolCallId);
     into.set(toolCallId, {
       toolCallId,
       toolName,
@@ -316,6 +348,75 @@ export function indexToolCallsFromBlobTexts(texts: string[]): Map<string, Enrich
     }
   }
   return map;
+}
+
+/** Like indexToolCallsFromBlobTexts but preserves blobs.rowid order for batch matching. */
+export function indexToolCallsFromBlobTextsOrdered(texts: string[]): EnrichedCursorToolCall[] {
+  const map = new Map<string, EnrichedCursorToolCall>();
+  const order: string[] = [];
+  for (const text of texts) {
+    if (!text || text[0] !== '{' && text[0] !== '[') continue;
+    try {
+      const obj = JSON.parse(text);
+      collectToolCallsFromBlob(obj, map, order);
+    } catch {
+      // ignore non-JSON / partial blobs
+    }
+  }
+  return order
+    .map((id) => map.get(id))
+    .filter((t): t is EnrichedCursorToolCall => !!t);
+}
+
+/** Kind buckets to try when ordinal grep vs glob classification diverges. */
+export function cursorSearchKindFallback(kind: string): string[] {
+  if (kind === 'glob') return ['glob', 'grep'];
+  if (kind === 'grep') return ['grep', 'glob'];
+  return [kind];
+}
+
+/** Edit / Write / Delete share Cursor stub titles — try all file-mutation queues. */
+export function cursorFileMutateKindFallback(kind: string): string[] {
+  if (kind === 'edit') return ['edit', 'write', 'delete'];
+  if (kind === 'write') return ['write', 'edit', 'delete'];
+  if (kind === 'delete') return ['delete', 'edit', 'write'];
+  return [kind];
+}
+
+/**
+ * Cursor ACP uses title "Edit File" + kind=edit for Write/Delete too.
+ * Return a verb only when toolName or an enriched title confirms it.
+ */
+export function confirmedFileMutationKind(
+  toolName: string | undefined,
+  title: string | undefined,
+  toolKind?: string | undefined,
+): 'write' | 'edit' | 'delete' | null {
+  const n = (toolName || '').trim().toLowerCase();
+  if (n === 'write' || n === 'write_file' || n === 'writefile') return 'write';
+  if (n === 'delete' || n === 'delete_file' || n === 'deletefile') return 'delete';
+  if (
+    n === 'streplace' ||
+    n === 'strreplace' ||
+    n === 'str_replace' ||
+    n === 'edit' ||
+    n === 'applypatch'
+  ) {
+    return 'edit';
+  }
+  const tl = (title || '').trim().toLowerCase();
+  if (tl.startsWith('write ') && tl !== 'write file' && tl !== 'write') return 'write';
+  if (tl.startsWith('delete ') && tl !== 'delete file' && tl !== 'delete') return 'delete';
+  if (
+    (tl.startsWith('edit ') || tl.startsWith('strreplace ')) &&
+    tl !== 'edit file' &&
+    tl !== 'edit' &&
+    tl !== 'edit files'
+  ) {
+    return 'edit';
+  }
+  if ((toolKind || '').trim().toLowerCase() === 'delete') return 'delete';
+  return null;
 }
 
 /** True when store.db has real content (ACP often creates a 0-byte stub). */
@@ -414,55 +515,54 @@ async function readBlobTextsViaNodeSqlite(dbPath: string): Promise<string[]> {
 }
 
 async function readBlobTextsViaSqliteCli(dbPath: string): Promise<string[]> {
-  // Full-table CAST…AS TEXT via `sqlite3 -json` hangs / emits invalid UTF-8 on
-  // Cursor stores (multi-MB blobs + mixed binary). Prefer a Python reader that
-  // decodes with replacement and skips non-JSON rows. Fall back to a size-capped
-  // sqlite3 query only for small JSON blobs.
-  try {
-    const script = [
-      'import sqlite3,json,sys',
-      'db=sys.argv[1]',
-      'conn=sqlite3.connect(db)',
-      'out=[]',
-      'for (data,) in conn.execute("SELECT data FROM blobs ORDER BY rowid"):',
-      '  if isinstance(data, memoryview): data=bytes(data)',
-      '  if isinstance(data, bytes):',
-      '    if not data or data[0] not in (123,91): continue',
-      '    # Skip multi-MB conversation dumps — tool-calls live in small msgs.',
-      '    if len(data) > 512*1024: continue',
-      '    text=data.decode("utf-8","replace")',
-      '  else:',
-      '    text=str(data or "")',
-      '    if not text or text[0] not in "{[": continue',
-      '    if len(text) > 512*1024: continue',
-      '  out.append(text)',
-      'print(json.dumps(out))',
-    ].join('\n');
-    const { stdout } = await execFileAsync('python3', ['-c', script, dbPath], {
-      maxBuffer: 64 * 1024 * 1024,
-      encoding: 'utf8',
-    });
-    if (!stdout.trim()) return [];
-    const rows = JSON.parse(stdout) as string[];
-    return Array.isArray(rows) ? rows.filter((t) => typeof t === 'string' && t.length > 0) : [];
-  } catch {
-    // Last resort: only small JSON-looking rows via sqlite3 CLI.
+  const script = [
+    'import sqlite3,json,sys',
+    'db=sys.argv[1]',
+    'conn=sqlite3.connect(db)',
+    'out=[]',
+    'for (data,) in conn.execute("SELECT data FROM blobs ORDER BY rowid"):',
+    '  if isinstance(data, memoryview): data=bytes(data)',
+    '  if isinstance(data, bytes):',
+    '    if not data or data[0] not in (123,91): continue',
+    '    # Skip multi-MB conversation dumps — tool-calls live in small msgs.',
+    '    if len(data) > 512*1024: continue',
+    '    text=data.decode("utf-8","replace")',
+    '  else:',
+    '    text=str(data or "")',
+    '    if not text or text[0] not in "{[": continue',
+    '    if len(text) > 512*1024: continue',
+    '  out.append(text)',
+    'print(json.dumps(out))',
+  ].join('\n');
+  for (const py of ['python3', 'python']) {
     try {
-      const { stdout } = await execFileAsync(
-        'sqlite3',
-        [
-          '-json',
-          dbPath,
-          `SELECT CAST(data AS TEXT) AS data FROM blobs WHERE length(data) < 200000 AND (substr(data,1,1)='{' OR substr(data,1,1)='[')`,
-        ],
-        { maxBuffer: 64 * 1024 * 1024, encoding: 'utf8' },
-      );
-      if (!stdout.trim()) return [];
-      const rows = JSON.parse(stdout) as Array<{ data?: string }>;
-      return rows.map((r) => (typeof r.data === 'string' ? r.data : '')).filter(Boolean);
+      const { stdout } = await execFileAsync(py, ['-c', script, dbPath], {
+        maxBuffer: 64 * 1024 * 1024,
+        encoding: 'utf8',
+      });
+      if (!stdout.trim()) continue;
+      const rows = JSON.parse(stdout) as string[];
+      return Array.isArray(rows) ? rows.filter((t) => typeof t === 'string' && t.length > 0) : [];
     } catch {
-      return [];
+      // try next python executable
     }
+  }
+  // Last resort: only small JSON-looking rows via sqlite3 CLI.
+  try {
+    const { stdout } = await execFileAsync(
+      'sqlite3',
+      [
+        '-json',
+        dbPath,
+        `SELECT CAST(data AS TEXT) AS data FROM blobs WHERE length(data) < 200000 AND (substr(data,1,1)='{' OR substr(data,1,1)='[')`,
+      ],
+      { maxBuffer: 64 * 1024 * 1024, encoding: 'utf8' },
+    );
+    if (!stdout.trim()) return [];
+    const rows = JSON.parse(stdout) as Array<{ data?: string }>;
+    return rows.map((r) => (typeof r.data === 'string' ? r.data : '')).filter(Boolean);
+  } catch {
+    return [];
   }
 }
 
@@ -654,6 +754,7 @@ async function storeBlobContainsSubstring(dbPath: string, needle: string): Promi
 export class CursorSessionToolEnricher {
   private dbPath: string | null | undefined;
   private index: Map<string, EnrichedCursorToolCall> | null = null;
+  private toolOrder: string[] = [];
   private lastScanMs = 0;
   private dbMtimeMs = 0;
   private searchedFallback = false;
@@ -672,6 +773,7 @@ export class CursorSessionToolEnricher {
   invalidate(): void {
     this.dbPath = undefined;
     this.index = null;
+    this.toolOrder = [];
     this.lastScanMs = 0;
     this.dbMtimeMs = 0;
     this.searchedFallback = false;
@@ -734,15 +836,18 @@ export class CursorSessionToolEnricher {
       const mtime = fs.statSync(dbPath).mtimeMs;
       if (this.index && this.dbPath === dbPath && mtime === this.dbMtimeMs && this.index.size > 0) {
         this.lastScanMs = Date.now();
-        return Array.from(this.index.values());
+        return this.toolOrder
+          .map((id) => this.index!.get(id))
+          .filter((t): t is EnrichedCursorToolCall => !!t);
       }
       const texts = await readBlobTexts(dbPath);
-      const map = indexToolCallsFromBlobTexts(texts);
-      this.index = map;
+      const ordered = indexToolCallsFromBlobTextsOrdered(texts);
+      this.index = indexToolCallsFromBlobTexts(texts);
+      this.toolOrder = ordered.map((t) => t.toolCallId);
       this.dbPath = dbPath;
       this.lastScanMs = Date.now();
       this.dbMtimeMs = mtime;
-      return Array.from(map.values());
+      return ordered;
     } catch {
       return [];
     }
@@ -821,7 +926,7 @@ export class CursorSessionToolEnricher {
       if (hit) return hit;
       if (delay > 0 && Date.now() + delay > deadline) break;
       if (delay > 0) await new Promise((r) => setTimeout(r, delay));
-      delay = delay === 0 ? 30 : Math.min(delay * 2, 200);
+      delay = delay === 0 ? 15 : Math.min(Math.floor(delay * 1.5), 120);
     }
 
     await this.refreshIndex(toolCallId);

@@ -1,6 +1,17 @@
 import * as vscode from 'vscode';
 import { log } from '../utils/Logger';
 import { sendEvent } from '../utils/TelemetryManager';
+import {
+  extractCommandFromToolCall,
+  extractPermissionToolFingerprint,
+  isApprovedToolFingerprint,
+  normalizeApprovedToolFingerprint,
+} from './permissionUtils';
+import {
+  mergePermissionLists,
+  readPermissionStore,
+  writePermissionStore,
+} from './PermissionStore';
 
 import type { RequestPermissionRequest, RequestPermissionResponse } from '@agentclientprotocol/sdk';
 
@@ -229,30 +240,9 @@ export class PermissionHandler {
    *  before vscode.ConfigurationTarget.Global finishes writing. */
   private approvedToolsCache: Set<string> | null = null;
 
-  /** Extract the command string from a tool call's rawInput. */
+  /** Extract the command string from a tool call's rawInput (title fallback for Cursor). */
   private extractCommand(toolCall: any): string | undefined {
-    const rawInput = toolCall?.rawInput;
-    if (!rawInput) {
-      return undefined;
-    }
-    // Command as string
-    if (typeof rawInput.command === 'string') {
-      return rawInput.command;
-    }
-    // Command as array (Codex format: ["gh", "issue", "view", "3715"])
-    if (Array.isArray(rawInput.command)) {
-      return rawInput.command.join(' ');
-    }
-    // Parsed command fallback (Codex also sends parsed_cmd)
-    if (Array.isArray(rawInput.parsed_cmd)) {
-      const cmds = rawInput.parsed_cmd
-        .map((p: any) => (typeof p === 'object' ? p.cmd || p.command || '' : String(p)))
-        .filter((s: string) => s.length > 0);
-      if (cmds.length > 0) {
-        return cmds.join(' && ');
-      }
-    }
-    return undefined;
+    return extractCommandFromToolCall(toolCall);
   }
 
   /** Extract the command prefix (first N tokens) for saving to the allowlist. */
@@ -277,7 +267,9 @@ export class PermissionHandler {
   }
 
   private loadAllowedCommands(): string[] {
-    return vscode.workspace.getConfiguration('acp').get<string[]>('approvedCommands', []);
+    const fromSettings = vscode.workspace.getConfiguration('acp').get<string[]>('approvedCommands', []);
+    const fromFile = readPermissionStore().approvedCommands;
+    return mergePermissionLists(fromSettings, fromFile, false);
   }
 
   private loadDeniedCommands(): string[] {
@@ -286,85 +278,79 @@ export class PermissionHandler {
   }
 
   private saveAllowedCommand(prefix: string): void {
-    const config = vscode.workspace.getConfiguration('acp');
-    const approved = config.get<string[]>('approvedCommands', []);
-    if (!approved.includes(prefix)) {
-      approved.push(prefix);
-      if (approved.length > 500) {
-        approved.splice(0, approved.length - 500);
-      }
-      config
-        .update('approvedCommands', approved, vscode.ConfigurationTarget.Global)
-        .then(undefined, (e) => log(`Failed to save approved command: ${e}`));
+    if (!prefix) {
+      return;
     }
+    const approved = this.loadAllowedCommands();
+    if (approved.includes(prefix)) {
+      return;
+    }
+    approved.push(prefix);
+    if (approved.length > 500) {
+      approved.splice(0, approved.length - 500);
+    }
+    this.persistApprovedCommands(approved);
   }
 
-  /**
-   * Stable key for non-shell tool permissions (subagent crew, MCP tools, etc.).
-   * Same title+kind → same key so "two identical subagents" and post-reload
-   * re-spawns reuse an allow_always grant.
-   */
   private extractToolFingerprint(params: RequestPermissionRequest): string | undefined {
-    const toolCall = params.toolCall as any;
-    if (!toolCall) {
-      return undefined;
-    }
-    const title = typeof toolCall.title === 'string' ? toolCall.title.trim().toLowerCase() : '';
-    const kind = typeof toolCall.kind === 'string' ? toolCall.kind.trim().toLowerCase() : '';
-    const raw = toolCall.rawInput && typeof toolCall.rawInput === 'object' ? toolCall.rawInput : null;
-    const toolName =
-      (raw && typeof raw._toolName === 'string' && raw._toolName) ||
-      (raw && typeof raw.toolName === 'string' && raw.toolName) ||
-      (toolCall._meta?.kiro?.toolName && String(toolCall._meta.kiro.toolName)) ||
-      (toolCall._meta?.claudeCode?.toolName && String(toolCall._meta.claudeCode.toolName)) ||
-      '';
-    const name = String(toolName).trim().toLowerCase();
-    if (!title && !kind && !name) {
-      return undefined;
-    }
-    // Prefer toolName when present (stable across title wording); else title+kind.
-    if (name) {
-      return `tool:${name}|${kind || 'other'}`;
-    }
-    return `tool:${title || 'untitled'}|${kind || 'other'}`;
+    return extractPermissionToolFingerprint(params);
   }
 
   private loadApprovedTools(): string[] {
     if (this.approvedToolsCache) {
       return Array.from(this.approvedToolsCache);
     }
-    const stored = vscode.workspace.getConfiguration('acp').get<string[]>('approvedTools', []);
-    this.approvedToolsCache = new Set(stored);
-    return stored;
+    const fromSettings = vscode.workspace.getConfiguration('acp').get<string[]>('approvedTools', []);
+    const fromFile = readPermissionStore().approvedTools;
+    const merged = mergePermissionLists(fromSettings, fromFile, true);
+    this.approvedToolsCache = new Set(merged);
+    return merged;
+  }
+
+  private persistApprovedCommands(approved: string[]): void {
+    writePermissionStore({
+      approvedCommands: approved,
+      approvedTools: this.loadApprovedTools(),
+    });
+    vscode.workspace
+      .getConfiguration('acp')
+      .update('approvedCommands', approved, vscode.ConfigurationTarget.Global)
+      .then(undefined, (e) => log(`Failed to save approved command: ${e}`));
+  }
+
+  private persistApprovedTools(approved: string[]): void {
+    writePermissionStore({
+      approvedCommands: this.loadAllowedCommands(),
+      approvedTools: approved,
+    });
+    vscode.workspace
+      .getConfiguration('acp')
+      .update('approvedTools', approved, vscode.ConfigurationTarget.Global)
+      .then(undefined, (e) => log(`Failed to save approved tool: ${e}`));
   }
 
   private saveApprovedTool(fingerprint: string): void {
     if (!fingerprint) {
       return;
     }
+    const normalized = normalizeApprovedToolFingerprint(fingerprint);
     if (!this.approvedToolsCache) {
-      this.approvedToolsCache = new Set(vscode.workspace.getConfiguration('acp').get<string[]>('approvedTools', []));
+      this.loadApprovedTools();
     }
-    if (this.approvedToolsCache.has(fingerprint)) {
+    if (this.approvedToolsCache!.has(normalized)) {
       return;
     }
-    this.approvedToolsCache.add(fingerprint);
-    const approved = Array.from(this.approvedToolsCache);
+    this.approvedToolsCache!.add(normalized);
+    const approved = Array.from(this.approvedToolsCache!);
     if (approved.length > 500) {
       const trimmed = approved.slice(approved.length - 500);
       this.approvedToolsCache = new Set(trimmed);
     }
-    vscode.workspace
-      .getConfiguration('acp')
-      .update('approvedTools', Array.from(this.approvedToolsCache), vscode.ConfigurationTarget.Global)
-      .then(undefined, (e) => log(`Failed to save approved tool: ${e}`));
+    this.persistApprovedTools(Array.from(this.approvedToolsCache!));
   }
 
   private isToolApproved(fingerprint: string | undefined): boolean {
-    if (!fingerprint) {
-      return false;
-    }
-    return this.loadApprovedTools().includes(fingerprint);
+    return isApprovedToolFingerprint(this.loadApprovedTools(), fingerprint);
   }
 
   async requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
@@ -525,9 +511,10 @@ export class PermissionHandler {
       log(`Saved prefix "${prefix}" for future auto-approval`);
     }
 
-    // Non-command tools (Kiro subagent crew, etc.): persist on allow_always, and
-    // also on any allow in remember mode so reload does not re-prompt.
-    if (toolFp && isAllow) {
+    // Non-command tools (edit/read/grep/MCP): persist on allow_always, and also
+    // on any allow in remember mode so reload/resume does not re-prompt.
+    // Shell/execute uses approvedCommands prefix list — skip tool:execute bucket.
+    if (toolFp && isAllow && toolFp !== 'tool:execute') {
       if (selectedOption?.kind === 'allow_always' || autoApprove === 'remember') {
         this.saveApprovedTool(toolFp);
         log(`Saved tool fingerprint "${toolFp}" for future auto-approval`);
