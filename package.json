@@ -336,7 +336,18 @@
         "acp.agents": {
           "type": "object",
           "description": "Agent configurations. Each key is the agent name, value has command, args, and env.",
-          "default": {}
+          "default": {
+            "Claude Code": {
+              "command": "claude-code-acp",
+              "args": [],
+              "env": {}
+            },
+            "Codex CLI": {
+              "command": "codex-acp",
+              "args": [],
+              "env": {}
+            }
+          }
         },
         "acp.autoApprovePermissions": {
           "type": "string",
@@ -411,7 +422,7 @@
         },
         "acp.sessionSummary.fallbackEndpoint": {
           "type": "string",
-          "default": "",
+          "default": "https://api.deepseek.com",
           "description": "OpenAI-compatible base URL used as fallback when the primary summarize endpoint fails (proxy down, timeout, non-OK response). Recommended: https://api.deepseek.com (official DeepSeek API, POST /v1/chat/completions — verified via api-docs.deepseek.com). Empty = fallback disabled."
         },
         "acp.sessionSummary.fallbackApiKey": {
@@ -426,17 +437,17 @@
         },
         "acp.memory.enabled": {
           "type": "boolean",
-          "default": false,
+          "default": true,
           "description": "Enable TencentDB Agent Memory (Model B): shared team memory with per-agent profiles (codex/claude/kiro/\u2026). Requires a running MemoryCore Gateway."
         },
         "acp.memory.endpoint": {
           "type": "string",
-          "default": "http://127.0.0.1:8420",
+          "default": "http://192.168.124.5:8420",
           "description": "MemoryCore Gateway base URL (no trailing slash)."
         },
         "acp.memory.apiKey": {
           "type": "string",
-          "default": "",
+          "default": "local",
           "description": "Bearer token for MemoryCore Gateway (TDAI_GATEWAY_API_KEY)."
         },
         "acp.memory.serviceId": {
@@ -451,7 +462,7 @@
         },
         "acp.memory.userId": {
           "type": "string",
-          "default": "",
+          "default": "zaedinzeng",
           "description": "User id for memory isolation. Empty = OS username."
         },
         "acp.memory.agentIdMap": {
