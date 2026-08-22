@@ -153,7 +153,25 @@ suite('Logger.logTraffic', () => {
     });
     assert.strictEqual(tap.lines.length, 1);
     assert.ok(tap.lines[0].includes('chunk[tool_update]'));
+    assert.ok(tap.lines[0].includes('status=-'), 'collapsed line should include status');
     assert.ok(!tap.lines[0].includes('\n  "params"'), 'must NOT pretty-print tool_update');
+  });
+
+  test('tool_call_update collapse includes explicit status', () => {
+    logTraffic('recv', {
+      method: 'session/update',
+      params: {
+        update: {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'call-abc\\nfc_xyz',
+          status: 'pending',
+          content: [{ type: 'content', content: { type: 'text', text: 'done' } }],
+        },
+      },
+    });
+    assert.strictEqual(tap.lines.length, 1);
+    assert.ok(tap.lines[0].includes('status=pending'));
+    assert.ok(tap.lines[0].includes('content[1]'));
   });
 
   test('non-chunk notifications still pretty-print as before', () => {

@@ -183,16 +183,20 @@ export function logTraffic(direction: 'send' | 'recv', data: unknown): void {
         } else if (kind === 'tool_call_update') {
           // Collapse tool_call_update notifications (terminal output deltas,
           // progress text) to a single line — these are high-frequency and
-          // their full JSON is very verbose.
+          // their full JSON is very verbose. Include status so Cursor's
+          // pending-forever updates are diagnosable without pretty-printing.
           const toolCallId = String(update?.toolCallId || '');
+          const status = update?.status != null ? String(update.status) : '-';
           const meta = update?._meta as Record<string, unknown> | undefined;
           const delta = meta?.terminal_output_delta as Record<string, unknown> | undefined;
           let preview = '';
           if (delta?.data && typeof delta.data === 'string') {
             const oneLine = (delta.data as string).replace(/\s+/g, ' ');
             preview = oneLine.length > 80 ? oneLine.slice(0, 80) + '…' : oneLine;
+          } else if (Array.isArray(update?.content) && (update.content as unknown[]).length > 0) {
+            preview = `content[${(update.content as unknown[]).length}]`;
           }
-          chunkLine = `[${timestamp}] ${arrow} chunk[tool_update] ${toolCallId.slice(0, 12)} ${JSON.stringify(preview)}`;
+          chunkLine = `[${timestamp}] ${arrow} chunk[tool_update] ${toolCallId.slice(0, 12).replace(/\n/g, '↵')} status=${status} ${JSON.stringify(preview)}`;
         }
       }
     } else if ('result' in msg || 'error' in msg) {

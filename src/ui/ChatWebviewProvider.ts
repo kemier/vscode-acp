@@ -19,6 +19,11 @@ import { TerminalOutputStore } from '../core/TerminalOutputStore';
 import { StreamCoalescer } from '../core/StreamCoalescer';
 import { FollowCoalescer, pickFollowTarget, type ToolCallLocationLike } from '../core/FollowAgent';
 import { needsRestoreAfterCapture } from '../core/SessionCaptureRestore';
+import {
+  CursorSessionToolEnricher,
+  isCursorAgentName,
+  needsCursorToolEnrichment,
+} from '../core/CursorToolEnricher';
 import { log, logError, formatAcpErrorMessage, getOutputChannel } from '../utils/Logger';
 import { sendEvent } from '../utils/TelemetryManager';
 import { cleanSessionTitle } from '../utils/TitleCleaner';
@@ -90,6 +95,16 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * cuts both by roughly 6× at typical OpenAI token rates.
    */
   private streamCoalescer: StreamCoalescer;
+
+  /**
+   * Cursor ACP omits tool args on the wire (rawInput: {}, stub titles).
+   * Enrich from ~/.cursor/acp-sessions/<id>/store.db when needed.
+   */
+  private cursorToolEnrichers = new Map<string, CursorSessionToolEnricher>();
+  /** Deduplicate concurrent enrich polls for the same toolCallId. */
+  private cursorToolEnrichInFlight = new Set<string>();
+  /** Coalesce batch-enrich requests (reload + loadSessionEnd + webview ready). */
+  private cursorBatchEnrichTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * "Follow Agent" feature — mirrors Zed's `workspace.follow(CollaboratorId::Agent)`.
@@ -1427,6 +1442,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             await vscode.commands.executeCommand(message.command, ...(message.args || []));
           }
           break;
+        case 'cursorRequestToolEnrich':
+          this.scheduleCursorBatchEnrich(
+            message.sessionId || this.sessionManager.getActiveSessionId(),
+          );
+          break;
         case 'ready':
           // Webview loaded — flush any queued messages, then send state
           this.webviewReady = true;
@@ -1439,6 +1459,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           // sendCurrentState is skipped if a load is in progress (handled
           // by the isLoading guard inside sendCurrentState itself).
           this.sendCurrentState();
+          this.scheduleCursorBatchEnrich(this.sessionManager.getActiveSessionId());
           break;
         case 'openDiff':
           await this.handleOpenDiff(message.toolCallId);
@@ -1520,19 +1541,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           break;
         }
         case 'debugLog':
-          // Forward webview debug logs to the ACP Client output channel
-          // DRAIN-DBG logs always pass through for queue drain debugging
-          if (
-            DEBUG ||
-            (message.message &&
-              (message.message.indexOf('[DRAIN-DBG]') === 0 ||
-                message.message.indexOf('[WV-DIAG]') === 0 ||
-                message.message.indexOf('[WV-MERGE]') === 0 ||
-                message.message.indexOf('[WV-USER]') === 0 ||
-                message.message.indexOf('[WV-RENDER]') === 0 ||
-                message.message.indexOf('[WV-UPDATE]') === 0 ||
-                message.message.indexOf('[STAGE-DBG]') === 0))
-          ) {
+          // Webview debug noise — only forward when DEBUG is on.
+          // (Previously WV-RENDER / WV-UPDATE / STAGE-DBG were always-on and
+          // flooded ACP Client during session/load + every tool call.)
+          if (DEBUG) {
             log('[DEBUG-WV] ' + (message.message || '(empty)'));
           }
           break;
@@ -1703,6 +1715,144 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       sessionId: update.sessionId,
       isLoading: this.sessionManager.isLoading(update.sessionId),
     });
+
+    // Cursor: stub tool titles / empty rawInput — recover path/pattern from store.db
+    // and push a follow-up tool_call_update so the webview title + tooltip update.
+    void this.maybeEnrichCursorToolCall(update.sessionId, updateData);
+    if (
+      (updateData?.sessionUpdate === 'tool_call' || updateData?.sessionUpdate === 'tool_call_update') &&
+      isCursorAgentName(this.sessionManager.getSession(update.sessionId)?.agentName)
+    ) {
+      this.scheduleCursorBatchEnrich(update.sessionId);
+    }
+  }
+
+  private getCursorToolEnricher(sessionId: string): CursorSessionToolEnricher {
+    let enricher = this.cursorToolEnrichers.get(sessionId);
+    if (!enricher) {
+      enricher = new CursorSessionToolEnricher(sessionId);
+      this.cursorToolEnrichers.set(sessionId, enricher);
+    }
+    return enricher;
+  }
+
+  /**
+   * When Cursor ACP sends tool_call with empty rawInput, poll store.db for
+   * the real args and emit a synthetic tool_call_update.
+   */
+  private async maybeEnrichCursorToolCall(sessionId: string, updateData: any): Promise<void> {
+    try {
+      if (!needsCursorToolEnrichment(updateData)) return;
+      // session/load uses synthetic replay-* ids that are never in store.db —
+      // skip per-tool polls (batch enrich runs at loadSessionEnd instead).
+      if (this.sessionManager.isLoading(sessionId)) return;
+      const session = this.sessionManager.getSession(sessionId);
+      if (!isCursorAgentName(session?.agentName)) return;
+      const toolCallId = updateData.toolCallId as string;
+      if (!toolCallId || String(toolCallId).startsWith('replay-')) return;
+
+      const inflightKey = `${sessionId}::${toolCallId}`;
+      if (this.cursorToolEnrichInFlight.has(inflightKey)) return;
+      this.cursorToolEnrichInFlight.add(inflightKey);
+      let enriched;
+      try {
+        enriched = await this.getCursorToolEnricher(sessionId).enrich(toolCallId, {
+          timeoutMs: 12000,
+        });
+      } finally {
+        this.cursorToolEnrichInFlight.delete(inflightKey);
+      }
+
+      if (!enriched || Object.keys(enriched.args).length === 0) {
+        // Per-id lookup can miss while blobs are still landing — batch enrich
+        // uses ordinal kind-matching and often succeeds a moment later.
+        this.scheduleCursorBatchEnrich(sessionId);
+        if (DEBUG) {
+          log(`Cursor tool enrich miss: ${toolCallId.slice(0, 48).replace(/\n/g, '\\n')}`);
+        }
+        return;
+      }
+      // Session may have switched while we waited.
+      if (this.sessionManager.getActiveSessionId() !== sessionId) return;
+      if (this.suppressWebviewUpdates) return;
+
+      const patch: Record<string, unknown> = {
+        sessionUpdate: 'tool_call_update',
+        toolCallId,
+        title: enriched.title,
+        rawInput: enriched.args,
+      };
+      if (enriched.locations && enriched.locations.length > 0) {
+        patch.locations = enriched.locations;
+      }
+      if (DEBUG) {
+        log(`Cursor tool enrich hit: ${enriched.title.slice(0, 80)}`);
+      }
+      this.postMessage({
+        type: 'sessionUpdate',
+        update: patch,
+        sessionId,
+        isLoading: this.sessionManager.isLoading(sessionId),
+      });
+
+      // Follow Agent: open path once locations are recovered.
+      if (this._isFollowing && enriched.locations) {
+        const target = pickFollowTarget(enriched.locations as ToolCallLocationLike[], {
+          sessionCwd: session?.cwd,
+          workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
+          homeDir: process.env.HOME,
+        });
+        if (target) this.followCoalescer.submit(target);
+      }
+    } catch (e: any) {
+      log(`Cursor tool enrich failed: ${e?.message || e}`);
+    }
+  }
+
+  /**
+   * After session/load or webview restore, push store.db tool titles so stub
+   * "Read File" / "grep" rows get paths (replay-* ids cannot be looked up).
+   */
+  private scheduleCursorBatchEnrich(sessionId: string | null | undefined): void {
+    if (!sessionId) return;
+    if (this.cursorBatchEnrichTimer) {
+      clearTimeout(this.cursorBatchEnrichTimer);
+    }
+    this.cursorBatchEnrichTimer = setTimeout(() => {
+      this.cursorBatchEnrichTimer = null;
+      void this.maybeBatchEnrichCursorToolsAfterLoad(sessionId);
+    }, 40);
+  }
+
+  /**
+   * After session/load, push store.db tool titles into the webview so stub
+   * "Read File" / "grep" / "Edit File" rows get paths (replay-* ids cannot
+   * be looked up individually).
+   */
+  private async maybeBatchEnrichCursorToolsAfterLoad(sessionId: string | null): Promise<void> {
+    try {
+      if (!sessionId) return;
+      const session = this.sessionManager.getSession(sessionId);
+      if (!isCursorAgentName(session?.agentName)) return;
+      if (this.suppressWebviewUpdates) return;
+      const tools = await this.getCursorToolEnricher(sessionId).listEnrichedTools();
+      if (!tools.length) return;
+      this.postMessage({
+        type: 'cursorToolEnrichBatch',
+        sessionId,
+        tools: tools.map((t) => ({
+          toolCallId: t.toolCallId,
+          toolName: t.toolName,
+          title: t.title,
+          rawInput: t.args,
+          locations: t.locations,
+        })),
+      });
+    } catch (e: any) {
+      if (DEBUG) {
+        log(`Cursor batch enrich failed: ${e?.message || e}`);
+      }
+    }
   }
 
   /**
@@ -3496,6 +3646,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       this.refreshGitBranch(session.cwd).then(() => this.sendCurrentState());
     }
     this.sendCurrentState();
+    if (session && isCursorAgentName(session.agentName)) {
+      this.scheduleCursorBatchEnrich(session.sessionId);
+    }
   }
 
   /**
@@ -3653,6 +3806,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       this.streamCoalescer.flush(activeId);
     }
     this.postMessage({ type: 'loadSessionEnd', ok });
+    // Cursor session/load leaves stub tool titles; fill paths from store.db.
+    if (ok) {
+      this.scheduleCursorBatchEnrich(activeId);
+    }
   }
 
   /** Notify webview that session title / metadata changed. */
@@ -4377,15 +4534,18 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       flex-shrink: 0;
       width: 14px;
       text-align: center;
+      /* inline-block required — CSS transform/spin is ignored on pure inline */
+      display: inline-block;
     }
-   .tool-call-inline .tc-icon.pending { color: var(--vscode-badge-foreground); }
-   .tool-call-inline .tc-icon.running { color: var(--vscode-progressBar-background); animation: tc-spin 1s linear infinite; }
+   .tool-call-inline .tc-icon.pending,
+   .tool-call-inline .tc-icon.running,
    .tool-call-inline .tc-icon.in_progress { color: var(--vscode-progressBar-background); animation: tc-spin 1s linear infinite; }
    .tool-call-inline .tc-icon.completed { color: var(--vscode-testing-iconPassed); }
     .tool-call-inline .tc-icon.failed { color: var(--vscode-testing-iconFailed); }
     @keyframes tc-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
     .tool-call-inline .tc-title {
       flex: 1;
+      min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
@@ -4414,7 +4574,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    .tool-call-inline .tc-stage-depends { margin-left: 6px; font-size: 0.85em; opacity: 0.6; }
   .tool-call-inline .tc-stage-desc { margin-left: 18px; font-size: 0.85em; opacity: 0.6; }
  .tool-call-inline .tc-stage-icon.running,
- .tool-call-inline .tc-stage-icon.in_progress { color: var(--vscode-progressBar-background); animation: tc-spin 1s linear infinite; }
+ .tool-call-inline .tc-stage-icon.in_progress,
+ .tool-call-inline .tc-stage-icon.pending { color: var(--vscode-progressBar-background); animation: tc-spin 1s linear infinite; }
  .tool-call-inline .tc-stage-icon.completed { color: var(--vscode-testing-iconPassed); }
  .tool-call-inline .tc-stage-icon.error { color: var(--vscode-testing-iconFailed); }
  .tool-call-inline .tc-stage { padding: 2px 4px; border-radius: 3px; }
@@ -6418,6 +6579,7 @@ var end = displayText.length;
   // If there's chat history but no active session, show a prominent
     // resume button in the fixed resume bar (always visible, no scroll needed).
     updateResumeBar();
+   requestCursorToolEnrichIfNeeded();
 
    // Start with input disabled
    }
@@ -8270,6 +8432,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      hasSteeredThisTurn = false;
      isSendingPrompt = false;
     if (tokenUsageRing) tokenUsageRing.classList.remove('visible');
+    if (typeof clearCursorTodosPlan === 'function') clearCursorTodosPlan();
       // Keep a copy of the restored webview history. Claude session/load for an
      // interrupted mid-turn often only replays the user prompt — without this
      // snapshot (and without saveState of the empty array) the collapse block
@@ -8704,7 +8867,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         var _newStatus = _hasFollowingAssistant ? 'completed' : 'failed';
         item.status = _newStatus;
         if (_newStatus === 'failed') _failedAnyTool = true;
-        const el = toolCalls[item.toolCallId] || document.getElementById('tc-' + item.toolCallId);
+        const el = lookupToolCallEl(item.toolCallId);
         if (el) {
           const iconEl = el.querySelector('.tc-icon');
           if (iconEl) { iconEl.className = 'tc-icon ' + _newStatus; iconEl.textContent = getStatusIcon(_newStatus); }
@@ -8787,6 +8950,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      if (!ok) {
        addMessage('error', 'Failed to load session history.');
      }
+     requestCursorToolEnrichIfNeeded();
    }
 
    function handleSessionInfoUpdate(title) {
@@ -9523,12 +9687,380 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
  function getStatusIcon(status) {
     switch (status) {
        case 'running':
-       case 'in_progress': return '⟳';
+       case 'in_progress':
+       // Cursor / Kiro emit "pending" for in-flight tools; Codex uses
+       // "in_progress". Same glyph so every live tool shows a spinner.
+       case 'pending': return '⟳';
       case 'completed': return '✓';
       case 'failed':
       case 'error': return '✗';
       default: return '…';
     }
+  }
+
+  /**
+   * Cursor toolCallIds contain a literal newline before "fc_*". That breaks
+   * HTML id attributes and getElementById — sanitize for DOM, keep the
+   * original id as the toolCalls{} map key.
+   */
+  function toolCallElementId(toolCallId) {
+    return 'tc-' + String(toolCallId || '').replace(/[\\n\\r]/g, '__');
+  }
+
+  /**
+   * Cursor wire IDs are "call-…\\nfc_…"; store.db / some updates use the
+   * escaped "call-…\\\\nfc_…" form. Build lookup aliases so tool_call and
+   * tool_call_update still resolve to the same DOM row.
+   */
+  function toolCallIdLookupKeys(toolCallId) {
+    var id = String(toolCallId || '');
+    var keys = [];
+    function addKey(k) {
+      if (k && keys.indexOf(k) < 0) keys.push(k);
+    }
+    addKey(id);
+    // Real newline ↔ escaped \\n
+    if (id.indexOf('\\n') >= 0) addKey(id.replace(/\\n/g, '\\\\n'));
+    if (id.indexOf('\\\\n') >= 0) addKey(id.replace(/\\\\n/g, '\\n'));
+    var parts = id.split(/\\n|\\\\n/);
+    if (parts.length > 1) {
+      addKey(parts[0]);
+      addKey(parts[parts.length - 1]);
+    }
+    return keys;
+  }
+
+  function toolCallIdsMatch(a, b) {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    var ka = toolCallIdLookupKeys(a);
+    var kb = toolCallIdLookupKeys(b);
+    for (var i = 0; i < ka.length; i++) {
+      if (kb.indexOf(ka[i]) >= 0) return true;
+    }
+    var fa = String(a).match(/fc_[A-Za-z0-9_-]+/);
+    var fb = String(b).match(/fc_[A-Za-z0-9_-]+/);
+    // Require exact fc_* token match (including _N). A shared batch UUID
+    // stem without the suffix would collide across parallel tools.
+    if (fa && fb && fa[0] === fb[0]) return true;
+    return false;
+  }
+
+  /** Cursor ACP stub titles that need store.db enrichment. */
+  function isCursorStubToolTitle(title) {
+    var t = String(title || '').trim().toLowerCase();
+    if (!t) return true;
+    if (t === 'read file' || t === 'edit file' || t === 'write file' || t === 'delete file') return true;
+    if (t === 'read' || t === 'write' || t === 'edit' || t === 'delete') return true;
+    if (t === 'grep' || t === 'find' || t === 'search' || t === 'glob') return true;
+    if (t === 'shell' || t === 'bash' || t === 'terminal' || t === 'run') return true;
+    if (t === 'list directory' || t.indexOf('mcp:') === 0) return true;
+    return false;
+  }
+
+  function hasCursorStubToolsInHistory() {
+    for (var i = 0; i < chatHistory.length; i++) {
+      var item = chatHistory[i];
+      if (item && item.kind === 'toolCall' && isCursorStubToolTitle(item.title)) return true;
+    }
+    return false;
+  }
+
+  function requestCursorToolEnrichIfNeeded() {
+    if (!isCursorAgentSession()) return;
+    if (!hasCursorStubToolsInHistory()) return;
+    vscode.postMessage({
+      type: 'cursorRequestToolEnrich',
+      sessionId: (sessionState && sessionState.sessionId) || null,
+    });
+  }
+
+  var cursorStubEnrichRetryTimer = null;
+  var cursorStubEnrichRetryCount = 0;
+  function scheduleCursorStubEnrichRetry() {
+    if (!hasCursorStubToolsInHistory()) {
+      cursorStubEnrichRetryCount = 0;
+      return;
+    }
+    if (cursorStubEnrichRetryCount >= 30) return;
+    if (cursorStubEnrichRetryTimer) return;
+    cursorStubEnrichRetryTimer = setTimeout(function() {
+      cursorStubEnrichRetryTimer = null;
+      if (!hasCursorStubToolsInHistory()) {
+        cursorStubEnrichRetryCount = 0;
+        return;
+      }
+      cursorStubEnrichRetryCount++;
+      requestCursorToolEnrichIfNeeded();
+      scheduleCursorStubEnrichRetry();
+    }, 200);
+  }
+
+  /** Rebuild fold summary titles from live .tc-title after store.db enrich. */
+  function refreshAllTurnToolSummaries() {
+    messagesEl.querySelectorAll('.turn').forEach(function(turn) {
+      var summary = getTurnSummaryEl(turn);
+      var lists = turn.querySelectorAll('.turn-tools-list');
+      if (!summary || !lists.length) return;
+      var titles = [];
+      var kinds = [];
+      var rawInputs = [];
+      lists.forEach(function(list) {
+        var meta = collectToolMetaFromList(list);
+        titles = titles.concat(meta.titles);
+        kinds = kinds.concat(meta.kinds);
+        rawInputs = rawInputs.concat(meta.rawInputs);
+      });
+      summary._titles = titles;
+      summary._kinds = kinds;
+      summary._rawInputs = rawInputs;
+      summary.dataset.count = String(titles.length);
+      updateToolGroupSummary(summary, titles.length, titles, kinds, rawInputs);
+    });
+  }
+
+  /** Keep compact-mode fold summary in sync when a tool title is enriched. */
+  function syncToolTitleToTurnSummaries(toolCallId, title, rawInput) {
+    if (!title) return;
+    var el = lookupToolCallEl(toolCallId);
+    if (!el) return;
+    var turn = el.closest ? el.closest('.turn') : null;
+    if (!turn) return;
+    var toolIndex = -1;
+    var counted = 0;
+    var lists = turn.querySelectorAll('.turn-tools-list');
+    for (var li = 0; li < lists.length; li++) {
+      var rows = lists[li].querySelectorAll('.tool-call-inline');
+      for (var ri = 0; ri < rows.length; ri++) {
+        if (rows[ri].getAttribute('data-parent-tool')) continue;
+        if (rows[ri] === el) {
+          toolIndex = counted;
+          break;
+        }
+        counted++;
+      }
+      if (toolIndex >= 0) break;
+    }
+    if (toolIndex < 0) return;
+    var summary = getTurnSummaryEl(turn);
+    if (!summary) return;
+    if (!summary._titles) summary._titles = [];
+    if (!summary._kinds) summary._kinds = [];
+    if (!summary._rawInputs) summary._rawInputs = [];
+    while (summary._titles.length <= toolIndex) summary._titles.push('');
+    while (summary._rawInputs.length <= toolIndex) summary._rawInputs.push(null);
+    summary._titles[toolIndex] = title;
+    if (rawInput) summary._rawInputs[toolIndex] = rawInput;
+    updateToolGroupSummary(
+      summary,
+      parseInt(summary.dataset.count || String(counted), 10) || counted,
+      summary._titles,
+      summary._kinds,
+      summary._rawInputs
+    );
+    if (currentTurnEl === turn && currentToolsCountEl === summary) {
+      currentToolsCountEl._titles = summary._titles;
+      currentToolsCountEl._rawInputs = summary._rawInputs;
+    }
+  }
+
+  function cursorEnrichKind(toolName, title, toolKind) {
+    var n = String(toolName || '').trim().toLowerCase();
+    var t = String(title || '').trim().toLowerCase();
+    var k = String(toolKind || '').trim().toLowerCase();
+    if (n === 'read' || n === 'read_file' || n === 'readfile' || t === 'read file' || t.indexOf('read ') === 0 || k === 'read') return 'read';
+    if (n === 'glob' || n === 'find' || n === 'listdir' || n === 'list_dir' ||
+        t === 'find' || t === 'glob' || t.indexOf('find ') === 0) return 'glob';
+    if (n === 'grep' || n === 'rg' || n === 'ripgrep' ||
+        t === 'grep' || t === 'search' || t.indexOf('grep ') === 0 || k === 'fetch') return 'grep';
+    if (n === 'streplace' || n === 'strreplace' || n === 'str_replace' || n === 'edit' || n === 'applypatch' ||
+        t === 'edit file' || t.indexOf('edit ') === 0 || t.indexOf('strreplace ') === 0 || k === 'edit') return 'edit';
+    if (n === 'write' || n === 'write_file' || t === 'write file' || t.indexOf('write ') === 0) return 'write';
+    if (n === 'shell' || n === 'bash' || n === 'run' || k === 'execute') return 'shell';
+    if (k === 'search') {
+      if (t.indexOf('find ') === 0) return 'glob';
+      if (t.indexOf('grep ') === 0) return 'grep';
+      return 'grep';
+    }
+    return 'other';
+  }
+
+  /**
+   * Apply store.db-enriched titles after session/load. Wire replay-* ids never
+   * match store keys, so fall back to kind-ordered matching for stub rows.
+   * Non-stub history rows still consume a same-kind store entry so ordinal
+   * alignment stays correct when Cursor already rewrote some titles (Edit).
+   */
+  function handleCursorToolEnrichBatch(tools) {
+    if (!tools || !tools.length) return;
+    var byId = {};
+    var queues = { read: [], grep: [], glob: [], edit: [], write: [], shell: [], other: [] };
+    // Preserve store.db rowid order from listEnrichedTools — do NOT sort by
+    // the trailing -N suffix alone (each turn resets to -0 and scrambles grep).
+    for (var i = 0; i < tools.length; i++) {
+      var t = tools[i];
+      if (!t || !t.title) continue;
+      var id = String(t.toolCallId || '');
+      if (id) {
+        byId[id] = t;
+        var keys = toolCallIdLookupKeys(id);
+        for (var ki = 0; ki < keys.length; ki++) byId[keys[ki]] = t;
+      }
+      var kind = cursorEnrichKind(t.toolName, t.title, null);
+      if (!queues[kind]) queues[kind] = [];
+      queues[kind].push(t);
+    }
+
+    function takeById(toolCallId) {
+      var keys = toolCallIdLookupKeys(toolCallId);
+      for (var i = 0; i < keys.length; i++) {
+        if (byId[keys[i]]) {
+          var hit = byId[keys[i]];
+          for (var ak in byId) {
+            if (byId[ak] === hit) delete byId[ak];
+          }
+          var qk = cursorEnrichKind(hit.toolName, hit.title, null);
+          var q = queues[qk] || [];
+          var qi = q.indexOf(hit);
+          if (qi >= 0) q.splice(qi, 1);
+          return hit;
+        }
+      }
+      return null;
+    }
+
+    function takeByKind(kind) {
+      var queue = queues[kind] || [];
+      if (!queue.length) return null;
+      var ordinal = queue.shift();
+      for (var bk in byId) {
+        if (byId[bk] === ordinal) delete byId[bk];
+      }
+      return ordinal;
+    }
+
+    for (var hi = 0; hi < chatHistory.length; hi++) {
+      var item = chatHistory[hi];
+      if (!item || item.kind !== 'toolCall') continue;
+      var histKind = cursorEnrichKind(
+        (item.rawInput && (item.rawInput._toolName || item.rawInput.toolName)) || '',
+        item.title,
+        item.toolKind || null
+      );
+      var histHit = takeById(item.toolCallId || '') || takeByKind(histKind);
+      if (!histHit) continue;
+      // Always consume; only rewrite UI when the row is still a stub.
+      if (!isCursorStubToolTitle(item.title)) continue;
+      var resolvedTitle = resolveToolCallDisplayTitle(
+        histHit.title,
+        histHit.rawInput,
+        histHit.locations,
+        item.toolKind || null
+      );
+      item.title = resolvedTitle;
+      if (histHit.rawInput) item.rawInput = histHit.rawInput;
+      if (histHit.locations) item.locations = histHit.locations;
+      updateToolCall(
+        item.toolCallId || histHit.toolCallId,
+        undefined,
+        resolvedTitle,
+        undefined,
+        histHit.rawInput || null
+      );
+    }
+    refreshAllTurnToolSummaries();
+    saveState();
+    if (hasCursorStubToolsInHistory()) {
+      scheduleCursorStubEnrichRetry();
+    } else {
+      cursorStubEnrichRetryCount = 0;
+    }
+  }
+
+  function lookupToolCallEl(toolCallId) {
+    var keys = toolCallIdLookupKeys(toolCallId);
+    var i;
+    for (i = 0; i < keys.length; i++) {
+      if (toolCalls[keys[i]]) return toolCalls[keys[i]];
+    }
+    for (i = 0; i < keys.length; i++) {
+      var byDom = document.getElementById(toolCallElementId(keys[i]));
+      if (byDom) return byDom;
+    }
+    // Fuzzy: map key contains the same fc_* or call-* prefix.
+    var want = String(toolCallId || '');
+    var wantFcMatch = want.match(/fc_[A-Za-z0-9_-]+/);
+    var wantFc = wantFcMatch ? wantFcMatch[0] : '';
+    var wantCall = want.split(/\\n|\\\\n/)[0];
+    for (var k in toolCalls) {
+      if (!Object.prototype.hasOwnProperty.call(toolCalls, k)) continue;
+      if (wantFc && k.indexOf(wantFc) >= 0) return toolCalls[k];
+      if (wantCall && k.indexOf(wantCall) === 0) return toolCalls[k];
+    }
+    return null;
+  }
+
+  /**
+   * Normalize ACP tool status for the live UI.
+   * Codex sends "in_progress" (mapped to "running" → spinning icon).
+   * Cursor / Kiro often send "pending" first — without remapping, the icon
+   * stays a static ellipsis with no CSS spin. While the turn is in flight,
+   * treat pending like running so every tool call matches Codex behavior.
+   */
+  function normalizeLiveToolStatus(status) {
+    var s = status === 'in_progress' ? 'running' : (status || 'pending');
+    if (s === 'pending' && isProcessing && !isLoadingSession) {
+      return 'running';
+    }
+    return s;
+  }
+
+  function isCursorAgentSession() {
+    return /cursor/i.test(currentAgentLabel());
+  }
+
+  /**
+   * Cursor ACP rarely/never sends status:"completed" on tool_call_update —
+   * tools stay pending/running and keep spinning. When the model moves on
+   * (next tool / thought / message), mark prior plain tools completed so
+   * the spinner stops. Skips subagent crew parents (their stages own status).
+   */
+  function completeInFlightToolCalls(exceptId) {
+    if (isLoadingSession) return;
+    var changed = false;
+    for (var tid in toolCalls) {
+      if (!Object.prototype.hasOwnProperty.call(toolCalls, tid)) continue;
+      if (exceptId && toolCallIdsMatch(tid, exceptId)) continue;
+      var el = toolCalls[tid];
+      if (!el) continue;
+      if (el.getAttribute('data-subagent-crew') || el.getAttribute('data-claude-crew') ||
+          el.querySelector(':scope > .tc-stages')) {
+        continue;
+      }
+      var iconEl = el.querySelector(':scope > .tc-icon') || el.querySelector('.tc-icon');
+      if (!iconEl) continue;
+      if (iconEl.classList.contains('running') || iconEl.classList.contains('pending') ||
+          iconEl.classList.contains('in_progress')) {
+        iconEl.className = 'tc-icon completed';
+        iconEl.textContent = getStatusIcon('completed');
+        changed = true;
+      }
+    }
+    for (var hi = 0; hi < chatHistory.length; hi++) {
+      var item = chatHistory[hi];
+      if (!item || item.kind !== 'toolCall') continue;
+      if (exceptId && toolCallIdsMatch(item.toolCallId, exceptId)) continue;
+      if (item.status !== 'in_progress' && item.status !== 'running' && item.status !== 'pending') {
+        continue;
+      }
+      var raw = item.rawInput;
+      if (raw && typeof raw === 'object' && Array.isArray(raw.stages) && raw.stages.length > 0) {
+        continue;
+      }
+      item.status = 'completed';
+      changed = true;
+    }
+    if (changed) saveState();
   }
 
     function setFoldExpanded(body, expanded) {
@@ -10706,7 +11238,7 @@ function orderCompactFoldContents(body) {
      */
     function stampToolHistoryIndex(toolCallId, historyIndex) {
       if (!Number.isFinite(historyIndex) || historyIndex < 0) return;
-      var el = toolCalls[toolCallId] || document.getElementById('tc-' + toolCallId);
+      var el = lookupToolCallEl(toolCallId);
       if (!el || !el.setAttribute) return;
       el.setAttribute('data-history-index', String(historyIndex));
       var wrap = el.closest ? el.closest('.turn-tools') : null;
@@ -11480,6 +12012,10 @@ function commitCurrentTextSegment(opts) {
       if (isCursorTaskPlaceholder(title, rawInput)) {
         return;
       }
+      // Cursor Update TODOs stub — board comes from cursor/update_todos.
+      if (isCursorUpdateTodosPlaceholder(title, rawInput)) {
+        return;
+      }
       // Kiro Summarizing/summary — never land in history/DOM.
       if (isKiroSummaryToolTitle(title)) {
         return;
@@ -11492,6 +12028,11 @@ function commitCurrentTextSegment(opts) {
           message: '[WV-ADDTC] suppress nested child id=' + (toolCallId || '').slice(0, 12) + ' parent=' + String(parentToolUseId).slice(0, 12),
         });
         return;
+      }
+      // Cursor never emits status:"completed"; prior tools would spin forever.
+      // When the next tool starts, mark earlier plain tools done.
+      if (isCursorAgentSession() && !isLoadingSession) {
+        completeInFlightToolCalls(toolCallId);
       }
       vscode.postMessage({ type: 'debugLog', message: '[WV-ADDTC] title="' + title + '" id=' + (toolCallId || '').slice(0, 12) + ' chatHistoryLen BEFORE=' + chatHistory.length + ' currentAssistantTextLen=' + currentAssistantText.length + ' hasCurrentAssistantEl=' + !!currentAssistantEl });
       // Commit any in-progress thought BEFORE assistant text and tool call
@@ -11549,8 +12090,7 @@ function commitCurrentTextSegment(opts) {
     }
      // If the title is generic and we found a path from diff content, use it.
      if (_editPath && (title === 'Editing files' || title === 'Edit file' || !title)) {
-       var _baseName = _editPath.split('/').pop() || _editPath;
-       title = "Edit '" + _baseName + "'";
+       title = 'Edit ' + _editPath;
      }
      addToolCallInline(toolCallId, title, status, rawInput, toolKind, locations, null);
      // Live path must stamp the same way renderChatHistory does — otherwise the
@@ -11686,6 +12226,126 @@ function commitCurrentTextSegment(opts) {
      return false;
    } catch (e) { return true; }
  }
+
+ /** Pull a file/directory path out of common ACP / Cursor tool arg shapes. */
+ function pathFromToolRawInput(rawInput) {
+   if (!rawInput || typeof rawInput !== 'object' || Array.isArray(rawInput)) return '';
+   var keys = ['path', 'file_path', 'filePath', 'target_file', 'targetFile', 'directory', 'target_directory'];
+   for (var ki = 0; ki < keys.length; ki++) {
+     var v = rawInput[keys[ki]];
+     if (typeof v === 'string' && v.trim()) return v.trim();
+   }
+   return '';
+ }
+
+ function searchScopeFromToolRawInput(rawInput) {
+   var pathArg = pathFromToolRawInput(rawInput);
+   if (pathArg) return pathArg;
+   if (!rawInput || typeof rawInput !== 'object') return '';
+   if (typeof rawInput.glob === 'string' && rawInput.glob.trim()) return rawInput.glob.trim();
+   if (typeof rawInput.glob_pattern === 'string' && rawInput.glob_pattern.trim()) return rawInput.glob_pattern.trim();
+   if (typeof rawInput.globPattern === 'string' && rawInput.globPattern.trim()) return rawInput.globPattern.trim();
+   if (typeof rawInput.target_directory === 'string' && rawInput.target_directory.trim()) return rawInput.target_directory.trim();
+   return '';
+ }
+
+ function isFindSearchKind(toolName, title) {
+   var n = String(toolName || '').trim().toLowerCase();
+   var t = String(title || '').trim().toLowerCase();
+   if (n === 'glob' || n === 'find' || n === 'listdir' || n === 'list_dir') return true;
+   if (t === 'find' || t === 'glob' || t.indexOf('find ') === 0) return true;
+   return false;
+ }
+
+ function formatSearchStubTitle(toolName, title, rawInput, locations) {
+   var path = pathFromToolRawInput(rawInput);
+   if (!path && locations && locations.length && locations[0] && locations[0].path) {
+     path = String(locations[0].path);
+   }
+   var pattern = (rawInput && rawInput.pattern) || (rawInput && rawInput.query) || (rawInput && rawInput.regex) || '';
+   if (typeof pattern !== 'string') pattern = String(pattern || '');
+   var globPat = pattern ||
+     (rawInput && rawInput.glob_pattern) ||
+     (rawInput && rawInput.globPattern) ||
+     (rawInput && rawInput.glob) || '';
+   if (typeof globPat !== 'string') globPat = String(globPat || '');
+   if (isFindSearchKind(toolName, title)) {
+     if (globPat && path) return 'Find ' + JSON.stringify(globPat) + ' in ' + path;
+     if (globPat) return 'Find ' + JSON.stringify(globPat);
+     if (path) return 'Find ' + path;
+     return '';
+   }
+   var scope = searchScopeFromToolRawInput(rawInput);
+   if (pattern && scope) return 'grep ' + JSON.stringify(pattern) + ' ' + scope;
+   if (pattern) return 'grep ' + JSON.stringify(pattern);
+   if (scope) return 'grep ' + scope;
+   return '';
+ }
+
+ function isGenericEditTitle(title) {
+   var s = String(title || '').trim().toLowerCase();
+   return !s || s === 'edit' || s === 'edit file' || s === 'edit files' ||
+     s === 'editing files' || s === 'editing file' || s === 'strreplace' ||
+     s === 'apply patch' || s === 'applypatch';
+ }
+
+ /**
+  * Row title for tool calls: prefer enriched/protocol title, but when Cursor
+  * sends stub "Edit file" + path in rawInput, show "Edit /full/path.ts".
+  * No manual char cap — CSS ellipsis clips only when the panel is narrow;
+  * hover tooltip shows the full text when clipped or when rawInput has more.
+  */
+ function resolveToolCallDisplayTitle(title, rawInput, locations, toolKind) {
+   var t = cleanMultiLineTitle(title || '');
+   var tl = t.toLowerCase().trim();
+   var path = pathFromToolRawInput(rawInput);
+   var pattern = (rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput))
+     ? (rawInput.pattern || rawInput.query || rawInput.regex || '') : '';
+   if (typeof pattern !== 'string') pattern = String(pattern || '');
+   var toolName = (rawInput && rawInput._toolName) || (rawInput && rawInput.toolName) || '';
+   var kind = cursorEnrichKind(toolName, title, toolKind);
+
+   if (!path && locations && locations.length && locations[0] && locations[0].path) {
+     path = String(locations[0].path);
+   }
+
+   if (isCursorStubToolTitle(t) || isGenericEditTitle(t)) {
+     if (kind === 'read' && path) return 'Read ' + path;
+     if (kind === 'edit' && path) return 'Edit ' + path;
+     if (kind === 'write' && path) return 'Write ' + path;
+     if (kind === 'grep' || kind === 'glob') {
+       var searchTitle = formatSearchStubTitle(toolName, title, rawInput, locations);
+       if (searchTitle) return searchTitle;
+     }
+     if (kind === 'shell' && rawInput && rawInput.command) {
+       var cmd = Array.isArray(rawInput.command) ? rawInput.command.join(' ') : String(rawInput.command);
+       return cmd.replace(/\\s+/g, ' ').trim();
+     }
+   }
+
+   if (path && isGenericEditTitle(t)) return 'Edit ' + path;
+   if (path && (kind === 'read' || tl === 'read file' || tl.indexOf('read ') === 0) &&
+       tl.indexOf(path.toLowerCase()) < 0) {
+     var base = path.split('/').pop() || path;
+     if (tl.indexOf(String(base).toLowerCase()) >= 0) return 'Read ' + path;
+   }
+   if (path && (kind === 'edit' || tl.indexOf('edit ') === 0) && tl.indexOf(path.toLowerCase()) < 0) {
+     var baseEdit = path.split('/').pop() || path;
+     if (tl.indexOf(String(baseEdit).toLowerCase()) >= 0) return 'Edit ' + path;
+   }
+
+   if (!isCursorStubToolTitle(t) && t) return t;
+
+   if (!isEmptyRawInput(rawInput)) {
+     var hint = formatRawInput(rawInput);
+     if (hint) {
+       var firstLine = hint.split('\\n')[0].trim();
+       if (firstLine && firstLine.charAt(0) !== '{' && firstLine.charAt(0) !== '[') return firstLine;
+     }
+   }
+   return t || 'Tool Call';
+ }
+
   /**
    * Extract a file path from a tool call title.
    * Handles patterns like:
@@ -11726,6 +12386,20 @@ function commitCurrentTextSegment(opts) {
     }
     var t = (title || '').trim().toLowerCase();
     return t === 'task: subagent task';
+  }
+
+  /**
+   * Cursor ACP emits tool_call "Update TODOs" (+ rawInput._toolName updateTodos)
+   * and then the real board via cursor/update_todos. Suppress the inline row so
+   * we only show one Todos UI (the plan bar).
+   */
+  function isCursorUpdateTodosPlaceholder(title, rawInput) {
+    if (rawInput && typeof rawInput === 'object') {
+      var tn = String(rawInput._toolName || rawInput.toolName || '').toLowerCase();
+      if (tn === 'updatetodos' || tn === 'update_todos' || tn === 'todowrite') return true;
+      if (Array.isArray(rawInput.todos) && /^update\\s+todos\\b/i.test(String(title || ''))) return true;
+    }
+    return /^update\\s+todos\\b/i.test(String(title || '').trim());
   }
 
   function formatLocations(locations) {
@@ -12021,7 +12695,7 @@ function commitCurrentTextSegment(opts) {
    var foldBody = el.closest('.turn-fold-body');
    if (foldBody && foldBody.classList.contains('collapsed')) return;
 
-  var title = (hoverTarget.textContent) || el._toolTitle || '';
+  var title = (el._toolTitle || hoverTarget.textContent) || '';
   var formatted = formatToolCallTooltipText(title, el._rawInput, el._locations, el._diffPaths);
   if (!formatted) return;
 
@@ -12220,7 +12894,7 @@ function commitCurrentTextSegment(opts) {
    function flushPendingNestedTools(parentToolUseId) {
      var pending = pendingNestedByParent[parentToolUseId];
      if (!pending || !pending.length) return;
-     var parentEl = toolCalls[parentToolUseId] || document.getElementById('tc-' + parentToolUseId);
+     var parentEl = lookupToolCallEl(parentToolUseId);
      if (!parentEl) return;
      var nest = ensureNestedContainer(parentEl);
      delete pendingNestedByParent[parentToolUseId];
@@ -12811,7 +13485,7 @@ function commitCurrentTextSegment(opts) {
 
      const el = document.createElement('div');
      el.className = 'tool-call-inline tc-subagent';
-     el.id = 'tc-' + toolCallId;
+     el.id = toolCallElementId(toolCallId);
      el.setAttribute('data-subagent-crew', '1');
      el.setAttribute('data-claude-crew', '1');
      if (toolKind) el.dataset.toolKind = toolKind;
@@ -12932,12 +13606,12 @@ function commitCurrentTextSegment(opts) {
      if (hasKiroStages || isSubagentToolCall(title, toolKind, rawInput)) {
        el.className += ' tc-subagent';
      }
-     el.id = 'tc-' + toolCallId;
+     el.id = toolCallElementId(toolCallId);
      if (toolKind) el.dataset.toolKind = toolKind;
      el._rawInput = rawInput || null;
      el._locations = locations || null;
      el._toolTitle = title || 'Tool Call';
-      var displayTitle = cleanMultiLineTitle(title);
+      var displayTitle = resolveToolCallDisplayTitle(title, rawInput, locations, toolKind);
      // Title itself may be a JSON operation blob from Kiro.
      var titleTrim = String(displayTitle).trim();
       if (titleTrim.charAt(0) === '{' || titleTrim.charAt(0) === '[') {
@@ -12957,43 +13631,12 @@ function commitCurrentTextSegment(opts) {
             displayTitle = 'spawned ' + spawnN + ' subagent' + (spawnN > 1 ? 's' : '');
           }
         }
-      } else {
-        var detailHint = formatRawInput(rawInput) || formatLocations(locations);
-        if (detailHint) {
-          var firstLine = detailHint.split('\\n')[0].trim();
-          // Never replace the tool title with a JSON blob (Kiro operation payloads).
-          if (firstLine && firstLine !== displayTitle &&
-              firstLine.charAt(0) !== '{' && firstLine.charAt(0) !== '[') {
-            // Don't override the title if it already contains the detail
-            // (e.g. title="Reading /path/file.ts" vs rawInput.path="/path/file.ts").
-            // This preserves the action verb from the agent's buildToolTitle
-            // instead of replacing it with just the bare path/query.
-            var titleLower = displayTitle.toLowerCase();
-            var firstLineLower = firstLine.toLowerCase();
-            // Descriptive titles often use a file's basename (e.g.
-            // "Edit file 'foo.ts'") while formatRawInput returns the full path
-            // (e.g. "/tmp/foo.ts"). The containment check above fails on that
-            // mismatch and would clobber the verb with a bare path. Also
-            // compare against the basename so a descriptive title is preserved.
-            var baseNameLower = '';
-            // Windows paths use backslashes; without them the basename never
-            // matches, so the verb-bearing title is clobbered by the bare path.
-            // NOTE: this block lives inside the webview HTML template literal —
-            // '\\' here would collapse to '\' and emit lastIndexOf('\') with an
-            // unescaped quote, killing the whole script with 'Invalid or
-            // unexpected token'. Four backslashes emit a valid '\\'.
-            var slashIdx = Math.max(firstLineLower.lastIndexOf('/'), firstLineLower.lastIndexOf('\\\\'));
-            if (slashIdx >= 0 && slashIdx < firstLineLower.length - 1) {
-              baseNameLower = firstLineLower.substring(slashIdx + 1);
-            }
-            var titleContainsDetail =
-              titleLower.indexOf(firstLineLower) >= 0 ||
-              firstLineLower.indexOf(titleLower) >= 0 ||
-              (baseNameLower && titleLower.indexOf(baseNameLower) >= 0);
-            if (!titleContainsDetail) {
-              displayTitle = firstLine.length > 80 ? firstLine.substring(0, 77) + '...' : firstLine;
-            }
-          }
+      }
+      el._toolTitle = displayTitle;
+      if (currentToolsCountEl && currentToolsCountEl._titles && currentToolsCountEl._titles.length) {
+        currentToolsCountEl._titles[currentToolsCountEl._titles.length - 1] = displayTitle;
+        if (currentToolsCountEl.classList.contains('turn-tools-summary')) {
+          updateToolGroupSummary(currentToolsCountEl, currentToolCount, currentToolsCountEl._titles, currentToolsCountEl._kinds, currentToolsCountEl._rawInputs || []);
         }
       }
       el.innerHTML =
@@ -13096,7 +13739,7 @@ function commitCurrentTextSegment(opts) {
       hideEmpty();
       const el = document.createElement('div');
       el.className = 'tool-call';
-      el.id = 'tc-' + toolCallId;
+      el.id = toolCallElementId(toolCallId);
       el._rawInput = rawInput || null;
       el._toolTitle = title || 'Tool Call';
       el.innerHTML = '<span class="title">' + escapeHtml(title || 'Tool Call') + '</span>'
@@ -13167,6 +13810,7 @@ if (_deduped) {
  resetClaudeCrewState();
  currentPlanEl = null;
  if (planBar) { planBar.innerHTML = ''; }
+ if (typeof clearCursorTodosPlan === 'function') clearCursorTodosPlan();
  currentTurnEl = null;
  currentToolsListEl = null;
  currentToolsCountEl = null;
@@ -13205,6 +13849,8 @@ if (_deduped) {
    if (!item) continue;
    // Skip persisted Kiro Summarizing rows (redundant with assistant summary).
    if (item.kind === 'toolCall' && isKiroSummaryToolTitle(item.title)) continue;
+   // Skip Cursor Update TODOs tool rows — board lives in the plan bar.
+   if (item.kind === 'toolCall' && isCursorUpdateTodosPlaceholder(item.title, item.rawInput)) continue;
    // Keep the outer index for DOM stamping — thoughts were pushed via the
    // addThoughtDOM historyIndex arg, tool rows stamped explicitly below.
    var _historyIndex = i;
@@ -13347,7 +13993,7 @@ if (_deduped) {
          item.toolKind,
          item.locations,
          item.parentToolUseId || null);
-       var _toolEl = toolCalls[item.toolCallId] || document.getElementById('tc-' + item.toolCallId);
+       var _toolEl = lookupToolCallEl(item.toolCallId);
        // Restore diffPaths from persisted history so tooltips work after
        // VS Code restart (without session/load replay).
        if (_toolEl && item.diffPaths && item.diffPaths.length > 0) {
@@ -13523,17 +14169,32 @@ forceCollapseTurnFolds();
    function updateToolCall(toolCallId, status, title, content, rawInput) {
      var _wasTerminal = false;
      for (let i = chatHistory.length - 1; i >= 0; i--) {
-       if (chatHistory[i].kind === 'toolCall' && chatHistory[i].toolCallId === toolCallId) {
+       if (chatHistory[i].kind === 'toolCall' && toolCallIdsMatch(chatHistory[i].toolCallId, toolCallId)) {
          var _prevStatus = chatHistory[i].status;
-         chatHistory[i].status = status;
+         if (status) {
+           var _prevTerminal = _prevStatus === 'completed' || _prevStatus === 'failed' || _prevStatus === 'error';
+           var _nextRunning = status === 'pending' || status === 'running' || status === 'in_progress';
+           // Don't let Cursor's late pending updates undo a completed row.
+           if (!(_prevTerminal && _nextRunning)) {
+             chatHistory[i].status = status;
+           }
+         }
          if (title) chatHistory[i].title = title;
          if (rawInput) chatHistory[i].rawInput = rawInput;
+         var _resolvedTitle = resolveToolCallDisplayTitle(
+           chatHistory[i].title,
+           chatHistory[i].rawInput,
+           chatHistory[i].locations,
+           chatHistory[i].toolKind
+         );
+         if (_resolvedTitle) chatHistory[i].title = _resolvedTitle;
          // Detect a transition INTO a terminal status (completed/failed/error)
          // from a running one — used to live-refresh the /ps panel so a tool
          // that ends mid-turn disappears from the running list immediately,
          // without waiting for the next turn's drainQueue.
-         if (status !== _prevStatus &&
-             (status === 'completed' || status === 'failed' || status === 'error') &&
+         var _appliedStatus = chatHistory[i].status;
+         if (_appliedStatus && _appliedStatus !== _prevStatus &&
+             (_appliedStatus === 'completed' || _appliedStatus === 'failed' || _appliedStatus === 'error') &&
              (_prevStatus === 'in_progress' || _prevStatus === 'running' || _prevStatus === 'pending')) {
            _wasTerminal = true;
          }
@@ -13552,7 +14213,7 @@ forceCollapseTurnFolds();
     // overwrite stage 0's prompt with the parent's "Spawn N subagents" task
     // and short-circuit before the multi-stage iteration runs). Route it to
     // the crew-level stages[] handler instead.
-    var crewElForAggregate = document.getElementById('tc-' + toolCallId);
+    var crewElForAggregate = lookupToolCallEl(toolCallId);
     var isAggregateParallelUpdate = rawInput && typeof rawInput === 'object' &&
       Array.isArray(rawInput.stages) && rawInput.stages.length > 1 &&
       crewElForAggregate && (crewElForAggregate.getAttribute('data-subagent-crew') === '1' || crewElForAggregate.getAttribute('data-claude-crew') === '1') &&
@@ -13624,7 +14285,7 @@ forceCollapseTurnFolds();
     }
     } // end else (not aggregate parallel update)
 
-     const el = toolCalls[toolCallId] || document.getElementById('tc-' + toolCallId);
+     const el = lookupToolCallEl(toolCallId);
      if (!el) return;
 
      // Attach tooltip if rawInput arrived in an update (not present on
@@ -13695,35 +14356,49 @@ forceCollapseTurnFolds();
           }
           return;
         }
-        iconEl.className = 'tc-icon ' + status;
-        iconEl.textContent = getStatusIcon(status);
-        if (title) {
-          const titleEl = el.querySelector('.tc-title');
-          if (titleEl) {
-            // Apply friendly title for subagent spawn calls
-            var dt = cleanMultiLineTitle(title);
-            var elRawInput = el._rawInput || rawInput;
-            if (isSubagentToolCall(title, el.dataset.toolKind || null, elRawInput)) {
-              var sn = getSubagentSpawnCount(title, elRawInput);
-              if (isSubagentSpawnTitle(title, elRawInput) && sn > 0) {
-                var taskDesc2 = (elRawInput && (elRawInput.task || elRawInput.prompt || elRawInput.description)) || '';
-                if (Array.isArray(elRawInput && elRawInput.stages) && elRawInput.stages.length > 0) {
-                  dt = 'spawned ' + sn + ' subagent' + (sn > 1 ? 's' : '');
-                } else if (typeof taskDesc2 === 'string' && taskDesc2.length > 0) {
-                  dt = taskDesc2.length > 80 ? taskDesc2.substring(0, 77) + '...' : taskDesc2;
-                } else {
-                  dt = 'spawned ' + sn + ' subagent' + (sn > 1 ? 's' : '');
-                }
+        if (status) {
+          // Cursor keeps emitting status:"pending" on late tool_call_update
+          // after we've already marked the row completed — don't re-spin.
+          var _iconTerminal = iconEl.classList.contains('completed') ||
+            iconEl.classList.contains('failed') || iconEl.classList.contains('error');
+          var _statusRunning = status === 'pending' || status === 'running' || status === 'in_progress';
+          if (!(_iconTerminal && _statusRunning)) {
+            iconEl.className = 'tc-icon ' + status;
+            iconEl.textContent = getStatusIcon(status);
+          }
+        }
+        var titleEl = el.querySelector('.tc-title');
+        if (titleEl && (title || rawInput)) {
+          var elRawInput = rawInput || el._rawInput;
+          var dt = resolveToolCallDisplayTitle(title || el._toolTitle, elRawInput, el._locations, el.dataset.toolKind || null);
+          if (isSubagentToolCall(title || el._toolTitle, el.dataset.toolKind || null, elRawInput)) {
+            var sn = getSubagentSpawnCount(title || el._toolTitle, elRawInput);
+            if (isSubagentSpawnTitle(title || el._toolTitle, elRawInput) && sn > 0) {
+              var taskDesc2 = (elRawInput && (elRawInput.task || elRawInput.prompt || elRawInput.description)) || '';
+              if (Array.isArray(elRawInput && elRawInput.stages) && elRawInput.stages.length > 0) {
+                dt = 'spawned ' + sn + ' subagent' + (sn > 1 ? 's' : '');
+              } else if (typeof taskDesc2 === 'string' && taskDesc2.length > 0) {
+                dt = taskDesc2.length > 80 ? taskDesc2.substring(0, 77) + '...' : taskDesc2;
+              } else {
+                dt = 'spawned ' + sn + ' subagent' + (sn > 1 ? 's' : '');
               }
             }
-            titleEl.textContent = dt;
           }
+          titleEl.textContent = dt;
+          el._toolTitle = dt;
+          syncToolTitleToTurnSummaries(toolCallId, dt, elRawInput);
+        } else if (title || rawInput) {
+          syncToolTitleToTurnSummaries(
+            toolCallId,
+            resolveToolCallDisplayTitle(title || el._toolTitle, rawInput || el._rawInput, el._locations, el.dataset.toolKind || null),
+            rawInput || el._rawInput
+          );
         }
         return;
       }
       // Legacy card style fallback
       const badge = el.querySelector('.status-badge');
-      if (badge) {
+      if (badge && status) {
         badge.className = 'status-badge ' + status;
         badge.textContent = status;
       }
@@ -14187,6 +14862,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         lastRenderTime = 0;
         currentPlanEl = null;
         if (planBar) { planBar.innerHTML = ''; }
+        if (typeof clearCursorTodosPlan === 'function') clearCursorTodosPlan();
         break;
 
      case 'promptEnd':
@@ -14472,6 +15148,10 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       if (!isCompacting && messageQueue.length === 0 && !pendingSendAfterCancel) {
         vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] no drain needed: queue empty' });
       }
+      // Catch any stub titles whose per-tool enrich raced the store.db write.
+      if (!_wasCompacting && !isLoadingSession) {
+        requestCursorToolEnrichIfNeeded();
+      }
        break;
 
      case 'clearChat':
@@ -14503,6 +15183,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         thoughtEndTime = null;
         currentPlanEl = null;
         if (planBar) { planBar.innerHTML = ''; }
+        if (typeof clearCursorTodosPlan === 'function') clearCursorTodosPlan();
         tokenUsage = null;
          if (tokenUsageRing) tokenUsageRing.classList.remove('visible');
          availableCommands = [];
@@ -14548,7 +15229,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
                (_kItem.status === 'in_progress' || _kItem.status === 'running' || _kItem.status === 'pending')) {
              _kItem.status = 'failed';
              _killed++;
-             var _kEl = toolCalls[_kItem.toolCallId] || document.getElementById('tc-' + _kItem.toolCallId);
+             var _kEl = lookupToolCallEl(_kItem.toolCallId);
              if (_kEl) {
                var _kIcon = _kEl.querySelector('.tc-icon');
                if (_kIcon) { _kIcon.className = 'tc-icon failed'; _kIcon.textContent = getStatusIcon('failed'); }
@@ -14838,6 +15519,10 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
 
         case 'loadSessionEnd':
           handleLoadSessionEnd(!!msg.ok);
+          break;
+
+        case 'cursorToolEnrichBatch':
+          handleCursorToolEnrichBatch(msg.tools || []);
           break;
 
         case 'sessionInfoUpdate':
@@ -15361,9 +16046,20 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
 
     /** Bare spinner while the turn is still running (no "Compacting…" label). */
     function restoreProcessingStatusSpinner() {
-      if (isProcessing && statusEl && !statusEl.innerHTML) {
-        statusEl.innerHTML = '<span class="spinner"></span>';
-      } else if (!isProcessing && statusEl) {
+      if (!statusEl) return;
+      if (isProcessing) {
+        // Don't clobber intentional labeled statuses.
+        if (isCompacting || isClearing) return;
+        var txt = (statusEl.textContent || '').trim();
+        if (/compact|clearing|summarizing/i.test(txt)) return;
+        var hasSpinner = !!statusEl.querySelector('.spinner');
+        // Bare spinner must be the only content. A flash like
+        // "<spinner>3 todos updated" still has .spinner, so the old
+        // heal path left the sticky label for the rest of the turn.
+        if (!hasSpinner || txt) {
+          statusEl.innerHTML = '<span class="spinner"></span>';
+        }
+      } else {
         statusEl.innerHTML = '';
       }
     }
@@ -15380,8 +16076,10 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         // Compact UI may have been left in statusEl after a prior soft exit.
         if (statusEl && /compact/i.test(statusEl.textContent || '')) {
           hideCompactionProgress();
-          restoreProcessingStatusSpinner();
         }
+        // Also heal sticky statuses (e.g. "N todos updated" without spinner)
+        // whenever the agent resumes streaming mid-turn.
+        restoreProcessingStatusSpinner();
         return;
       }
       if (compactedWarningText || compactedNoticeText) {
@@ -15560,7 +16258,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
     const type = update.sessionUpdate;
 
     // [DEBUG-SUBAGENT] Log every update type received by webview
-    if (type === 'agent_message_chunk' || type === 'tool_call' || type === 'agent_thought_chunk') {
+    if (DEBUG && (type === 'agent_message_chunk' || type === 'tool_call' || type === 'agent_thought_chunk')) {
       var _dbgPreview = '';
       if (type === 'agent_message_chunk' || type === 'agent_thought_chunk') {
         _dbgPreview = update.content && update.content.text
@@ -15574,6 +16272,12 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
      switch (type) {
     case 'agent_message_chunk': {
       const content = update.content;
+      // Cursor tools stay pending forever on the wire — when the model
+      // resumes with a message, prior plain tools are done.
+      if (isCursorAgentSession() && !isLoadingSession && content && content.type === 'text' &&
+          String(content.text || '').trim()) {
+        completeInFlightToolCalls(null);
+      }
       // Suppress "Effort configuration is currently not available on <model>"
       // messages from Kiro CLI when switching to a model that doesn't support
       // effort. These are slash-command responses, not part of the conversation.
@@ -15962,6 +16666,10 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
          const content = update.content;
          if (content && content.type === 'text') {
            endCompactingOnAgentResume();
+           // Cursor: model thinking again means prior tools finished.
+           if (isCursorAgentSession() && !isLoadingSession && String(content.text || '').trim()) {
+             completeInFlightToolCalls(null);
+           }
            currentThoughtText += content.text;
            // Don't mount an empty Thinking… card — it flashes then vanishes when
            // tools arrive before any real text (same idea as assistant bubbles).
@@ -16123,9 +16831,17 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       if (isCursorTaskPlaceholder(update.title, update.rawInput)) {
         break;
       }
+      // Cursor Update TODOs stub — drop; board comes from cursor/update_todos.
+      if (isCursorUpdateTodosPlaceholder(update.title, update.rawInput)) {
+        break;
+      }
       // Non-compaction tool — agent is working again; clear compact status.
+      // Keep the banner spinner alive on every tool call (Codex keeps it
+      // spinning for the whole turn; Cursor/Kiro status flashes must not
+      // leave a dead status slot).
       if (!isCompacting) {
-      endCompactingOnAgentResume();
+        endCompactingOnAgentResume();
+        restoreProcessingStatusSpinner();
       }
       const tc = update;
       var _parentId = update._meta && update._meta.claudeCode && update._meta.claudeCode.parentToolUseId;
@@ -16157,13 +16873,17 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       addToolCall(
         tc.toolCallId || 'unknown',
         _tcTitleForUi,
-         (tc.status === 'in_progress' ? 'running' : tc.status) || 'pending',
+         normalizeLiveToolStatus(tc.status),
         tc.content,
         _tcRawInput,
         tc.kind,
         tc.locations,
         _parentId || null,
       );
+      if (isCursorStubToolTitle(_tcTitleForUi)) {
+        requestCursorToolEnrichIfNeeded();
+        scheduleCursorStubEnrichRetry();
+      }
       break;
      }
 
@@ -16219,11 +16939,28 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       var _tcuRawInput = update.rawInput && update.rawInput.taskResult
         ? stripTaskResult(update.rawInput)
         : update.rawInput;
+      // status may be omitted (e.g. Cursor store.db enrich patch that only
+      // fills title/rawInput) — pass undefined so updateToolCall keeps the
+      // current icon/status instead of forcing "running".
+      var _tcuStatus = update.status == null
+        ? undefined
+        : normalizeLiveToolStatus(update.status);
+      var _tcuContent = update.content;
+      // Cursor keeps status "pending" on tool_call_update even after results
+      // arrive. If content is present, the tool finished — stop the spinner.
+      if (_tcuStatus &&
+          (_tcuStatus === 'pending' || _tcuStatus === 'running' || _tcuStatus === 'in_progress') &&
+          Array.isArray(_tcuContent) && _tcuContent.length > 0) {
+        _tcuStatus = 'completed';
+      }
+      if (!isCompacting && (_tcuStatus || update.title || update.content || _tcuRawInput)) {
+        restoreProcessingStatusSpinner();
+      }
       updateToolCall(
         update.toolCallId || 'unknown',
-         (update.status === 'in_progress' ? 'running' : update.status) || 'running',
+        _tcuStatus,
          update.title,
-         update.content,
+         _tcuContent,
           _tcuRawInput,
        );
        break;
@@ -16931,39 +17668,105 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
     }
   }
 
-  /** Cursor cursor/update_todos — only surface outside when Collapse is off. */
-  function handleCursorUpdateTodos(params) {
-    if (!params || !Array.isArray(params.todos) || !planBar) return;
-    // Render todos in the plan bar above the chat input in all modes.
-    // In compact mode the plan bar is still visible (it sits outside the
-    // message list fold), so the user always sees the current task board.
-    if (compactMode) {
-      if (statusEl && params.todos.length) {
-        statusEl.textContent = params.todos.length + ' todo' + (params.todos.length > 1 ? 's' : '') + ' updated';
-      }
-    }
-    var todos = params.todos;
-    if (!todos.length) {
-      if (!params.merge) planBar.innerHTML = '';
+  /** Cursor cursor/update_todos — single plan-bar board (not inline tool rows). */
+  var cursorTodosById = Object.create(null);
+
+  function normalizeCursorTodoStatus(st) {
+    var s = String(st || 'pending').toLowerCase();
+    if (s.indexOf('complet') >= 0) return 'completed';
+    if (s.indexOf('progress') >= 0 || s === 'in_progress') return 'in_progress';
+    if (s.indexOf('cancel') >= 0) return 'cancelled';
+    return 'pending';
+  }
+
+  function clearCursorTodosPlan() {
+    cursorTodosById = Object.create(null);
+    if (!planBar) return;
+    var root = planBar.querySelector('.cursor-todos-plan');
+    if (root) root.remove();
+    planBar.classList.remove('cursor-todos-outside');
+  }
+
+  function renderCursorTodosPlanBar() {
+    if (!planBar) return;
+    var ids = Object.keys(cursorTodosById);
+    var root = planBar.querySelector('.cursor-todos-plan');
+    if (!ids.length) {
+      if (root) root.remove();
+      planBar.classList.remove('cursor-todos-outside');
       return;
     }
-    planBar.classList.add('cursor-todos-outside');
-    if (!params.merge) planBar.innerHTML = '';
+    ids.sort(function (a, b) {
+      var na = Number(a); var nb = Number(b);
+      if (!isNaN(na) && !isNaN(nb)) return na - nb;
+      return String(a).localeCompare(String(b));
+    });
     var html = '<div class="plan"><div class="plan-title">Todos</div>';
-    for (var i = 0; i < todos.length; i++) {
-      var t = todos[i];
-      var st = (t && t.status) || 'pending';
+    for (var i = 0; i < ids.length; i++) {
+      var t = cursorTodosById[ids[i]];
+      var st = normalizeCursorTodoStatus(t && t.status);
       var cls = st === 'completed' ? 'plan-entry completed' : 'plan-entry';
       html += '<div class="' + cls + '">' +
         '<span>' + (st === 'completed' ? '✓' : st === 'in_progress' ? '…' : '○') + '</span>' +
         '<span>' + escapeHtml((t && t.content) || '') + '</span></div>';
     }
     html += '</div>';
-    if (params.merge && planBar.innerHTML) {
-      planBar.innerHTML += html;
-    } else {
-      planBar.innerHTML = html;
+    if (!root) {
+      root = document.createElement('div');
+      root.className = 'cursor-todos-plan';
+      planBar.insertBefore(root, planBar.firstChild);
     }
+    planBar.classList.add('cursor-todos-outside');
+    root.innerHTML = html;
+  }
+
+  function handleCursorUpdateTodos(params) {
+    if (!params || !Array.isArray(params.todos) || !planBar) return;
+    // Render todos in the plan bar above the chat input in all modes.
+    // In compact mode the plan bar is still visible (it sits outside the
+    // message list fold), so the user always sees the current task board.
+    if (compactMode && statusEl && params.todos.length) {
+      var todoMsg = params.todos.length + ' todo' + (params.todos.length > 1 ? 's' : '') + ' updated';
+      if (statusEl._todoStatusTimer) {
+        clearTimeout(statusEl._todoStatusTimer);
+        statusEl._todoStatusTimer = null;
+      }
+      if (isProcessing) {
+        // Never replace the live spinner with "N todos updated" — that label
+        // stuck for the rest of the turn (heal only ran when .spinner was
+        // missing). Todos already show in the plan bar; keep status = spinner.
+        restoreProcessingStatusSpinner();
+      } else {
+        statusEl.textContent = todoMsg;
+        statusEl._todoStatusTimer = setTimeout(function () {
+          statusEl._todoStatusTimer = null;
+          if (statusEl && statusEl.textContent === todoMsg) {
+            statusEl.textContent = '';
+          }
+        }, 3000);
+      }
+    }
+    var todos = params.todos;
+    if (!params.merge) {
+      cursorTodosById = Object.create(null);
+    }
+    if (!todos.length) {
+      if (!params.merge) clearCursorTodosPlan();
+      else renderCursorTodosPlanBar();
+      return;
+    }
+    for (var i = 0; i < todos.length; i++) {
+      var t = todos[i];
+      if (!t || typeof t !== 'object') continue;
+      var id = t.id != null ? String(t.id) : ('anon-' + i);
+      var prev = cursorTodosById[id] || {};
+      cursorTodosById[id] = {
+        id: id,
+        content: t.content != null ? t.content : prev.content,
+        status: normalizeCursorTodoStatus(t.status != null ? t.status : prev.status),
+      };
+    }
+    renderCursorTodosPlanBar();
   }
 
   function handleCursorGenerateImage(params) {
