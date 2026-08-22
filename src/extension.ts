@@ -56,25 +56,40 @@ import { initTelemetry, sendEvent } from './utils/TelemetryManager';
 let _sessionManager: SessionManager | undefined;
 
 /** Coalesce duplicate session open/restore progress toasts (double-click resume). */
-let sessionOpenInFlight: { key: string; promise: Promise<unknown> } | null = null;
+const sessionOpenOperations = new Map<string, Promise<unknown>>();
 
 function sessionOpenKey(agentName: string, sessionId: string): string {
   return `${agentName}\0${sessionId}`;
 }
 
-function clearSessionOpenInFlight(): void {
-  sessionOpenInFlight = null;
+/** Dedupe key for connect+load restore — session id must not be part of the key
+ * because connectToAgent creates a temp session and overwrites lastConnectedSessionId
+ * mid-restore, which would defeat agent+session dedupe on the second click. */
+function sessionConnectRestoreKey(agentName: string): string {
+  return `connect-restore:\0${agentName}`;
 }
 
-async function withDedupedSessionOpenProgress<T>(
-  agentName: string,
-  sessionId: string,
+function isConnectRestoreInFlight(agentName: string): boolean {
+  return sessionOpenOperations.has(sessionConnectRestoreKey(agentName));
+}
+
+function clearSessionOpenInFlight(): void {
+  sessionOpenOperations.clear();
+}
+
+/**
+ * Run `task` once per dedupe key; concurrent callers await the same promise
+ * and only one progress notification is shown. The map entry is reserved
+ * synchronously so parallel connectAgent handlers cannot race.
+ */
+function joinOrRunSessionOpen<T>(
+  dedupeKey: string,
   title: string,
   task: () => Thenable<T>,
 ): Promise<T> {
-  const key = sessionOpenKey(agentName, sessionId);
-  if (sessionOpenInFlight?.key === key) {
-    return sessionOpenInFlight.promise as Promise<T>;
+  const existing = sessionOpenOperations.get(dedupeKey);
+  if (existing) {
+    return existing as Promise<T>;
   }
 
   let resolve!: (value: T) => void;
@@ -83,10 +98,7 @@ async function withDedupedSessionOpenProgress<T>(
     resolve = res;
     reject = rej;
   });
-  // Reserve synchronously before withProgress — otherwise a second click in the
-  // same event-loop turn starts a second notification (Promise.resolve runs
-  // withProgress before sessionOpenInFlight is assigned).
-  sessionOpenInFlight = { key, promise: deferred };
+  sessionOpenOperations.set(dedupeKey, deferred);
 
   void Promise.resolve(
     vscode.window.withProgress(
@@ -100,8 +112,8 @@ async function withDedupedSessionOpenProgress<T>(
   )
     .then(resolve, reject)
     .finally(() => {
-      if (sessionOpenInFlight?.key === key) {
-        sessionOpenInFlight = null;
+      if (sessionOpenOperations.get(dedupeKey) === deferred) {
+        sessionOpenOperations.delete(dedupeKey);
       }
     });
 
@@ -335,7 +347,15 @@ export function activate(context: vscode.ExtensionContext): void {
     if (session) {
       context.workspaceState.update('acp.lastConnectedAgent', session.agentName);
       context.workspaceState.update('acp.lastConnectedAgentDisplay', session.agentDisplayName || session.agentName);
-      context.workspaceState.update('acp.lastConnectedSessionId', session.sessionId);
+      // Do not persist the temp session id created by connectToAgent mid-restore —
+      // that id change breaks resume dedupe and re-seeds the webview with a
+      // different sessionId before loadSession finishes.
+      const skipSessionIdPersist =
+        isConnectRestoreInFlight(session.agentName) ||
+        sessionManager.isLoading(session.sessionId);
+      if (!skipSessionIdPersist) {
+        context.workspaceState.update('acp.lastConnectedSessionId', session.sessionId);
+      }
     }
     chatWebviewProvider.notifyActiveSessionChanged();
   });
@@ -474,9 +494,10 @@ export function activate(context: vscode.ExtensionContext): void {
   sessionManager.on('session-load-start', () => {
     chatWebviewProvider.notifyLoadSessionStart();
   });
-  sessionManager.on('session-load-end', (_sessionId: string, _agentName: string, ok: boolean) => {
+  sessionManager.on('session-load-end', (sessionId: string, agentName: string, ok: boolean) => {
     chatWebviewProvider.notifyLoadSessionEnd(ok);
     if (ok) {
+      context.workspaceState.update('acp.lastConnectedSessionId', sessionId);
       // The loadSession response carries modes/models/configOptions for the
       // restored session. Re-send the state so the pickers pick them up
       // (the original `active-session-changed` was emitted before the RPC
@@ -508,9 +529,71 @@ export function activate(context: vscode.ExtensionContext): void {
         agentName = agentNameOrItem.agentName;
         // Restored-session reconnect: the webview passes both agentName
         // and sessionId so we can load the previous session after connecting.
-        if (typeof agentNameOrItem.sessionId === 'string') {
+        if (typeof agentNameOrItem.sessionId === 'string' && agentNameOrItem.sessionId.length > 0) {
           sessionId = agentNameOrItem.sessionId;
         }
+      }
+
+      // Resume path: agent + session are known — dedupe before any await so
+      // parallel webview executeCommand handlers cannot each spawn a toast.
+      if (agentName && !sessionId) {
+        sessionId = context.workspaceState.get<string>('acp.lastConnectedSessionId') || undefined;
+      }
+      if (agentName && sessionId) {
+        const restoreAgent = agentName;
+        const restoreSessionId = sessionId;
+        try {
+          await joinOrRunSessionOpen(
+            sessionConnectRestoreKey(restoreAgent),
+            `Restoring ${restoreAgent} session...`,
+            async () => {
+              const currentAgent = sessionManager.getActiveAgentName();
+              if (currentAgent && currentAgent !== restoreAgent) {
+                sessionManager.cancelInFlightSessionLoads();
+                clearSessionOpenInFlight();
+              }
+              sessionManager.cancelInFlightSessionLoadsUnless(restoreAgent, restoreSessionId);
+              if (currentAgent && currentAgent !== restoreAgent && chatWebviewProvider.hasChatContent) {
+                const choice = await vscode.window.showWarningMessage(
+                  `Switch to ${restoreAgent}? This will disconnect ${currentAgent} and clear the chat history.`,
+                  'Switch Agent',
+                  'Cancel',
+                );
+                if (choice !== 'Switch Agent') {
+                  throw new Error('Connect cancelled');
+                }
+                chatWebviewProvider.clearChat(false);
+              }
+              // Spawn/connect the agent process only — do NOT create a throwaway
+              // session via connectToAgent. That temp session fires
+              // active-session-changed, re-seeds lastConnectedSessionId, and can
+              // cancel the real session/load on a second resume click.
+              await sessionManager.ensureConnected(restoreAgent);
+              const caps = sessionManager.getCachedCapabilities(restoreAgent);
+              if (caps?.load) {
+                try {
+                  await sessionManager.loadSession(restoreAgent, restoreSessionId);
+                } catch (e: any) {
+                  if (isSessionLoadCancelledError(e)) {
+                    return;
+                  }
+                  log(`Failed to restore session ${restoreSessionId}: ${e?.message || e}`);
+                }
+              } else if (caps?.resume) {
+                await sessionManager.resumeSession(restoreAgent, restoreSessionId);
+              } else {
+                await sessionManager.connectToAgent(restoreAgent);
+              }
+            },
+          );
+        } catch (e: any) {
+          if (isSessionLoadCancelledError(e) || e?.message === 'Connect cancelled') {
+            return;
+          }
+          logError('Failed to connect to agent', e);
+          vscode.window.showErrorMessage(`Failed to connect: ${e.message}`);
+        }
+        return;
       }
 
       if (!agentName) {
@@ -549,55 +632,20 @@ export function activate(context: vscode.ExtensionContext): void {
         chatWebviewProvider.clearChat(false);
       }
 
-      // Join an in-flight restore (double-click resume) before any new progress toast.
-      if (sessionId && agentName && sessionOpenInFlight?.key === sessionOpenKey(agentName, sessionId)) {
-        await sessionOpenInFlight.promise;
-        return;
-      }
-
       try {
         const runConnect = async (): Promise<void> => {
           await sessionManager.connectToAgent(agentName!);
-          // If we have a previous session ID and the agent supports
-          // session/load, restore the session history.
-          if (sessionId) {
-            const caps = sessionManager.getCachedCapabilities(agentName!);
-            if (caps?.load) {
-              try {
-                await sessionManager.loadSession(agentName!, sessionId);
-              } catch (e: any) {
-                if (isSessionLoadCancelledError(e)) {
-                  return;
-                }
-                // Session may have expired or been deleted — not fatal.
-                // The user gets a fresh session with the same agent.
-                log(`Failed to restore session ${sessionId}: ${e?.message || e}`);
-              }
-            }
-          }
         };
 
-        if (sessionId) {
-          await withDedupedSessionOpenProgress(
-            agentName!,
-            sessionId,
-            `Restoring ${agentName} session...`,
-            runConnect,
-          );
-        } else {
-          await vscode.window.withProgress(
-            {
-              location: vscode.ProgressLocation.Notification,
-              title: `Connecting to ${agentName}...`,
-              cancellable: false,
-            },
-            runConnect,
-          );
-        }
+        await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: `Connecting to ${agentName}...`,
+            cancellable: false,
+          },
+          runConnect,
+        );
       } catch (e: any) {
-        if (isSessionLoadCancelledError(e)) {
-          return;
-        }
         logError('Failed to connect to agent', e);
         vscode.window.showErrorMessage(`Failed to connect: ${e.message}`);
       }
@@ -937,7 +985,7 @@ export function activate(context: vscode.ExtensionContext): void {
     // No-op if it is already the active session (join an in-flight load instead).
     if (sessionManager.getActiveSessionId() === sessionId) {
       if (sessionManager.hasInFlightSessionLoadFor(agentName, sessionId)) {
-        await withDedupedSessionOpenProgress(agentName, sessionId, `Loading session…`, async () => {
+        await joinOrRunSessionOpen(sessionOpenKey(agentName, sessionId), `Loading session…`, async () => {
           await sessionManager.loadSession(agentName, sessionId);
         });
       }
@@ -964,7 +1012,7 @@ export function activate(context: vscode.ExtensionContext): void {
       // history) for the richer experience.
       const caps = sessionManager.getCachedCapabilities(agentName);
       if (caps?.load) {
-        await withDedupedSessionOpenProgress(agentName, sessionId, `Loading session…`, async () => {
+        await joinOrRunSessionOpen(sessionOpenKey(agentName, sessionId), `Loading session…`, async () => {
           await sessionManager.loadSession(agentName, sessionId);
         });
       } else if (caps?.resume) {

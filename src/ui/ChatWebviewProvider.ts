@@ -126,6 +126,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   /** Coalesce batch-enrich requests (reload + loadSessionEnd + webview ready). */
   private cursorBatchEnrichTimer: ReturnType<typeof setTimeout> | null = null;
 
+  /** Serialize acp.connectAgent from the webview (onDidReceiveMessage is not awaited). */
+  private connectAgentCommandChain: Promise<unknown> = Promise.resolve();
+
   /**
    * "Follow Agent" feature — mirrors Zed's `workspace.follow(CollaboratorId::Agent)`.
    * When `_isFollowing` is true and a `tool_call` / `tool_call_update` carries
@@ -1493,7 +1496,15 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           break;
         case 'executeCommand':
           if (message.command) {
-            await vscode.commands.executeCommand(message.command, ...(message.args || []));
+            if (message.command === 'acp.connectAgent') {
+              const run = this.connectAgentCommandChain.then(() =>
+                vscode.commands.executeCommand(message.command, ...(message.args || [])),
+              );
+              this.connectAgentCommandChain = run.catch(() => undefined);
+              await run;
+            } else {
+              await vscode.commands.executeCommand(message.command, ...(message.args || []));
+            }
           }
           break;
         case 'cursorRequestToolEnrich':
@@ -5555,14 +5566,47 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   let lastConnectedAgentDisplay = null;
  let lastConnectedSessionId = null;
  var resumeConnectInFlight = false;
+ var pinnedRestoreSessionId = null;
  function requestResumeConnect() {
    if (resumeConnectInFlight || !lastConnectedAgent) return;
    resumeConnectInFlight = true;
+   pinnedRestoreSessionId = lastConnectedSessionId;
+   if (loadOverlay) loadOverlay.classList.add('visible');
+   if (resumeBar) {
+     var btns = resumeBar.querySelectorAll('.resume-btn');
+     for (var bi = 0; bi < btns.length; bi++) {
+       btns[bi].disabled = true;
+       btns[bi].style.opacity = '0.55';
+       btns[bi].style.pointerEvents = 'none';
+     }
+   }
+   if (welcomeConnectAgent) {
+     welcomeConnectAgent.disabled = true;
+     welcomeConnectAgent.style.opacity = '0.55';
+     welcomeConnectAgent.style.pointerEvents = 'none';
+   }
    vscode.postMessage({
      type: 'executeCommand',
      command: 'acp.connectAgent',
-     args: [{ agentName: lastConnectedAgent, sessionId: lastConnectedSessionId }],
+     args: [{ agentName: lastConnectedAgent, sessionId: pinnedRestoreSessionId }],
    });
+ }
+ function resetResumeConnectUi() {
+   resumeConnectInFlight = false;
+   pinnedRestoreSessionId = null;
+   if (resumeBar) {
+     var btns2 = resumeBar.querySelectorAll('.resume-btn');
+     for (var bj = 0; bj < btns2.length; bj++) {
+       btns2[bj].disabled = false;
+       btns2[bj].style.opacity = '';
+       btns2[bj].style.pointerEvents = '';
+     }
+   }
+   if (welcomeConnectAgent) {
+     welcomeConnectAgent.disabled = false;
+     welcomeConnectAgent.style.opacity = '';
+     welcomeConnectAgent.style.pointerEvents = '';
+   }
  }
 let isProcessing = false;
 let isForceCancelled = false; // true after cancel fallback forces promptEnd
@@ -8526,6 +8570,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
 
  function handleLoadSessionStart() {
+   if (isLoadingSession) {
+     vscode.postMessage({ type: 'debugLog', message: 'handleLoadSessionStart: ignored duplicate (already loading)' });
+     return;
+   }
    vscode.postMessage({ type: 'debugLog', message: 'handleLoadSessionStart' });
    // Cancel all pending render retries from restoreState — the DOM is
    // about to be wiped and rebuilt, so stale renderMarkdown requests
@@ -8600,7 +8648,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
 
   function handleLoadSessionEnd(ok) {
-   resumeConnectInFlight = false;
+   resetResumeConnectUi();
    hideEmpty();
    isLoadingSession = false;
    // DIAG: log merge diagnostics
@@ -14820,7 +14868,9 @@ forceCollapseTurnFolds();
   }
 
   function showSessionConnected(session) {
-   resumeConnectInFlight = false;
+   if (!isLoadingSession) {
+     resetResumeConnectUi();
+   }
    // If a load overlay is still visible (e.g. stale session was
    // replaced by a new session), dismiss it now as a safety net.
    if (isLoadingSession) {
@@ -14854,7 +14904,9 @@ sessionState = {
   };
   lastConnectedAgent = session.agentConfigKey || session.agentName;
   lastConnectedAgentDisplay = session.agentName;
-  lastConnectedSessionId = session.sessionId || null;
+  if (!isLoadingSession && !resumeConnectInFlight) {
+    lastConnectedSessionId = session.sessionId || null;
+  }
   if (resumeBar) resumeBar.style.display = 'none';
   updateWelcomeButton();
   saveState();
@@ -14925,7 +14977,7 @@ sessionState = {
 
 
    function showNoSession() {
-     resumeConnectInFlight = false;
+     resetResumeConnectUi();
      if (isLoadingSession) return;
     hasActiveSession = false;
     hasSentPrompt = false;
@@ -15027,7 +15079,9 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         if (msg.lastAgent) {
           lastConnectedAgent = msg.lastAgent;
           lastConnectedAgentDisplay = msg.lastAgentDisplay || msg.lastAgent;
-          lastConnectedSessionId = msg.lastSessionId || null;
+          if (!isLoadingSession && !resumeConnectInFlight) {
+            lastConnectedSessionId = msg.lastSessionId || null;
+          }
         } else {
           // Extension host cleared the last-connected agent (e.g. after
           // deleting the active session). Clear webview-side state too so
