@@ -2551,6 +2551,11 @@ export class SessionManager extends EventEmitter {
     return this.sessions.get(sessionId);
   }
 
+  /** All sessions currently held in memory (open or background). */
+  getOpenSessions(): SessionInfo[] {
+    return Array.from(this.sessions.values());
+  }
+
   getActiveSession(): SessionInfo | undefined {
     if (!this.activeSessionId) {
       return undefined;

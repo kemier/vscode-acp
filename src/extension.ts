@@ -51,6 +51,7 @@ import {
   getStructuredTraffic,
 } from './utils/Logger';
 import { initTelemetry, sendEvent } from './utils/TelemetryManager';
+import { CompactionHookWatcher } from './core/CompactionHookWatcher';
 
 // Module-level reference so deactivate() can clean up even if
 // context.subscriptions disposal was skipped (e.g. VSCode force-quit).
@@ -154,6 +155,32 @@ export function activate(context: vscode.ExtensionContext): void {
   const connectionManager = new ConnectionManager(sessionUpdateHandler);
   const sessionManager = new SessionManager(agentManager, connectionManager, sessionUpdateHandler);
   _sessionManager = sessionManager;
+
+  const compactionHookWatcherEnabled = vscode.workspace
+    .getConfiguration('acp')
+    .get<boolean>('compaction.hookWatcher', true);
+  let compactionHookWatcher: CompactionHookWatcher | undefined;
+  if (compactionHookWatcherEnabled) {
+    compactionHookWatcher = new CompactionHookWatcher(
+      () => sessionManager.getOpenSessions(),
+      () => sessionManager.getActiveSessionId(),
+      (sessionId, event) => {
+        log(
+          `[COMPACT-HOOK] preCompact → session=${sessionId.slice(0, 8)} ` +
+            `trigger=${event.trigger ?? 'n/a'} usage=${event.context_usage_percent ?? 'n/a'}%`,
+        );
+        sessionManager.onContextCompacted(sessionId);
+      },
+      (event) => {
+        log(
+          `[COMPACT-HOOK] preCompact logged but no matching Cursor session ` +
+            `(conversation=${event.conversation_id ?? 'n/a'})`,
+        );
+      },
+    );
+    compactionHookWatcher.start();
+    context.subscriptions.push({ dispose: () => compactionHookWatcher?.stop() });
+  }
 
   // --- NES (Next Edit Suggestions) ---
   // NES is an experimental ACP feature. codex-acp does NOT currently support
