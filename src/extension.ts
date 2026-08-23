@@ -34,6 +34,7 @@ import { TerminalOutputStore } from './core/TerminalOutputStore';
 import { KiroSessionDiscovery } from './core/KiroSessionDiscovery';
 import { SessionUpdateHandler } from './handlers/SessionUpdateHandler';
 import { SharedMemoryProvider } from './core/memory/SharedMemoryProvider';
+import { MemorySkillBridge } from './core/memory/MemorySkillBridge';
 import { describeMemoryConfigSources, isMemoryConfigured, readMemorySettings } from './core/memory/MemoryConfig';
 import { SessionTreeProvider } from './ui/SessionTreeProvider';
 import { StatusBarManager } from './ui/StatusBarManager';
@@ -180,6 +181,13 @@ export function activate(context: vscode.ExtensionContext): void {
     },
   });
   sessionManager.setMemoryProvider(memoryProvider);
+  const skillBridge = new MemorySkillBridge();
+  if (isMemoryConfigured(readMemorySettings())) {
+    void skillBridge.start().then(() => {
+      memoryProvider.setSkillBridgeBaseUrl(skillBridge.baseUrl);
+    });
+  }
+  context.subscriptions.push({ dispose: () => skillBridge.stop() });
   context.subscriptions.push({ dispose: () => memoryProvider.dispose() });
   {
     const logMemoryStatus = (reason: string): string => {
@@ -199,6 +207,11 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.workspace.onDidChangeConfiguration((e) => {
         if (e.affectsConfiguration('acp.memory')) {
           logMemoryStatus('settings changed');
+          if (isMemoryConfigured(readMemorySettings())) {
+            void skillBridge.start().then(() => {
+              memoryProvider.setSkillBridgeBaseUrl(skillBridge.baseUrl);
+            });
+          }
         }
       }),
     );

@@ -26,6 +26,7 @@ import { log, logError } from '../../utils/Logger';
 import { isMemoryConfigured, readMemorySettings, type MemorySettings } from './MemoryConfig';
 import { resolveMemoryAgentId } from './MemoryAgentId';
 import { formatRecallContext, type SkillEntry } from './MemoryFormat';
+import { formatMemorySkillTools } from './MemorySkillTools';
 import { MemoryHttpClient, type MemoryIsolation } from './MemoryHttpClient';
 import {
   buildRecallQuery,
@@ -87,6 +88,7 @@ export class SharedMemoryProvider {
   private readonly l1State = new Map<string, SessionL1State>();
   private client: MemoryHttpClient | null = null;
   private cachedSettingsKey = '';
+  private skillBridgeBaseUrl = '';
 
   constructor(
     private readonly sessionUpdateHandler: SessionUpdateHandler,
@@ -102,6 +104,12 @@ export class SharedMemoryProvider {
     this.turns.clear();
     this.l1State.clear();
     this.client = null;
+    this.skillBridgeBaseUrl = '';
+  }
+
+  /** Set by extension after MemorySkillBridge starts (localhost curl target). */
+  setSkillBridgeBaseUrl(url: string): void {
+    this.skillBridgeBaseUrl = url.replace(/\/+$/, '');
   }
 
   /**
@@ -363,7 +371,15 @@ export class SharedMemoryProvider {
       // full set.
       this.persistL1StateToStorage();
 
-      const formatted = formatRecallContext(l1Items, persona, scenes, skills);
+      const skillToolsBlock =
+        includeSkills && this.skillBridgeBaseUrl
+          ? formatMemorySkillTools({
+              bridgeBaseUrl: this.skillBridgeBaseUrl,
+              agentId: memoryAgentId,
+            })
+          : undefined;
+
+      const formatted = formatRecallContext(l1Items, persona, scenes, skills, skillToolsBlock);
       if (!formatted) {
         if (settings.debug) {
           log(

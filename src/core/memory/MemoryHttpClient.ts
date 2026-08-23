@@ -261,6 +261,19 @@ export class MemoryHttpClient {
     });
   }
 
+  getSkillByName(
+    iso: MemoryIsolation,
+    skillName: string,
+  ): Promise<{ skill_id: string; name: string; description: string; content: string; version: number }> {
+    const { sessionId: _sessionId, ...rest } = iso;
+    return this.post('/v3/skill/get-by-name', {
+      ...this.isolationBody(rest),
+      skill_name: skillName,
+      include_content: true,
+      include_manifest: false,
+    });
+  }
+
   searchSkills(
     iso: MemoryIsolation,
     params: { query: string; topK?: number },

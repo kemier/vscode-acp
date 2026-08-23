@@ -185,11 +185,12 @@ suite('MemoryFormat.formatSkills', () => {
     assert.ok(text!.includes('</available_skills>'));
   });
 
-  test('clarifies memory vs filesystem skills', () => {
+  test('clarifies memory vs filesystem skills and memory_skill_view', () => {
     const text = formatSkills([{ skill_id: 's1', name: 'test', description: 'a test', version: 1 }]);
     assert.ok(text);
     assert.ok(text!.includes('memory-injected'));
-    assert.ok(text!.includes('Skill tool'));
+    assert.ok(text!.includes('memory_skill_view'));
+    assert.ok(text!.includes('Read tool'));
   });
 
   test('handles multiple skills', () => {

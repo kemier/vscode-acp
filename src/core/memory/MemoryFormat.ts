@@ -79,9 +79,9 @@ export function formatSkills(skills: SkillEntry[]): string | undefined {
     lines.push(`- **${s.name}** (v${s.version}): ${s.description}`);
   }
   lines.push('');
-  lines.push('These are memory-injected skills extracted from past conversations.');
-  lines.push('Their full instructions are already loaded in this block — follow them when relevant.');
-  lines.push('Filesystem skills (e.g. ~/.codex/skills/) are loaded separately via the Skill tool.');
+  lines.push('These are memory-injected skills (metadata only — not full SKILL.md).');
+  lines.push('Load full instructions with memory_skill_view (see <memory_skill_tools> below).');
+  lines.push('Filesystem skills (e.g. ~/.cursor/skills-cursor/) are loaded via the Read tool.');
   lines.push('</available_skills>');
   return lines.join('\n');
 }
@@ -128,6 +128,7 @@ export function formatRecallContext(
   persona: string | null | undefined,
   scenes: SceneNavEntry[],
   skills: SkillEntry[] = [],
+  skillToolsBlock?: string,
 ): FormattedRecall | undefined {
   const parts: string[] = [];
   const l1 = formatL1Memories(l1Items);
@@ -145,6 +146,9 @@ export function formatRecallContext(
   const skillBlock = formatSkills(skills);
   if (skillBlock) {
     parts.push(skillBlock);
+  }
+  if (skillToolsBlock?.trim()) {
+    parts.push(skillToolsBlock.trim());
   }
   if (parts.length === 0) {
     return undefined;
