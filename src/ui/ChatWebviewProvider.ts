@@ -186,6 +186,65 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /** Trace Cursor ACP session/update traffic (compaction investigation). Enable acp.debugResume. */
+  private isDebugCursorCompactionTrace(): boolean {
+    return DEBUG || this.isDebugResume();
+  }
+
+  private logCursorSessionUpdate(
+    sessionId: string,
+    updateData: Record<string, unknown> | undefined,
+    activeId: string | null,
+  ): void {
+    if (!this.isDebugCursorCompactionTrace() || !updateData) {
+      return;
+    }
+    const session = this.sessionManager.getSession(sessionId);
+    const agentLabel = session?.agentName || session?.agentDisplayName || '';
+    if (!isCursorAgentName(agentLabel)) {
+      return;
+    }
+    const kind = String(updateData.sessionUpdate || 'unknown');
+    const parts: string[] = [
+      `kind=${kind}`,
+      `session=${sessionId.slice(0, 8)}`,
+      `active=${sessionId === activeId}`,
+    ];
+    if (kind === 'compaction_update') {
+      parts.push(`status=${String(updateData.status || '')}`);
+      if (updateData.error) {
+        parts.push(`error=${String(updateData.error).slice(0, 80)}`);
+      }
+      if (updateData.summary) {
+        parts.push(`summaryLen=${String(updateData.summary).length}`);
+      }
+    }
+    if (kind === 'tool_call' || kind === 'tool_call_update') {
+      parts.push(`title="${String(updateData.title || '').slice(0, 60)}"`);
+      parts.push(`status=${String(updateData.status || '')}`);
+      const meta = updateData._meta as Record<string, unknown> | undefined;
+      if (meta?.contextCompaction != null) {
+        parts.push(`contextCompaction=${JSON.stringify(meta.contextCompaction)}`);
+      }
+      if (meta && Object.keys(meta).length > 0) {
+        parts.push(`_metaKeys=${Object.keys(meta).join(',')}`);
+      }
+    }
+    if (kind === 'agent_message_chunk' || kind === 'agent_thought_chunk') {
+      const content = updateData.content as { type?: string; text?: string } | undefined;
+      if (content?.type === 'text' && typeof content.text === 'string') {
+        const t = content.text.trim();
+        parts.push(`textLen=${t.length}`);
+        if (/compact/i.test(t) || t.length < 200) {
+          parts.push(`preview="${t.replace(/\s+/g, ' ').slice(0, 100)}"`);
+        }
+      }
+    }
+    const line = `[CURSOR-ACP] ${parts.join(' ')}`;
+    log(line);
+    this.logResumeDiag(line);
+  }
+
   private postDebugResumeConfig(): void {
     this.postMessage({ type: 'debugResume', enabled: this.isDebugResume() });
   }
@@ -1635,6 +1694,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       return;
     }
     const updateData = update.update as any;
+
+    const activeIdForTrace = this.sessionManager.getActiveSessionId();
+    this.logCursorSessionUpdate(update.sessionId, updateData, activeIdForTrace);
 
     // Debug: log user_message_chunk updates (especially during session/load replay).
     if (updateData?.sessionUpdate === 'user_message_chunk') {
@@ -10256,6 +10318,45 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     return /cursor/i.test(currentAgentLabel());
   }
 
+  /** Enable acp.debugResume to trace Cursor session/update (compaction diagnostics). */
+  function cursorCompactionTraceEnabled() {
+    return DEBUG || DEBUG_RESUME;
+  }
+
+  function summarizeCursorSessionUpdate(update) {
+    var kind = update && update.sessionUpdate ? String(update.sessionUpdate) : '(missing)';
+    var parts = ['kind=' + kind];
+    if (kind === 'compaction_update') {
+      parts.push('status=' + (update.status || ''));
+      if (update.error) parts.push('error=' + String(update.error).slice(0, 80));
+    }
+    if (kind === 'tool_call' || kind === 'tool_call_update') {
+      parts.push('title="' + String(update.title || '').slice(0, 60) + '"');
+      parts.push('status=' + (update.status || ''));
+      if (update._meta && update._meta.contextCompaction != null) {
+        parts.push('contextCompaction=' + JSON.stringify(update._meta.contextCompaction));
+      }
+      if (update._meta) {
+        parts.push('_metaKeys=' + Object.keys(update._meta).join(','));
+      }
+    }
+    if ((kind === 'agent_message_chunk' || kind === 'agent_thought_chunk') &&
+        update.content && update.content.type === 'text') {
+      var t = String(update.content.text || '').trim();
+      parts.push('textLen=' + t.length);
+      if (/compact/i.test(t) || t.length < 200) {
+        parts.push('preview="' + t.replace(/\\s+/g, ' ').slice(0, 100) + '"');
+      }
+    }
+    return parts.join(' ');
+  }
+
+  function logCursorHandleUpdate(update) {
+    if (!cursorCompactionTraceEnabled() || !isCursorAgentSession()) return;
+    resumeDiag('[CURSOR-ACP-WV] ' + summarizeCursorSessionUpdate(update) +
+      ' isCompacting=' + isCompacting + ' manual=' + manualCompacting);
+  }
+
   /**
    * Cursor ACP rarely/never sends status:"completed" on tool_call_update —
    * tools stay pending/running and keep spinning. When the model moves on
@@ -15222,6 +15323,10 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        vscode.postMessage({ type: 'debugLog', message: '[WV-PROMPTEND] stale promptEnd for session ' + msg.sessionId + ' (current=' + (sessionState ? sessionState.sessionId : 'none') + '), ignoring' });
        break;
      }
+     if (cursorCompactionTraceEnabled() && isCursorAgentSession()) {
+       resumeDiag('[CURSOR-ACP-WV] kind=promptEnd stopReason=' + (msg.stopReason || '') +
+         ' isCompacting=' + isCompacting + ' manual=' + manualCompacting);
+     }
      vscode.postMessage({ type: 'debugLog', message: '[WV-PROMPTEND] promptEnd received. chatHistoryLen=' + chatHistory.length + ' currentAssistantTextLen=' + currentAssistantText.length + ' hasCurrentAssistantEl=' + !!currentAssistantEl });
       if (msg.goalSnapshot !== undefined) {
         goalSnapshot = msg.goalSnapshot;
@@ -16678,6 +16783,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
 
   function handleUpdate(update) {
     if (!update) return;
+    logCursorHandleUpdate(update);
     // After a force-cancel (agent didn't acknowledge session/cancel within
     // the fallback window), drop all further session/update notifications
     // so stale chunks from the unresponsive agent don't pollute the chat.
