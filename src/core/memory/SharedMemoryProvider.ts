@@ -27,6 +27,7 @@ import { isMemoryConfigured, readMemorySettings, type MemorySettings } from './M
 import { resolveMemoryAgentId } from './MemoryAgentId';
 import { formatRecallContext, type SkillEntry } from './MemoryFormat';
 import { formatMemorySkillTools } from './MemorySkillTools';
+import { l1DedupKey, skillDedupKey } from './MemoryDedup';
 import { MemoryHttpClient, type MemoryIsolation } from './MemoryHttpClient';
 import {
   buildRecallQuery,
@@ -35,6 +36,11 @@ import {
   stripCodeBlocks,
   truncateForCapture,
 } from './MemorySanitize';
+import {
+  shouldIncludeL1WrapperForMode,
+  shouldIncludeSkillsFooterForMode,
+  type MemoryInjectMode,
+} from '../MemoryCacheStability';
 import {
   buildSkillConversationMessages,
   type SkillToolCall,
@@ -207,10 +213,12 @@ export class SharedMemoryProvider {
     includePersona?: boolean;
     /** Override settings.includeSceneNav for this call. */
     includeSceneNav?: boolean;
-    /** Override settings.includeSkills for this call (L1-only later turns:
-     *  skills are agent-profile scoped and already injected on the first
-     *  full prompt — do NOT re-inject them on every l1-only turn). */
+    /** Override settings.includeSkills for this call (L1-only later turns). */
     includeSkills?: boolean;
+    /** Inject <memory_skill_tools> curl recipes (first full profile turn only). */
+    includeSkillTools?: boolean;
+    /** Recall inject mode — controls incremental formatting (wrapper/footer). */
+    injectMode?: MemoryInjectMode;
   }): Promise<ContentBlock[]> {
     const settings = this.getSettings();
     if (!isMemoryConfigured(settings)) {
@@ -247,6 +255,7 @@ export class SharedMemoryProvider {
       const includePersona = opts.includePersona ?? settings.includePersona;
       const includeSceneNav = opts.includeSceneNav ?? settings.includeSceneNav;
       const includeSkills = opts.includeSkills ?? settings.includeSkills;
+      const includeSkillTools = opts.includeSkillTools ?? false;
       const [searchResult, personaResult, scenesResult, skillsResult] = await Promise.allSettled([
         client.searchAtomic(iso, { query, limit: settings.recallMaxResults }),
         includePersona ? client.readCore(iso) : Promise.resolve(null),
@@ -301,6 +310,7 @@ export class SharedMemoryProvider {
       // Full recall resets the ID set (post-compaction: everything is fresh).
       // l1-only recall filters previously-seen IDs and accumulates new ones.
       const isFullRecall = opts.includePersona ?? settings.includePersona;
+      const injectMode: MemoryInjectMode = opts.injectMode ?? (isFullRecall ? 'full' : 'l1-only');
       if (isFullRecall) {
         this.l1State.delete(opts.sessionId);
       }
@@ -319,13 +329,17 @@ export class SharedMemoryProvider {
       })();
       if (state) {
         const before = l1Items.length;
-        l1Items = l1Items.filter((item) => !item.id || !state.injectedIds.has(item.id));
+        l1Items = l1Items.filter((item) => {
+          const key = l1DedupKey(item);
+          return !key || !state.injectedIds.has(key);
+        });
         if (settings.debug && l1Items.length < before) {
           log(`L1 dedup: ${before} → ${l1Items.length} (filtered ${before - l1Items.length} already-injected)`);
         }
         for (const item of l1Items) {
-          if (item.id) {
-            state.injectedIds.add(item.id);
+          const key = l1DedupKey(item);
+          if (key) {
+            state.injectedIds.add(key);
           }
         }
       }
@@ -355,13 +369,17 @@ export class SharedMemoryProvider {
       const skillState = this.l1State.get(opts.sessionId);
       if (skillState) {
         const before = skills.length;
-        skills = skills.filter((s) => !s.skill_id || !skillState.injectedSkillIds.has(s.skill_id));
+        skills = skills.filter((s) => {
+          const key = skillDedupKey(s);
+          return !key || !skillState.injectedSkillIds.has(key);
+        });
         if (settings.debug && skills.length < before) {
           log(`Skill dedup: ${before} → ${skills.length} (filtered ${before - skills.length} already-injected)`);
         }
         for (const s of skills) {
-          if (s.skill_id) {
-            skillState.injectedSkillIds.add(s.skill_id);
+          const key = skillDedupKey(s);
+          if (key) {
+            skillState.injectedSkillIds.add(key);
           }
         }
       }
@@ -372,14 +390,17 @@ export class SharedMemoryProvider {
       this.persistL1StateToStorage();
 
       const skillToolsBlock =
-        includeSkills && this.skillBridgeBaseUrl
+        includeSkillTools && includeSkills && this.skillBridgeBaseUrl
           ? formatMemorySkillTools({
               bridgeBaseUrl: this.skillBridgeBaseUrl,
               agentId: memoryAgentId,
             })
           : undefined;
 
-      const formatted = formatRecallContext(l1Items, persona, scenes, skills, skillToolsBlock);
+      const formatted = formatRecallContext(l1Items, persona, scenes, skills, skillToolsBlock, {
+        includeL1Wrapper: shouldIncludeL1WrapperForMode(injectMode),
+        includeSkillsFooter: shouldIncludeSkillsFooterForMode(injectMode),
+      });
       if (!formatted) {
         if (settings.debug) {
           log(

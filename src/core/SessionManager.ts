@@ -95,7 +95,7 @@ export interface AgentCapabilitySummary {
  */
 export type { SelectionContext } from './ContextBlockBuilder';
 import { buildSelectionBlock, type SelectionContext } from './ContextBlockBuilder';
-import { isIncrementalCacheAgent, resolveMemoryInjectMode, resetMemoryInjectGates, shouldInjectSkillsForMode } from './MemoryCacheStability';
+import { isIncrementalCacheAgent, resolveMemoryInjectMode, resetMemoryInjectGates, shouldInjectSkillToolsForMode, shouldInjectSkillsForMode, shouldMarkProfileInjectedAfterRecall } from './MemoryCacheStability';
 import type { SharedMemoryProvider } from './memory/SharedMemoryProvider';
 import { readMemorySettings, resolveMemoryAgentId } from './memory/MemoryConfig';
 
@@ -805,9 +805,9 @@ export class SessionManager extends EventEmitter {
     // is unchanged. Slash commands (e.g. /compact on non-Kiro agents) are
     // non-local prompts forwarded to the LLM, so they DO get memory injected —
     // the LLM needs the same persona/scenes/skills context to act on them.
-    // We do NOT mark the profile as injected for a slash command, so a later
-    // real prompt still takes the 'full' path (the slash command is transient
-    // context, not the first real turn).
+    // We mark the profile as injected after any successful full recall (including
+    // slash commands) so the next real prompt is l1-only — persona/scenes are
+    // already in conversation history from the slash turn.
     const profileAlreadyInjected = this.memoryProfileInjectedSessions.has(sessionId);
     const memoryInjectMode =
       !this.memoryProvider?.isEnabled()
@@ -829,6 +829,8 @@ export class SessionManager extends EventEmitter {
           agentName: session.agentName,
           query: text,
           supportsEmbedded: supportsEmbeddedContext,
+          includeSkillTools: shouldInjectSkillToolsForMode(memoryInjectMode),
+          injectMode: memoryInjectMode,
           ...(memoryInjectMode === 'l1-only'
             ? {
                 includePersona: false,
@@ -846,10 +848,12 @@ export class SessionManager extends EventEmitter {
         if (memoryBlocks.length > 0) {
           if (memoryInjectMode === 'full') {
             prompt.push(...memoryBlocks);
-            // Slash commands don't mark the profile as injected — the next
-            // real prompt must still get the full re-inject (persona + scenes
-            // + skills) since the slash command was transient context.
-            if (!isSlashCommand) {
+            if (
+              shouldMarkProfileInjectedAfterRecall({
+                memoryInjectMode,
+                memoryBlocksCount: memoryBlocks.length,
+              })
+            ) {
               this.memoryProfileInjectedSessions.add(sessionId);
             }
           } else {

@@ -12339,9 +12339,10 @@ function commitCurrentTextSegment(opts) {
         }
       }
     }
-     // If the title is generic and we found a path from diff content, use it.
-     if (_editPath && (title === 'Editing files' || title === 'Edit file' || !title)) {
-       title = 'Edit ' + _editPath;
+     // If the title is a Cursor file stub and we found a path from diff content, enrich it.
+     if (_editPath && isAmbiguousFileStubTitle(title)) {
+       title = fileStubTitleWithPath(title, _editPath, (rawInput && (rawInput._toolName || rawInput.toolName)) || '', toolKind);
+       rawInput = Object.assign({}, rawInput || {}, { path: _editPath });
      }
      addToolCallInline(toolCallId, title, status, rawInput, toolKind, locations, null);
      // Live path must stamp the same way renderChatHistory does — otherwise the
@@ -12483,7 +12484,7 @@ function commitCurrentTextSegment(opts) {
  /** Pull a file/directory path out of common ACP / Cursor tool arg shapes. */
  function pathFromToolRawInput(rawInput) {
    if (!rawInput || typeof rawInput !== 'object' || Array.isArray(rawInput)) return '';
-   var keys = ['path', 'file_path', 'filePath', 'target_file', 'targetFile', 'directory', 'target_directory'];
+   var keys = ['path', 'file_path', 'filePath', 'target_file', 'targetFile', 'file', 'relative_path', 'relativePath', 'directory', 'target_directory'];
    for (var ki = 0; ki < keys.length; ki++) {
      var v = rawInput[keys[ki]];
      if (typeof v === 'string' && v.trim()) return v.trim();
@@ -12548,6 +12549,29 @@ function commitCurrentTextSegment(opts) {
      s === 'delete file' || s === 'delete';
  }
 
+ /** Interim label while store.db enrichment is pending — keep the verb, not bare "File". */
+ function fileStubInterimTitle(title) {
+   var s = String(title || '').trim().toLowerCase();
+   if (s === 'write file' || s === 'write') return 'Write File';
+   if (s === 'delete file' || s === 'delete') return 'Delete File';
+   if (isGenericEditTitle(title)) return 'Edit File';
+   return 'File';
+ }
+
+ /** Prefix a recovered path with Write/Edit/Delete when the stub title hints the verb. */
+ function fileStubTitleWithPath(title, path, toolName, toolKind) {
+   if (!path) return fileStubInterimTitle(title);
+   var confirmed = fileMutationKindConfirmed(toolName, title, toolKind);
+   if (confirmed === 'write') return 'Write ' + path;
+   if (confirmed === 'delete') return 'Delete ' + path;
+   if (confirmed === 'edit') return 'Edit ' + path;
+   var s = String(title || '').trim().toLowerCase();
+   if (s === 'write file' || s === 'write' || s.indexOf('write ') === 0) return 'Write ' + path;
+   if (s === 'delete file' || s === 'delete' || s.indexOf('delete ') === 0) return 'Delete ' + path;
+   if (isGenericEditTitle(title) || s.indexOf('edit ') === 0) return 'Edit ' + path;
+   return path;
+ }
+
  /** Cursor stubs share "Edit File" — only trust verb when toolName/title confirms it. */
  function fileMutationKindConfirmed(toolName, title, toolKind) {
    var n = String(toolName || '').trim().toLowerCase();
@@ -12597,8 +12621,8 @@ function commitCurrentTextSegment(opts) {
 
    // Cursor "Edit File" stubs cover write/edit/delete — never guess "Edit" early.
    if (isAmbiguousFileStubTitle(t) && !confirmed) {
-     if (path) return path;
-     if (isEmptyRawInput(rawInput)) return 'File';
+     if (path) return fileStubTitleWithPath(t, path, toolName, toolKind);
+     if (isEmptyRawInput(rawInput)) return fileStubInterimTitle(t);
    }
 
    if (isCursorStubToolTitle(t) || isGenericEditTitle(t)) {
@@ -12639,7 +12663,7 @@ function commitCurrentTextSegment(opts) {
    if (!isCursorStubToolTitle(t) && t) return t;
 
    if (isAmbiguousFileStubTitle(t) && !path && isEmptyRawInput(rawInput)) {
-     return 'File';
+     return fileStubInterimTitle(t);
    }
 
    if (!isEmptyRawInput(rawInput)) {

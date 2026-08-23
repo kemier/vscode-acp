@@ -4,6 +4,10 @@ import {
   resolveMemoryInjectMode,
   shouldInjectMemoryForTurn,
   shouldInjectSkillsForMode,
+  shouldInjectSkillToolsForMode,
+  shouldIncludeL1WrapperForMode,
+  shouldIncludeSkillsFooterForMode,
+  shouldMarkProfileInjectedAfterRecall,
   resetMemoryInjectGates,
   type MemoryInjectGates,
 } from '../core/MemoryCacheStability';
@@ -36,10 +40,10 @@ suite('MemoryCacheStability', () => {
       assert.strictEqual(resolveMemoryInjectMode('codex-acp', opts), 'l1-only');
     });
 
-    test('Codex after a slash-first session still gets full on the first real prompt', () => {
+    test('Codex after slash with profile already injected gets l1-only on next turn', () => {
       assert.strictEqual(
-        resolveMemoryInjectMode('codex-acp', { sessionAlreadyPrompted: true, profileAlreadyInjected: false }),
-        'full',
+        resolveMemoryInjectMode('codex-acp', { sessionAlreadyPrompted: true, profileAlreadyInjected: true }),
+        'l1-only',
       );
     });
 
@@ -157,6 +161,70 @@ suite('MemoryCacheStability', () => {
       });
       assert.strictEqual(after, 'full');
       assert.strictEqual(shouldInjectSkillsForMode(after), true);
+    });
+  });
+
+  suite('shouldInjectSkillToolsForMode (curl recipe once per profile)', () => {
+    test('skill tools block only on full mode', () => {
+      assert.strictEqual(shouldInjectSkillToolsForMode('full'), true);
+      assert.strictEqual(shouldInjectSkillToolsForMode('l1-only'), false);
+      assert.strictEqual(shouldInjectSkillToolsForMode('none'), false);
+    });
+
+    test('after compaction full mode re-injects skill tools', () => {
+      const gates = {
+        promptedSessions: new Set<string>(['sess-1']),
+        memoryProfileInjectedSessions: new Set<string>(['sess-1']),
+      };
+      assert.strictEqual(shouldInjectSkillToolsForMode(resolveMemoryInjectMode('codex-acp', {
+        sessionAlreadyPrompted: gates.promptedSessions.has('sess-1'),
+        profileAlreadyInjected: gates.memoryProfileInjectedSessions.has('sess-1'),
+      })), false);
+
+      resetMemoryInjectGates('sess-1', gates);
+      assert.strictEqual(shouldInjectSkillToolsForMode(resolveMemoryInjectMode('codex-acp', {
+        sessionAlreadyPrompted: gates.promptedSessions.has('sess-1'),
+        profileAlreadyInjected: gates.memoryProfileInjectedSessions.has('sess-1'),
+      })), true);
+    });
+  });
+
+  suite('shouldIncludeSkillsFooterForMode', () => {
+    test('footer only on full mode', () => {
+      assert.strictEqual(shouldIncludeSkillsFooterForMode('full'), true);
+      assert.strictEqual(shouldIncludeSkillsFooterForMode('l1-only'), false);
+      assert.strictEqual(shouldIncludeSkillsFooterForMode('none'), false);
+    });
+  });
+
+  suite('shouldIncludeL1WrapperForMode', () => {
+    test('wrapper only on full mode', () => {
+      assert.strictEqual(shouldIncludeL1WrapperForMode('full'), true);
+      assert.strictEqual(shouldIncludeL1WrapperForMode('l1-only'), false);
+      assert.strictEqual(shouldIncludeL1WrapperForMode('none'), false);
+    });
+  });
+
+  suite('shouldMarkProfileInjectedAfterRecall', () => {
+    test('marks after successful full inject including slash commands', () => {
+      assert.strictEqual(
+        shouldMarkProfileInjectedAfterRecall({ memoryInjectMode: 'full', memoryBlocksCount: 1 }),
+        true,
+      );
+    });
+
+    test('does not mark when full inject returned no blocks', () => {
+      assert.strictEqual(
+        shouldMarkProfileInjectedAfterRecall({ memoryInjectMode: 'full', memoryBlocksCount: 0 }),
+        false,
+      );
+    });
+
+    test('does not mark on l1-only turns', () => {
+      assert.strictEqual(
+        shouldMarkProfileInjectedAfterRecall({ memoryInjectMode: 'l1-only', memoryBlocksCount: 1 }),
+        false,
+      );
     });
   });
 });

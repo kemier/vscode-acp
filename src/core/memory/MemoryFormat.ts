@@ -33,11 +33,22 @@ export interface FormattedRecall {
  *  are long paragraphs; truncate to keep the total recall block bounded. */
 const MAX_L1_ITEM_CHARS = 500;
 
-export function formatL1Memories(items: L1MemoryItem[]): string | undefined {
+export interface FormatRecallOptions {
+  /** Wrap L1 bullets in `<relevant-memories>` (first full profile turn only). */
+  includeL1Wrapper?: boolean;
+  /** Append skills footer boilerplate (first full profile turn only). */
+  includeSkillsFooter?: boolean;
+}
+
+export function formatL1Memories(items: L1MemoryItem[], opts?: { includeWrapper?: boolean }): string | undefined {
   if (items.length === 0) {
     return undefined;
   }
-  const lines: string[] = ['<relevant-memories>', ''];
+  const includeWrapper = opts?.includeWrapper !== false;
+  const lines: string[] = [];
+  if (includeWrapper) {
+    lines.push('<relevant-memories>', '');
+  }
   for (const item of items) {
     const typeTag = item.type ? `[${item.type}] ` : '';
     let text = item.content;
@@ -46,7 +57,9 @@ export function formatL1Memories(items: L1MemoryItem[]): string | undefined {
     }
     lines.push(`- ${typeTag}${text}`);
   }
-  lines.push('', '</relevant-memories>');
+  if (includeWrapper) {
+    lines.push('', '</relevant-memories>');
+  }
   return lines.join('\n');
 }
 
@@ -70,18 +83,23 @@ export function formatPersona(persona: string | null | undefined): string | unde
   return `<user-persona>\n${trimmed}\n</user-persona>`;
 }
 
-export function formatSkills(skills: SkillEntry[]): string | undefined {
+export function formatSkills(skills: SkillEntry[], opts?: { includeFooter?: boolean }): string | undefined {
   if (skills.length === 0) {
     return undefined;
   }
+  const includeFooter = opts?.includeFooter !== false;
   const lines: string[] = ['<available_skills>', ''];
   for (const s of skills) {
     lines.push(`- **${s.name}** (v${s.version}): ${s.description}`);
   }
-  lines.push('');
-  lines.push('These are memory-injected skills (metadata only — not full SKILL.md).');
-  lines.push('Load full instructions with memory_skill_view (see <memory_skill_tools> below).');
-  lines.push('Filesystem skills (e.g. ~/.cursor/skills-cursor/) are loaded via the Read tool.');
+  if (includeFooter) {
+    lines.push('');
+    lines.push('These are memory-injected skills (metadata only — not full SKILL.md).');
+    lines.push(
+      'Load full instructions with memory_skill_view (Shell curl; recipe on first profile turn — see session history).',
+    );
+    lines.push('Filesystem skills (e.g. ~/.cursor/skills-cursor/) are loaded via the Read tool.');
+  }
   lines.push('</available_skills>');
   return lines.join('\n');
 }
@@ -129,9 +147,12 @@ export function formatRecallContext(
   scenes: SceneNavEntry[],
   skills: SkillEntry[] = [],
   skillToolsBlock?: string,
+  formatOpts?: FormatRecallOptions,
 ): FormattedRecall | undefined {
+  const includeL1Wrapper = formatOpts?.includeL1Wrapper !== false;
+  const includeSkillsFooter = formatOpts?.includeSkillsFooter !== false;
   const parts: string[] = [];
-  const l1 = formatL1Memories(l1Items);
+  const l1 = formatL1Memories(l1Items, { includeWrapper: includeL1Wrapper });
   if (l1) {
     parts.push(l1);
   }
@@ -143,7 +164,7 @@ export function formatRecallContext(
   if (sceneBlock && (!persona || !persona.includes('Scene Navigation'))) {
     parts.push(sceneBlock);
   }
-  const skillBlock = formatSkills(skills);
+  const skillBlock = formatSkills(skills, { includeFooter: includeSkillsFooter });
   if (skillBlock) {
     parts.push(skillBlock);
   }

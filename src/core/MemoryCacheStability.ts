@@ -52,6 +52,9 @@ export function resolveMemoryInjectMode(
  * is handled by `SharedMemoryProvider` (tracks injected skill IDs
  * per session, filters on subsequent recalls, resets on compaction).
  *
+ * The static <memory_skill_tools> curl block is NOT included here —
+ * see `shouldInjectSkillToolsForMode` (first `full` turn only).
+ *
  * Returns false only for `none` mode (memory disabled).
  */
 export function shouldInjectSkillsForMode(mode: MemoryInjectMode): boolean {
@@ -86,6 +89,52 @@ export function resetMemoryInjectGates(
   }
   gates.promptedSessions.delete(sessionId);
   gates.memoryProfileInjectedSessions.delete(sessionId);
+}
+
+/**
+ * Whether the <memory_skill_tools> curl recipe block should be injected on this turn.
+ *
+ * Unlike <available_skills> (semantic, per-prompt), the tools block is static
+ * (~700 chars). Inject once on the first `full` profile turn; later `l1-only`
+ * turns rely on conversation history for curl usage. Resets after compaction
+ * (next prompt is `full` again).
+ */
+export function shouldInjectSkillToolsForMode(mode: MemoryInjectMode): boolean {
+  return mode === 'full';
+}
+
+/**
+ * Whether the <available_skills> footer boilerplate should be injected on this turn.
+ *
+ * Footer text (~250 chars) is static; inject once on the first `full` profile
+ * turn. Later `l1-only` turns list only new skill entries.
+ */
+export function shouldIncludeSkillsFooterForMode(mode: MemoryInjectMode): boolean {
+  return mode === 'full';
+}
+
+/**
+ * Whether L1 bullets should be wrapped in `<relevant-memories>` on this turn.
+ *
+ * The wrapper is injected once on the first `full` profile turn. Later
+ * `l1-only` turns append bare bullet lines (content deduped by id/hash).
+ */
+export function shouldIncludeL1WrapperForMode(mode: MemoryInjectMode): boolean {
+  return mode === 'full';
+}
+
+/**
+ * Mark the session profile gate after a successful full recall inject.
+ *
+ * Includes slash commands: if `/compact` (etc.) already prepended persona +
+ * scenes into the transcript, the next real prompt should be `l1-only`, not
+ * a duplicate full profile.
+ */
+export function shouldMarkProfileInjectedAfterRecall(opts: {
+  memoryInjectMode: MemoryInjectMode;
+  memoryBlocksCount: number;
+}): boolean {
+  return opts.memoryInjectMode === 'full' && opts.memoryBlocksCount > 0;
 }
 
 /** True when any recall blob should be attached (full or L1-only). */

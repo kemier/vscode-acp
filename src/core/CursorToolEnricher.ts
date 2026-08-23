@@ -137,7 +137,18 @@ export function parseCursorToolArgs(raw: unknown): Record<string, unknown> {
 }
 
 export function extractPathFromArgs(args: Record<string, unknown>): string | undefined {
-  for (const key of ['path', 'file_path', 'filePath', 'target_file', 'targetFile', 'directory', 'target_directory']) {
+  for (const key of [
+    'path',
+    'file_path',
+    'filePath',
+    'target_file',
+    'targetFile',
+    'file',
+    'relative_path',
+    'relativePath',
+    'directory',
+    'target_directory',
+  ]) {
     const v = args[key];
     if (typeof v === 'string' && v.trim()) return v.trim();
   }

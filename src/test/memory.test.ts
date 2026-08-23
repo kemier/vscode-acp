@@ -45,6 +45,30 @@ suite('MemoryFormat', () => {
     assert.ok(text?.includes('[preference] prefers tabs'));
   });
 
+  test('formatL1Memories can omit wrapper on incremental turns', () => {
+    const text = formatL1Memories([{ content: 'new fact', type: 'fact' }], { includeWrapper: false });
+    assert.ok(text);
+    assert.ok(!text!.includes('<relevant-memories>'));
+    assert.ok(text!.includes('- [fact] new fact'));
+  });
+
+  test('formatRecallContext incremental mode omits L1 wrapper and skills footer', () => {
+    const formatted = formatRecallContext(
+      [{ content: 'new memory', type: 'fact' }],
+      null,
+      [],
+      [{ skill_id: 's1', name: 'skill-a', description: 'does things', version: 1 }],
+      undefined,
+      { includeL1Wrapper: false, includeSkillsFooter: false },
+    );
+    assert.ok(formatted);
+    assert.ok(!formatted!.text.includes('<relevant-memories>'));
+    assert.ok(formatted!.text.includes('- [fact] new memory'));
+    assert.ok(formatted!.text.includes('<available_skills>'));
+    assert.ok(!formatted!.text.includes('memory-injected skills'));
+    assert.ok(formatted!.text.includes('skill-a'));
+  });
+
   test('formatRecallContext combines layers', () => {
     const formatted = formatRecallContext([{ content: 'uses pnpm', type: 'fact' }], 'User is a systems engineer.', [
       { path: 'scene_blocks/deploy.md' },
@@ -191,6 +215,18 @@ suite('MemoryFormat.formatSkills', () => {
     assert.ok(text!.includes('memory-injected'));
     assert.ok(text!.includes('memory_skill_view'));
     assert.ok(text!.includes('Read tool'));
+  });
+
+  test('can omit footer on incremental skill injections', () => {
+    const text = formatSkills(
+      [{ skill_id: 's1', name: 'test', description: 'a test', version: 1 }],
+      { includeFooter: false },
+    );
+    assert.ok(text);
+    assert.ok(text!.includes('<available_skills>'));
+    assert.ok(text!.includes('test'));
+    assert.ok(!text!.includes('memory-injected'));
+    assert.ok(!text!.includes('Read tool'));
   });
 
   test('handles multiple skills', () => {
