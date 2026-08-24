@@ -2,16 +2,11 @@
 
 ## Project Overview
 
-`vscode-acp` is a VS Code extension that implements the Agent Client Protocol (ACP) for desktop chat with local agent binaries (Codex CLI, Kiro CLI, EricCLI, etc.). It communicates with agents via stdio JSON-RPC and renders the conversation in a webview panel.
+`vscode-acp` is a VS Code extension that implements the Agent Client Protocol (ACP) for desktop chat with local agent binaries (Codex CLI, Kiro CLI, etc.). It communicates with agents via stdio JSON-RPC and renders the conversation in a webview panel.
 
 The same ACP agents are also consumed by Zed (via `codex-acp`). Link formats emitted by the LLM must therefore be compatible with **both** VS Code and Zed.
 
-## Branch Strategy
 
-- **`local/dev`** — Main development branch. Non-A2A bug fixes, UI improvements, and feature work. Backed by `origin/local/dev` (GitHub: kemuer/vscode-acp). Rebases onto `origin/local/dev` to pick up collaborator commits.
-- **`feat-local-a2a-agents`** — Feature branch for local A2A (Agent-to-Agent) agent spawning. All A2A-related work (spawning, delegation, session tree integration, lifecycle management) lives here. Non-A2A fixes are cherry-picked to `local/dev`.
-- **Do NOT push to remote** unless explicitly asked. All work stays local.
-- `dist/extension.js` is in `.gitignore` and untracked — never commit build artifacts.
 
 ## Key Source Files
 
@@ -29,16 +24,6 @@ The same ACP agents are also consumed by Zed (via `codex-acp`). Link formats emi
 | `src/handlers/TerminalContextProvider.ts` | Captures terminal output for `@terminal` context injection. |
 | `src/handlers/ElicitationHandler.ts` | ACP elicitation forms (auth, user input). |
 
-## A2A Local Agents (feat-local-a2a-agents branch)
-
-The extension supports spawning local A2A agents — additional ACP sessions that run as subprocesses and can be delegated tasks by the main agent. Key concepts:
-
-- **Spawning**: `/a2a register local <name>` creates a new ACP session in the IDE. The spawned agent appears as a child of the main session in the session tree.
-- **Delegation**: The main agent uses `delegate_to_a2a` and `a2a_task_status` tools to send tasks and poll results. Tasks are async — the main agent can continue other work while A2A agents process.
-- **Lifecycle**: A2A agents are scoped to their parent session. Switching sessions does not kill them (they run in their own subprocess). Deleting the parent session terminates all its A2A agents. Dead agents can be respawned from the tree.
-- **Persistence**: A2A agent metadata is persisted to `~/.config/cli-4-ericai/a2a-agents.json` so they survive VS Code restarts. On resume, agents are restored and reconnected.
-- **UI**: A2A agents show a colored status bubble (green=working, red=dead) in the session tree. Clicking an A2A agent loads its session history in the chat view.
-
 
 
 ## Code-Reference Link Format
@@ -48,7 +33,7 @@ The LLM must emit links that work in both editors. There is one primary format.
 ### 1. Primary — `file:///absolute/path?symbol=name#L123` (both editors)
 
 ```markdown
-[process_line](file:///workspace/git/ezennin/ericai-proxy/src/translate_response.rs?symbol=process_line#L195)
+[main](file:///workspace/git/ezennin/codex-acp/src/main.ts?symbol=main#L10)
 ```
 
 - **CRITICAL**: `?symbol=` MUST come BEFORE `#L` (RFC 3986). If reversed, Zed
@@ -87,8 +72,6 @@ The LLM must emit links that work in both editors. There is one primary format.
  |---|---|---|
  | **codex-acp** | `/workspace/git/ezennin/codex-acp` | ACP adapter for Codex CLI (`@agentclientprotocol/codex-acp`). The agent binary spawned by this extension. Key files: `src/CodexAcpServer.ts` (ACP server — session/cancel, prompt, turn/interrupt), `src/CodexAcpClient.ts` (Codex app-server client), `src/CodexAppServerClient.ts` (JSON-RPC transport to Codex core). |
 | **codex** | `/workspace/git/ezennin/codex` | Codex CLI core (Rust). The actual agent engine. Key crate: `codex-rs/app-server/` (app-server protocol, turn/interrupt handling in `src/request_processors/turn_processor.rs`). |
-| **ericli** | `/workspace/git/ezennin/ericli` | EricAI CLI — a Codex CLI alternative that talks to EricAI's vLLM backend. Provides the `ericli acp` command for ACP stdio. Key files: `src/acp/acp-server.ts` (ACP server — prompt/cancel/newSession/loadSession), `src/core/tool-executor.ts` (tool flow + streaming LLM calls + hook execution), `src/core/hook-manager.ts` (Codex-compatible PreToolUse hooks via hooks.json), `src/agents/agent-runtime.ts` (subagent execution + model fallback), `src/ericai/client.ts` (vLLM streaming client). Install: `bash scripts/install-acp.sh --local` → `/workspace/git/ezennin/.local/bin/ericli-acp`. Branch: `feat-local-a2a-agents`. |
-| **ericai-proxy** | `/workspace/git/ezennin/ericai-proxy` | Rust proxy translating OpenAI Responses API ↔ Chat Completions API for EricAI's vLLM backend (GLM-5.2, Qwen3, DeepSeek, etc.). Used by codex-acp AND ericli. Key files: `src/translate_response.rs` (SSE translation, reasoning block lifecycle), `src/translate_request.rs` (request translation), `src/main.rs` (HTTP/WS routes). Build & install: `make install` → `/workspace/git/ezennin/.local/share/ericai-proxy/`. Runtime config: `~/.cli-proxy-api/config.yaml`. |
 
 When debugging agent-side issues (cancel not working, turn not interrupting, etc.), inspect the codex-acp source first — it is the bridge between this extension's JSON-RPC notifications and the Codex core's internal `Op::Interrupt`.
  
@@ -206,25 +189,6 @@ The traffic log is an in-memory `OutputChannel` that auto-rotates after `acp.log
 ```
 
 To export a structured JSON dump of the traffic ring buffer (last 2000 entries), use the `acp.exportTraffic` command from the Command Palette.
-
-## EricCLI Hooks System (ericli repo)
-
-EricCLI supports Codex-compatible PreToolUse hooks via `~/.config/cli-4-ericai/hooks.json` (falls back to `~/.codex/hooks.json`). This allows external tools like **dcg** (Destructive Command Guard) to block dangerous commands without hardcoding them into ericli's source.
-
-- Hook config format: `{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"dcg","timeout":5}]}]}}`
-- JSON-stdin protocol: ericli pipes `{"tool_name":"Bash","tool_input":{"command":"rm -rf /"}}` to the hook command's stdin
-- Hook can block via non-zero exit (stderr = reason) or JSON output `{"hookSpecificOutput":{"permissionDecision":"deny","permissionDecisionReason":"..."}}`
-- Install dcg for ericli: `bash scripts/install-dcg-hook.sh` (in ericli repo)
-- dcg binary: `/workspace/git/ezennin/.local/bin/dcg`
-
-## EricCLI Proxy Config Paths
-
-EricCLI reads the ericai-proxy config from these paths (in order):
-1. `~/.local/share/ericai-proxy/config.yaml` (runtime, highest priority)
-2. `/workspace/git/$USER/ericai-proxy/config.yaml` (repo/development)
-3. `~/.cli-proxy-api/config.yaml` (older runtime location)
-
-The runtime config may use a `*` wildcard in the models list (meaning "all models"). EricCLI falls through to the next candidate when only a wildcard is found, to get the full explicit model list.
 
 ## Coding Style
 

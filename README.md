@@ -149,7 +149,7 @@ Communication with agents uses the ACP protocol (JSON-RPC 2.0 over stdio).
 
 - Agents must be available via the system PATH or `npx`
 - Some agents may require additional authentication setup
-- Image attachment is only shown when the current model supports image input. For Codex CLI, this is determined from `~/.codex/model_catalog.json` (written by ericai-proxy `start.sh`). For Kiro CLI, Claude models are assumed to support images; all others (minimax, qwen, glm, kimi) are text-only. Clipboard paste of images is also gated by this check.
+- Image attachment is only shown when the current model supports image input. For Codex CLI, this is determined from `~/.codex/model_catalog.json`. For Kiro CLI, Claude models are assumed to support images; all others (minimax, qwen, glm, kimi) are text-only. Clipboard paste of images is also gated by this check.
 
 ## Links
 
