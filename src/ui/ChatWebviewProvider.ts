@@ -8147,6 +8147,65 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         }
       }
 
+      function toolAnchorKey(it) {
+        if (!it || it.kind !== 'toolCall') return null;
+        var t = String(it.title || '').trim();
+        // Key by TITLE (not id): snapshot ids (call_abc) and loaded/replay
+        // ids (replay-N-M) never match each other, and each snapshot id is
+        // unique, so id-keying would make every identical Edit "count=1" and
+        // fall back to the first-title-match bug. Title groups the duplicates
+        // so ordinal matching can interleave thoughts between them.
+        if (t) return 'title:' + t;
+        if (it.toolCallId) return 'id:' + it.toolCallId;
+        return null;
+      }
+      // Ordinal of the Nth occurrence of a tool (by id, else title) within
+      // arr[0..index] inclusive. Returns 1-based ordinal.
+      function toolOrdinalThrough(arr, index, key) {
+        var n = 0;
+        for (var i = 0; i <= index && i < arr.length; i++) {
+          if (arr[i] && arr[i].kind === 'toolCall' && toolAnchorKey(arr[i]) === key) n++;
+        }
+        return n;
+      }
+      // Find the index of the n-th occurrence of a tool (by id, else title)
+      // in arr. Returns -1 if fewer than n exist.
+      function nthToolIndex(arr, n, key) {
+        var seen = 0;
+        for (var i = 0; i < arr.length; i++) {
+          if (arr[i] && arr[i].kind === 'toolCall' && toolAnchorKey(arr[i]) === key) {
+            seen++;
+            if (seen === n) return i;
+          }
+        }
+        return -1;
+      }
+      // Anchor a snapshot tool call to its MERGED counterpart. When the same
+      // tool (same title, e.g. several consecutive Edit of the same file)
+      // appears multiple times, the plain findMergedHistoryAnchor always
+      // returns the FIRST match, which clusters every interleaved thought onto
+      // that first tool and groups all identical tools together. Instead,
+      // match by ordinal: the Nth occurrence in the snapshot maps to the Nth
+      // occurrence in the merged timeline, restoring the interleave.
+      function findMergedToolAnchorOrdinal(mergedArr, snapTool, snapArr, snapIndex) {
+        var key = toolAnchorKey(snapTool);
+        if (!key) return findMergedHistoryAnchor(mergedArr, snapTool);
+        // If only one occurrence of this tool exists in merged, the plain
+        // matcher is already exact.
+        var mergedCount = 0;
+        for (var i = 0; i < mergedArr.length; i++) {
+          if (mergedArr[i] && mergedArr[i].kind === 'toolCall' && toolAnchorKey(mergedArr[i]) === key) mergedCount++;
+        }
+        if (mergedCount <= 1) return findMergedHistoryAnchor(mergedArr, snapTool);
+        var ordinal = toolOrdinalThrough(snapArr, snapIndex, key);
+        if (ordinal <= 0) return findMergedHistoryAnchor(mergedArr, snapTool);
+        var idx = nthToolIndex(mergedArr, ordinal, key);
+        if (idx >= 0) return idx;
+        // Fallback if the snapshot has more occurrences than merged (loaded
+        // replay dropped some): clamp to the last available occurrence.
+        return nthToolIndex(mergedArr, mergedCount, key);
+      }
+
       function insertSnapshotItem(snapItem, snapIndex) {
         // Thoughts belong BEFORE the next snapshot row already present in merged
         // (e.g. the tool call they precede). Backward-only anchoring after the
@@ -8168,6 +8227,14 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
              continue;
            }
            var nextAnchor = findMergedHistoryAnchor(merged, next);
+           // The thought anchors BEFORE this next tool. If the next tool is a
+           // duplicate (several identical Edit of the same file), a plain
+           // first-match would place the thought before the FIRST edit instead
+           // of the edit that actually follows it in the snapshot. Anchor by
+           // ordinal so the thought lands immediately before the right edit.
+           if (next.kind === 'toolCall') {
+             nextAnchor = findMergedToolAnchorOrdinal(merged, next, snapshot, after);
+           }
            if (nextAnchor >= 0) {
              merged.splice(nextAnchor, 0, Object.assign({}, snapItem));
              return;
@@ -8193,7 +8260,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
              isSessionInterruptNotice(prev.text)) {
            continue;
          }
-         var anchor = findMergedHistoryAnchor(merged, prev);
+         var anchor = prev.kind === 'toolCall'
+           ? findMergedToolAnchorOrdinal(merged, prev, snapshot, snapIndex)
+           : findMergedHistoryAnchor(merged, prev);
          if (anchor >= 0) {
            insertAt = anchor + 1;
            break;
@@ -8218,7 +8287,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
                isSessionInterruptNotice(nextItem.text)) {
              continue;
            }
-           var fwdAnchor = findMergedHistoryAnchor(merged, nextItem);
+           var fwdAnchor = nextItem.kind === 'toolCall'
+             ? findMergedToolAnchorOrdinal(merged, nextItem, snapshot, snapIndex)
+             : findMergedHistoryAnchor(merged, nextItem);
            if (fwdAnchor >= 0) {
              insertAt = fwdAnchor;
              break;
