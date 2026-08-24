@@ -1781,6 +1781,15 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       typeof updateData.content.text === 'string' &&
       updateData.content.text.length > 0
     ) {
+      // Suppress the agent's own "/stop" kill notice (ericli emits
+      // "🛑 Killed N running process(es)." as an agent_message_chunk). It
+      // would render as a PERSISTENT assistant bubble and stick in the chat
+      // forever. The webview shows its own transient (auto-vanishing)
+      // "Killed N..." notice in the processesStopped handler instead, so we
+      // drop the agent's copy here to avoid a permanent "Killed" line.
+      if (updateKind === 'agent_message_chunk' && /^\s*🛑\s*\d+\s+running process/.test(updateData.content.text)) {
+        return;
+      }
       this.streamCoalescer.append(
         activeId,
         updateKind === 'agent_message_chunk' ? 'message' : 'thought',
@@ -7348,7 +7357,6 @@ function handleLocalSlashCommand(cmdText) {
   if (text === '/stop') {
     promptInput.value = '';
     updateSendButton();
-    showTransientNotice('Stopping all running processes...');
     vscode.postMessage({ type: 'stopProcesses' });
     return true;
   }
@@ -15672,6 +15680,14 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
          // notifications for the killed processes. Mark ALL currently-running
          // tool calls as 'failed' locally so /ps no longer shows stale
          // processes and the tool icons reflect the kill.
+         //
+         // The agent ALSO emits a "🛑 Killed N running process(es)."
+         // agent_message_chunk — that lands as a PERSISTENT assistant bubble,
+         // which would stick in the chat forever. We suppress that bubble
+         // (isStopNoticeChunk, checked in the agent_message_chunk path) and
+         // instead show our OWN transient notice here, which auto-vanishes
+         // after a few seconds (like before) — so the user gets feedback
+         // without a permanent "Killed" line cluttering the history.
          var _killed = 0;
          for (var _ki = 0; _ki < chatHistory.length; _ki++) {
            var _kItem = chatHistory[_ki];
@@ -15689,10 +15705,13 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
            }
          }
          if (_killed > 0) saveState();
-         // Force-dismiss the /ps panel (bypass the 3s min-display window)
-         // and show a confirmation. If /ps is re-run it will now show
-         // "No background terminals running".
+         // Force-dismiss the /ps panel (bypass the 3s min-display window).
+         // If /ps is re-run it will now show "No background terminals running".
          dismissPsPanel(true);
+         // Transient confirmation — auto-vanishes after a few seconds so the
+         // "Killed" feedback doesn't persist in the chat history. (The agent's
+         // own "🛑 Killed N..." bubble is suppressed via isStopNoticeChunk so
+         // this is the ONLY "Killed" text the user sees.)
          showTransientNotice('Killed ' + _killed + ' running process' + (_killed === 1 ? '' : 'es') + '.');
          break;
        }
