@@ -1,13 +1,4 @@
 {
 	"js/ts.tsdk.path": "node_modules/typescript/lib",
-	"acp.memory.enabled": true,
-	"acp.memory.endpoint": "http://192.168.124.5:8420",
-	"acp.memory.apiKey": "local",
-	"acp.memory.userId": "zaedinzeng",
-	"acp.memory.teamId": "default",
-	"acp.memory.serviceId": "default",
-	"acp.memory.captureEnabled": true,
-	"acp.memory.agentIdMap": {
-		"Pi Agent": "pi-agent"
-	}
+	
 }

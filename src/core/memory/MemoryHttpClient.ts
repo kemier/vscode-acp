@@ -152,6 +152,12 @@ export class MemoryHttpClient {
         );
       }
       return (envelope.data ?? {}) as T;
+    } catch (e) {
+      if (this.debug) {
+        const cause = e instanceof Error && e.cause ? ` cause=${JSON.stringify(e.cause)}` : '';
+        log(`Memory HTTP ${path} ERROR: ${e instanceof Error ? e.message : String(e)}${cause}`);
+      }
+      throw e;
     } finally {
       clearTimeout(timer);
     }
