@@ -39,6 +39,12 @@ const execFileAsync = promisify(execFile);
 // in the ACP Client output channel. Keep false in normal use — the per-chunk
 // logging floods the channel during streaming.
 const DEBUG = false;
+// TEMP-DEBUG master switch for the Kiro-resume "Send button stuck" fix
+// instrumentation (HOST-PROMPT / HOST-SLASH / sendCurrentState / IN-FLIGHT /
+// [WV-MSG] / [WV-PROBE] / [WV-CHUNK] / [WV-SLASH-ECHO] …). Keep false in normal
+// use; flip to true (or set acp.debugResume) to re-enable the full trace when
+// debugging resumes / streaming again.
+const DEBUG_LIVE = false;
 
 /** Webview debugLog lines forwarded when acp.debugResume is true (even if DEBUG is off). */
 const RESUME_DIAG_MARKERS = [
@@ -1668,9 +1674,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         }
         case 'debugLog': {
           const wvMsg = message.message || '(empty)';
-          // Full webview trace only when DEBUG is on; resume/load diagnostics
-          // also forward when acp.debugResume is enabled.
-          if (DEBUG) {
+          // TEMP-DEBUG (copy button / cannot-send investigation): forward
+          // every webview debugLog to the ACP Client log so a repro captures
+          // the latch state. Gated behind DEBUG_LIVE (default off) so normal
+          // use stays silent — flip DEBUG_LIVE (or keep DEBUG/acp.debugResume)
+          // to re-enable whenever the trace is needed again.
+          if (DEBUG_LIVE) {
+            log('[DEBUG-WV] ' + wvMsg);
+          } else if (DEBUG) {
             log('[DEBUG-WV] ' + wvMsg);
           } else if (this.isDebugResume() && isResumeDiagWebviewMessage(wvMsg)) {
             this.logResumeDiag('[DEBUG-WV] ' + wvMsg);
@@ -1787,7 +1798,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // forever. The webview shows its own transient (auto-vanishing)
       // "Killed N..." notice in the processesStopped handler instead, so we
       // drop the agent's copy here to avoid a permanent "Killed" line.
-      if (updateKind === 'agent_message_chunk' && /^\s*🛑\s*\d+\s+running process/.test(updateData.content.text)) {
+      if (
+        updateKind === 'agent_message_chunk' &&
+        // ericli emits "🛑 Killed N running process(es)." — the "Killed" word
+        // sits between the emoji and the count, so match it optionally.
+        /^\s*🛑\s*(?:Killed\s+)?\d+\s+running process(?:es)?\.?/.test(
+          updateData.content.text,
+        )
+      ) {
         return;
       }
       this.streamCoalescer.append(
@@ -1798,6 +1816,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         // run and reach the webview tagged for bubble grouping.
         typeof updateData.messageId === 'string' ? updateData.messageId : undefined,
       );
+      // TEMP-DEBUG: trace every appended chunk so we can see WHEN the Kiro
+      // "/effort xhigh" echo text enters the pipeline (load-replay tail vs
+      // live post-load) and whether it precedes/follows promptEnd.
+      if (DEBUG_LIVE) {
+        log(
+          `HOST-CHUNK-APPEND: kind=${updateKind === 'agent_message_chunk' ? 'message' : 'thought'} session=${activeId} len=${updateData.content.text.length} text="${updateData.content.text.replace(/\\s+/g, ' ').slice(0, 50)}" isLoadingSession=${this.sessionManager.isLoading(activeId)} inFlight=${this.sessionManager.isPromptInFlight(activeId)}`,
+        );
+      }
       return;
     }
     // Any non-chunk update must come after the buffered text so users see
@@ -2067,6 +2093,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * Handle a prompt sent from the webview.
    */
   private async handleSendPrompt(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void> {
+    // TEMP-DEBUG (cannot-send investigation): entry marker so we can tell
+    // "webview never posted" apart from "host received but dropped".
+    if (DEBUG_LIVE) {
+      log(`handleSendPrompt ENTER: text="${(text || '').substring(0, 60)}" activeId=${this.sessionManager.getActiveSessionId()}`);
+    }
     const activeId = this.sessionManager.getActiveSessionId();
     if (!activeId) {
       this.postMessage({
@@ -2098,6 +2129,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // agent_message_chunk notifications from slash commands (e.g. /index build,
       // /tools, /stats) are dropped by the "After promptEnd the turn is closed"
       // guard in the webview's sessionUpdate handler.
+      if (DEBUG_LIVE) {
+        log(`HOST-SLASH: posting promptStart for slash text="${text.substring(0, 40)}" activeId=${activeId} isPromptInFlight=${this.sessionManager.isPromptInFlight(activeId)}`);
+      }
       this.postMessage({ type: 'promptStart' });
       let slashStopReason: string = 'end_turn';
       try {
@@ -2142,6 +2176,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         // new agent's panel — posting promptEnd: cancelled would leak the
         // "— Conversation interrupted —" notice into the wrong chat.
         if (this.sessionManager.getActiveSessionId() === activeId) {
+          if (DEBUG_LIVE) {
+            log(`HOST-SLASH: posting promptEnd stopReason=${slashStopReason} for slash text="${text.substring(0, 40)}" activeId=${activeId} isPromptInFlight=${this.sessionManager.isPromptInFlight(activeId)}`);
+          }
           this.postMessage({ type: 'promptEnd', sessionId: activeId, stopReason: slashStopReason });
         }
       }
@@ -2149,6 +2186,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     // Tell webview we're processing
+    if (DEBUG_LIVE) {
+      log(`HOST-PROMPT: posting promptStart for text="${text.substring(0, 40)}" activeId=${activeId} isPromptInFlight=${this.sessionManager.isPromptInFlight(activeId)}`);
+    }
     this.postMessage({ type: 'promptStart' });
 
     // Capture all non-empty selections from the active editor.
@@ -2339,6 +2379,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // render "— Conversation interrupted —" in the WRONG agent's panel.
       if (this.sessionManager.getActiveSessionId() === activeId) {
         const session = this.sessionManager.getSession(activeId);
+        if (DEBUG_LIVE) {
+          log(`HOST-PROMPT: posting promptEnd stopReason=${response.stopReason} activeId=${activeId} isPromptInFlight=${this.sessionManager.isPromptInFlight(activeId)} (after sendPrompt resolved)`);
+        }
         this.postMessage({
           type: 'promptEnd',
           sessionId: activeId,
@@ -3743,9 +3786,23 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   /**
    * Send current session state to the webview on load.
    */
-  private sendCurrentState(): void {
+  private sendCurrentState(opts?: { isPromptInFlightOverride?: boolean }): void {
     const activeId = this.sessionManager.getActiveSessionId();
     const session = activeId ? this.sessionManager.getSession(activeId) : null;
+    // TEMP-DEBUG: log every state push with the in-flight snapshot so we can
+    // see which state message carries isPromptInFlight when Kiro resume loads.
+    const _inflightAtSend =
+      typeof opts?.isPromptInFlightOverride === 'boolean'
+        ? opts.isPromptInFlightOverride
+        : !!(activeId && this.sessionManager.isPromptInFlight(activeId));
+    if (DEBUG_LIVE) {
+      try {
+        const _st = new Error().stack?.split('\n').slice(1, 4).map((l) => l.trim().replace(/^at /, '')).join(' | ') || '';
+        log(`sendCurrentState: activeId=${activeId || '(none)'} session=${session?.sessionId || '(none)'} isPromptInFlight=${_inflightAtSend} caller=[${_st}]`);
+      } catch {
+        log(`sendCurrentState: activeId=${activeId || '(none)'} session=${session?.sessionId || '(none)'} isPromptInFlight=${_inflightAtSend} caller=[unknown]`);
+      }
+    }
     // Read the last connected agent from workspaceState (persists across restarts).
     const lastAgent = this.workspaceState.get<string>('acp.lastConnectedAgent');
     const lastAgentDisplay = this.workspaceState.get<string>('acp.lastConnectedAgentDisplay');
@@ -3783,7 +3840,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // isProcessing resets to false, so the Send button shows instead of
       // Stop even though the agent is still streaming. This re-establishes
       // the correct processing state on webview ready.
-      isPromptInFlight: !!(activeId && this.sessionManager.isPromptInFlight(activeId)),
+      isPromptInFlight: _inflightAtSend,
     });
   }
 
@@ -3812,7 +3869,24 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // Refresh git branch for the new session's cwd, then send state.
     const session = this.sessionManager.getActiveSession();
     if (session?.cwd) {
-      this.refreshGitBranch(session.cwd).then(() => this.sendCurrentState());
+      // Capture the in-flight snapshot BEFORE starting the async git-branch
+      // refresh. It is re-posted by the .then() below; reading it AFTER the
+      // await races other host activity (e.g. restoreConfigOptions →
+      // sendSlashCommand adding the session to inFlightPromptSessions for
+      // ~1ms), which would post a STALE isPromptInFlight=true to the webview
+      // and latch isProcessing forever (bug: resumed Kiro session shows a
+      // permanent Stop button, messages can't be sent).
+      const _inflightBeforeGit = !!(
+        this.sessionManager.getActiveSessionId() &&
+        this.sessionManager.isPromptInFlight(this.sessionManager.getActiveSessionId()!)
+      );
+      this.refreshGitBranch(session.cwd).then(() => {
+        // The deferred state push must reflect the snapshot taken at call
+        // time, not whatever happened during the git refresh await — so a
+        // transient in-flight flag from an unrelated concurrent operation
+        // can never leak into this state message.
+        this.sendCurrentState({ isPromptInFlightOverride: _inflightBeforeGit });
+      });
     }
     this.sendCurrentState();
     if (session && isCursorAgentName(session.agentName)) {
@@ -5689,6 +5763,14 @@ let isForceCancelled = false; // true after cancel fallback forces promptEnd
 // We accept chunks for a short window after promptEnd and append them to the
 // last committed assistant bubble instead of dropping.
 let turnTailGraceUntil = 0; // timestamp until which late chunks are accepted
+let _pendingStaleInFlightWatchdogTimer = null;
+// When a state.isPromptInFlight latch is suspected of being stale (no send in
+// flight, no user prompt, nothing streaming), arm a short watchdog. If no real
+// turn activity (promptStart / promptEnd / agent chunk) arrives before it
+// fires, the latch was caused by a transient in-flight flag (e.g. the Kiro
+// restoreConfigOptions → sendSlashCommand race) and must be cleared — otherwise
+// the Send button would stay stuck on "■ Stop" forever.
+const STALE_INFLIGHT_WATCHDOG_MS = 3000;
 const TURN_TAIL_GRACE_MS = 1500;
 let hasSentPrompt = false;
 // Track whether the last sent prompt was a slash command (e.g. /ps, /stats).
@@ -5925,7 +6007,7 @@ let isCompacting = false;  // true while /compact is running
      // and until promptStart lands, new input must queue, not send.
      isSendingPrompt = true;
      // Optimistically set processing=true so the Stop button shows immediately.
-     setProcessing(true);
+     setProcessing(true, 'drainQueue-localslash-notprocessing');
      vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
     }
   }
@@ -6015,7 +6097,7 @@ hasSentPrompt = true;
   isSendingPrompt = true;
   // Optimistically set processing=true so the Stop button shows immediately.
   // See handleSend() for rationale (VS Code webview postMessage throttling).
-  setProcessing(true);
+  setProcessing(true, 'drainQueue-sendPrompt');
   vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
 }
 return true;
@@ -6965,10 +7047,27 @@ var end = displayText.length;
     });
 
     // --- Auto-resize textarea (within the input area constraints) ---
+   // TEMP-DEBUG (cannot-send investigation): always-on probe, forwarded to the
+   // ACP Client log unconditionally by the extension host.
+   function wvProbe(tag, detail) {
+     vscode.postMessage({
+       type: 'debugLog',
+       message: '[WV-PROBE] ' + tag + ' isProcessing=' + isProcessing +
+         ' isSendingPrompt=' + isSendingPrompt +
+         ' isCompacting=' + isCompacting +
+         ' isClearing=' + isClearing +
+         ' hasActiveSession=' + hasActiveSession +
+         ' hasSentPrompt=' + hasSentPrompt +
+         ' messageQueue.length=' + (typeof messageQueue === 'undefined' ? '?' : messageQueue.length) +
+         ' isLoadingSession=' + isLoadingSession +
+         (detail ? ' | ' + detail : ''),
+     });
+   }
    function updateSendButton() {
      if (isProcessing) return; // Stop button is always enabled
      const hasText = promptInput.value.trim().length > 0;
      sendStopBtn.disabled = !hasText || !hasActiveSession;
+     wvProbe('updateSendButton', 'hasText=' + hasText + ' disabled=' + sendStopBtn.disabled + ' btnText=' + sendStopBtn.textContent);
    }
 
     promptInput.addEventListener('input', () => {
@@ -7311,6 +7410,7 @@ var end = displayText.length;
 
     function handleQueue() {
     const text = promptInput.value.trim();
+    wvProbe('handleQueue ENTER', 'text=' + (text || '(empty)').substring(0, 40));
     if (!text && pendingImages.length === 0) return;
     const images = pendingImages.splice(0);
     imagePreviewStrip.innerHTML = '';
@@ -7498,7 +7598,7 @@ function handleLocalSlashCommand(cmdText) {
     if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
     pendingPostCompactChunks = []; // new compaction supersedes any buffered resume tokens
     if (kiroCompactWatchdog) { clearTimeout(kiroCompactWatchdog); kiroCompactWatchdog = null; }
-    setProcessing(true);
+    setProcessing(true, 'handleLocalSlashCommand-compact');
     var compactCmd = '/' + compactMatch[1].toLowerCase();
     var compactArgs = (compactMatch[2] || '').trim();
     var compactPrompt = compactArgs ? (compactCmd + ' ' + compactArgs) : compactCmd;
@@ -7528,7 +7628,7 @@ function handleLocalSlashCommand(cmdText) {
         pendingPostCompactChunks = []; // compaction timed out — discard any buffered resume tokens
         hideCompactionProgress();
         if (statusEl) statusEl.innerHTML = '';
-        setProcessing(false);
+        setProcessing(false, 'compact-timeout-watchdog');
         addMessage('system',
           'Timed out waiting for compaction to finish. Conversation was left unchanged.');
       }, 600000);
@@ -7552,7 +7652,7 @@ function handleLocalSlashCommand(cmdText) {
     var isKiroClear = sessionState && /kiro/i.test(sessionState.agentName || sessionState.agentConfigKey || '');
     if (isKiroClear) {
       isClearing = true;
-      setProcessing(true);
+      setProcessing(true, 'handleLocalSlashCommand-clear');
       addMessage('user', '/clear');
       showStatusBanner('clear', 'Clearing conversation...', null);
       vscode.postMessage({ type: 'executeKiroCommand', command: 'clear' });
@@ -7649,11 +7749,13 @@ function handleLocalSlashCommand(cmdText) {
 
 function handleSend() {
   const text = promptInput.value.trim();
+  wvProbe('handleSend ENTER', 'textLen=' + text.length + ' hasImages=' + (pendingImages.length > 0));
   if (!text && pendingImages.length === 0) return;
   // Guard: don't send if there's no active agent session (e.g. after reload
   // before reconnecting). The Send button is also disabled via
   // updateSendButton, but this catches edge cases like Enter key.
   if (!hasActiveSession) {
+    wvProbe('handleSend GUARD:no-active-session', 'showResumeBar');
     // Show the resume bar instead
     updateResumeBar();
     return;
@@ -7662,6 +7764,7 @@ function handleSend() {
    // Send Now but the turn hasn't started yet (promptStart not received).
    // Sending now would race the in-flight session/prompt. Queue instead.
    if (isSendingPrompt) {
+     wvProbe('handleSend GUARD:isSendingPrompt-stuck', 'queueing instead of posting sendPrompt');
      handleQueue();
      return;
    }
@@ -7670,6 +7773,7 @@ function handleSend() {
    // BUT allow local slash commands (e.g. /ps, /rename) that don't
    // interact with the agent.
    if (isCompacting || isClearing) {
+     wvProbe('handleSend GUARD:compacting-clearing', 'isCompacting=' + isCompacting + ' isClearing=' + isClearing);
      // Local slash commands (e.g. /ps, /rename) execute immediately even
      // during compaction — they don't interact with the agent.
      if (text.startsWith('/') && handleLocalSlashCommand()) { return; }
@@ -7681,17 +7785,22 @@ function handleSend() {
      return;
    }
    // /rename works immediately, even during streaming
-   if (handleLocalSlashCommand()) { return; }
+   if (handleLocalSlashCommand()) {
+     wvProbe('handleSend GUARD:local-slash', 'text=' + text.substring(0, 40));
+     return;
+   }
 // Allow slash commands through during streaming — the agent
    // handles read-only commands (e.g. /ps, /status) without
    // interrupting the in-progress LLM turn.
    // Non-slash messages typed while a turn is streaming are QUEUED (never
    // sent concurrently, never dropped) — they drain one per turn, FIFO.
    if (isProcessing && !text.startsWith('/')) {
+     wvProbe('handleSend GUARD:isProcessing-queued', 'text=' + text.substring(0, 40));
      handleQueue();
      return;
    }
 
+  wvProbe('handleSend POSTING', 'text=' + text.substring(0, 40));
   addMessage('user', text || '(image)');
    promptInput.value = '';
    const images = pendingImages.splice(0);
@@ -7706,7 +7815,7 @@ function handleSend() {
   // the Stop button without waiting for the round-trip.
   // isSendingPrompt guards against concurrent sends; promptStart will clear it.
   isSendingPrompt = true;
-  setProcessing(true);
+  setProcessing(true, 'handleSend');
  vscode.postMessage({ type: 'sendPrompt', text: text || ' ', images });
 }
 
@@ -7814,6 +7923,7 @@ function handleSend() {
 
    // Wire up buttons
     sendStopBtn.addEventListener('click', () => {
+      wvProbe('sendStopBtn CLICK', 'isProcessing=' + isProcessing + ' btnText=' + sendStopBtn.textContent);
       if (isProcessing) {
         handleCancel();
       } else {
@@ -7843,9 +7953,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
  updateWelcomeButton();
 
    // --- Send/Stop toggle ---
-  function setProcessing(processing) {
+  function setProcessing(processing, caller) {
     if (isProcessing !== processing) {
-      vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] setProcessing: ' + isProcessing + ' → ' + processing + ' messageQueue.length=' + messageQueue.length + ' hasSteeredThisTurn=' + hasSteeredThisTurn });
+      vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] setProcessing: ' + isProcessing + ' → ' + processing + ' caller=' + (caller || 'anon') + ' messageQueue.length=' + messageQueue.length + ' hasSteeredThisTurn=' + hasSteeredThisTurn });
     }
     isProcessing = processing;
     if (!processing) {
@@ -7855,6 +7965,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       // as a safety net for any path that ends processing without promptEnd.
       isSendingPrompt = false;
     }
+    wvProbe('setProcessing', '→ ' + processing + ' caller=' + (caller || 'anon'));
      if (processing) {
         sendStopBtn.className = 'send-stop-btn stop';
         sendStopBtn.textContent = '■ Stop';
@@ -8714,7 +8825,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       if (loadOverlay) loadOverlay.classList.add('visible');
       if (inputArea) inputArea.classList.add('disabled');
       promptInput.disabled = false; // keep textarea editable during load
-      setProcessing(false);
+      setProcessing(false, 'handleLoadSessionStart');
     }
 
   function handleLoadSessionEnd(ok) {
@@ -15066,6 +15177,7 @@ sessionState = {
     // Show/hide image attach button based on agent's promptCapabilities.image
     updateAttachButtonVisibility(session.promptCapabilities, session.currentModelImageSupport);
     updatePlaceholder();
+    wvProbe('showSessionConnected END', 'sessionId=' + session.sessionId + ' agent=' + session.agentName);
   }
 
   function showSessionConnectedFromState(ss) {
@@ -15202,6 +15314,38 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
    // Handle messages from the extension
    window.addEventListener('message', (event) => {
       const msg = event.data;
+      // TEMP-DEBUG: trace EVERY inbound message (type + key fields) so the
+      // frame-by-frame order is visible in the repro (state / promptStart /
+      // promptEnd / sessionUpdate ordering around the latch). Forwarded to the
+      // ACP Client log only while DEBUG_LIVE is on (host-side hub gate).
+      var _wvMsgType = msg && msg.type ? String(msg.type) : '(none)';
+      var _wvMsgBrief = '';
+      if (msg && typeof msg === 'object') {
+        if (_wvMsgType === 'state') {
+          _wvMsgBrief = ' isPromptInFlight=' + !!msg.isPromptInFlight + ' activeSessionId=' + (msg.activeSessionId || '') +
+            ' sessionId=' + (msg.session && msg.session.sessionId ? msg.session.sessionId : '') +
+            ' agent=' + (msg.session && msg.session.agentName ? msg.session.agentName : '');
+        } else if (_wvMsgType === 'promptStart') {
+          _wvMsgBrief = ' sessionId=' + (msg.sessionId || '');
+        } else if (_wvMsgType === 'promptEnd') {
+          _wvMsgBrief = ' sessionId=' + (msg.sessionId || '') + ' stopReason=' + (msg.stopReason || '');
+        } else if (_wvMsgType === 'sessionUpdate') {
+          var _wvU = msg.update || {};
+          _wvMsgBrief = ' sessId=' + (msg.sessionId || '') + ' type=' + (_wvU.sessionUpdate || '') +
+            ' preview=' + (_wvU.content && _wvU.content.text ? String(_wvU.content.text).replace(/\\s+/g, ' ').slice(0, 40) : '');
+        } else if (_wvMsgType === 'loadSessionEnd') {
+          _wvMsgBrief = ' ok=' + !!msg.ok;
+        } else if (_wvMsgType === 'loadSessionStart') {
+          _wvMsgBrief = '';
+        } else if (_wvMsgType === 'kiroMetadata') {
+          _wvMsgBrief = ' effort=' + (msg.params && msg.params.effort) + ' ctx=' + (msg.params && msg.params.contextUsagePercentage);
+        } else if (_wvMsgType === 'kiroCompactionStatus' || _wvMsgType === 'kiroClearStatus') {
+          _wvMsgBrief = ' msg=' + ((msg.params && msg.params.message) || '') + ' type=' + ((msg.params && msg.params.type) || '');
+        } else if (_wvMsgType === 'state' || _wvMsgType === 'sendPrompt' || _wvMsgType === 'cancelTurn') {
+          // no extra
+        }
+      }
+      vscode.postMessage({ type: 'debugLog', message: '[WV-MSG] type=' + _wvMsgType + _wvMsgBrief + ' | isProcessing=' + isProcessing + ' isSendingPrompt=' + isSendingPrompt + ' isLoadingSession=' + isLoadingSession });
       switch (msg.type) {
        case 'debugResume':
          DEBUG_RESUME = !!msg.enabled;
@@ -15240,7 +15384,27 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
          // (e.g. switching to Copilot Chat and back), so we must re-establish
          // it here to keep the Stop button active while streaming continues.
          if (msg.isPromptInFlight) {
-           setProcessing(true);
+           setProcessing(true, 'state-msg-isPromptInFlight');
+           vscode.postMessage({ type: 'debugLog', message: '[WV-STATE] isPromptInFlight=true → setProcessing(true) from state msg' });
+           // Possible stale flag: if nothing is actually in flight from the
+           // webview's perspective (no send pending, no user prompt sent in
+           // this session, nothing streaming), this latch may come from a
+           // transient host-side in-flight hold (Kiro resume restoreConfig /
+           // slash). Arm a short watchdog: clear it unless a real turn shows
+           // up. Genuine mid-turn resumes keep producing agent chunks or an
+           // early promptStart, so they clear the watchdog naturally.
+           if (!isSendingPrompt && !hasSentPrompt && !isLoadingSession && !messageQueue.length &&
+               !currentAssistantText && !currentThoughtText) {
+             if (_pendingStaleInFlightWatchdogTimer) { clearTimeout(_pendingStaleInFlightWatchdogTimer); }
+             var _watchStart = Date.now();
+             _pendingStaleInFlightWatchdogTimer = setTimeout(function() {
+               _pendingStaleInFlightWatchdogTimer = null;
+               vscode.postMessage({ type: 'debugLog', message: '[WV-STALE-WATCHDOG] no turn activity within ' + (Date.now() - _watchStart) + 'ms after state.isPromptInFlight latch — clearing stale isProcessing' });
+               setProcessing(false, 'stale-inflight-watchdog');
+             }, STALE_INFLIGHT_WATCHDOG_MS);
+           }
+         } else {
+           vscode.postMessage({ type: 'debugLog', message: '[WV-STATE] isPromptInFlight=false (no setProcessing)' });
          }
          break;
 
@@ -15267,8 +15431,9 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        // The turn has actually started — the drain/Send-Now sendPrompt is now
        // in-flight and new input may proceed normally (will be queued because
        // isProcessing=true, or sent once the turn finishes).
+       if (_pendingStaleInFlightWatchdogTimer) { clearTimeout(_pendingStaleInFlightWatchdogTimer); _pendingStaleInFlightWatchdogTimer = null; }
        isSendingPrompt = false;
-       setProcessing(true);
+       setProcessing(true, 'promptStart');
        isForceCancelled = false;
        // Chat history is being built for the current session.
        chatHistoryOriginSessionId = (sessionState && sessionState.sessionId) || null;
@@ -15320,6 +15485,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         break;
 
      case 'promptEnd':
+     if (_pendingStaleInFlightWatchdogTimer) { clearTimeout(_pendingStaleInFlightWatchdogTimer); _pendingStaleInFlightWatchdogTimer = null; }
      // Stale promptEnd guard: the extension host can resolve a torn-down
      // session's in-flight prompt AFTER the user started a new conversation
      // (disconnectAgent cancels the prompt, but the continuation races the
@@ -15469,7 +15635,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       if (!_wasCancelled && !isLoadingSession && !_wasCompacting) {
         turnTailGraceUntil = Date.now() + TURN_TAIL_GRACE_MS;
       }
-      setProcessing(false);
+      setProcessing(false, 'promptEnd');
       vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] after setProcessing(false): isProcessing=' + isProcessing + ' isCompacting=' + isCompacting + ' messageQueue.length=' + messageQueue.length + ' pendingSendAfterCancel=' + !!pendingSendAfterCancel });
        // Interrupted: keep partial reply folded and refresh the ▸ header
         // (thought-only / Claude cancel often had toolCount 0 → header hidden).
@@ -15481,12 +15647,12 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        // Kiro /compact can still be running after execute's promptEnd — keep
        // the Stop/spinner state until we get a true compacted notice.
        if (isCompacting) {
-         setProcessing(true);
+         setProcessing(true, 'promptEnd-keepwaiting-compacting');
          if (statusEl && !statusEl.innerHTML) {
            showCompactionProgress('Compacting conversation...', null);
          }
        } else if (isClearing) {
-         setProcessing(true);
+         setProcessing(true, 'promptEnd-keepwaiting-clearing');
          if (statusEl && !statusEl.innerHTML) {
            showStatusBanner('clear', 'Clearing conversation...', null);
          }
@@ -15665,8 +15831,8 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         if (inputArea) inputArea.classList.add('disabled');
         modePickerWrap.classList.add('hidden');
         modelPickerWrap.classList.add('hidden');
-        setConfigOptionsState([]);
-        setProcessing(false);
+       setConfigOptionsState([]);
+        setProcessing(false, 'newConversation');
         // Hide resume bar immediately — new conversation means no session
         // to resume. Without this, the resume button from startup/previous
         // session lingers until the new agent connects.
@@ -15742,14 +15908,14 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
               pendingPostCompactChunks = [];
               hideCompactionProgress();
               if (statusEl) statusEl.innerHTML = '';
-              setProcessing(false);
+              setProcessing(false, 'error-compact-failure');
             }
           }
          addMessage('error', msg.message || 'An error occurred');
          // Reset processing state in case the error prevents promptEnd from firing
          // (e.g. early return in handleSendPrompt before slash command path).
          if (isProcessing && !isCompacting && !isClearing) {
-           setProcessing(false);
+           setProcessing(false, 'error-reset');
          }
          break;
 
@@ -16712,7 +16878,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
           pendingPostCompactChunks = [];
           showCompactionProgress('Compacting conversation...', null);
-          setProcessing(true);
+          setProcessing(true, 'contextCompaction-in_progress');
         }
         return;
       }
@@ -16725,7 +16891,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         pendingPostCompactChunks = [];
         hideCompactionProgress();
         if (statusEl) statusEl.innerHTML = '';
-        setProcessing(false);
+        setProcessing(false, 'contextCompaction-failed');
         var failMsg = opts.error ? String(opts.error) : '';
         addMessage('error', failMsg || 'Compaction failed');
         return;
@@ -16739,7 +16905,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         pendingPostCompactChunks = [];
         hideCompactionProgress();
         if (statusEl) statusEl.innerHTML = '';
-        setProcessing(false);
+        setProcessing(false, 'contextCompaction-cancelled');
         return;
       }
       if (st === 'completed') {
@@ -16749,7 +16915,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           compactedWarningText = '';
           compactedNoticeText = '';
           showCompactionProgress('Compacting conversation...', null);
-          setProcessing(true);
+          setProcessing(true, 'contextCompaction-completed');
         }
         if (!compactedNoticeText) {
           var fromSummary = compactionNoticeFromSummary(opts.summary);
@@ -16839,6 +17005,19 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           content.text.trim().startsWith('Effort configuration is currently not available')) {
         break;
       }
+      // Suppress Kiro CLI slash-command echo output (e.g. "/effort xhigh"
+      // → "Effort set to xhigh"). These are streamed as agent_message_chunk
+      // AFTER the host's slash session/prompt already resolved with end_turn
+      // (sendSlashCommand posts no promptStart/promptEnd), and when they land
+      // right after a state.isPromptInFlight latch they keep the panel stuck
+      // on "■ Stop" (Send disabled forever). They are not conversation
+      // content — drop them so they never render and never count as turn
+      // activity. The single-line form is "Effort set to <level>".
+      if (content && content.type === 'text' &&
+          /^Effort set to (none|low|medium|high|xhigh|max)\\.?$/.test(content.text.trim())) {
+        vscode.postMessage({ type: 'debugLog', message: '[WV-SLASH-ECHO] suppressed Kiro slash echo: "' + content.text.trim() + '"' });
+        break;
+      }
       // codex-acp internal retry boundary: a "retrying with backoff" notice
       // follows a transient failure (503 model at capacity / stream
       // disconnect). The failed attempt's partial reply is abandoned; discard
@@ -16873,9 +17052,15 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       // the last committed assistant bubble. Without this the final answer is
       // silently dropped → premature end_turn / "nothing happened".
       var _inTailGrace = Date.now() <= turnTailGraceUntil;
+      if (content && content.type === 'text' && String(content.text || '').trim()) {
+        vscode.postMessage({ type: 'debugLog', message: '[WV-CHUNK] text="' + String(content.text).replace(/\\s+/g, ' ').slice(0, 60) + '" len=' + String(content.text).length + ' isLoadingSession=' + isLoadingSession + ' isProcessing=' + isProcessing + ' isCompacting=' + isCompacting + ' inTailGrace=' + _inTailGrace + ' tailGraceUntil=' + turnTailGraceUntil + ' now=' + Date.now() + ' messageId=' + (update.messageId || '') });
+      }
       if (!isLoadingSession && !isProcessing && !isCompacting && !_inTailGrace) {
+        vscode.postMessage({ type: 'debugLog', message: '[WV-CHUNK-DROP] dropped: text="' + (content && content.text ? String(content.text).replace(/\\s+/g, ' ').slice(0, 60) : '') + '" isLoadingSession=' + isLoadingSession + ' isProcessing=' + isProcessing + ' isCompacting=' + isCompacting + ' inTailGrace=' + _inTailGrace });
         break;
       }
+      // Real agent activity — the state.isPromptInFlight latch was genuine.
+      if (_pendingStaleInFlightWatchdogTimer) { clearTimeout(_pendingStaleInFlightWatchdogTimer); _pendingStaleInFlightWatchdogTimer = null; }
       // Detect auto-compaction: if the agent sends "*Context compacted*" text
       // without a preceding contextCompaction tool_call, treat it as compaction.
       // Also recognize Kiro CLI "Conversation compacted" notices and Claude's
@@ -16903,7 +17088,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
             if (kiroCompactWatchdog) { clearTimeout(kiroCompactWatchdog); kiroCompactWatchdog = null; }
             hideCompactionProgress();
             if (statusEl) statusEl.innerHTML = '';
-            setProcessing(false);
+            setProcessing(false, 'chunk-compaction-cancel');
           }
           break;
         }
@@ -16919,7 +17104,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
              /^Compacting/i.test(_autoTrim) ? 'Compacting...' : 'Compacting conversation...',
              null,
            );
-           setProcessing(true);
+           setProcessing(true, 'chunk-auto-compact-notice');
          }
          // Claude ACP adapter: "Compacting completed." / "Compacting failed..."
          if (isCompacting && /^Compacting (completed|failed)/i.test(_autoTrim)) {
@@ -16928,7 +17113,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
              if (kiroCompactWatchdog) { clearTimeout(kiroCompactWatchdog); kiroCompactWatchdog = null; }
              hideCompactionProgress();
              if (statusEl) statusEl.innerHTML = '';
-             setProcessing(false);
+             setProcessing(false, 'chunk-compaction-failed');
              addMessage('error', 'Compaction failed.');
              break;
            }
@@ -17776,7 +17961,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
     toolCalls = {};
    toolCallDiffs = {};
    if (statusEl) statusEl.innerHTML = '';
-   setProcessing(false);
+   setProcessing(false, 'finalizeKiroClear');
    saveState();
    // After Kiro clear, chatHistory belongs to current session.
    chatHistoryOriginSessionId = (sessionState && sessionState.sessionId) || null;
@@ -17792,12 +17977,14 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
   function handleKiroClearStatus(params) {
     if (isLoadingSession) return;
     var msg = params && typeof params.message === 'string' ? params.message : '';
+    wvProbe('kiroClearStatus', 'msg="' + msg + '" isClearing=' + isClearing);
     if (!isClearing) {
       isClearing = true;
-      setProcessing(true);
+      setProcessing(true, 'handleLocalSlashCommand-clear');
     }
     var looksDone = !!msg && /cleared/i.test(msg) && !/clearing/i.test(msg);
     if (looksDone) {
+      wvProbe('kiroClearStatus DONE', 'msg="' + msg + '"');
       finalizeKiroClear(msg);
       return;
     }
@@ -17808,11 +17995,12 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
    * _kiro.dev/commands/execute for clear returned.
    */
   function handleKiroClearDone(msg) {
+    wvProbe('kiroClearDone', 'error=' + !!(msg && msg.error) + ' msg="' + ((msg && typeof msg.message === 'string') ? msg.message : '') + '" isClearing=' + isClearing);
     if (msg && msg.error) {
       isClearing = false;
       hideCompactionProgress();
       if (statusEl) statusEl.innerHTML = '';
-      setProcessing(false);
+      setProcessing(false, 'kiroClearDone-error');
       if (msg.message) addMessage('error', String(msg.message));
       return;
     }
@@ -17841,6 +18029,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       statusType = String(statusObj.type);
     }
     var summary = params && typeof params.summary === 'string' ? params.summary : '';
+    wvProbe('kiroCompactionStatus', 'statusType=' + statusType + ' msg="' + msg + '" isCompacting=' + isCompacting);
 
     if (!isCompacting) {
       isCompacting = true;
@@ -17850,10 +18039,11 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       compactedNoticeText = '';
       if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
       pendingPostCompactChunks = []; // new compaction supersedes any buffered resume tokens
-      setProcessing(true);
+      setProcessing(true, 'kiroCompactionStatus-in_progress');
     }
 
     if (statusType === 'failed') {
+      wvProbe('kiroCompactionStatus FAILED', '');
       if (kiroCompactWatchdog) { clearTimeout(kiroCompactWatchdog); kiroCompactWatchdog = null; }
       isCompacting = false;
       manualCompacting = false;
@@ -17863,7 +18053,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       pendingPostCompactChunks = []; // compaction failed — discard any buffered resume tokens
       hideCompactionProgress();
       if (statusEl) statusEl.innerHTML = '';
-      setProcessing(false);
+      setProcessing(false, 'kiroCompactionStatus-failed');
       addMessage('error', msg || summary || 'Compaction failed.');
       return;
     }
@@ -17873,6 +18063,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       (!!msg && /compacted/i.test(msg) && !/compacting/i.test(msg));
     if (looksDone) {
       // Do not paint Kiro's summary markdown into the panel — client note only.
+      wvProbe('kiroCompactionStatus COMPLETED', 'isCompacting=' + isCompacting);
       finalizeKiroCompact(msg || 'Conversation compacted.');
       return;
     }
@@ -17894,7 +18085,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
     } else {
       scheduleCompactionFlush();
     }
-    setProcessing(false);
+    setProcessing(false, 'finalizeKiroCompact');
   }
 
   /**
@@ -17902,6 +18093,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
    * the conversation — wait for compaction/status or agent message.
    */
   function handleKiroCompactDone(msg) {
+    wvProbe('kiroCompactDone', 'error=' + !!(msg && msg.error) + ' msg="' + ((msg && typeof msg.message === 'string') ? msg.message : '') + '" isCompacting=' + isCompacting);
     if (msg && msg.error) {
       if (kiroCompactWatchdog) { clearTimeout(kiroCompactWatchdog); kiroCompactWatchdog = null; }
       isCompacting = false;
@@ -17911,7 +18103,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       pendingPostCompactChunks = []; // compaction failed — discard any buffered resume tokens
       hideCompactionProgress();
       if (statusEl) statusEl.innerHTML = '';
-      setProcessing(false);
+      setProcessing(false, 'kiroCompactDone-error');
       if (msg.message) {
         addMessage('error', String(msg.message));
       }
@@ -17933,7 +18125,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
     }
     // Keep conversation; show waiting status until true completion.
     showCompactionProgress('Compacting conversation...', null);
-    setProcessing(true);
+    setProcessing(true, 'kiroCompactDone-keepwaiting');
   }
 
   // Handle _kiro.dev/subagent/list_update notification (Kiro CLI specific).

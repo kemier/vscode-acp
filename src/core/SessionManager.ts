@@ -40,6 +40,11 @@ import { ConnectionManager, ConnectionInfo } from './ConnectionManager';
 import { SessionUpdateHandler } from '../handlers/SessionUpdateHandler';
 import { SessionHistoryStore } from './SessionHistoryStore';
 import { getAgentConfig, getAgentConfigs, resolveAgentConfigKey } from '../config/AgentConfig';
+
+// TEMP-DEBUG master switch for the Kiro-resume "Send button stuck" fix
+// instrumentation (sendPrompt/sendSlashCommand IN-FLIGHT ADD/DELETE traces).
+// Keep false in normal use; flip to true to re-enable when debugging resumes.
+const DEBUG_LIVE = false;
 import { resolveAgentDisplayName } from '../config/agentDisplayName';
 import { log, logError } from '../utils/Logger';
 import { sendEvent, sendError } from '../utils/TelemetryManager';
@@ -913,6 +918,9 @@ export class SessionManager extends EventEmitter {
     }
 
     this.inFlightPromptSessions.add(sessionId);
+    if (DEBUG_LIVE) {
+      log(`sendPrompt: IN-FLIGHT ADD session=${sessionId} slash=${isSlashCommand} text="${text.substring(0, 40)}" t+${(performance.now() - sendT0).toFixed(1)}ms`);
+    }
     this.promptedSessions.add(sessionId);
     if (!isSlashCommand && this.memoryProvider?.isEnabled()) {
       this.memoryProvider.beginTurn(sessionId, session.agentName, text);
@@ -939,6 +947,9 @@ export class SessionManager extends EventEmitter {
       return response;
     } finally {
       this.inFlightPromptSessions.delete(sessionId);
+      if (DEBUG_LIVE) {
+        log(`sendPrompt: IN-FLIGHT DELETE session=${sessionId} slash=${isSlashCommand}`);
+      }
       if (!isSlashCommand && this.memoryProvider) {
         void this.memoryProvider.endTurn(sessionId).catch((e) => logError('Memory capture failed', e));
       }
@@ -1374,6 +1385,9 @@ export class SessionManager extends EventEmitter {
     log(`sendSlashCommand: session=${sessionId}, command="${command}"`);
     try {
       this.inFlightPromptSessions.add(sessionId);
+      if (DEBUG_LIVE) {
+        log(`sendSlashCommand: IN-FLIGHT ADD session=${sessionId} command="${command}"`);
+      }
       await connInfo.connection.prompt({
         sessionId,
         prompt: [{ type: 'text', text: command }],
@@ -1382,6 +1396,9 @@ export class SessionManager extends EventEmitter {
       log(`sendSlashCommand: failed for session ${sessionId}: ${e?.message ?? e}`);
     } finally {
       this.inFlightPromptSessions.delete(sessionId);
+      if (DEBUG_LIVE) {
+        log(`sendSlashCommand: IN-FLIGHT DELETE session=${sessionId} command="${command}"`);
+      }
     }
   }
 
