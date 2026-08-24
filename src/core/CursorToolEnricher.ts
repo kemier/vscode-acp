@@ -99,6 +99,26 @@ export function needsCursorToolEnrichment(update: {
   const kind = update?.sessionUpdate;
   if (kind !== 'tool_call' && kind !== 'tool_call_update') return false;
   if (!update.toolCallId) return false;
+
+  const hasTitle = update.title !== undefined && update.title !== null;
+  const hasRawInput = update.rawInput !== undefined && update.rawInput !== null;
+
+  // Cursor often sends bare tool_call_update (status / terminal delta / content)
+  // with neither title nor rawInput — not a stub recovery trigger.
+  if (kind === 'tool_call_update' && !hasTitle && !hasRawInput) {
+    return false;
+  }
+
+  // Wire already carries actionable args — nothing to recover from store.db.
+  if (hasRawInput && !isEmptyRawInput(update.rawInput)) {
+    return false;
+  }
+
+  // Enriched/non-stub title on the wire (e.g. backtick-wrapped shell command).
+  if (hasTitle && !isCursorStubToolTitle(update.title)) {
+    return false;
+  }
+
   return isEmptyRawInput(update.rawInput) && isCursorStubToolTitle(update.title);
 }
 
@@ -474,6 +494,21 @@ export function findCursorSessionStorePath(
 /** Skip multi-hundred-MB stores on fallback LIKE scans (each miss costs >1s). */
 const MAX_FALLBACK_STORE_BYTES = 120 * 1024 * 1024;
 
+/** Live per-tool enrich skips full-table blob scans above this size. */
+const MAX_LIVE_ENRICH_FULL_SCAN_BYTES = MAX_FALLBACK_STORE_BYTES;
+
+/** JSON tool-call blobs in store.db are small; skip multi-MB conversation dumps. */
+const MAX_TOOL_BLOB_BYTES = 512 * 1024;
+
+export function isLargeCursorStore(dbPath: string | null | undefined): boolean {
+  if (!dbPath) return false;
+  try {
+    return fs.statSync(dbPath).size > MAX_LIVE_ENRICH_FULL_SCAN_BYTES;
+  } catch {
+    return false;
+  }
+}
+
 export function listRecentCursorStorePaths(
   cursorDir: string = path.join(os.homedir(), '.cursor'),
   limit: number = 12,
@@ -508,7 +543,7 @@ function blobDataToText(d: unknown): string {
   return '';
 }
 
-async function readBlobTextsViaNodeSqlite(dbPath: string): Promise<string[]> {
+async function readBlobTextsViaNodeSqlite(dbPath: string, smallJsonOnly: boolean): Promise<string[]> {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { DatabaseSync } = require('node:sqlite') as {
     DatabaseSync: new (path: string, opts?: { readOnly?: boolean }) => {
@@ -518,20 +553,26 @@ async function readBlobTextsViaNodeSqlite(dbPath: string): Promise<string[]> {
   };
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
-    const rows = db.prepare('SELECT data FROM blobs ORDER BY rowid').all();
+    const sql = smallJsonOnly
+      ? `SELECT data FROM blobs WHERE length(data) < ${MAX_TOOL_BLOB_BYTES} AND (substr(data, 1, 1) = '{' OR substr(data, 1, 1) = '[') ORDER BY rowid`
+      : 'SELECT data FROM blobs ORDER BY rowid';
+    const rows = db.prepare(sql).all();
     return rows.map((r) => blobDataToText(r.data)).filter((t) => t.length > 0 && (t[0] === '{' || t[0] === '['));
   } finally {
     db.close();
   }
 }
 
-async function readBlobTextsViaSqliteCli(dbPath: string): Promise<string[]> {
+async function readBlobTextsViaSqliteCli(dbPath: string, smallJsonOnly: boolean): Promise<string[]> {
+  const rowFilter = smallJsonOnly
+    ? `AND length(data) < ${MAX_TOOL_BLOB_BYTES} AND (substr(data,1,1)='{' OR substr(data,1,1)='[')`
+    : '';
   const script = [
     'import sqlite3,json,sys',
     'db=sys.argv[1]',
     'conn=sqlite3.connect(db)',
     'out=[]',
-    'for (data,) in conn.execute("SELECT data FROM blobs ORDER BY rowid"):',
+    'for (data,) in conn.execute("SELECT data FROM blobs WHERE 1=1 ' + rowFilter + ' ORDER BY rowid"):',
     '  if isinstance(data, memoryview): data=bytes(data)',
     '  if isinstance(data, bytes):',
     '    if not data or data[0] not in (123,91): continue',
@@ -578,10 +619,11 @@ async function readBlobTextsViaSqliteCli(dbPath: string): Promise<string[]> {
 }
 
 async function readBlobTexts(dbPath: string): Promise<string[]> {
+  const smallJsonOnly = isLargeCursorStore(dbPath);
   try {
-    return await readBlobTextsViaNodeSqlite(dbPath);
+    return await readBlobTextsViaNodeSqlite(dbPath, smallJsonOnly);
   } catch {
-    return readBlobTextsViaSqliteCli(dbPath);
+    return readBlobTextsViaSqliteCli(dbPath, smallJsonOnly);
   }
 }
 
@@ -613,7 +655,7 @@ async function readBlobsMatchingSubstring(dbPath: string, needle: string): Promi
     try {
       const rows = db
         .prepare(
-          `SELECT data FROM blobs WHERE data LIKE ? AND length(data) < 1048576 LIMIT 40`,
+          `SELECT data FROM blobs WHERE data LIKE ? AND length(data) < 1048576 ORDER BY rowid DESC LIMIT 40`,
         )
         .all('%' + needle + '%');
       return rows
@@ -630,7 +672,7 @@ async function readBlobsMatchingSubstring(dbPath: string, needle: string): Promi
         'db,needle=sys.argv[1],sys.argv[2]',
         'conn=sqlite3.connect(db)',
         'out=[]',
-        'for (data,) in conn.execute("SELECT data FROM blobs WHERE data LIKE ? LIMIT 40", ("%"+needle+"%",)):',
+        'for (data,) in conn.execute("SELECT data FROM blobs WHERE data LIKE ? ORDER BY rowid DESC LIMIT 40", ("%"+needle+"%",)):',
         '  if isinstance(data, memoryview): data=bytes(data)',
         '  if isinstance(data, bytes):',
         '    if not data or data[0] not in (123,91): continue',
@@ -845,7 +887,15 @@ export class CursorSessionToolEnricher {
     if (!dbPath || !isUsableCursorStore(dbPath)) return [];
     try {
       const mtime = fs.statSync(dbPath).mtimeMs;
-      if (this.index && this.dbPath === dbPath && mtime === this.dbMtimeMs && this.index.size > 0) {
+      const largeStore = isLargeCursorStore(dbPath);
+      // store.db grows on every live tool call — on multi-100MB stores a full
+      // rescan blocks the extension host (Git SCM spinner stalls with it).
+      if (
+        this.index &&
+        this.dbPath === dbPath &&
+        this.index.size > 0 &&
+        (mtime === this.dbMtimeMs || largeStore)
+      ) {
         this.lastScanMs = Date.now();
         return this.toolOrder
           .map((id) => this.index!.get(id))
@@ -885,6 +935,16 @@ export class CursorSessionToolEnricher {
       }
 
       if (this.index && mtime === this.dbMtimeMs) {
+        this.lastScanMs = Date.now();
+        return this.index;
+      }
+      const dbSize = fs.statSync(dbPath).size;
+      if (dbSize > MAX_LIVE_ENRICH_FULL_SCAN_BYTES) {
+        // Prefix query only — full ORDER BY rowid scan on 400MB+ store.db
+        // routinely exceeds the live enrich timeout.
+        if (!this.index) this.index = new Map();
+        for (const [k, v] of targeted) this.index.set(k, v);
+        this.dbMtimeMs = mtime;
         this.lastScanMs = Date.now();
         return this.index;
       }

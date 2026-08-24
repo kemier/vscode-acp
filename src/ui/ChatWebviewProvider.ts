@@ -23,6 +23,8 @@ import {
   CursorSessionToolEnricher,
   findCursorSessionStorePath,
   isCursorAgentName,
+  isCursorStubToolTitle,
+  hasActionableToolArgs,
   needsCursorToolEnrichment,
 } from '../core/CursorToolEnricher';
 import { log, logError, formatAcpErrorMessage, getOutputChannel } from '../utils/Logger';
@@ -129,6 +131,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   private cursorToolEnrichers = new Map<string, CursorSessionToolEnricher>();
   /** Deduplicate concurrent enrich polls for the same toolCallId. */
   private cursorToolEnrichInFlight = new Set<string>();
+  /** toolCallIds that already have actionable args / enriched title on the wire. */
+  private cursorToolArgsSatisfied = new Set<string>();
   /** Coalesce batch-enrich requests (reload + loadSessionEnd + webview ready). */
   private cursorBatchEnrichTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -1897,6 +1901,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
     // Cursor: stub tool titles / empty rawInput — recover path/pattern from store.db
     // and push a follow-up tool_call_update so the webview title + tooltip update.
+    if (updateData?.sessionUpdate === 'tool_call' || updateData?.sessionUpdate === 'tool_call_update') {
+      this.noteCursorToolArgsIfPresent(update.sessionId, updateData);
+    }
     void this.maybeEnrichCursorToolCall(update.sessionId, updateData);
     // Live tool_call: per-id enrich only (fast prefix query). Full batch enrich
     // (listEnrichedTools scans the whole store) is reserved for post-merge/restore.
@@ -1912,22 +1919,48 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Remember tool calls whose wire payload already has paths/commands so a
+   * later bare tool_call_update (status-only) does not re-poll store.db.
+   */
+  private noteCursorToolArgsIfPresent(sessionId: string, updateData: any): void {
+    const toolCallId = updateData?.toolCallId as string | undefined;
+    if (!toolCallId) return;
+    const key = `${sessionId}::${toolCallId}`;
+    const rawInput = updateData.rawInput;
+    if (
+      rawInput &&
+      typeof rawInput === 'object' &&
+      !Array.isArray(rawInput) &&
+      hasActionableToolArgs(rawInput as Record<string, unknown>)
+    ) {
+      this.cursorToolArgsSatisfied.add(key);
+      return;
+    }
+    const title = updateData.title;
+    if (typeof title === 'string' && title.trim() && !isCursorStubToolTitle(title)) {
+      this.cursorToolArgsSatisfied.add(key);
+    }
+  }
+
+  /**
    * When Cursor ACP sends tool_call with empty rawInput, poll store.db for
    * the real args and emit a synthetic tool_call_update.
    */
   private async maybeEnrichCursorToolCall(sessionId: string, updateData: any): Promise<void> {
     try {
       if (!needsCursorToolEnrichment(updateData)) return;
+      const toolCallId = updateData.toolCallId as string;
+      if (!toolCallId || String(toolCallId).startsWith('replay-')) return;
+      const satisfiedKey = `${sessionId}::${toolCallId}`;
+      if (this.cursorToolArgsSatisfied.has(satisfiedKey)) return;
       // session/load uses synthetic replay-* ids that are never in store.db —
       // skip per-tool polls (batch enrich runs at loadSessionEnd instead).
       if (this.sessionManager.isLoading(sessionId)) return;
       const session = this.sessionManager.getSession(sessionId);
       const agentLabel = session?.agentName || session?.agentDisplayName || '';
       if (!isCursorAgentName(agentLabel)) return;
-      const toolCallId = updateData.toolCallId as string;
-      if (!toolCallId || String(toolCallId).startsWith('replay-')) return;
 
-      const inflightKey = `${sessionId}::${toolCallId}`;
+      const inflightKey = satisfiedKey;
       if (this.cursorToolEnrichInFlight.has(inflightKey)) return;
       this.cursorToolEnrichInFlight.add(inflightKey);
       let enriched;
@@ -1988,6 +2021,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   /**
    * After session/load or webview restore, push store.db tool titles so stub
    * "Read File" / "grep" rows get paths (replay-* ids cannot be looked up).
+   * Live-turn requests are deferred — a synchronous full-table store.db scan
+   * on large DBs blocks the extension host and starves Git SCM change
+   * detection until the agent turn ends.
    */
   private scheduleCursorBatchEnrich(
     sessionId: string | null | undefined,
@@ -1997,10 +2033,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     if (this.cursorBatchEnrichTimer) {
       clearTimeout(this.cursorBatchEnrichTimer);
     }
+    const delayMs =
+      reason === 'deferred-inflight' || reason === 'stub-retry' ? 1500 : 40;
     this.cursorBatchEnrichTimer = setTimeout(() => {
       this.cursorBatchEnrichTimer = null;
       void this.maybeBatchEnrichCursorToolsAfterLoad(sessionId, reason);
-    }, 40);
+    }, delayMs);
   }
 
   /**
@@ -2021,6 +2059,18 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       const session = this.sessionManager.getSession(sessionId);
       const agentLabel = session?.agentName || session?.agentDisplayName || '';
       if (!isCursorAgentName(agentLabel)) return;
+      // Batch enrich scans store.db on the extension host. While the agent is
+      // mid-turn (file edits streaming), defer so Git SCM / other extensions
+      // are not starved by a multi-second SQLite read.
+      const allowDuringPrompt =
+        reason === 'post-restore' ||
+        reason === 'post-merge' ||
+        reason === 'post-load' ||
+        this.sessionManager.isLoading(sessionId);
+      if (!allowDuringPrompt && this.sessionManager.isPromptInFlight(sessionId)) {
+        this.scheduleCursorBatchEnrich(sessionId, reason || 'deferred-inflight');
+        return;
+      }
       if (this.suppressWebviewUpdates) {
         log(`Cursor batch enrich failed: suppressWebviewUpdates active (session=${sessionId.slice(0, 8)}…${reasonTag})`);
         return;

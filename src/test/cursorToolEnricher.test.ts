@@ -77,6 +77,51 @@ suite('CursorToolEnricher', () => {
       }),
       false,
     );
+    assert.strictEqual(
+      needsCursorToolEnrichment({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 't1',
+      }),
+      false,
+      'status-only tool_call_update must not poll store.db',
+    );
+    assert.strictEqual(
+      needsCursorToolEnrichment({
+        sessionUpdate: 'tool_call',
+        toolCallId: 't1',
+        title: '`cmd /c dir`',
+        rawInput: { command: 'cmd /c dir' },
+      }),
+      false,
+      'wire already has command',
+    );
+    assert.strictEqual(
+      needsCursorToolEnrichment({
+        sessionUpdate: 'tool_call_update',
+        toolCallId: 't1',
+        title: 'Read File',
+        rawInput: {},
+      }),
+      true,
+      'explicit stub patch still enriches',
+    );
+  });
+
+  test('isLargeCursorStore detects multi-100MB store.db', () => {
+    const { isLargeCursorStore } = require('../core/CursorToolEnricher') as typeof import('../core/CursorToolEnricher');
+    const tmp = path.join(os.tmpdir(), `acp-store-size-${Date.now()}.db`);
+    try {
+      fs.writeFileSync(tmp, Buffer.alloc(121 * 1024 * 1024));
+      assert.strictEqual(isLargeCursorStore(tmp), true);
+      fs.truncateSync(tmp, 1024);
+      assert.strictEqual(isLargeCursorStore(tmp), false);
+    } finally {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+        // ignore
+      }
+    }
   });
 
   test('parseCursorToolArgs handles object and JSON string', () => {
