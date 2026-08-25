@@ -6077,8 +6077,16 @@ let isCompacting = false;  // true while /compact is running
   if (isProcessing) {
    // Set the pending message; it will be sent once promptEnd fires
    // after the cancel completes.
-    pendingSendAfterCancel = entry;
-    vscode.postMessage({ type: 'cancelTurn' });
+   pendingSendAfterCancel = entry;
+   // Show the user bubble IMMEDIATELY on Send Now click for responsiveness —
+   // the user expects to see their message right away, not after the current
+   // turn ends. Mark the entry so the promptEnd drain path does not re-add
+   // the bubble (guard against double insertion). If the cancel is rejected
+   // and the message is not sent this cycle, the bubble still reflects the
+   // user's intent; the message is sent on the next promptEnd.
+   entry.bubbleShown = true;
+   addUserBubbleForQueuedEntry(entry);
+   vscode.postMessage({ type: 'cancelTurn' });
   } else {
      // Not processing — send directly now and show the bubble.
     // Route slash commands through handleLocalSlashCommand so local UI
@@ -15977,12 +15985,16 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       pendingSendAfterCancel = null;
       setTimeout(() => {
         if (!isProcessing) {
-          // Show the user bubble now (not at queue time) and route slash
-          // commands through handleLocalSlashCommand so local UI is triggered.
+          // Route slash commands through handleLocalSlashCommand so local UI
+          // is triggered. The bubble is only added here if the Send Now click
+          // did NOT already show it (entry.bubbleShown) — sendQueuedMessageNow
+          // adds it immediately for responsiveness, so we must not duplicate.
           if (entry.text && entry.text.startsWith('/') && handleLocalSlashCommand(entry.text)) {
             // Local slash command handled it.
           } else {
-            addUserBubbleForQueuedEntry(entry);
+            if (!entry.bubbleShown) {
+              addUserBubbleForQueuedEntry(entry);
+            }
             hasSentPrompt = true;
             vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
           }
