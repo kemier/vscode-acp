@@ -2394,6 +2394,15 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         selections,
         contextBlocks,
       );
+      // Ensure the user bubble is rendered in the webview. Normally the
+      // webview's handleSend() adds the bubble before posting sendPrompt, but
+      // when a prompt is sent while isLoadingSession is true (resume still
+      // replaying), the webview-side send path can deliver the prompt to the
+      // agent WITHOUT rendering the bubble — the LLM answers but the user
+      // message never appears in the chat panel. Post a userBubble so the
+      // webview renders it (dedup: the webview skips if the last user message
+      // already matches).
+      this.postMessage({ type: 'userBubble', text: text || '(image)' });
       // Flush any buffered streaming text before sending promptEnd.  The
       // coalescer's 8 ms timer may still be holding the last agent_message_chunk(s);
       // without flushing, promptEnd arrives at the webview first and
@@ -15573,6 +15582,41 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         if (typeof msg.text === 'string' && msg.text.length > 0) {
           promptInput.value = msg.text;
           handleSend();
+        }
+        break;
+
+      // Host-initiated user bubble render. The extension host posts this
+      // after it sends a prompt to the agent, so the user message ALWAYS
+      // appears in the panel even when the webview-side send path skipped it
+      // (e.g. a prompt sent while isLoadingSession is true — resume still
+      // replaying — where handleSend() did not run and no bubble was added).
+      // Dedup: skip if the last chatHistory user message already matches, so
+      // a normal handleSend() path (which already added the bubble) does not
+      // get a duplicate.
+      case 'userBubble':
+        if (typeof msg.text === 'string') {
+          var _ubText = msg.text || '(image)';
+          // Dedup against the MOST RECENT USER message, not just the last
+          // chatHistory item. After a normal turn completes the last item is
+          // the assistant reply, so checking chatHistory[last] would never
+          // match and would re-add the user bubble for EVERY prompt sent via
+          // the extension-host path (the "prompt replayed after end_turn"
+          // bug). Search backward past assistant/tool rows for the most
+          // recent user message and skip if it already matches.
+          var _ubDup = false;
+          for (var _ubi = chatHistory.length - 1; _ubi >= 0; _ubi--) {
+            var _ubItem = chatHistory[_ubi];
+            if (!_ubItem || _ubItem.kind !== 'message') continue;
+            if (_ubItem.role === 'user') {
+              _ubDup = String(_ubItem.text || '') === String(_ubText);
+              break;
+            }
+            // Skip assistant / system / error rows — keep scanning for the
+            // user message that started this turn.
+          }
+          if (!_ubDup) {
+            addMessage('user', _ubText);
+          }
         }
         break;
 
