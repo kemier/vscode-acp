@@ -16815,6 +16815,13 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
      toolCalls = {};
      // After compaction clear, chatHistory (now empty) belongs to current session.
      chatHistoryOriginSessionId = (sessionState && sessionState.sessionId) || null;
+     // Persist the cleared history NOW. Without this, the pre-compaction
+     // chatHistory (with its old turn-fold titles) stays in vscode.getState()
+     // and is restored on the next webview reload / session resume — the
+     // "old chat collapsed title kept in the new session and in resume" bug.
+     // The agent has already compacted its own session state, so persisting
+     // the (now empty) history is correct here.
+     saveState();
      // Re-render preserved queued user bubbles so they are visible after
      // the compaction wipe. drainQueue sends them to the agent without
      // re-adding the bubble (it checks for existing user messages).
