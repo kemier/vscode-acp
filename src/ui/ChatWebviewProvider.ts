@@ -9035,7 +9035,22 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
   // and start with an empty chat — the user gets a fresh session.
   if (_diagLoadedLen === 0 && (!preLoadChatHistorySnapshot || !preLoadChatHistorySnapshot.some(function(x) { return x && x.kind === 'message' && x.role === 'assistant'; }))) {
     vscode.postMessage({ type: 'debugLog', message: '[WV-DIAG] session/load returned empty + snapshot has no assistant — clearing stale state (session not found on agent side)' });
-    chatHistory = [];
+    // Keep prompts the user sent that were never answered. A fresh session on
+    // the agent side means the old transcript is correctly discarded — but a
+    // prompt the user just sent is not part of that transcript, and it may
+    // still be in flight. handleLoadSessionStart wiped it from chatHistory
+    // (the snapshot was taken just before), so discarding the snapshot here
+    // dropped it too. When the prompt was sent just BEFORE the load began the
+    // host's userBubble fallback does not cover this either — it is gated on
+    // isLoadingSession as of send time — so the message was lost outright
+    // rather than merely delayed.
+    //
+    // Only the TRAILING run of user messages is kept: those sit after the last
+    // assistant / tool / thought in the snapshot, which is what makes them
+    // provably unanswered. Anything earlier belongs to the discarded
+    // transcript. Interrupt notices and blank rows are not real prompts.
+    var _unanswered = collectUnansweredTrailingPrompts(preLoadChatHistorySnapshot);
+    chatHistory = _unanswered;
     preLoadChatHistorySnapshot = null;
     preLoadSnapshotSessionId = null;
     clearSessionInterrupted();
@@ -9047,7 +9062,16 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     if (inputArea) inputArea.classList.remove('disabled');
     updateSendButton();
     messagesEl.innerHTML = '';
-    if (emptyState) { messagesEl.appendChild(emptyState); emptyState.style.display = ''; }
+    if (_unanswered.length) {
+      // Re-render the surviving prompt(s) so the bubble stays visible instead
+      // of disappearing until the turn resolves.
+      for (var _uri = 0; _uri < _unanswered.length; _uri++) {
+        addMessageDOM('user', _unanswered[_uri].text || '(image)');
+      }
+      hideEmpty();
+    } else if (emptyState) {
+      messagesEl.appendChild(emptyState); emptyState.style.display = '';
+    }
     return;
   }
   // After replay, chatHistory belongs to the loaded session.
@@ -11521,6 +11545,33 @@ function orderCompactFoldContents(body) {
       if (/^Request interrupted by user\.?$/i.test(t)) return true;
       if (/^—?\\s*Conversation interrupted\\s*—?$/i.test(t)) return true;
       return false;
+    }
+
+    /**
+     * Return the TRAILING run of real user prompts in a chatHistory snapshot —
+     * the messages that sit after the last assistant / tool / thought entry,
+     * which is what makes them provably unanswered.
+     *
+     * Used when session/load comes back empty (the agent created a fresh
+     * session) and the snapshot is therefore discarded: the old transcript goes
+     * away, but a prompt the user just sent is not part of that transcript and
+     * must survive. Interrupt notices and blank rows are not real prompts.
+     */
+    function collectUnansweredTrailingPrompts(snapshot) {
+      var out = [];
+      if (!snapshot) return out;
+      for (var i = snapshot.length - 1; i >= 0; i--) {
+        var item = snapshot[i];
+        if (!item) continue;
+        if (item.kind === 'message' && item.role === 'user') {
+          if (String(item.text || '').trim() && !isSessionInterruptNotice(item.text)) {
+            out.unshift(item);
+          }
+          continue;
+        }
+        break;
+      }
+      return out;
     }
 
     /** Scan chatHistory for Claude interrupt notices; mark session + prior assistant. */
