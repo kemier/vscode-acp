@@ -2485,6 +2485,15 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   private async handleCancelTurn(): Promise<void> {
     const activeId = this.sessionManager.getActiveSessionId();
     if (activeId) {
+      // Dedup: multiple rapid stop-button clicks each post a cancelTurn.
+      // If a cancel fallback timer is already pending for this session, a
+      // second cancel is a no-op — otherwise each click spawns its own 5s
+      // fallback timer and every one posts promptEnd(cancelled), rendering
+      // duplicate "— Conversation interrupted —" notices in the webview.
+      if (this._cancelFallbackTimer) {
+        log(`Cancel dedup: fallback timer already pending for session ${activeId}, ignoring repeat cancel`);
+        return;
+      }
       try {
         await this.sessionManager.cancelTurn(activeId);
       } catch (e) {
@@ -15556,6 +15565,18 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        isSendingPrompt = false;
        setProcessing(true, 'promptStart');
        isForceCancelled = false;
+       // New turn — drop stale "— Conversation interrupted —" / "Request
+       // interrupted by user" notices from the previous cancelled turn so
+       // they don't linger in the chat panel once the user sends a follow-up.
+       // (clearSessionInterrupted() only clears the session flag; the notice
+       // stays in chatHistory and would re-render on the next promptStart.)
+       for (var _intI = chatHistory.length - 1; _intI >= 0; _intI--) {
+         var _intItem = chatHistory[_intI];
+         if (_intItem && _intItem.kind === 'message' && _intItem.role === 'user' &&
+             isSessionInterruptNotice(_intItem.text)) {
+           chatHistory.splice(_intI, 1);
+         }
+       }
        // Chat history is being built for the current session.
        chatHistoryOriginSessionId = (sessionState && sessionState.sessionId) || null;
        cancelProvisionalSummaryPromote();
