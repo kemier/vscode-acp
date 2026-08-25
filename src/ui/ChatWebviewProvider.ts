@@ -11382,6 +11382,25 @@ function orderCompactFoldContents(body) {
       var forceFold = foldInterruptedAssistantsOnPromote &&
         turnLooksInterrupted(turn) &&
         (!turnFinished || trailingContentAfterLastAsst);
+      // [WV-DIAG] Trace WHY a turn's assistant ends up folded into the
+      // collapsed title on resume (the "assistant msg is in the collapsed
+      // title" symptom). Reports every input to the forceFold decision so we
+      // can see whether an interrupted flag, a trailing thought/tool, or a
+      // stale history-index is wrongly collapsing a finished turn. Gated on
+      // acp.debugResume — no-op in normal operation.
+      resumeDiag(
+        '[WV-DIAG] promoteFinalAssistantForTurn: turn=' +
+        (turn && turn.dataset ? (turn.dataset.historyIndex ?? '?') : '?') +
+        ' assistants=' + assistants.length +
+        ' compactMode=' + compactMode +
+        ' keepAssistantsInFold=' + keepAssistantsInFold +
+        ' foldInterruptedAssistantsOnPromote=' + foldInterruptedAssistantsOnPromote +
+        ' turnLooksInterrupted=' + turnLooksInterrupted(turn) +
+        ' turnFinished=' + turnFinished +
+        ' trailingContentAfterLastAsst=' + trailingContentAfterLastAsst +
+        ' forceFold=' + forceFold +
+        ' lastAsstIdx=' + lastAsstIdx,
+      );
       if (forceFold) {
         assistants.forEach(function(a) {
           a.classList.add('assistant-interim');
