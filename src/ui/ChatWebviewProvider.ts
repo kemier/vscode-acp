@@ -12007,6 +12007,15 @@ function orderCompactFoldContents(body) {
       // covers the reload-while-active case where the turn still "looks
       // finished" (all tools completed) but the last bubble was cut mid-way.
       var lastAsstIdx = assistantHistoryIndex(summaryEl);
+      // Only an IN-FLIGHT (running/pending) thought or tool after the last
+      // assistant indicates a genuinely interrupted turn that must force-fold
+      // (the reload/cancel cut it mid-tool). A COMPLETED tool/thought with an
+      // index above the last assistant is almost always a resume-merge
+      // history-index mis-ordering — the tool belongs *before* the final
+      // reply but got a higher index on replay. Force-folding on that hides a
+      // finished assistant reply inside the collapsed title (the "assistant
+      // msg is in the collapsed title" symptom). So only count trailing
+      // content that is still running/pending.
       var trailingContentAfterLastAsst = turnLooksInterrupted(turn) &&
         Array.prototype.some.call(
           turn.querySelectorAll('.thought-block, .turn-tools'),
@@ -12014,7 +12023,18 @@ function orderCompactFoldContents(body) {
             var v = el && el.getAttribute ? el.getAttribute('data-history-index') : null;
             if (v === null || v === undefined || String(v).trim() === '') return false;
             var n = Number(v);
-            return Number.isFinite(n) && n > lastAsstIdx;
+            if (!(Number.isFinite(n) && n > lastAsstIdx)) return false;
+            // In-flight only: a running/pending tool or a thought block that
+            // is still being streamed. Completed tools are not interruption.
+            if (el.classList && el.classList.contains('turn-tools')) {
+              return !!el.querySelector(
+                '.tc-icon.running, .tc-icon.in_progress, .tc-icon.pending, ' +
+                '.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending'
+              );
+            }
+            // .thought-block — treat as trailing only if still streaming
+            // (not yet committed to a finished assistant).
+            return el.classList && el.classList.contains('streaming');
           }
         );
       var forceFold = foldInterruptedAssistantsOnPromote &&
