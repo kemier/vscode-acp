@@ -2157,6 +2157,18 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    // Capture whether the session was still loading (resume replay in
+    // progress) when this prompt arrived. The webview's handleSend() adds a
+    // user bubble for normal prompts, but when a prompt is sent while
+    // isLoadingSession is true the webview-side send path can deliver it to
+    // the agent WITHOUT rendering the bubble. We only post a userBubble in
+    // that resume case; posting it unconditionally after EVERY prompt causes
+    // duplicate user bubbles (dedup fails on context-token-stripped text or
+    // when the resume merge re-injects an older prompt) and can truncate an
+    // in-progress assistant stream (addMessage('user') resets
+    // currentAssistantEl), producing an empty assistant bubble.
+    const promptSentWhileLoading = this.sessionManager.isLoading(activeId);
+
     sendEvent(
       'chat/messageSent',
       {
@@ -2401,8 +2413,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // agent WITHOUT rendering the bubble — the LLM answers but the user
       // message never appears in the chat panel. Post a userBubble so the
       // webview renders it (dedup: the webview skips if the last user message
-      // already matches).
-      this.postMessage({ type: 'userBubble', text: text || '(image)' });
+      // already matches). Only post when the prompt arrived during the load —
+      // for normal prompts handleSend() already rendered the bubble, and
+      // posting unconditionally re-adds it when the resume merge re-injects an
+      // older prompt or the text was context-token-stripped.
+      if (promptSentWhileLoading) {
+        this.postMessage({ type: 'userBubble', text: text || '(image)' });
+      }
       // Flush any buffered streaming text before sending promptEnd.  The
       // coalescer's 8 ms timer may still be holding the last agent_message_chunk(s);
       // without flushing, promptEnd arrives at the webview first and
@@ -14617,6 +14634,14 @@ if (_deduped) {
            // Assistant message. Same turn when tools already ran (mid-turn
            // interim text + final summary). New turn only for back-to-back
            // assistants with no tools between them.
+           // Skip whitespace-only assistant text — session/load replay and
+           // the snapshot merge can carry an empty assistant row (e.g. a turn
+           // interrupted before any text was emitted). Rendering it would
+           // create an empty assistant bubble in the panel.
+           if (!item.text || !String(item.text).trim()) {
+             trace('  -> assistant: skipping empty/whitespace text');
+             break;
+           }
            var turnHasAssistant = currentTurnEl && currentTurnEl.querySelector('.message.assistant');
            var turnHasTools = currentTurnEl && currentTurnEl.querySelector('.tool-call-inline');
            if (turnHasAssistant && !turnHasTools) {
@@ -15596,6 +15621,11 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       case 'userBubble':
         if (typeof msg.text === 'string') {
           var _ubText = msg.text || '(image)';
+          // Skip whitespace-only text — the extension host sends ' ' for
+          // image-only prompts (webview handleSend posts text || ' '), which
+          // would render an empty user bubble. Treat whitespace-only like
+          // empty.
+          if (!_ubText || !_ubText.trim()) break;
           // Dedup against the MOST RECENT USER message, not just the last
           // chatHistory item. After a normal turn completes the last item is
           // the assistant reply, so checking chatHistory[last] would never
