@@ -2168,6 +2168,16 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // in-progress assistant stream (addMessage('user') resets
     // currentAssistantEl), producing an empty assistant bubble.
     const promptSentWhileLoading = this.sessionManager.isLoading(activeId);
+    // Snapshot the text the USER typed, before the context-block processing
+    // below rewrites it (@terminal / @problems are stripped and the resolved
+    // output is prepended as <terminal>/<problems> XML, file references are
+    // removed). The userBubble must show what was typed, not the augmented
+    // payload sent to the model — and the webview dedups the bubble by
+    // comparing against the most recent user message, which handleSend()
+    // rendered from the raw text. Posting the rewritten text made that
+    // comparison miss, so a resume-phase prompt using any context token got a
+    // SECOND bubble containing the machine-facing XML.
+    const promptDisplayText = text;
 
     sendEvent(
       'chat/messageSent',
@@ -2418,7 +2428,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // posting unconditionally re-adds it when the resume merge re-injects an
       // older prompt or the text was context-token-stripped.
       if (promptSentWhileLoading) {
-        this.postMessage({ type: 'userBubble', text: text || '(image)' });
+        this.postMessage({
+          type: 'userBubble',
+          text: promptDisplayText || '(image)',
+        });
       }
       // Flush any buffered streaming text before sending promptEnd.  The
       // coalescer's 8 ms timer may still be holding the last agent_message_chunk(s);
@@ -7028,6 +7041,11 @@ var end = displayText.length;
     let currentToolsListEl = null;  // .turn-tools-list inside current turn
     let currentToolsCountEl = null; // .turn-tools-summary counter
     let currentToolCount = 0;
+    // Maximum tool rows in a single .turn-tools-list before ensureTurnTools
+    // starts a fresh group. Guards against an agent that emits a long run of
+    // consecutive tool calls with no assistant text between them (seen on
+    // session/load replay), which otherwise builds one unbounded list.
+    const TOOL_GROUP_MAX_ROWS = 50;
     currentPsEl = null;
     if (psPanel) psPanel.style.display = 'none';
     let toolCalls = {};
@@ -11947,6 +11965,24 @@ function orderCompactFoldContents(body) {
      // Mid-turn assistant text (before more tools) goes into the fold.
      if (currentAssistantEl && currentAssistantText) {
        commitCurrentTextSegment({ interim: true });
+       // Start a NEW tools group after the assistant text. Without this the
+       // next tool reuses the OLD wrapper, which sits BEFORE the text we just
+       // committed — collapsing every tool of the turn into one group and
+       // breaking the interleaved order (thought → tools → assistant → tools).
+       // The replay path in renderChatHistory already does this; the live
+       // streaming path did not.
+       currentToolsListEl = null;
+     }
+     // Cap the size of a single tools group. A run of tool calls with no
+     // assistant text between them would otherwise grow one unbounded
+     // .turn-tools-list — an agent that replays (or streams) hundreds of
+     // consecutive tool calls produced a single enormous group that is
+     // unreadable and slow to lay out. Splitting keeps each group navigable
+     // and bounds the DOM work per group; in compact mode the per-turn
+     // summary count is carried over below, so the visible total is unchanged.
+     if (currentToolsListEl &&
+         currentToolsListEl.children.length >= TOOL_GROUP_MAX_ROWS) {
+       currentToolsListEl = null;
      }
      if (!currentToolsListEl) {
        // Always start a fresh tools group. Compact still uses one fold/summary
@@ -16834,17 +16870,36 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
      for (var _mqi = 0; _mqi < messageQueue.length; _mqi++) {
        if (messageQueue[_mqi].text) _queuedTexts[messageQueue[_mqi].text] = true;
      }
+     // Preserve IN-FLIGHT tool calls for the same reason we preserve queued
+     // user messages: a tool call that is still running is live state, not
+     // compacted-away history. Dropping it broke per-subagent tracking — a
+     // spawn_parallel / Agent-Task crew card that was still executing had its
+     // DOM destroyed and its entry removed from the toolCalls map, so every
+     // later tool_call_update carrying the per-stage status found nothing to
+     // update (lookupToolCallEl checks the map, then getElementById, then a
+     // fuzzy map scan — all three fail once the card is gone) and the stage
+     // rows froze mid-run. Re-rendering them below rebuilds the crew card
+     // (with its stages[]) and repopulates toolCalls, so the subagents keep
+     // reporting after an auto-compaction.
+     function _isLiveToolStatus(s) {
+       return s === 'pending' || s === 'running' || s === 'in_progress';
+     }
      var _preservedQueue = [];
+     var _preserved = [];
      for (var _qi = 0; _qi < chatHistory.length; _qi++) {
        var _qItem = chatHistory[_qi];
-       if (_qItem && _qItem.kind === 'message' && _qItem.role === 'user') {
+       if (!_qItem) continue;
+       if (_qItem.kind === 'message' && _qItem.role === 'user') {
          // Only preserve if still queued (not yet sent to the agent).
          var _qText = typeof _qItem.text === 'string' ? _qItem.text : '';
          if (!_queuedTexts[_qText]) continue;
          _preservedQueue.push(_qItem);
+         _preserved.push(_qItem);
+       } else if (_qItem.kind === 'toolCall' && _isLiveToolStatus(_qItem.status)) {
+         _preserved.push(_qItem);
        }
      }
-     chatHistory = _preservedQueue;
+     chatHistory = _preserved;
      messagesEl.innerHTML = '';
      historyRenderGen++;
      for (var _cmpRk in pendingRenderRetries) { delete pendingRenderRetries[_cmpRk]; }
@@ -16855,6 +16910,32 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
      currentToolsCountEl = null;
      currentToolCount = 0;
      toolCalls = {};
+     // Reset the in-flight THOUGHT state too. Without this, currentThoughtEl
+     // still points at the detached pre-compaction thought block while
+     // chatHistory has been replaced. The next tool call runs
+     // ensureTurnTools() -> commitOrDiscardCurrentThought(), which reads the
+     // stale accumulated reasoning text and — because _historyIndex no longer
+     // addresses a 'thought' entry in the new (short) array — PUSHES it into
+     // the fresh chatHistory. The pre-compaction reasoning then reappears in
+     // the new turn's collapsed fold body and survives resume/reload.
+     // clearChat (new conversation) already reset all of this; the compaction
+     // wipe did not.
+     currentThoughtEl = null;
+     currentThoughtTextEl = null;
+     currentThoughtText = '';
+     thoughtDomBase = '';
+     thoughtStartTime = null;
+     thoughtEndTime = null;
+     // Plan/todo state belongs to the compacted-away conversation as well —
+     // leaving currentPlanEl attached to a detached node kept the stale plan
+     // chip visible after compaction.
+     currentPlanEl = null;
+     if (planBar) { planBar.innerHTML = ''; }
+     if (typeof clearCursorTodosPlan === 'function') clearCursorTodosPlan();
+     // Crew bookkeeping points at the destroyed card; clear it so the
+     // re-render below builds a fresh crew (and later spawns extend THAT one
+     // instead of a stale id). renderChatHistory does the same on rebuild.
+     resetClaudeCrewState();
      // After compaction clear, chatHistory (now empty) belongs to current session.
      chatHistoryOriginSessionId = (sessionState && sessionState.sessionId) || null;
      // Persist the cleared history NOW. Without this, the pre-compaction
@@ -16864,11 +16945,30 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
      // The agent has already compacted its own session state, so persisting
      // the (now empty) history is correct here.
      saveState();
-     // Re-render preserved queued user bubbles so they are visible after
-     // the compaction wipe. drainQueue sends them to the agent without
-     // re-adding the bubble (it checks for existing user messages).
-     for (var _pri = 0; _pri < _preservedQueue.length; _pri++) {
-       addMessageDOM('user', _preservedQueue[_pri].text || '(image)');
+     // Re-render preserved items (queued user bubbles + in-flight tool calls)
+     // so they are visible after the compaction wipe and, for tool calls, so
+     // toolCalls is repopulated and later tool_call_update / per-stage
+     // subagent progress can still resolve its element. drainQueue sends the
+     // queued messages to the agent without re-adding the bubble (it checks
+     // for existing user messages). addToolCallInline does NOT push to
+     // chatHistory, so re-rendering cannot duplicate the preserved entries.
+     for (var _pri = 0; _pri < _preserved.length; _pri++) {
+       var _pItem = _preserved[_pri];
+       if (_pItem.kind === 'toolCall') {
+         addToolCallInline(
+           _pItem.toolCallId,
+           _pItem.title,
+           _pItem.status,
+           _pItem.rawInput && _pItem.rawInput.taskResult
+             ? stripTaskResult(_pItem.rawInput)
+             : _pItem.rawInput,
+           _pItem.toolKind,
+           _pItem.locations,
+           _pItem.parentToolUseId || null,
+         );
+       } else {
+         addMessageDOM('user', _pItem.text || '(image)');
+       }
      }
       toolCallDiffs = {};
       isCompacting = false;
