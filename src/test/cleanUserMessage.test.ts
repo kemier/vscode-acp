@@ -541,7 +541,23 @@ suite('cleanUserMessage', () => {
       throw new Error('unbalanced braces while extracting isMachineContextOnly()');
     }
     const fnSrc = src.slice(startIdx, endIdx + 1);
-    const isMachineContextOnly = new Function('return (' + fnSrc + ')')() as (raw: string) => boolean;
+    // isMachineContextOnly now also calls stripLeadingResourceLinkJson (a
+    // resource_link-only chunk is machine context too), so that helper has to
+    // be in the eval scope. Bounded by the next function declaration rather
+    // than brace counting: the helper compares against char code 123, and any
+    // comment naming that character would break a brace counter.
+    const depStart = src.indexOf('function stripLeadingResourceLinkJson(text) {');
+    if (depStart < 0) {
+      throw new Error('stripLeadingResourceLinkJson() not found in ChatWebviewProvider.ts');
+    }
+    const depEnd = src.indexOf('function cleanUserMessage(rawText) {', depStart);
+    if (depEnd < 0) {
+      throw new Error('end marker after stripLeadingResourceLinkJson() not found');
+    }
+    const depSrc = src.slice(depStart, depEnd);
+    const isMachineContextOnly = new Function(
+      depSrc + '\nreturn (' + fnSrc + ')',
+    )() as (raw: string) => boolean;
 
     test('a complete recall blob is machine context', () => {
       assert.strictEqual(

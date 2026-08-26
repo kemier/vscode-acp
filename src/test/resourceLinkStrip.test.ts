@@ -97,3 +97,65 @@ suite('stripLeadingResourceLinkJson', () => {
     assert.strictEqual(strip(text), text, 'no closing brace: left as-is');
   });
 });
+
+/**
+ * The stripper alone was not enough. Both render paths fall back to the RAW
+ * text when cleanUserMessage() empties a message, so that a session/load prompt
+ * is never silently dropped:
+ *
+ *   if (rawFallback && !isSessionInterruptNotice(...) && !isMachineContextOnly(...))
+ *     cleanedNew = rawFallback;
+ *
+ * session/load replays each stored content block as its OWN user_message_chunk,
+ * so an attachment arrives alone as a single resource_link JSON object.
+ * cleanUserMessage stripped it to empty, then this fallback put it straight
+ * back — the ACP log showed exactly that: "UMC chunk: len=96" followed by
+ * "UMC load-turn: len=96". isMachineContextOnly now recognises the shape.
+ */
+function loadIsMachineContextOnly(): (text: string) => boolean {
+  const src = fs.readFileSync(SOURCE, 'utf8');
+  const grab = (name: string, endMarker: string) => {
+    const s = src.indexOf('function ' + name + '(');
+    assert.ok(s >= 0, name + ' not found');
+    const e = src.indexOf(endMarker, s);
+    assert.ok(e > s, 'end marker for ' + name + ' not found');
+    return src.slice(s, e).replace(/\\\\/g, '\\');
+  };
+  const predicate = grab('isMachineContextOnly', '/**\n    * Truncate a session title');
+  const stripper = grab('stripLeadingResourceLinkJson', 'function cleanUserMessage(rawText) {');
+  // eslint-disable-next-line no-new-func
+  return new Function(
+    stripper + '\n' + predicate + '\nreturn isMachineContextOnly;',
+  )() as (t: string) => boolean;
+}
+
+suite('isMachineContextOnly', () => {
+  const isMachineOnly = loadIsMachineContextOnly();
+
+  test('treats a lone resource_link chunk as machine context', () => {
+    assert.strictEqual(isMachineOnly(link('path`', 'file:///workspace/git/ezennin/vscode-acp/path%60')), true);
+  });
+
+  test('treats a run of resource_link chunks as machine context', () => {
+    assert.strictEqual(isMachineOnly(link('a', 'file:///a') + link('b', 'file:///b')), true);
+  });
+
+  test('still treats a closed memory block as machine context', () => {
+    assert.strictEqual(isMachineOnly('<agent-memory>blob</agent-memory>'), true);
+  });
+
+  test('does NOT treat a real prompt as machine context', () => {
+    assert.strictEqual(isMachineOnly('check acp log'), false);
+  });
+
+  test('does NOT treat a link followed by real text as machine-only', () => {
+    // cleanUserMessage would keep the real text here, so the fallback must not
+    // suppress the message.
+    assert.strictEqual(isMachineOnly(link('a', 'file:///a') + 'real question'), false);
+  });
+
+  test('blank input counts as machine context (nothing to show)', () => {
+    assert.strictEqual(isMachineOnly(''), true);
+    assert.strictEqual(isMachineOnly('   \n'), true);
+  });
+});

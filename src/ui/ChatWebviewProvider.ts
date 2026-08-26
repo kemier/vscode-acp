@@ -6411,6 +6411,14 @@ const builtinCommands = [
         var close = raw.indexOf('</' + tags[i] + '>', open);
         if (close > open) return true;
       }
+      // A replayed chunk that is nothing but JSON-stringified resource_link
+      // blocks is machine context too. session/load replays each stored
+      // content block as its OWN user_message_chunk, so an attachment arrives
+      // alone as {"name":...,"uri":...,"type":"resource_link"}. cleanUserMessage
+      // strips it to empty — and then the raw-text fallback above put it
+      // straight back, because this predicate did not recognise the shape. That
+      // is why such links kept rendering after every resume.
+      if (!stripLeadingResourceLinkJson(raw).trim()) return true;
       return false;
    }
 
@@ -6459,7 +6467,7 @@ const builtinCommands = [
          var c = out.charCodeAt(start);
          if (c === 32 || c === 10 || c === 13 || c === 9) { start++; } else break;
        }
-       if (out.charCodeAt(start) !== 123 /* '{' */) return out;
+       if (out.charCodeAt(start) !== 123) return out; // 123 = opening brace
        var consumedTo = -1;
        var probe = out.indexOf('}', start);
        while (probe >= 0) {
@@ -16450,10 +16458,17 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
               var _utext = typeof _item.text === 'string' ? _item.text : '';
               if (!_utext.trim()) continue;
               if (_utext.startsWith('[Subagent result]')) continue;
+              // Never carry replayed resource_link JSON into a fork. History
+              // written by an earlier build can hold rows whose whole body is
+              // {"name":...,"uri":...,"type":"resource_link"}; exporting them
+              // put the raw JSON into the NEW conversation as a User: line,
+              // and the fork's own resume then replayed it again.
+              if (!stripLeadingResourceLinkJson(_utext).trim()) continue;
               _exportParts.push('User: ' + _utext);
             } else if (_item.role === 'assistant') {
               var _atext = typeof _item.text === 'string' ? _item.text : '';
               if (!_atext.trim()) continue;
+              if (!stripLeadingResourceLinkJson(_atext).trim()) continue;
               _exportParts.push('Assistant: ' + _atext);
             }
           } else if (_item.kind === 'thought') {

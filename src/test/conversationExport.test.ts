@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { exportConversation, exportConversationItem, type ConversationExportItem } from '../core/conversationExport';
+import { exportConversation, exportConversationItem, isResourceLinkJsonOnly, type ConversationExportItem } from '../core/conversationExport';
 
 /**
  * Unit tests for the fork-to-agent conversation export.
@@ -87,5 +87,62 @@ suite('conversationExport', () => {
   test('unknown kinds are skipped', () => {
     const result = exportConversationItem({ kind: 'system', text: 'x' } as ConversationExportItem);
     assert.strictEqual(result, null);
+  });
+
+  /**
+   * Fork-to-agent used to carry replayed resource_link JSON into the NEW
+   * conversation. session/load replays each stored content block as its own
+   * user_message_chunk, so an attachment arrives alone as
+   * {"name":...,"uri":...,"type":"resource_link"}; a webview fallback restored
+   * that raw JSON into chatHistory when the cleaner emptied it, the export
+   * emitted it as a "User:" line, and the fork's own resume replayed it again.
+   * The webview no longer writes those rows, but history polluted by an earlier
+   * build still holds them — so the export filters them as well.
+   */
+  const rlink = (name: string, uri: string) =>
+    JSON.stringify({ name, uri, type: 'resource_link' });
+
+  test('skips messages that are only resource_link JSON', () => {
+    assert.strictEqual(
+      exportConversationItem({
+        kind: 'message',
+        role: 'user',
+        text: rlink('path`', 'file:///workspace/git/ezennin/vscode-acp/path%60'),
+      } as ConversationExportItem),
+      null,
+    );
+    assert.strictEqual(
+      exportConversationItem({
+        kind: 'message',
+        role: 'assistant',
+        text: rlink('a', 'file:///a') + rlink('b', 'file:///b'),
+      } as ConversationExportItem),
+      null,
+    );
+  });
+
+  test('keeps a message that has an attachment followed by real prose', () => {
+    const text = rlink('a', 'file:///a') + 'what changed here?';
+    assert.strictEqual(
+      exportConversationItem({ kind: 'message', role: 'user', text } as ConversationExportItem),
+      'User: ' + text,
+      'genuine content must survive intact',
+    );
+  });
+
+  test('resource_link-only rows drop out of a full export', () => {
+    const items: ConversationExportItem[] = [
+      { kind: 'message', role: 'user', text: rlink('`/', 'file:///workspace/git/ezennin/vscode-acp/%60/') },
+      { kind: 'message', role: 'user', text: 'check acp log' },
+      { kind: 'message', role: 'assistant', text: 'looking now' },
+    ];
+    assert.strictEqual(exportConversation(items), 'User: check acp log\n\nAssistant: looking now');
+  });
+
+  test('isResourceLinkJsonOnly leaves ordinary text and non-link JSON alone', () => {
+    assert.strictEqual(isResourceLinkJsonOnly('hello'), false);
+    assert.strictEqual(isResourceLinkJsonOnly(''), false, 'empty is handled by the caller');
+    assert.strictEqual(isResourceLinkJsonOnly(JSON.stringify({ type: 'text', text: 'x' })), false);
+    assert.strictEqual(isResourceLinkJsonOnly(rlink('weird}name', 'file:///w')), true);
   });
 });
