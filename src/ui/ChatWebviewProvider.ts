@@ -6435,6 +6435,52 @@ const builtinCommands = [
     * (<open_files>, <selection>, <terminal>, <problems>, <file>, <folder>).
     * Falls back to the original if the result is empty.
     */
+   /**
+    * Strip JSON-stringified resource_link blocks from the FRONT of a string:
+    *   {"name":"...","uri":"file:///...","type":"resource_link"}
+    * Kiro concatenates them with no separator ahead of the real user text.
+    *
+    * Called both before and after the <context> / <agent-memory> tag strips.
+    * Running it only once up front missed the common case where the links sit
+    * AFTER a memory or context block — the text then starts with '<', the scan
+    * bailed on the first character, and the raw JSON survived into the bubble
+    * on every session/load replay.
+    *
+    * The closing brace is found by trying each '}' in turn and keeping the
+    * first that parses, because a link's "name" is arbitrary user-ish text and
+    * may itself contain '}' (these names are often broken fragments such as
+    * a lone backtick).
+    */
+   function stripLeadingResourceLinkJson(text) {
+     var out = String(text || '');
+     for (var guard = 0; guard < 200; guard++) {
+       var start = 0;
+       while (start < out.length) {
+         var c = out.charCodeAt(start);
+         if (c === 32 || c === 10 || c === 13 || c === 9) { start++; } else break;
+       }
+       if (out.charCodeAt(start) !== 123 /* '{' */) return out;
+       var consumedTo = -1;
+       var probe = out.indexOf('}', start);
+       while (probe >= 0) {
+         try {
+           var parsed = JSON.parse(out.substring(start, probe + 1));
+           if (parsed && parsed.type === 'resource_link' && typeof parsed.uri === 'string') {
+             consumedTo = probe + 1;
+           }
+           // Parsed cleanly: this is the object boundary either way. A JSON
+           // object that is NOT a resource_link must be left alone.
+           break;
+         } catch (e) {
+           probe = out.indexOf('}', probe + 1);
+         }
+       }
+       if (consumedTo < 0) return out;
+       out = out.substring(consumedTo);
+     }
+     return out;
+   }
+
  function cleanUserMessage(rawText) {
     var displayText = rawText;
     // Debug: log cleanUserMessage entry
@@ -6512,25 +6558,7 @@ const builtinCommands = [
 // Strip leading JSON-stringified resource_link blocks (Kiro format):
    // {"name":"...","uri":"file:///...","type":"resource_link"}
    // These are concatenated without separators before the real user text.
-   while (true) {
-     var jsonStart = 0;
-     while (jsonStart < displayText.length) {
-       var jc = displayText.charCodeAt(jsonStart);
-       if (jc === 32 || jc === 10 || jc === 13 || jc === 9) { jsonStart++; } else break;
-     }
-     if (displayText.charCodeAt(jsonStart) !== 123 /* '{' */) break;
-     var jsonEnd = displayText.indexOf('}', jsonStart);
-     if (jsonEnd < 0) break;
-     var jsonStr = displayText.substring(jsonStart, jsonEnd + 1);
-     try {
-       var parsed = JSON.parse(jsonStr);
-       if (parsed && parsed.type === 'resource_link' && typeof parsed.uri === 'string') {
-         displayText = displayText.substring(jsonEnd + 1);
-         continue;
-       }
-     } catch (e) { /* not valid JSON, stop */ }
-     break;
-   }
+   displayText = stripLeadingResourceLinkJson(displayText);
  // Strip leading <context ref="...">...</context> blocks
  displayText = stripTag(displayText, 'context', null);
  // Strip the shared-memory recall blob. SharedMemoryProvider prepends it to
@@ -6544,6 +6572,12 @@ const builtinCommands = [
  displayText = stripTag(displayText, 'relevant-scenes', null);
  displayText = stripTag(displayText, 'scene-navigation', null);
  displayText = stripTag(displayText, 'memory-tools-guide', null);
+ // Second pass: the tag strips above may have UNCOVERED resource_link JSON
+ // that was sitting behind a <context> / <agent-memory> block. That is the
+ // usual layout — memory blob first, then the links, then the typed text — so
+ // without this the raw {"name":"...","type":"resource_link"} objects leaked
+ // into the bubble on every session/load replay.
+ displayText = stripLeadingResourceLinkJson(displayText);
  // Cursor Agent inlines open-file / resource attachments into the user
  // message text during session/load as a trailing "Additional ACP context:"
  // block (followed by "[ACP resource_link] ..." dumps). Keep only the real
