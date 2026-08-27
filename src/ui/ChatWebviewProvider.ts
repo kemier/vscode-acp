@@ -14847,11 +14847,21 @@ if (_deduped) {
          // links were stored in chatHistory before the fix.
          var displayText = item.role === 'user' ? cleanUserMessage(item.text) : item.text;
          // If cleaning stripped context-only wrappers, fall back to raw text so
-         // session/load prompts are not silently dropped from the panel.
+         // session/load prompts are not silently dropped from the panel. A user
+         // row that carries BOTH real typed text and an injected memory/skills
+         // blob (fork memory-carry, @memory injection) must still be shown with
+         // the real text — judge machine-context-only on the CLEANED text, not
+         // the raw blob, otherwise isMachineContextOnly() sees the <agent-memory>
+         // tag and wrongly hides a real prompt.
          if (item.role === 'user' && !String(displayText || '').trim()) {
            var rawFallback = String(item.text || '').trim();
-           if (rawFallback && !isSessionInterruptNotice(rawFallback) && !isMachineContextOnly(rawFallback)) {
-             displayText = rawFallback;
+           if (rawFallback && !isSessionInterruptNotice(rawFallback)) {
+             var cleanedFallback = cleanUserMessage(rawFallback);
+             if (String(cleanedFallback || '').trim()) {
+               displayText = cleanedFallback;
+             } else if (!isMachineContextOnly(rawFallback)) {
+               displayText = rawFallback;
+             }
            }
          }
          if (item.role === 'user' && !String(displayText || '').trim()) {
