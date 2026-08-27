@@ -1,5 +1,5 @@
 import * as assert from 'assert';
-import { exportConversation, exportConversationItem, isResourceLinkJsonOnly, type ConversationExportItem } from '../core/conversationExport';
+import { exportConversation, exportConversationItem, isResourceLinkJsonOnly, isCompactionBoundaryItem, type ConversationExportItem } from '../core/conversationExport';
 
 /**
  * Unit tests for the fork-to-agent conversation export.
@@ -144,5 +144,100 @@ suite('conversationExport', () => {
     assert.strictEqual(isResourceLinkJsonOnly(''), false, 'empty is handled by the caller');
     assert.strictEqual(isResourceLinkJsonOnly(JSON.stringify({ type: 'text', text: 'x' })), false);
     assert.strictEqual(isResourceLinkJsonOnly(rlink('weird}name', 'file:///w')), true);
+  });
+
+  // ── Compaction boundary: fork/export must NOT carry pre-compaction history ──
+  // Each ACP adapter signals compaction differently. The export should only
+  // carry post-compaction items so the forked agent's context stays aligned
+  // with what the source agent actually used (not a 700k+ re-embedding).
+
+  test('skips pre-compaction history when a tool_call carries _meta.contextCompaction (kiro/pi/claude-code)', () => {
+    const items: ConversationExportItem[] = [
+      { kind: 'message', role: 'user', text: 'old pre-compaction question' },
+      { kind: 'message', role: 'assistant', text: 'old pre-compaction answer' },
+      {
+        kind: 'toolCall',
+        title: 'Context compacting',
+        status: 'in_progress',
+        // @ts-expect-error _meta is not on the public interface, but adapters set it
+        _meta: { contextCompaction: true },
+      },
+      { kind: 'message', role: 'user', text: 'post-compaction question' },
+      { kind: 'message', role: 'assistant', text: 'post-compaction answer' },
+    ];
+    assert.strictEqual(
+      exportConversation(items),
+      'User: post-compaction question\n\nAssistant: post-compaction answer',
+    );
+  });
+
+  test('skips pre-compaction history on a tool_call titled Context compacting without _meta', () => {
+    const items: ConversationExportItem[] = [
+      { kind: 'message', role: 'user', text: 'old' },
+      { kind: 'toolCall', title: 'Context compacting', status: 'in_progress' },
+      { kind: 'message', role: 'user', text: 'new' },
+    ];
+    assert.strictEqual(exportConversation(items), 'User: new');
+  });
+
+  test('skips pre-compaction history on an assistant *Context compacted* line (codex)', () => {
+    const items: ConversationExportItem[] = [
+      { kind: 'message', role: 'user', text: 'old' },
+      { kind: 'message', role: 'assistant', text: '*Context compacted to fit the model\'s context window.*' },
+      { kind: 'message', role: 'user', text: 'new' },
+    ];
+    assert.strictEqual(exportConversation(items), 'User: new');
+  });
+
+  test('skips pre-compaction history on a system notice mentioning compacted', () => {
+    const items: ConversationExportItem[] = [
+      { kind: 'message', role: 'user', text: 'old' },
+      { kind: 'message', role: 'system', text: 'Conversation compacted.' },
+      { kind: 'message', role: 'user', text: 'new' },
+    ];
+    assert.strictEqual(exportConversation(items), 'User: new');
+  });
+
+  test('skips pre-compaction history on a future compaction_update RFD item', () => {
+    const items: ConversationExportItem[] = [
+      { kind: 'message', role: 'user', text: 'old' },
+      { kind: 'compaction_update', status: 'completed' },
+      { kind: 'message', role: 'user', text: 'new' },
+    ];
+    assert.strictEqual(exportConversation(items), 'User: new');
+  });
+
+  test('exports the full conversation when it was never compacted', () => {
+    const items: ConversationExportItem[] = [
+      { kind: 'message', role: 'user', text: 'a' },
+      { kind: 'message', role: 'assistant', text: 'b' },
+    ];
+    assert.strictEqual(exportConversation(items), 'User: a\n\nAssistant: b');
+  });
+
+  test('exports from the first compaction boundary when compacted multiple times', () => {
+    const items: ConversationExportItem[] = [
+      { kind: 'message', role: 'user', text: 'very old' },
+      { kind: 'toolCall', title: 'Context compacting', status: 'in_progress' },
+      { kind: 'message', role: 'user', text: 'middle' },
+      { kind: 'toolCall', title: 'Context compacting', status: 'in_progress' },
+      { kind: 'message', role: 'user', text: 'latest' },
+    ];
+    // First boundary wins — everything from it onward is kept (it is the
+    // earliest point after which content is genuinely retained).
+    assert.strictEqual(exportConversation(items), 'User: middle\n\nUser: latest');
+  });
+
+  test('isCompactionBoundaryItem detects all adapter shapes', () => {
+    assert.strictEqual(isCompactionBoundaryItem({ kind: 'toolCall', title: 'Context compacting' }), true);
+    assert.strictEqual(isCompactionBoundaryItem({ kind: 'toolCall', title: 'Context compacted' }), true);
+    assert.strictEqual(
+      isCompactionBoundaryItem({ kind: 'message', role: 'assistant', text: '*Context compacted to fit*' }),
+      true,
+    );
+    assert.strictEqual(isCompactionBoundaryItem({ kind: 'message', role: 'system', text: 'Conversation compacted.' }), true);
+    assert.strictEqual(isCompactionBoundaryItem({ kind: 'compaction_update', status: 'completed' }), true);
+    assert.strictEqual(isCompactionBoundaryItem({ kind: 'message', role: 'user', text: 'normal question' }), false);
+    assert.strictEqual(isCompactionBoundaryItem({ kind: 'toolCall', title: 'edit_file' }), false);
   });
 });

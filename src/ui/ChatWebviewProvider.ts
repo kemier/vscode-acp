@@ -16449,10 +16449,75 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         // blocks from chatHistory so the target agent gets structured
         // context (not just a flat prose dump). Tool calls carry the
         // action taken and its result; thoughts carry the reasoning trail.
+        //
+        // If the session was compacted at some point, only the post-compaction
+        // history (from the first compaction boundary onward) is exported.
+        // Carrying the full pre-compaction transcript into the fork inflates
+        // the target's token usage far beyond its context window (a compacted
+        // 200k session can become 700k+ when re-embedded as one text block).
+        // Each adapter signals compaction differently (tool_call titled
+        // "Context compacting" + _meta.contextCompaction for kiro/pi/
+        // claude-code, an assistant "*Context compacted ...*" line for codex,
+        // a system notice, or the future compaction_update RFD), so we accept
+        // all of them. Mirrors findCompactionBoundary in core/conversationExport.ts.
+        var _exportStart = 0;
+        for (var _cei = 0; _cei < chatHistory.length; _cei++) {
+          var _ceItem = chatHistory[_cei];
+          if (!_ceItem) continue;
+          var _ceMeta = _ceItem._meta;
+          var _isBoundary = false;
+          if (_ceMeta && _ceMeta.contextCompaction === true) {
+            _isBoundary = true;
+          } else if (_ceItem.kind === 'compaction_update') {
+            var _ceStatus = typeof _ceItem.status === 'string' ? _ceItem.status.toLowerCase() : '';
+            if (_ceStatus === 'completed' || _ceStatus === '' || _ceStatus === 'in_progress') {
+              _isBoundary = true;
+            }
+          } else if (_ceItem.kind === 'toolCall') {
+            var _ceTitle = typeof _ceItem.title === 'string' ? _ceItem.title.toLowerCase() : '';
+            if (_ceTitle.includes('compact') && _ceTitle.includes('context')) {
+              _isBoundary = true;
+            }
+          } else if (_ceItem.kind === 'message') {
+            var _ceText = typeof _ceItem.text === 'string' ? _ceItem.text.toLowerCase() : '';
+            if (_ceText.includes('compacted') || _ceText.includes('compacting')) {
+              _isBoundary = true;
+            }
+          }
+          if (_isBoundary) {
+            // Start AFTER the boundary marker: the marker itself (a "Context
+            // compacting" tool call, a "*Context compacted*" line, or a
+            // compaction_update) is protocol noise, not content the forked
+            // agent needs. Post-compaction turns begin after it.
+            _exportStart = _cei + 1;
+            break;
+          }
+        }
         var _exportParts = [];
-        for (var _ei = 0; _ei < chatHistory.length; _ei++) {
+        for (var _ei = _exportStart; _ei < chatHistory.length; _ei++) {
           var _item = chatHistory[_ei];
           if (!_item) continue;
+          // Never carry a compaction boundary marker itself (a "Context
+          // compacting" tool call, a "*Context compacted*" line, a system
+          // notice, or a compaction_update) into a fork — protocol noise.
+          var _itemMeta = _item._meta;
+          var _isBoundaryMarker = false;
+          if (_itemMeta && _itemMeta.contextCompaction === true) {
+            _isBoundaryMarker = true;
+          } else if (_item.kind === 'compaction_update') {
+            _isBoundaryMarker = true;
+          } else if (_item.kind === 'toolCall') {
+            var _itemTitle = typeof _item.title === 'string' ? _item.title.toLowerCase() : '';
+            if (_itemTitle.includes('compact') && _itemTitle.includes('context')) {
+              _isBoundaryMarker = true;
+            }
+          } else if (_item.kind === 'message') {
+            var _itemText = typeof _item.text === 'string' ? _item.text.toLowerCase() : '';
+            if (_itemText.includes('compacted') || _itemText.includes('compacting')) {
+              _isBoundaryMarker = true;
+            }
+          }
+          if (_isBoundaryMarker) continue;
           if (_item.kind === 'message') {
             if (_item.role === 'user') {
               var _utext = typeof _item.text === 'string' ? _item.text : '';
