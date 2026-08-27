@@ -1349,11 +1349,34 @@ export function activate(context: vscode.ExtensionContext): void {
       );
 
       // 3. Send the conversation as a continuation prompt
+      // Carry the SOURCE agent's injected memory/skills (persona, scenes,
+      // available_skills) into the fork so the target agent sees the context
+      // the source was working with. The target still gets its OWN memory/
+      // skills injected fresh on this prompt (sendPrompt recalls the target
+      // agent's profile), and uses its own on subsequent turns.
+      //
+      // recallMemoryForAgent falls back to a fresh recall of the source
+      // agent's profile when the per-session cache is empty (e.g. after a
+      // VS Code reload, where the cache is not persisted).
+      const sourceMemory = await sessionManager.recallMemoryForAgent(
+        sourceAgentName,
+        conversationText,
+      );
       const forkPrompt = [
         'The following is a conversation from another agent. Please continue this conversation:',
         '',
         '---',
         '',
+        ...(sourceMemory
+          ? [
+              'Context (memory & skills) from the source agent:',
+              '',
+              sourceMemory,
+              '',
+              '---',
+              '',
+            ]
+          : []),
         conversationText,
         '',
         '---',

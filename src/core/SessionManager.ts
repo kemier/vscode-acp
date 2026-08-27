@@ -202,6 +202,65 @@ export class SessionManager extends EventEmitter {
   private inFlightPromptSessions: Set<string> = new Set();
 
   /**
+   * Last memory/skills block TEXT injected per session (persona + scenes +
+   * available_skills), keyed by sessionId. Populated in sendPrompt after a
+   * successful memory recall. Used by forkToAgent to carry the SOURCE agent's
+   * injected memory/skills into the forked target session as conversation
+   * context — the target then uses its OWN memory/skills on subsequent turns.
+   */
+  private sessionMemoryBlocks: Map<string, string> = new Map();
+
+  /** The memory/skills block text last injected into the given session ('' if none). */
+  getSessionMemoryBlocks(sessionId: string): string {
+    return this.sessionMemoryBlocks.get(sessionId) || '';
+  }
+
+  /**
+   * Recall the memory/skills block text for an agent at fork time. Used by
+   * forkToAgent to carry the SOURCE agent's injected memory/skills into the
+   * target session. Falls back to a fresh recall (via the memory provider)
+   * when the in-memory per-session cache is empty — e.g. after a VS Code
+   * reload, where the cache is not persisted across sessions.
+   */
+  async recallMemoryForAgent(agentName: string, query: string): Promise<string> {
+    // 1. Prefer the in-memory cache (last injected for this session).
+    const cached = this.getSessionMemoryBlocks(this.getActiveSession()?.sessionId || '');
+    if (cached) {
+      return cached;
+    }
+    // 2. Fresh recall of the agent's own profile (persona + scenes + skills).
+    if (!this.memoryProvider?.isEnabled()) {
+      return '';
+    }
+    try {
+      const blocks = await this.memoryProvider.buildRecallBlocks({
+        sessionId: this.getActiveSession()?.sessionId || '',
+        agentName,
+        query,
+        supportsEmbedded: true,
+        includeSkillTools: true,
+        injectMode: 'full',
+      });
+      const joined = (blocks || [])
+        .map((b) => {
+          const t =
+            b.type === 'resource' && (b as { resource?: { text?: string } }).resource?.text
+              ? (b as { resource: { text: string } }).resource.text
+              : b.type === 'text' && 'text' in b
+                ? String((b as { text: string }).text)
+                : '';
+          return t;
+        })
+        .filter(Boolean)
+        .join('\n\n');
+      return joined;
+    } catch (e) {
+      logError('recallMemoryForAgent failed', e);
+      return '';
+    }
+  }
+
+  /**
    * Per-agent load/resume serialization chain.
    *
    * Kiro (and other agents) enforce a single active session per process and
@@ -875,6 +934,58 @@ export class SessionManager extends EventEmitter {
                 `mode=${memoryInjectMode} (agent=${session.agentName}→${memoryAgentId}, session=${sessionId})`
             : `Memory inject: none mode=${memoryInjectMode} (agent=${session.agentName}→${memoryAgentId}, session=${sessionId})`,
         );
+        // Remember the injected memory/skills text per session so a fork to
+        // another agent can carry the SOURCE agent's context into the target
+        // session. The target then uses its own memory/skills on later turns.
+        if (memoryBlocks.length > 0) {
+          const joined = memoryBlocks
+            .map((b) => {
+              const t =
+                b.type === 'resource' && (b as { resource?: { text?: string } }).resource?.text
+                  ? (b as { resource: { text: string } }).resource.text
+                  : b.type === 'text' && 'text' in b
+                    ? String((b as { text: string }).text)
+                    : '';
+              return t;
+            })
+            .filter(Boolean)
+            .join('\n\n');
+          if (joined) {
+            this.sessionMemoryBlocks.set(sessionId, joined);
+          }
+        }
+        // ── Fork-debug instrumentation ──────────────────────────────────
+        // When a conversation is forked to another agent, the target agent's
+        // OWN memory/skills are injected (agentName is the TARGET). This log
+        // captures exactly what the forked session inherits so we can verify
+        // the source agent's skills/persona are NOT carried over. The fork
+        // prompt is identifiable by its "conversation from another agent"
+        // prefix. Emits the skill names found in the injected memory block.
+        if (/^The following is a conversation from another agent/i.test(text)) {
+          const forkSkills: string[] = [];
+          for (const mb of memoryBlocks) {
+            const mbText =
+              mb.type === 'resource' && (mb as { resource?: { text?: string } }).resource?.text
+                ? (mb as { resource: { text: string } }).resource.text
+                : mb.type === 'text' && 'text' in mb
+                  ? String((mb as { text: string }).text)
+                  : '';
+            // Extract skill names from the <available_skills> block:
+            //   - **skill-name** (v1): description
+            const re = /\*\*([^*]+)\*\*\s*\(v\d+\)/g;
+            let m;
+            while ((m = re.exec(mbText)) !== null) {
+              forkSkills.push(m[1].trim());
+            }
+          }
+          const skillList = forkSkills.length > 0 ? forkSkills.join(', ') : '(none in injected block)';
+          log(
+            `[FORK-DEBUG] forked prompt → target agent=${session.agentName} (memoryAgentId=${memoryAgentId}) ` +
+              `mode=${memoryInjectMode} blocks=${memoryBlocks.length} bytes=${blobBytes} ` +
+              `persona=${/user-persona/i.test(memoryBlocks.map((b) => (b as any)?.resource?.text || '').join(''))} ` +
+              `skills=[${skillList}]`,
+          );
+        }
       } catch (e) {
         logError('Memory recall failed', e);
       }

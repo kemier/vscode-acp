@@ -84,8 +84,38 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   private _hasChatContent = false;
   /** Resolver for the pending conversation export request (fork-to-agent). */
   private _conversationExportResolver: ((text: string) => void) | undefined = undefined;
+  /**
+   * Ensure the chat webview is loaded and ready, revealing the panel if
+   * needed. Polls webviewReady (with a timeout) because a WebviewView is only
+   * instantiated when its container is visible; a fork triggered from the
+   * command palette / session tree may fire before the panel has opened.
+   */
+  async waitForWebviewReady(timeoutMs = 15000): Promise<void> {
+    if (this.webviewReady) {
+      return;
+    }
+    // Reveal the chat view container so the provider's resolveWebviewView runs
+    // and the webview starts loading.
+    try {
+      await vscode.commands.executeCommand(`${ChatWebviewProvider.viewType}.focus`);
+    } catch {
+      // Some hosts don't register the .focus command; fall through to polling.
+    }
+    const start = Date.now();
+    while (!this.webviewReady) {
+      if (Date.now() - start > timeoutMs) {
+        throw new Error('Conversation export failed: chat webview did not become ready in time');
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+  }
+
   /** Request the current conversation text from the webview (for fork-to-agent). */
   async requestConversationExport(timeoutMs = 5000): Promise<string> {
+    // Ensure the webview is loaded and ready before posting the export
+    // request. If it isn't ready, postMessage silently drops the request and
+    // the resolver would never fire → timeout. Reveal the panel and wait.
+    await this.waitForWebviewReady(15000);
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this._conversationExportResolver = undefined;
