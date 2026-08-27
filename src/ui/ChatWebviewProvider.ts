@@ -165,6 +165,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   private cursorToolArgsSatisfied = new Set<string>();
   /** Coalesce batch-enrich requests (reload + loadSessionEnd + webview ready). */
   private cursorBatchEnrichTimer: ReturnType<typeof setTimeout> | null = null;
+  /** Per-tool enrich requests deferred while the agent turn is in flight. */
+  private deferredCursorToolEnrich = new Map<string, Set<string>>();
 
   /** Serialize acp.connectAgent from the webview (onDidReceiveMessage is not awaited). */
   private connectAgentCommandChain: Promise<unknown> = Promise.resolve();
@@ -1935,8 +1937,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       this.noteCursorToolArgsIfPresent(update.sessionId, updateData);
     }
     void this.maybeEnrichCursorToolCall(update.sessionId, updateData);
-    // Live tool_call: per-id enrich only (fast prefix query). Full batch enrich
-    // (listEnrichedTools scans the whole store) is reserved for post-merge/restore.
+    // Live per-tool enrich is deferred while the turn is in flight (see
+    // maybeEnrichCursorToolCall). Batch enrich is post-merge/restore only.
   }
 
   private getCursorToolEnricher(sessionId: string): CursorSessionToolEnricher {
@@ -1976,7 +1978,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * When Cursor ACP sends tool_call with empty rawInput, poll store.db for
    * the real args and emit a synthetic tool_call_update.
    */
-  private async maybeEnrichCursorToolCall(sessionId: string, updateData: any): Promise<void> {
+  private async maybeEnrichCursorToolCall(
+    sessionId: string,
+    updateData: any,
+    options?: { force?: boolean },
+  ): Promise<void> {
     try {
       if (!needsCursorToolEnrichment(updateData)) return;
       const toolCallId = updateData.toolCallId as string;
@@ -1989,6 +1995,21 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       const session = this.sessionManager.getSession(sessionId);
       const agentLabel = session?.agentName || session?.agentDisplayName || '';
       if (!isCursorAgentName(agentLabel)) return;
+
+      // Per-tool store.db polls block the extension host (Git SCM starves on
+      // large sessions). Batch enrich is already deferred; defer live polls too.
+      if (
+        !options?.force &&
+        this.sessionManager.isPromptInFlight(sessionId)
+      ) {
+        let pending = this.deferredCursorToolEnrich.get(sessionId);
+        if (!pending) {
+          pending = new Set();
+          this.deferredCursorToolEnrich.set(sessionId, pending);
+        }
+        pending.add(toolCallId);
+        return;
+      }
 
       const inflightKey = satisfiedKey;
       if (this.cursorToolEnrichInFlight.has(inflightKey)) return;
@@ -2046,6 +2067,34 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     } catch (e: any) {
       log(`Cursor tool enrich failed: ${e?.message || e}`);
     }
+  }
+
+  /** Run per-tool enrich polls queued during an in-flight agent turn. */
+  private async flushDeferredCursorToolEnrich(sessionId: string): Promise<void> {
+    const pending = this.deferredCursorToolEnrich.get(sessionId);
+    if (!pending?.size) return;
+    // A newer turn may have started before a stale sendPrompt resolved.
+    if (this.sessionManager.isPromptInFlight(sessionId)) return;
+    this.deferredCursorToolEnrich.delete(sessionId);
+    log(
+      `Cursor tool enrich: flushing ${pending.size} deferred tool(s) (session=${sessionId.slice(0, 8)}…)`,
+    );
+    for (const toolCallId of pending) {
+      await this.maybeEnrichCursorToolCall(
+        sessionId,
+        {
+          sessionUpdate: 'tool_call',
+          toolCallId,
+          title: 'Edit File',
+          rawInput: {},
+        },
+        { force: true },
+      );
+    }
+  }
+
+  private onAgentTurnEnded(sessionId: string): void {
+    void this.flushDeferredCursorToolEnrich(sessionId);
   }
 
   /**
@@ -2283,6 +2332,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           }
           this.postMessage({ type: 'promptEnd', sessionId: activeId, stopReason: slashStopReason });
         }
+        this.onAgentTurnEnded(activeId);
       }
       return;
     }
@@ -2487,6 +2537,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         log(
           `handleSendPrompt: stale response (gen ${promptGeneration} → ${this._cancelGeneration}), suppressing promptEnd`,
         );
+        this.onAgentTurnEnded(activeId);
         return;
       }
       // Render the accumulated assistant text as markdown
@@ -2509,6 +2560,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           goalSnapshot: (session as any)?.goalSnapshot ?? null,
         });
       }
+      this.onAgentTurnEnded(activeId);
       this.sessionManager.touchHistory(activeId);
     } catch (e: any) {
       // Clear fallback timer and pending session on error too.
@@ -2545,6 +2597,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       });
       this.streamCoalescer.flush(activeId);
       this.postMessage({ type: 'promptEnd', sessionId: activeId, stopReason: 'error' });
+      this.onAgentTurnEnded(activeId);
     }
   }
 
@@ -2598,6 +2651,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           if (this.sessionManager.getActiveSessionId() === activeId) {
             this.postMessage({ type: 'promptEnd', sessionId: activeId, stopReason: 'cancelled' });
           }
+          this.onAgentTurnEnded(activeId);
           this._pendingPromptSessionId = null;
         }
         this._cancelFallbackTimer = null;
@@ -2658,6 +2712,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     } finally {
       this.streamCoalescer.flush(activeId);
       this.postMessage({ type: 'promptEnd', sessionId: activeId, stopReason: 'end_turn' });
+      this.onAgentTurnEnded(activeId);
     }
   }
 
