@@ -8814,6 +8814,66 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
 
     /**
+     * Loaded-first overlay keeps ONLY the loaded history's user rows and drops
+     * the snapshot's user messages when session/load replays a SPARSER history
+     * (e.g. agent-side compaction or a truncated transcript). The snapshot is
+     * what the user actually saw, so re-inject snapshot user rows that are
+     * missing from the merged history. Anchors each inserted user row before
+     * the first tool/assistant that follows it in the SNAPSHOT (falling back to
+     * appending at the tail for the last turn). Returns the number injected.
+     */
+    function mergeMissingUsersFromSnapshot(merged, snapshot) {
+      if (!merged || !snapshot || !snapshot.length) return 0;
+      var snapUsers = realUserEntries(snapshot);
+      if (!snapUsers.length) return 0;
+
+      var mergedUserKeys = {};
+      for (var mu = 0; mu < merged.length; mu++) {
+        var mIt = merged[mu];
+        if (mIt && mIt.kind === 'message' && mIt.role === 'user' && !isSessionInterruptNotice(mIt.text)) {
+          var mk = userMessageKey(mIt.text);
+          if (mk) mergedUserKeys[mk] = true;
+        }
+      }
+
+      var injected = 0;
+      for (var u = 0; u < snapUsers.length; u++) {
+        var su = snapUsers[u];
+        var userKey = userMessageKey(su.item.text);
+        if (!userKey) continue;
+
+        // Skip interrupt notices / machine-context-only rows.
+        if (isSessionInterruptNotice(su.item.text)) continue;
+        if (isMachineContextOnly(String(su.item.text || ''))) continue;
+        if (mergedUserKeys[userKey]) continue;
+
+        // Anchor: insert before the first snapshot row AFTER this user that is
+        // present in the merged history (its own turn's tool/assistant). If none
+        // found (last turn), append at the tail.
+        var insertBefore = merged.length;
+        for (var sk = su.index + 1; sk < snapshot.length; sk++) {
+          var afterItem = snapshot[sk];
+          if (!afterItem) continue;
+          // Stop at the next user-turn boundary: a row from a later turn must
+          // not anchor this user's prompt into that turn.
+          if (afterItem.kind === 'message' && afterItem.role === 'user' &&
+              !isSessionInterruptNotice(afterItem.text)) {
+            break;
+          }
+          var anchorIdx = findMergedHistoryAnchor(merged, afterItem);
+          if (anchorIdx >= 0) {
+            insertBefore = anchorIdx;
+            break;
+          }
+        }
+        merged.splice(insertBefore, 0, Object.assign({}, su.item));
+        mergedUserKeys[userKey] = true;
+        injected++;
+      }
+      return injected;
+    }
+
+    /**
      * Claude session/load often drops an interrupted mid-turn (tools never
      * flushed to the agent transcript). Re-inject the last turn from the
      * pre-load webview snapshot — including the user prompt when Claude only
@@ -9244,12 +9304,18 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        // thoughts/assistants onto loaded whenever replay returned history.
        if (_loadedHistoryForMerge.length > 0) {
          chatHistory = mergeLoadedWithSnapshotOverlay(_loadedHistoryForMerge, preLoadChatHistorySnapshot);
+         // session/load can replay a SPARSER history than the snapshot (agent-side
+         // compaction or truncated transcript). The loaded-first overlay above keeps
+         // only the loaded user rows, silently dropping the snapshot's user messages
+         // — including the last few the user actually typed. Re-inject snapshot user
+         // rows that are missing so the resumed panel shows the full conversation.
+         var _snapUserInjected = mergeMissingUsersFromSnapshot(chatHistory, preLoadChatHistorySnapshot);
          vscode.postMessage({
            type: 'debugLog',
            message: '[WV-MERGE] loaded-first overlay: ' + chatHistory.length + ' items (snap=' +
              preLoadChatHistorySnapshot.length + ' loaded=' + _diagLoadedLen + ' loadedUsers=' +
              _loadedRealUsers + ' snapUsers=' + _snapRealUsers + ' loadedUserMsgs=' +
-             _loadedUserMsgCount + ' snapUserMsgs=' + _snapUserMsgCount + ')',
+             _loadedUserMsgCount + ' snapUserMsgs=' + _snapUserMsgCount + ' injectedSnapUsers=' + _snapUserInjected + ')',
          });
          currentAssistantEl = null;
          currentAssistantText = '';
