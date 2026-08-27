@@ -19032,7 +19032,13 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       var used = tokenUsage.used;
       var size = tokenUsage.size;
       var ratio = size > 0 ? used / size : 0;
-      var pct = Math.round(ratio * 100);
+      // Cap the displayed percentage at 100%. A used > size ratio happens
+      // when a model switch mid-turn leaves the ring's size stale (e.g. the
+      // agent reports 784K used against a 256K window after a fork, or the
+      // final usage_update carries the 1M model's used but a 256K size).
+      // The ring fill is already clamped by Math.min(ratio, 1); without this
+      // cap the LABEL would read 299% / 372% which is misleading.
+      var pct = Math.round(Math.min(ratio, 1) * 100);
       // circumference = 2 * PI * r = 2 * 3.14159 * 6 = 37.7
       var circumference = 37.7;
       var offset = circumference * (1 - Math.min(ratio, 1));
@@ -19079,7 +19085,9 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         var used = tokenUsage.used;
         var size = tokenUsage.size;
         var ratio = size > 0 ? used / size : 0;
-        var pct = Math.round(ratio * 100);
+        // Cap tooltip percentage at 100% too — matches the ring label cap so
+        // hover doesn't show 299% when a stale size makes used > size.
+        var pct = Math.round(Math.min(ratio, 1) * 100);
         var html = '<div class="tooltip-header">Context</div>';
         if (size > 0 && size !== 100) {
           html += pct + '% \u2022 ' + humanizeTokens(used) + ' / ' + humanizeTokens(size);
