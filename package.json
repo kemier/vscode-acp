@@ -531,6 +531,18 @@
           "minimum": 1000,
           "description": "HTTP timeout for MemoryCore Gateway requests (milliseconds)."
         },
+        "acp.memory.recallRetryCount": {
+          "type": "number",
+          "default": 2,
+          "minimum": 0,
+          "description": "Retries per gateway request after transient network errors (fetch failed, connection refused). 0 disables retries."
+        },
+        "acp.memory.recallRetryDelayMs": {
+          "type": "number",
+          "default": 1000,
+          "minimum": 0,
+          "description": "Delay between memory gateway retry attempts (milliseconds)."
+        },
         "acp.memory.debug": {
           "type": "boolean",
           "default": false,

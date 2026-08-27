@@ -19,6 +19,10 @@ export interface MemoryHttpClientOptions {
   apiKey: string;
   serviceId: string;
   timeoutMs?: number;
+  /** Retries after transient network / 502–504 errors (0 = no retries). */
+  retryCount?: number;
+  /** Delay between retry attempts (milliseconds). */
+  retryDelayMs?: number;
   /** When true, log per-request latency + status to the 'ACP Client' channel. */
   debug?: boolean;
 }
@@ -51,6 +55,9 @@ interface ApiEnvelope<T> {
 }
 
 import { log } from '../../utils/Logger';
+import { isRetryableMemoryFetchError, sleep } from './MemoryHttpRetry';
+
+export { isRetryableMemoryFetchError } from './MemoryHttpRetry';
 
 export class MemoryHttpError extends Error {
   constructor(
@@ -67,6 +74,8 @@ export class MemoryHttpClient {
   private readonly endpoint: string;
   private readonly headers: Record<string, string>;
   private readonly timeoutMs: number;
+  private readonly retryCount: number;
+  private readonly retryDelayMs: number;
   private readonly debug: boolean;
 
   constructor(opts: MemoryHttpClientOptions) {
@@ -81,6 +90,8 @@ export class MemoryHttpClient {
     }
     this.endpoint = opts.endpoint.replace(/\/+$/, '');
     this.timeoutMs = opts.timeoutMs ?? 15_000;
+    this.retryCount = Math.max(0, opts.retryCount ?? 2);
+    this.retryDelayMs = Math.max(0, opts.retryDelayMs ?? 1000);
     this.debug = opts.debug === true;
     this.headers = {
       Authorization: `Bearer ${opts.apiKey}`,
@@ -108,6 +119,32 @@ export class MemoryHttpClient {
   }
 
   private async post<T>(path: string, body: Record<string, unknown>): Promise<T> {
+    const maxAttempts = this.retryCount + 1;
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      try {
+        return await this.postOnce<T>(path, body);
+      } catch (e) {
+        lastError = e;
+        const canRetry = attempt < maxAttempts && isRetryableMemoryFetchError(e);
+        if (!canRetry) {
+          throw e;
+        }
+        if (this.debug) {
+          log(
+            `Memory HTTP ${path} retry ${attempt}/${this.retryCount} after ` +
+              `${e instanceof Error ? e.message : String(e)}`,
+          );
+        }
+        if (this.retryDelayMs > 0) {
+          await sleep(this.retryDelayMs);
+        }
+      }
+    }
+    throw lastError;
+  }
+
+  private async postOnce<T>(path: string, body: Record<string, unknown>): Promise<T> {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     // Time the full request (DNS + connect + gateway processing + body read)

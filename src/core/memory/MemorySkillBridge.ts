@@ -98,6 +98,8 @@ export class MemorySkillBridge {
       apiKey: settings.apiKey,
       serviceId: settings.serviceId,
       timeoutMs: settings.timeoutMs,
+      retryCount: settings.recallRetryCount,
+      retryDelayMs: settings.recallRetryDelayMs,
     });
     const iso = {
       teamId: settings.teamId,

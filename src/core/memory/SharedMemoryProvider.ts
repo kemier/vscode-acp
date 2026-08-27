@@ -27,6 +27,7 @@ import { isMemoryConfigured, readMemorySettings, type MemorySettings } from './M
 import { resolveMemoryAgentId } from './MemoryAgentId';
 import { formatRecallContext, type SkillEntry } from './MemoryFormat';
 import { formatMemorySkillTools } from './MemorySkillTools';
+import { resolveSkillToolsBlockForInject } from './MemoryRecallInject';
 import { l1DedupKey, skillDedupKey } from './MemoryDedup';
 import { MemoryHttpClient, type MemoryIsolation } from './MemoryHttpClient';
 import {
@@ -173,13 +174,17 @@ export class SharedMemoryProvider {
   }
 
   private getClient(settings: MemorySettings): MemoryHttpClient {
-    const key = `${settings.endpoint}|${settings.apiKey}|${settings.serviceId}|${settings.timeoutMs}|${settings.debug}`;
+    const key =
+      `${settings.endpoint}|${settings.apiKey}|${settings.serviceId}|${settings.timeoutMs}|` +
+      `${settings.recallRetryCount}|${settings.recallRetryDelayMs}|${settings.debug}`;
     if (!this.client || this.cachedSettingsKey !== key) {
       this.client = new MemoryHttpClient({
         endpoint: settings.endpoint,
         apiKey: settings.apiKey,
         serviceId: settings.serviceId,
         timeoutMs: settings.timeoutMs,
+        retryCount: settings.recallRetryCount,
+        retryDelayMs: settings.recallRetryDelayMs,
         debug: settings.debug,
       });
       this.cachedSettingsKey = key;
@@ -389,13 +394,32 @@ export class SharedMemoryProvider {
       // full set.
       this.persistL1StateToStorage();
 
-      const skillToolsBlock =
+      const enabledArmResults: PromiseSettledResult<unknown>[] = [searchResult];
+      if (includePersona) {
+        enabledArmResults.push(personaResult);
+      }
+      if (includeSceneNav) {
+        enabledArmResults.push(scenesResult);
+      }
+      if (includeSkills) {
+        enabledArmResults.push(skillsResult);
+      }
+
+      const rawSkillToolsBlock =
         includeSkillTools && includeSkills && this.skillBridgeBaseUrl
           ? formatMemorySkillTools({
               bridgeBaseUrl: this.skillBridgeBaseUrl,
               agentId: memoryAgentId,
             })
           : undefined;
+
+      const skillToolsBlock = resolveSkillToolsBlockForInject(rawSkillToolsBlock, enabledArmResults);
+      if (rawSkillToolsBlock && !skillToolsBlock) {
+        log(
+          `Memory recall: skipped skill-tools-only inject (all ${enabledArmResults.length} recall arm(s) failed) ` +
+            `(agent=${opts.agentName}→${memoryAgentId}, session=${opts.sessionId})`,
+        );
+      }
 
       const formatted = formatRecallContext(l1Items, persona, scenes, skills, skillToolsBlock, {
         includeL1Wrapper: shouldIncludeL1WrapperForMode(injectMode),

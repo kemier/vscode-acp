@@ -28,6 +28,10 @@ export interface MemorySettings {
   skillCharBudget: number;
   captureEnabled: boolean;
   timeoutMs: number;
+  /** Retries after transient fetch failures (0 = disabled). */
+  recallRetryCount: number;
+  /** Delay between recall retry attempts (milliseconds). */
+  recallRetryDelayMs: number;
   /** Verbose timing/debug logging for recall + injection. Off by default. */
   debug: boolean;
 }
@@ -70,6 +74,8 @@ export function readMemorySettings(): MemorySettings {
     skillCharBudget: Math.max(0, cfg.get<number>('memory.skillCharBudget') ?? 8000),
     captureEnabled: cfg.get<boolean>('memory.captureEnabled') !== false,
     timeoutMs: Math.max(1000, cfg.get<number>('memory.timeoutMs') ?? 15_000),
+    recallRetryCount: Math.max(0, cfg.get<number>('memory.recallRetryCount') ?? 2),
+    recallRetryDelayMs: Math.max(0, cfg.get<number>('memory.recallRetryDelayMs') ?? 1000),
     debug: cfg.get<boolean>('memory.debug') === true,
   };
 }
