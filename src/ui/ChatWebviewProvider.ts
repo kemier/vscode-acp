@@ -18038,7 +18038,15 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         }
         if (content && content.type === 'text' && typeof content.text === 'string') {
           // Subagent task-notification blobs are not user turns.
-          if (/<task-notification[\\s>]/i.test(content.text)) {
+          //
+          // ANCHORED on purpose. This used to test the whole body, so any user
+          // message that merely MENTIONED "<task-notification>" anywhere was
+          // discarded during replay. A fork handoff carrying a transcript that
+          // discussed the tag lost its first user message: the turn's thought,
+          // summary and tool calls stayed at the top of chatHistory with no
+          // prompt above them (an orphaned thinking block), and the next user
+          // message rendered after them, so the turn looked reversed.
+          if (/^\\s*<task-notification[\\s>]/i.test(content.text)) {
             break;
           }
           // Claude interrupt notice — keep in history for fold heuristics, but

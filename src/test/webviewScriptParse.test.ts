@@ -139,6 +139,34 @@ suite('webviewScriptParse', () => {
     );
   });
 
+  test('task-notification guard is anchored, not a substring match', () => {
+    // Regression: the replay guard that drops subagent task-notification blobs
+    // tested the WHOLE body, so a user message that merely mentioned
+    // "<task-notification>" anywhere was discarded during session/load. A fork
+    // handoff whose transcript discussed the tag lost its first user message —
+    // the turn's thought, summary and tool calls stayed at the top of
+    // chatHistory with no prompt above them (an orphaned thinking block), and
+    // the next user message rendered after them, so the turn looked reversed.
+    const source = fs.readFileSync(PROVIDER, 'utf8');
+    const emitted = decodeTemplate(extractWebviewScript(source));
+    const match = emitted.match(/\/\^[^/\n]*<task-notification[^/\n]*\/i/);
+    assert.ok(match, 'anchored task-notification regex must exist in the emitted webview script');
+    const re = new Function(`return ${match[0]};`)() as RegExp;
+
+    // Genuine blobs (the whole message is the notification) are still dropped.
+    assert.strictEqual(re.test('<task-notification agent="x">result</task-notification>'), true);
+    assert.strictEqual(re.test('<task-notification>result</task-notification>'), true);
+    assert.strictEqual(re.test('\n  <task-notification>result</task-notification>'), true);
+
+    // Ordinary prompts that merely mention the tag must survive.
+    assert.strictEqual(re.test('- 18044: `<task-notification>` check'), false);
+    assert.strictEqual(
+      re.test('The following is a conversation from another agent.\n\nUser: explain the <task-notification> guard'),
+      false,
+    );
+    assert.strictEqual(re.test('why does <task-notification> drop my message?'), false);
+  });
+
   test('inbound message switch handles host-initiated sendPrompt (fork-to-agent)', () => {
     // Regression: dispatchPrompt() (host -> webview) posts { type:
     // 'sendPrompt', text } to forward the fork-to-agent export, but the
