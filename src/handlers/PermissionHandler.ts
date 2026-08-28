@@ -7,11 +7,7 @@ import {
   isApprovedToolFingerprint,
   normalizeApprovedToolFingerprint,
 } from './permissionUtils';
-import {
-  mergePermissionLists,
-  readPermissionStore,
-  writePermissionStore,
-} from './PermissionStore';
+import { mergePermissionLists, readPermissionStore, writePermissionStore } from './PermissionStore';
 
 import type { RequestPermissionRequest, RequestPermissionResponse } from '@agentclientprotocol/sdk';
 
@@ -354,6 +350,34 @@ export class PermissionHandler {
   }
 
   async requestPermission(params: RequestPermissionRequest): Promise<RequestPermissionResponse> {
+    const early = await this.tryAutoApprove(params);
+    if (early) {
+      return early;
+    }
+
+    // Slow path: needs user interaction — queue to prevent overlapping QuickPicks
+    return new Promise((resolve) => {
+      this.pendingPermissionQueue.push({ params, resolve });
+      this.processPermissionQueue();
+    });
+  }
+
+  /**
+   * Evaluate the auto-approve fast paths (allowAll, previously allow_always'd
+   * tool fingerprint, remember-mode command allow/denylist).
+   *
+   * Returns a response when the request can be settled without asking the
+   * user, otherwise undefined.
+   *
+   * This MUST be re-evaluated when a request is dequeued, not only when it is
+   * enqueued. Agents emit parallel tool calls: kiro-cli sends one
+   * session/request_permission per tool call, so two edits to the same file
+   * arrive milliseconds apart and both get queued while `isToolApproved()` is
+   * still false. Approving the first one saves the fingerprint — but without a
+   * dequeue-time re-check the second (identical) request still prompts, so the
+   * user is asked twice for the same file.
+   */
+  private async tryAutoApprove(params: RequestPermissionRequest): Promise<RequestPermissionResponse | undefined> {
     const config = vscode.workspace.getConfiguration('acp');
     const autoApprove = config.get<string>('autoApprovePermissions', 'ask');
     const rawCommand = this.extractCommand(params.toolCall);
@@ -387,11 +411,7 @@ export class PermissionHandler {
       // decision === 'ask_user' — fall through to manual
     }
 
-    // Slow path: needs user interaction — queue to prevent overlapping QuickPicks
-    return new Promise((resolve) => {
-      this.pendingPermissionQueue.push({ params, resolve });
-      this.processPermissionQueue();
-    });
+    return undefined;
   }
 
   private async processPermissionQueue(): Promise<void> {
@@ -401,8 +421,11 @@ export class PermissionHandler {
     this.isProcessingPermission = true;
     const { params, resolve } = this.pendingPermissionQueue.shift()!;
     try {
-      const response = await this.handleManualPermission(params);
-      resolve(response);
+      // Re-check the fast paths: an earlier request in this batch may have just
+      // saved a matching fingerprint / command prefix while this one sat in the
+      // queue (parallel tool calls on the same file).
+      const late = await this.tryAutoApprove(params);
+      resolve(late ?? (await this.handleManualPermission(params)));
     } catch (e) {
       log(`Permission handler error: ${e}`);
       resolve({ outcome: { outcome: 'cancelled' } });
