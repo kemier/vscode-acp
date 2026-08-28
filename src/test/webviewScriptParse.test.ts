@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
+import { decodeTemplate } from './templateDecode';
 
 /**
  * Regression guard for webview script parse breaks.
@@ -20,83 +21,7 @@ import * as path from 'path';
 
 const PROVIDER = path.join(__dirname, '..', '..', 'src', 'ui', 'ChatWebviewProvider.ts');
 
-/** Simulate untagged template literal escape processing on the raw template content. */
-function decodeTemplate(raw: string): string {
-  let out = '';
-  let i = 0;
-  const escapes: Record<string, string> = {
-    n: '\n',
-    t: '\t',
-    r: '\r',
-    b: '\b',
-    f: '\f',
-    v: '\v',
-    '0': '\0',
-  };
-  while (i < raw.length) {
-    const ch = raw[i];
-    if (ch === '$' && raw[i + 1] === '{') {
-      // Interpolation: skip balanced braces, emit a placeholder expression.
-      let depth = 1;
-      i += 2;
-      while (depth > 0 && i < raw.length) {
-        if (raw[i] === '{') {
-          depth++;
-        } else if (raw[i] === '}') {
-          depth--;
-        }
-        i++;
-      }
-      out += '""';
-      continue;
-    }
-    if (ch === '\\') {
-      const nx = raw[i + 1];
-      if (nx === 'u') {
-        out += '"x"';
-        i += 2;
-        if (raw[i] === '{') {
-          while (i < raw.length && raw[i] !== '}') {
-            i++;
-          }
-          i++;
-        } else {
-          i += 4;
-        }
-        continue;
-      }
-      if (nx === 'x') {
-        out += '"x"';
-        i += 6;
-        continue;
-      }
-      if (nx === '`' || nx === '$') {
-        out += nx;
-        i += 2;
-        continue;
-      }
-      if (nx === '\n') {
-        out += '\n';
-        i += 2;
-        continue;
-      }
-      if (escapes[nx] !== undefined) {
-        out += escapes[nx];
-        i += 2;
-        continue;
-      }
-      // Unrecognized escape: backslash is dropped (e.g. \/ -> /). This is the
-      // collapse that breaks regex/string literals written with single backslashes.
-      out += nx;
-      i += 2;
-      continue;
-    }
-    out += ch;
-    i++;
-  }
-  return out;
-}
-
+/** Extract the webview <script> body from the provider's HTML template literal. */
 function extractWebviewScript(source: string): string {
   const htmlStart = source.indexOf('<!DOCTYPE html>');
   const htmlEnd = source.lastIndexOf('</html>');
@@ -141,6 +66,79 @@ suite('webviewScriptParse', () => {
     assert.strictEqual(helper('gpt-oss-42m-v2'), false, 'gpt-oss is text-only');
   });
 
+  test('isSessionInterruptNotice only matches real interrupt notices', () => {
+    // Regression: the notice regex was written /^\[Request interrupted by user\]/i
+    // with SINGLE backslashes inside the HTML template literal. The template
+    // collapsed \[ -> [ and \] -> ], turning the escaped brackets into a
+    // character CLASS: /^[Request interrupted by user]/i. That matches any text
+    // whose first character is one of " BDEINPQRSTUYbdeinpqrstuy" — so during
+    // session/load replay, ordinary prompts like "then implement C" or
+    // "backport" were classified as interrupt notices, pushed into chatHistory
+    // as hidden notice rows instead of rendered user bubbles, and excluded from
+    // countRealUserMessages. Result: the last user messages vanished on resume.
+    const source = fs.readFileSync(PROVIDER, 'utf8');
+    const emitted = decodeTemplate(extractWebviewScript(source));
+    const match = emitted.match(/function isSessionInterruptNotice\([^)]*\)\s*\{[^}]*\}/);
+    assert.ok(match, 'isSessionInterruptNotice must exist in the emitted webview script');
+    const isNotice = new Function(`return (${match[0]});`)() as (t: string) => boolean;
+
+    // Real notices still detected.
+    assert.strictEqual(isNotice('[Request interrupted by user]'), true);
+    assert.strictEqual(isNotice('[Request interrupted by user] for tool use'), true);
+    assert.strictEqual(isNotice('Request interrupted by user'), true);
+    assert.strictEqual(isNotice('Request interrupted by user.'), true);
+    assert.strictEqual(isNotice('— Conversation interrupted —'), true);
+
+    // Ordinary prompts must NOT be swallowed. Each of these starts with a
+    // character that the collapsed character class matched.
+    for (const prompt of [
+      'then implement C',
+      'backport',
+      'These are memory-injected skills (metadata only)',
+      'debug this please',
+      'is the build green?',
+      'run the tests',
+      'update the docs',
+      'no, use the other branch',
+      'yes',
+      'push it',
+      'Explain the diff',
+      ' leading space prompt',
+    ]) {
+      assert.strictEqual(isNotice(prompt), false, `must not classify as interrupt notice: ${prompt}`);
+    }
+    assert.strictEqual(isNotice(''), false);
+  });
+
+  test('webview template literal has no collapsed single-backslash regex escapes', () => {
+    // Generic guard for the whole defect class. Inside the HTML template
+    // literal every regex/string escape must be written with DOUBLE
+    // backslashes (\\s, \\[, \\.) — a single backslash before a
+    // regex-meaningful character is silently eaten and changes the pattern's
+    // meaning without any syntax error.
+    const source = fs.readFileSync(PROVIDER, 'utf8');
+    const raw = extractWebviewScript(source);
+    const suspicious = /(^|[^\\])\\([[\].+*?(){}|/sSdDwWbBAZ-])/;
+    const offenders: string[] = [];
+    raw.split('\n').forEach((line, idx) => {
+      const m = suspicious.exec(line);
+      if (!m) {
+        return;
+      }
+      // Ignore matches that live inside a line comment.
+      const commentAt = line.indexOf('//');
+      if (commentAt >= 0 && (m.index ?? 0) >= commentAt) {
+        return;
+      }
+      offenders.push(`${idx + 1}: ${line.trim()}`);
+    });
+    assert.deepStrictEqual(
+      offenders,
+      [],
+      `single-backslash escapes inside the webview template literal (must be doubled):\n${offenders.join('\n')}`,
+    );
+  });
+
   test('inbound message switch handles host-initiated sendPrompt (fork-to-agent)', () => {
     // Regression: dispatchPrompt() (host -> webview) posts { type:
     // 'sendPrompt', text } to forward the fork-to-agent export, but the
@@ -163,7 +161,7 @@ suite('webviewScriptParse', () => {
     const hasInboundCase = /case\s+'sendPrompt'[^]*?\bhandleSend\(\)/.test(region);
     assert.ok(
       hasInboundCase,
-      'inbound switch must route sendPrompt through handleSend() (fork-to-agent was silently dropped without it)'
+      'inbound switch must route sendPrompt through handleSend() (fork-to-agent was silently dropped without it)',
     );
   });
 });

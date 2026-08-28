@@ -5841,8 +5841,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
        var it = arr[i];
        if (!it || it.kind !== 'message' || it.role !== 'user') continue;
        var t = String(it.text || '').trim();
-       if (/^\[Request interrupted by user\]/i.test(t)) continue;
-       if (/^Request interrupted by user\.?$/i.test(t)) continue;
+       if (/^\\[Request interrupted by user\\]/i.test(t)) continue;
+       if (/^Request interrupted by user\\.?$/i.test(t)) continue;
        n++;
      }
      return n;
@@ -11746,8 +11746,8 @@ function orderCompactFoldContents(body) {
     function isSessionInterruptNotice(text) {
       var t = String(text || '').trim();
       if (!t) return false;
-      if (/^\[Request interrupted by user\]/i.test(t)) return true;
-      if (/^Request interrupted by user\.?$/i.test(t)) return true;
+      if (/^\\[Request interrupted by user\\]/i.test(t)) return true;
+      if (/^Request interrupted by user\\.?$/i.test(t)) return true;
       if (/^—?\\s*Conversation interrupted\\s*—?$/i.test(t)) return true;
       return false;
     }
@@ -13386,7 +13386,7 @@ function commitCurrentTextSegment(opts) {
     var quoted = title.match(/'([^']+)'|"([^"]+)"/);
     if (quoted) return quoted[1] || quoted[2] || '';
     // Match unquoted path after edit/write keywords: Editing src/foo.ts
-    var unquoted = title.match(/(?:Edit|Write|Editing|Writing)\s+(.+)/i);
+    var unquoted = title.match(/(?:Edit|Write|Editing|Writing)\\s+(.+)/i);
     if (unquoted) {
       var p = unquoted[1].trim();
       // Only accept if it looks like a path (has a file extension)
@@ -14734,7 +14734,7 @@ function commitCurrentTextSegment(opts) {
       // single-stage prompt overwrite on stage 0.
       if (rawInput && typeof rawInput === 'object' &&
           Array.isArray(rawInput.stages) && rawInput.stages.length > 1 &&
-          typeof rawInput.task === 'string' && /^spawn\s/i.test(rawInput.task)) {
+          typeof rawInput.task === 'string' && /^spawn\\s/i.test(rawInput.task)) {
         if (el._rawInput && typeof el._rawInput === 'object') {
           el._rawInput._isSpawnParallel = true;
         } else {
@@ -17450,7 +17450,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
     /** Pi (pi-acp) signals /compact completion via agent_message_chunk + end_turn,
      *  same pattern as Claude — no _meta.contextCompaction meta. */
     function isPiAgent() {
-      return /pi\s*agent|pi-acp/i.test(currentAgentLabel());
+      return /pi\\s*agent|pi-acp/i.test(currentAgentLabel());
     }
 
     /** Agent post-compact noise that must not land in the chat panel. */
@@ -17487,7 +17487,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       // codex-acp emits exactly one of these two prefixes before the
       // "— retrying with backoff" suffix. Match only those, so no normal
       // assistant reply (which may plausibly quote the phrase) is swallowed.
-      return /^The (model is at capacity|connection dropped mid-stream)[^.]*[-—]\s*retrying with backoff/i.test(t);
+      return /^The (model is at capacity|connection dropped mid-stream)[^.]*[-—]\\s*retrying with backoff/i.test(t);
     }
 
     /**

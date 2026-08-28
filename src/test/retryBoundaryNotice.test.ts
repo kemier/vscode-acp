@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
+import { decodeTemplate } from './templateDecode';
 
 /**
  * Regression test for the codex-acp internal retry-boundary handling:
@@ -35,9 +36,11 @@ function extractRetryBoundaryFragment(): string {
 }
 
 function loadRetryBoundaryCheck(): (text: string) => boolean {
+  // Decode the template-literal escapes first: the fragment is raw template
+  // text, and the browser only ever sees the collapsed form.
   const factory = new Function(
     `
-      ${extractRetryBoundaryFragment()}
+      ${decodeTemplate(extractRetryBoundaryFragment())}
       return isRetryBoundaryNotice;
     `,
   );
