@@ -1,5 +1,13 @@
 import * as assert from 'assert';
-import { exportConversation, exportConversationItem, isResourceLinkJsonOnly, isCompactionBoundaryItem, type ConversationExportItem } from '../core/conversationExport';
+import {
+  exportConversation,
+  exportConversationItem,
+  isResourceLinkJsonOnly,
+  isCompactionBoundaryItem,
+  findCompactionBoundary,
+  exportConversationMessages,
+  type ConversationExportItem,
+} from '../core/conversationExport';
 
 /**
  * Unit tests for the fork-to-agent conversation export.
@@ -31,9 +39,7 @@ suite('conversationExport', () => {
   });
 
   test('exports reasoning blocks', () => {
-    const items: ConversationExportItem[] = [
-      { kind: 'thought', text: 'I should check the config' },
-    ];
+    const items: ConversationExportItem[] = [{ kind: 'thought', text: 'I should check the config' }];
     const result = exportConversation(items);
     assert.strictEqual(result, '(reasoning) I should check the config');
   });
@@ -55,9 +61,7 @@ suite('conversationExport', () => {
   });
 
   test('falls back to toolCallId when title is missing', () => {
-    const items: ConversationExportItem[] = [
-      { kind: 'toolCall', toolCallId: 'tc-7', rawInput: 'cmd' },
-    ];
+    const items: ConversationExportItem[] = [{ kind: 'toolCall', toolCallId: 'tc-7', rawInput: 'cmd' }];
     const result = exportConversation(items);
     assert.strictEqual(result, 'Tool: tc-7' + '\n' + 'cmd');
   });
@@ -69,10 +73,7 @@ suite('conversationExport', () => {
       { kind: 'toolCall', title: 'c', rawInput: 'd' },
     ];
     const result = exportConversation(items);
-    assert.strictEqual(
-      result,
-      'User: a' + '\n' + '\n' + '(reasoning) b' + '\n' + '\n' + 'Tool: c' + '\n' + 'd',
-    );
+    assert.strictEqual(result, 'User: a' + '\n' + '\n' + '(reasoning) b' + '\n' + '\n' + 'Tool: c' + '\n' + 'd');
   });
 
   test('null/undefined items are skipped', () => {
@@ -99,8 +100,7 @@ suite('conversationExport', () => {
    * The webview no longer writes those rows, but history polluted by an earlier
    * build still holds them — so the export filters them as well.
    */
-  const rlink = (name: string, uri: string) =>
-    JSON.stringify({ name, uri, type: 'resource_link' });
+  const rlink = (name: string, uri: string) => JSON.stringify({ name, uri, type: 'resource_link' });
 
   test('skips messages that are only resource_link JSON', () => {
     assert.strictEqual(
@@ -183,7 +183,7 @@ suite('conversationExport', () => {
   test('skips pre-compaction history on an assistant *Context compacted* line (codex)', () => {
     const items: ConversationExportItem[] = [
       { kind: 'message', role: 'user', text: 'old' },
-      { kind: 'message', role: 'assistant', text: '*Context compacted to fit the model\'s context window.*' },
+      { kind: 'message', role: 'assistant', text: "*Context compacted to fit the model's context window.*" },
       { kind: 'message', role: 'user', text: 'new' },
     ];
     assert.strictEqual(exportConversation(items), 'User: new');
@@ -215,7 +215,7 @@ suite('conversationExport', () => {
     assert.strictEqual(exportConversation(items), 'User: a\n\nAssistant: b');
   });
 
-  test('exports from the first compaction boundary when compacted multiple times', () => {
+  test('exports from the LAST compaction boundary when compacted multiple times', () => {
     const items: ConversationExportItem[] = [
       { kind: 'message', role: 'user', text: 'very old' },
       { kind: 'toolCall', title: 'Context compacting', status: 'in_progress' },
@@ -223,9 +223,59 @@ suite('conversationExport', () => {
       { kind: 'toolCall', title: 'Context compacting', status: 'in_progress' },
       { kind: 'message', role: 'user', text: 'latest' },
     ];
-    // First boundary wins — everything from it onward is kept (it is the
-    // earliest point after which content is genuinely retained).
-    assert.strictEqual(exportConversation(items), 'User: middle\n\nUser: latest');
+    // Last boundary wins. "middle" was already replaced by the second
+    // compaction's summary; re-sending it means the fork carries raw history
+    // AND the summary that superseded it — exactly the bloat the boundary
+    // check exists to prevent.
+    assert.strictEqual(exportConversation(items), 'User: latest');
+  });
+
+  test('exportConversationMessages splits per turn and attributes agent work to the assistant', () => {
+    const items: ConversationExportItem[] = [
+      { kind: 'message', role: 'user', text: 'do a thing' },
+      { kind: 'thought', text: 'thinking' },
+      { kind: 'toolCall', title: 'Edit x.ts', status: 'completed' },
+      { kind: 'message', role: 'assistant', text: 'done' },
+    ];
+    assert.deepStrictEqual(exportConversationMessages(items), [
+      { role: 'user', content: 'User: do a thing' },
+      { role: 'assistant', content: '(reasoning) thinking' },
+      { role: 'assistant', content: 'Tool: Edit x.ts [completed]' },
+      { role: 'assistant', content: 'Assistant: done' },
+    ]);
+  });
+
+  test('exportConversationMessages honours the last compaction boundary', () => {
+    const items: ConversationExportItem[] = [
+      { kind: 'message', role: 'user', text: 'very old' },
+      { kind: 'toolCall', title: 'Context compacting' },
+      { kind: 'message', role: 'user', text: 'middle' },
+      { kind: 'toolCall', title: 'Context compacting' },
+      { kind: 'message', role: 'user', text: 'latest' },
+    ];
+    assert.deepStrictEqual(exportConversationMessages(items), [{ role: 'user', content: 'User: latest' }]);
+  });
+
+  test('exportConversationMessages content matches exportConversation blocks', () => {
+    const items: ConversationExportItem[] = [
+      { kind: 'message', role: 'user', text: 'a' },
+      { kind: 'message', role: 'assistant', text: 'b' },
+      { kind: 'message', role: 'user', text: '' },
+    ];
+    const msgs = exportConversationMessages(items);
+    assert.strictEqual(msgs.map((m) => m.content).join('\n\n'), exportConversation(items));
+  });
+
+  test('findCompactionBoundary returns the last boundary index', () => {
+    const items: ConversationExportItem[] = [
+      { kind: 'message', role: 'user', text: 'a' },
+      { kind: 'toolCall', title: 'Context compacting' },
+      { kind: 'message', role: 'user', text: 'b' },
+      { kind: 'toolCall', title: 'Context compacting' },
+      { kind: 'message', role: 'user', text: 'c' },
+    ];
+    assert.strictEqual(findCompactionBoundary(items), 3);
+    assert.strictEqual(findCompactionBoundary([{ kind: 'message', role: 'user', text: 'a' }]), -1);
   });
 
   test('isCompactionBoundaryItem detects all adapter shapes', () => {
@@ -235,7 +285,10 @@ suite('conversationExport', () => {
       isCompactionBoundaryItem({ kind: 'message', role: 'assistant', text: '*Context compacted to fit*' }),
       true,
     );
-    assert.strictEqual(isCompactionBoundaryItem({ kind: 'message', role: 'system', text: 'Conversation compacted.' }), true);
+    assert.strictEqual(
+      isCompactionBoundaryItem({ kind: 'message', role: 'system', text: 'Conversation compacted.' }),
+      true,
+    );
     assert.strictEqual(isCompactionBoundaryItem({ kind: 'compaction_update', status: 'completed' }), true);
     assert.strictEqual(isCompactionBoundaryItem({ kind: 'message', role: 'user', text: 'normal question' }), false);
     assert.strictEqual(isCompactionBoundaryItem({ kind: 'toolCall', title: 'edit_file' }), false);

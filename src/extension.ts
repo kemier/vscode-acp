@@ -52,6 +52,8 @@ import {
 } from './utils/Logger';
 import { initTelemetry, sendEvent } from './utils/TelemetryManager';
 import { CompactionHookWatcher } from './core/CompactionHookWatcher';
+import { summarizeSession } from './core/SessionSummarizer';
+import { readSessionSummarySettings } from './core/SessionSummaryConfig';
 
 // Module-level reference so deactivate() can clean up even if
 // context.subscriptions disposal was skipped (e.g. VSCode force-quit).
@@ -84,11 +86,7 @@ function clearSessionOpenInFlight(): void {
  * and only one progress notification is shown. The map entry is reserved
  * synchronously so parallel connectAgent handlers cannot race.
  */
-function joinOrRunSessionOpen<T>(
-  dedupeKey: string,
-  title: string,
-  task: () => Thenable<T>,
-): Promise<T> {
+function joinOrRunSessionOpen<T>(dedupeKey: string, title: string, task: () => Thenable<T>): Promise<T> {
   const existing = sessionOpenOperations.get(dedupeKey);
   if (existing) {
     return existing as Promise<T>;
@@ -197,9 +195,9 @@ export function activate(context: vscode.ExtensionContext): void {
   // team_id shared across agents; agent_id mapped per ACP agent type.
   const memoryProvider = new SharedMemoryProvider(sessionUpdateHandler, {
     get: () =>
-      context.workspaceState.get<
-        Record<string, { injectedIds: string[]; injectedSkillIds: string[] }>
-      >('acp.memory.l1State'),
+      context.workspaceState.get<Record<string, { injectedIds: string[]; injectedSkillIds: string[] }>>(
+        'acp.memory.l1State',
+      ),
     update: (value) => {
       context.workspaceState.update('acp.memory.l1State', value);
     },
@@ -391,8 +389,7 @@ export function activate(context: vscode.ExtensionContext): void {
       // that id change breaks resume dedupe and re-seeds the webview with a
       // different sessionId before loadSession finishes.
       const skipSessionIdPersist =
-        isConnectRestoreInFlight(session.agentName) ||
-        sessionManager.isLoading(session.sessionId);
+        isConnectRestoreInFlight(session.agentName) || sessionManager.isLoading(session.sessionId);
       if (!skipSessionIdPersist) {
         context.workspaceState.update('acp.lastConnectedSessionId', session.sessionId);
       }
@@ -1330,10 +1327,52 @@ export function activate(context: vscode.ExtensionContext): void {
 
     try {
       // 1. Export the conversation from the webview
-      const conversationText = await chatWebviewProvider.requestConversationExport(10000);
+      const exported = await chatWebviewProvider.requestConversationExport(10000);
+      const conversationText = exported.text;
       if (!conversationText.trim()) {
         vscode.window.showWarningMessage('No conversation to fork — the session is empty.');
         return;
+      }
+
+      // 1b. Summarize it. Sending the raw transcript re-embeds the entire
+      // conversation as a single text block, which pushed the target agent past
+      // its context window on the very first prompt (an observed fork carried
+      // 822k chars, itself containing an earlier fork's transcript verbatim).
+      // A summary is what the target actually needs to continue.
+      let forkBody = conversationText;
+      let forkedAsSummary = true;
+      const summaryMessages = exported.messages.length
+        ? exported.messages
+        : [{ role: 'user', content: conversationText }];
+      try {
+        const summarized = await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: `Summarizing conversation from ${sourceAgentName}...`,
+            cancellable: false,
+          },
+          async () => summarizeSession(`Forked from ${sourceAgentName}`, summaryMessages, readSessionSummarySettings()),
+        );
+        forkBody = summarized.summary;
+        log(
+          `forkToAgent: summarized ${conversationText.length} chars → ${forkBody.length} chars via ${summarized.model}`,
+        );
+      } catch (e: any) {
+        // Never silently fall back to the raw transcript — that is the exact
+        // behaviour that blew up the target's context. Make it the user's call.
+        const choice = await vscode.window.showWarningMessage(
+          `Could not summarize the conversation (${e?.message || e}).`,
+          {
+            modal: true,
+            detail: `Send the full transcript instead? It is ${conversationText.length} characters and may exceed ${targetAgentName}'s context window.`,
+          },
+          'Send full transcript',
+        );
+        if (choice !== 'Send full transcript') {
+          return;
+        }
+        forkedAsSummary = false;
+        log(`forkToAgent: summarize failed (${e?.message || e}); user chose the full transcript`);
       }
 
       // 2. Connect to the target agent and create a new session
@@ -1358,26 +1397,16 @@ export function activate(context: vscode.ExtensionContext): void {
       // recallMemoryForAgent falls back to a fresh recall of the source
       // agent's profile when the per-session cache is empty (e.g. after a
       // VS Code reload, where the cache is not persisted).
-      const sourceMemory = await sessionManager.recallMemoryForAgent(
-        sourceAgentName,
-        conversationText,
-      );
+      const sourceMemory = await sessionManager.recallMemoryForAgent(sourceAgentName, forkBody);
       const forkPrompt = [
-        'The following is a conversation from another agent. Please continue this conversation:',
+        forkedAsSummary
+          ? 'The following is a summary of a conversation from another agent. Please continue this conversation:'
+          : 'The following is a conversation from another agent. Please continue this conversation:',
         '',
         '---',
         '',
-        ...(sourceMemory
-          ? [
-              'Context (memory & skills) from the source agent:',
-              '',
-              sourceMemory,
-              '',
-              '---',
-              '',
-            ]
-          : []),
-        conversationText,
+        ...(sourceMemory ? ['Context (memory & skills) from the source agent:', '', sourceMemory, '', '---', ''] : []),
+        forkBody,
         '',
         '---',
         '',

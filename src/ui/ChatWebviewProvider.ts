@@ -32,8 +32,8 @@ import { sendEvent } from '../utils/TelemetryManager';
 import { cleanSessionTitle } from '../utils/TitleCleaner';
 import { ACP_MATH_SPLIT_RE, createMathExtension } from '../utils/markdownMath';
 import { balanceMarkdownForPartialRender } from '../utils/markdownBalance';
-import { buildSummarizeSessionUrl, readSessionSummarySettings } from '../core/SessionSummaryConfig';
-import { summarizeViaChatCompletions } from '../core/SessionSummaryFallback';
+import { readSessionSummarySettings } from '../core/SessionSummaryConfig';
+import { summarizeSession } from '../core/SessionSummarizer';
 
 const execFileAsync = promisify(execFile);
 
@@ -67,6 +67,14 @@ function isResumeDiagWebviewMessage(message: string): boolean {
   return RESUME_DIAG_MARKERS.some((marker) => message.includes(marker));
 }
 
+/** Result of a fork-to-agent conversation export: flat transcript + messages. */
+export interface ConversationExportResult {
+  /** The whole (post-compaction) transcript as one text block. */
+  text: string;
+  /** The same content split per turn, for the summarizer. */
+  messages: Array<{ role: string; content: string }>;
+}
+
 /**
  * WebviewViewProvider for the ACP chat sidebar.
  * Renders chat messages, tool calls, plans, and handles user input.
@@ -83,7 +91,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   suppressWebviewUpdates = false;
   private _hasChatContent = false;
   /** Resolver for the pending conversation export request (fork-to-agent). */
-  private _conversationExportResolver: ((text: string) => void) | undefined = undefined;
+  private _conversationExportResolver: ((result: ConversationExportResult) => void) | undefined = undefined;
   /**
    * Ensure the chat webview is loaded and ready, revealing the panel if
    * needed. Polls webviewReady (with a timeout) because a WebviewView is only
@@ -110,8 +118,15 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  /** Request the current conversation text from the webview (for fork-to-agent). */
-  async requestConversationExport(timeoutMs = 5000): Promise<string> {
+  /**
+   * Request the current conversation from the webview (for fork-to-agent).
+   *
+   * Returns both the flat transcript and the discrete { role, content }
+   * messages. The fork summarizes the messages (the summarizer caps per-message
+   * length, so one concatenated blob would be reduced to its tail) and falls
+   * back to the transcript only when the user opts in.
+   */
+  async requestConversationExport(timeoutMs = 5000): Promise<ConversationExportResult> {
     // Ensure the webview is loaded and ready before posting the export
     // request. If it isn't ready, postMessage silently drops the request and
     // the resolver would never fire → timeout. Reveal the panel and wait.
@@ -121,9 +136,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         this._conversationExportResolver = undefined;
         reject(new Error('Conversation export timed out'));
       }, timeoutMs);
-      this._conversationExportResolver = (text: string) => {
+      this._conversationExportResolver = (result: ConversationExportResult) => {
         clearTimeout(timer);
-        resolve(text);
+        resolve(result);
       };
       this.postMessage({ type: 'requestConversationExport' });
     });
@@ -1662,9 +1677,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           this.postMessage({ type: 'requestConversationExport' });
           break;
         case 'conversationExported':
-          // Webview responded with the formatted conversation text — forward
-          // to whoever is waiting (the forkToAgent command).
-          this._conversationExportResolver?.(message.text);
+          // Webview responded with the formatted conversation — forward to
+          // whoever is waiting (the forkToAgent command). `messages` may be
+          // absent when an older webview build is still loaded.
+          this._conversationExportResolver?.({
+            text: typeof message.text === 'string' ? message.text : '',
+            messages: Array.isArray(message.messages) ? message.messages : [],
+          });
           this._conversationExportResolver = undefined;
           break;
         case 'compactionCompleted':
@@ -3774,55 +3793,19 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
       const summaryCfg = readSessionSummarySettings();
 
-      // Primary: responses-vllm-proxy /v1/summarize-session (forwards to vLLM backend).
-      const summarizePrimary = async (): Promise<{ summary: string; model: string }> => {
-        const summaryUrl = buildSummarizeSessionUrl(summaryCfg.endpoint);
-        const headers: Record<string, string> = { 'Content-Type': 'application/json' };
-        if (summaryCfg.apiKey) {
-          headers.Authorization = `Bearer ${summaryCfg.apiKey}`;
-        }
-        const summaryResponse = await fetch(summaryUrl, {
-          method: 'POST',
-          headers,
-          body: JSON.stringify({
-            title: picked.title,
-            messages,
-            model: summaryCfg.model || undefined,
-          }),
-          signal: AbortSignal.timeout(summaryCfg.timeoutMs),
-        });
-        if (!summaryResponse.ok) {
-          const errText = await summaryResponse.text();
-          throw new Error('Summary failed: ' + summaryResponse.status + ' ' + errText.slice(0, 200));
-        }
-        return (await summaryResponse.json()) as { summary: string; model: string };
-      };
-
-      // Fallback: OpenAI-compatible chat completions (configured per-install,
-      // recommended DeepSeek V4 Flash). Only active when a fallback endpoint
-      // AND API key are configured — without a key, a bearer-less request
-      // would just fail with 401 and mask the real error.
-      const fallbackEnabled = !!(summaryCfg.fallbackEndpoint && summaryCfg.fallbackApiKey);
-
+      // Shared with acp.forkToAgent: responses-vllm-proxy primary, then the
+      // configured OpenAI-compatible fallback. The outer catch reports any
+      // other failure (capture, etc.); this one keeps the summarize error text.
       let result: { summary: string; model: string };
-      let primaryError: string | undefined;
       try {
-        result = await summarizePrimary();
+        result = await summarizeSession(picked.title, messages, summaryCfg);
       } catch (e: any) {
-        primaryError = e?.message || String(e);
-        if (!fallbackEnabled) {
-          throw e;
-        }
-        try {
-          result = await summarizeViaChatCompletions(picked.title, messages, summaryCfg);
-        } catch (f: any) {
-          this.postMessage({
-            type: 'sessionSummary',
-            error: 'Primary summarize failed (' + primaryError + '); DeepSeek fallback failed: ' + (f?.message || f),
-            queryText,
-          });
-          return;
-        }
+        this.postMessage({
+          type: 'sessionSummary',
+          error: e?.message || String(e),
+          queryText,
+        });
+        return;
       }
 
       this.postMessage({
@@ -16667,11 +16650,21 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
             // compacting" tool call, a "*Context compacted*" line, or a
             // compaction_update) is protocol noise, not content the forked
             // agent needs. Post-compaction turns begin after it.
+            //
+            // Keep scanning to the END: the LAST boundary is the live one.
+            // Each compaction replaces everything before it with a summary, so
+            // after N compactions only the turns following the Nth are still
+            // live. Stopping at the first boundary re-sent every turn that
+            // compactions 2..N had already replaced, so the fork carried raw
+            // history AND the summaries that superseded it.
             _exportStart = _cei + 1;
-            break;
           }
         }
         var _exportParts = [];
+        // Parallel { role, content } list for the summarizer (the fork sends a
+        // summary, and the summarizer caps per-message length — so it needs
+        // discrete messages, not one giant blob).
+        var _exportMsgs = [];
         for (var _ei = _exportStart; _ei < chatHistory.length; _ei++) {
           var _item = chatHistory[_ei];
           if (!_item) continue;
@@ -16708,16 +16701,19 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
               // and the fork's own resume then replayed it again.
               if (!stripLeadingResourceLinkJson(_utext).trim()) continue;
               _exportParts.push('User: ' + _utext);
+              _exportMsgs.push({ role: 'user', content: 'User: ' + _utext });
             } else if (_item.role === 'assistant') {
               var _atext = typeof _item.text === 'string' ? _item.text : '';
               if (!_atext.trim()) continue;
               if (!stripLeadingResourceLinkJson(_atext).trim()) continue;
               _exportParts.push('Assistant: ' + _atext);
+              _exportMsgs.push({ role: 'assistant', content: 'Assistant: ' + _atext });
             }
           } else if (_item.kind === 'thought') {
             var _ttext = typeof _item.text === 'string' ? _item.text : '';
             if (_ttext.trim()) {
               _exportParts.push('(reasoning) ' + _ttext);
+              _exportMsgs.push({ role: 'assistant', content: '(reasoning) ' + _ttext });
             }
           } else if (_item.kind === 'toolCall') {
             var _tname = _item.title || _item.toolCallId || 'tool';
@@ -16732,9 +16728,10 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
             if (_tstatus) _tline += ' [' + _tstatus + ']';
             if (_tinput && _tinput.trim()) _tline += '\\n' + _tinput;
             _exportParts.push(_tline);
+            _exportMsgs.push({ role: 'assistant', content: _tline });
           }
         }
-        vscode.postMessage({ type: 'conversationExported', text: _exportParts.join('\\n\\n') });
+        vscode.postMessage({ type: 'conversationExported', text: _exportParts.join('\\n\\n'), messages: _exportMsgs });
         break;
       }
       case 'kiroGoalStatus':

@@ -121,7 +121,10 @@ export function exportConversationItem(item: ConversationExportItem): string | n
     return '(reasoning) ' + text;
   }
   if (item.kind === 'toolCall') {
-    const name = (typeof item.title === 'string' && item.title) || (typeof item.toolCallId === 'string' && item.toolCallId) || 'tool';
+    const name =
+      (typeof item.title === 'string' && item.title) ||
+      (typeof item.toolCallId === 'string' && item.toolCallId) ||
+      'tool';
     const status = typeof item.status === 'string' ? item.status : '';
     let input = '';
     if (typeof item.rawInput === 'string') {
@@ -198,13 +201,19 @@ export function isCompactionBoundaryItem(item: ConversationExportItem): boolean 
 }
 
 /**
- * Return the index of the first compaction-boundary item in `items`, or -1 if
- * the conversation has never been compacted. Items at or after this index are
- * the post-compaction history (including the retained summary / recent turns)
- * and are the only ones a fork should carry.
+ * Return the index of the LAST compaction-boundary item in `items`, or -1 if
+ * the conversation has never been compacted. Items after this index are the
+ * post-compaction history (the retained summary plus the turns since) and are
+ * the only ones a fork should carry.
+ *
+ * The last boundary — not the first. Each compaction replaces everything before
+ * it with a summary, so after N compactions only the content following the Nth
+ * is still live. Starting from the first boundary re-sent every turn that
+ * compactions 2..N had already replaced, so the fork carried raw history AND
+ * the summaries that superseded it.
  */
 export function findCompactionBoundary(items: ConversationExportItem[]): number {
-  for (let i = 0; i < items.length; i++) {
+  for (let i = items.length - 1; i >= 0; i--) {
     if (isCompactionBoundaryItem(items[i])) {
       return i;
     }
@@ -217,10 +226,10 @@ export function findCompactionBoundary(items: ConversationExportItem[]): number 
  * lines so each turn/block is visually separate in the forked agent prompt.
  *
  * If the conversation was compacted at some point, only the post-compaction
- * history (from the first compaction boundary onward) is exported. This keeps
+ * history (from the LAST compaction boundary onward) is exported. This keeps
  * the forked agent's context aligned with what the source agent actually used,
- * instead of re-embedding the entire pre-compaction transcript and blowing up
- * the target's token usage.
+ * instead of re-embedding transcript that compaction already replaced with a
+ * summary and blowing up the target's token usage.
  */
 export function exportConversation(items: ConversationExportItem[]): string {
   const boundary = findCompactionBoundary(items);
@@ -237,4 +246,36 @@ export function exportConversation(items: ConversationExportItem[]): string {
     }
   }
   return parts.join('\n\n');
+}
+
+/**
+ * Same content as exportConversation, but as discrete { role, content }
+ * messages for the summarizer.
+ *
+ * The summarizer caps per-message length, so handing it the export as one
+ * giant string would keep only that string's tail — i.e. throw the whole
+ * conversation away. Splitting the text back apart is not reliable either
+ * (a forked transcript legitimately contains lines that begin with "User: "),
+ * so the split happens here, on the structured items.
+ *
+ * Tool calls and reasoning blocks are attributed to the assistant: they are
+ * the agent's actions, and the summarizer only distinguishes user from
+ * assistant.
+ */
+export function exportConversationMessages(
+  items: ConversationExportItem[],
+): Array<{ role: 'user' | 'assistant'; content: string }> {
+  const boundary = findCompactionBoundary(items);
+  const start = boundary >= 0 ? boundary + 1 : 0;
+  const out: Array<{ role: 'user' | 'assistant'; content: string }> = [];
+  for (let i = start; i < items.length; i++) {
+    const item = items[i];
+    const line = exportConversationItem(item);
+    if (line === null) {
+      continue;
+    }
+    const role = item && item.kind === 'message' && item.role === 'user' ? 'user' : 'assistant';
+    out.push({ role, content: line });
+  }
+  return out;
 }
