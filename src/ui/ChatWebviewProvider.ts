@@ -6953,6 +6953,18 @@ var end = displayText.length;
        if (riItem && riItem.kind === 'plan') {
          continue;
        }
+       // Skip interrupt notices on restore — a "— Conversation interrupted —"
+       // (system role, added by addMessage at promptEnd) or "[Request
+       // interrupted by user]" (user role, recorded by Claude/adapters) is a
+       // transient turn-scoped event. Persisting it means it re-renders in
+       // the MIDDLE of the chat after a session resume, looking like a stray
+       // marker. The promptStart handler also strips these on the next prompt;
+       // filtering here ensures a resumed session never shows one at all.
+       if (riItem && riItem.kind === 'message' &&
+           (riItem.role === 'system' || riItem.role === 'user') &&
+           isSessionInterruptNotice(riItem.text)) {
+         continue;
+       }
        // Clean user messages so restored state does not show raw
         // <open_files>/<selection>/etc. blocks from before the fix.
         if (riItem && riItem.kind === 'message' && riItem.role === 'user' && typeof riItem.text === 'string') {
@@ -15963,7 +15975,12 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        // stays in chatHistory and would re-render on the next promptStart.)
        for (var _intI = chatHistory.length - 1; _intI >= 0; _intI--) {
          var _intItem = chatHistory[_intI];
-         if (_intItem && _intItem.kind === 'message' && _intItem.role === 'user' &&
+         // Both the user-role "[Request interrupted by user]" (Claude/adapters)
+         // AND the system-role "— Conversation interrupted —" (this extension's
+         // addMessage('system', ...)) must be stripped. The system-role one was
+         // previously missed, so it lingered until the next promptStart.
+         if (_intItem && _intItem.kind === 'message' &&
+             (_intItem.role === 'user' || _intItem.role === 'system') &&
              isSessionInterruptNotice(_intItem.text)) {
            chatHistory.splice(_intI, 1);
          }
