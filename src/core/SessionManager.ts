@@ -960,8 +960,8 @@ export class SessionManager extends EventEmitter {
         // captures exactly what the forked session inherits so we can verify
         // the source agent's skills/persona are NOT carried over. The fork
         // prompt is identifiable by its "conversation from another agent"
-        // prefix. Emits the skill names found in the injected memory block.
-        if (/^The following is a conversation from another agent/i.test(text)) {
+        // prefix (the body is a summary now, so accept both wordings).
+        if (/^The following is a (?:summary of a )?conversation from another agent/i.test(text)) {
           const forkSkills: string[] = [];
           for (const mb of memoryBlocks) {
             const mbText =
