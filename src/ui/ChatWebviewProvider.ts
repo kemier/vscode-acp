@@ -217,6 +217,15 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    *  that started after the cancel was acknowledged. */
   private _cancelGeneration: number = 0;
 
+  /**
+   * Sessions whose in-flight turn was abandoned by the cancel fallback (the
+   * agent ignored session/cancel for 5s and the webview was force-unblocked).
+   * Late session/update events from that abandoned turn must be suppressed so
+   * they don't interleave with a new prompt and drop/mangle user messages.
+   * Cleared when a new prompt starts for the session (see handleSendPrompt).
+   */
+  private _abandonedTurnSessions: Set<string> = new Set();
+
   /** Cached git branch for the active session's cwd, shown in the banner. */
   private _cachedGitBranch: string | null = null;
 
@@ -1759,6 +1768,17 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     if (this.suppressWebviewUpdates) {
       return;
     }
+    // Suppress late session/update events from a turn that was abandoned by
+    // the cancel fallback (agent ignored session/cancel for 5s). The webview
+    // already got promptEnd(cancelled); forwarding these would interleave the
+    // old turn's tool calls / message chunks into the next prompt and drop or
+    // mangle user messages. Cleared when a new prompt starts (handleSendPrompt).
+    if (this._abandonedTurnSessions.has(update.sessionId)) {
+      if (DEBUG) {
+        log(`Suppressing late session/update (${String(update.update?.sessionUpdate || '')}) for abandoned turn session ${update.sessionId}`);
+      }
+      return;
+    }
     const updateData = update.update as any;
 
     const activeIdForTrace = this.sessionManager.getActiveSessionId();
@@ -2505,6 +2525,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // promptEnd responses from a previous turn's sendPrompt promise.
     this._cancelGeneration++;
     const promptGeneration = this._cancelGeneration;
+    // A new prompt starts a fresh turn — clear the abandoned-turn suppression
+    // flag so this turn's session/update events flow normally again.
+    this._abandonedTurnSessions.delete(activeId);
     try {
       this._pendingPromptSessionId = activeId;
       const response = await this.sessionManager.sendPrompt(
@@ -2664,6 +2687,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           log('Cancel fallback: agent did not acknowledge within 5s, forcing promptEnd (session kept alive)');
           this.streamCoalescer.flush(activeId);
           this.sessionManager.forceAbortPrompt(activeId);
+          // Mark the turn as abandoned so late session/update events from it
+          // are suppressed (see handleSessionUpdate) — otherwise they interleave
+          // with a new prompt and drop/mangle user messages. Cleared when a
+          // new prompt starts for this session.
+          this._abandonedTurnSessions.add(activeId);
           // Same session-is-still-active guard as handleSendPrompt: if the user
           // switched agents while this cancel was in flight, do not leak the
           // "— Conversation interrupted —" notice into the new agent's panel.
