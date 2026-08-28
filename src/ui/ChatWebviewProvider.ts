@@ -6144,6 +6144,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
  }
 let isProcessing = false;
 let isForceCancelled = false; // true after cancel fallback forces promptEnd
+// Track the "— Conversation interrupted —" system message (DOM el + chatHistory
+// index) so it can be removed when a new turn starts (promptStart). This keeps
+// the notice from lingering in the chat panel after the user sends a follow-up.
+let interruptedNoticeEl = null;
+let interruptedNoticeHistoryIdx = -1;
 // Turn-tail grace window: agents (Codex, EricCLI, Claude Code, Kiro) can emit
 // the FINAL agent_message_chunk a few ms AFTER the session/prompt response
 // that carries end_turn — the response resolves first, promptEnd is posted,
@@ -16682,23 +16687,27 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        isSendingPrompt = false;
        setProcessing(true, 'promptStart');
        isForceCancelled = false;
-       // New turn — drop stale "— Conversation interrupted —" / "Request
-       // interrupted by user" notices from the previous cancelled turn so
-       // they don't linger in the chat panel once the user sends a follow-up.
-       // (clearSessionInterrupted() only clears the session flag; the notice
-       // stays in chatHistory and would re-render on the next promptStart.)
+       // New turn — remove any lingering "— Conversation interrupted —"
+       // notice from the previous cancelled turn (DOM + chatHistory) so it
+       // doesn't persist once the user sends a follow-up.
+       if (interruptedNoticeEl && interruptedNoticeEl.parentNode) {
+         interruptedNoticeEl.parentNode.removeChild(interruptedNoticeEl);
+       }
+       interruptedNoticeEl = null;
+       // Also scan chatHistory for BOTH the user-role "[Request interrupted by
+       // user]" (Claude/adapters) AND the system-role "— Conversation
+       // interrupted —" (this extension's addMessage('system', ...)) notices.
+       // The system-role one was previously missed, so it lingered until the
+       // next promptStart.
        for (var _intI = chatHistory.length - 1; _intI >= 0; _intI--) {
          var _intItem = chatHistory[_intI];
-         // Both the user-role "[Request interrupted by user]" (Claude/adapters)
-         // AND the system-role "— Conversation interrupted —" (this extension's
-         // addMessage('system', ...)) must be stripped. The system-role one was
-         // previously missed, so it lingered until the next promptStart.
          if (_intItem && _intItem.kind === 'message' &&
              (_intItem.role === 'user' || _intItem.role === 'system') &&
              isSessionInterruptNotice(_intItem.text)) {
            chatHistory.splice(_intI, 1);
          }
        }
+       interruptedNoticeHistoryIdx = -1;
        // Chat history is being built for the current session.
        chatHistoryOriginSessionId = (sessionState && sessionState.sessionId) || null;
        cancelProvisionalSummaryPromote();
@@ -16942,7 +16951,11 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        // collapsed mode the partial reply is folded away, so the only
        // visible indication of the interruption should not be hidden
        // inside the fold or limited to the transient status bar text.
-       addMessage('system', '— Conversation interrupted —');
+       var _noticeEl = addMessage('system', '— Conversation interrupted —');
+       // Track the notice so a new turn (promptStart) can remove it from both
+       // the DOM and chatHistory — it should not linger after a follow-up.
+       interruptedNoticeEl = _noticeEl;
+       interruptedNoticeHistoryIdx = chatHistory.length - 1;
      }
      if (!isLoadingSession && !pendingSendAfterCancel && statusEl) {
          statusEl.textContent = '— Conversation interrupted —';
