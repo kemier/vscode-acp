@@ -229,6 +229,21 @@ suite('MemoryFormat.formatSkills', () => {
     assert.ok(!text!.includes('Read tool'));
   });
 
+  test('footer embeds self-contained memory_skill_view curl recipe when bridgeBaseUrl set', () => {
+    const text = formatSkills(
+      [{ skill_id: 's1', name: 'test', description: 'a test', version: 1 }],
+      { bridgeBaseUrl: 'http://127.0.0.1:8127/', agentId: 'ericli' },
+    );
+    assert.ok(text);
+    assert.ok(text!.includes('memory-injected'));
+    assert.ok(text!.includes('curl -sf -X POST http://127.0.0.1:8127/view'));
+    assert.ok(text!.includes('curl -sf -X POST http://127.0.0.1:8127/search'));
+    assert.ok(text!.includes('"agent_id":"ericli"'));
+    assert.ok(text!.includes('memory skills MUST use the API'));
+    // The static fallback ("see session history") must NOT appear when a base URL is set.
+    assert.ok(!text!.includes('see session history'));
+  });
+
   test('handles multiple skills', () => {
     const text = formatSkills([
       { skill_id: 's1', name: 'a', description: 'first', version: 1 },

@@ -106,11 +106,15 @@ export function shouldInjectSkillToolsForMode(mode: MemoryInjectMode): boolean {
 /**
  * Whether the <available_skills> footer boilerplate should be injected on this turn.
  *
- * Footer text (~250 chars) is static; inject once on the first `full` profile
- * turn. Later `l1-only` turns list only new skill entries.
+ * The footer carries the self-contained memory_skill_view curl recipe (when a
+ * bridge base URL is configured), so it must be injected on EVERY turn — not
+ * just the first `full` profile turn. Mid-chat `l1-only` turns list new skills
+ * and the agent needs the recipe in its current context to load them via the
+ * memory API instead of falling back to the filesystem. Returns false only for
+ * `none` mode (memory disabled).
  */
 export function shouldIncludeSkillsFooterForMode(mode: MemoryInjectMode): boolean {
-  return mode === 'full';
+  return mode !== 'none';
 }
 
 /**

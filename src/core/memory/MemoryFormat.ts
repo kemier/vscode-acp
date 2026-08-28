@@ -36,8 +36,17 @@ const MAX_L1_ITEM_CHARS = 500;
 export interface FormatRecallOptions {
   /** Wrap L1 bullets in `<relevant-memories>` (first full profile turn only). */
   includeL1Wrapper?: boolean;
-  /** Append skills footer boilerplate (first full profile turn only). */
+  /** Append skills footer boilerplate (every turn when memory enabled). */
   includeSkillsFooter?: boolean;
+  /** MemorySkillBridge base URL, e.g. http://127.0.0.1:8127. When set and the
+   *  footer is included, the footer embeds the self-contained memory_skill_view
+   *  curl recipe so later l1-only turns don't rely on recalling it from the
+   *  first full profile turn. */
+  bridgeBaseUrl?: string;
+  /** MemoryCore agent_id for the active ACP agent (Model B). Used to fill the
+   *  self-contained memory_skill_view curl recipe's agent_id, so the footer is
+   *  directly usable without the agent substituting a placeholder. */
+  agentId?: string;
 }
 
 export function formatL1Memories(items: L1MemoryItem[], opts?: { includeWrapper?: boolean }): string | undefined {
@@ -83,11 +92,16 @@ export function formatPersona(persona: string | null | undefined): string | unde
   return `<user-persona>\n${trimmed}\n</user-persona>`;
 }
 
-export function formatSkills(skills: SkillEntry[], opts?: { includeFooter?: boolean }): string | undefined {
+export function formatSkills(
+  skills: SkillEntry[],
+  opts?: { includeFooter?: boolean; bridgeBaseUrl?: string; agentId?: string },
+): string | undefined {
   if (skills.length === 0) {
     return undefined;
   }
   const includeFooter = opts?.includeFooter !== false;
+  const base = opts?.bridgeBaseUrl?.replace(/\/+$/, '') || '';
+  const agentId = (opts?.agentId || '').replace(/"/g, '\\"');
   const lines: string[] = ['<available_skills>', ''];
   for (const s of skills) {
     lines.push(`- **${s.name}** (v${s.version}): ${s.description}`);
@@ -95,10 +109,19 @@ export function formatSkills(skills: SkillEntry[], opts?: { includeFooter?: bool
   if (includeFooter) {
     lines.push('');
     lines.push('These are memory-injected skills (metadata only — not full SKILL.md).');
-    lines.push(
-      'Load full instructions with memory_skill_view (Shell curl; recipe on first profile turn — see session history).',
-    );
-    lines.push('Filesystem skills (e.g. ~/.cursor/skills-cursor/) are loaded via the Read tool.');
+    if (base) {
+      // Self-contained recipe so later l1-only turns don't need to recall the
+      // curl syntax from the first full profile turn.
+      lines.push('Load full SKILL.md from the memory system (NOT the filesystem — memory skills are API-only):');
+      lines.push(`  curl -sf -X POST ${base}/view -H 'Content-Type: application/json' -d '{"name":"<skill-name>","agent_id":"${agentId}"}'`);
+      lines.push('Search for a skill not listed above:');
+      lines.push(`  curl -sf -X POST ${base}/search -H 'Content-Type: application/json' -d '{"query":"<keywords>","agent_id":"${agentId}"}'`);
+    } else {
+      lines.push(
+        'Load full instructions with memory_skill_view (Shell curl; recipe on first profile turn — see session history).',
+      );
+    }
+    lines.push('Filesystem skills (e.g. ~/.cursor/skills-cursor/) are loaded via the Read tool — but memory skills MUST use the API above.');
   }
   lines.push('</available_skills>');
   return lines.join('\n');
@@ -151,6 +174,8 @@ export function formatRecallContext(
 ): FormattedRecall | undefined {
   const includeL1Wrapper = formatOpts?.includeL1Wrapper !== false;
   const includeSkillsFooter = formatOpts?.includeSkillsFooter !== false;
+  const bridgeBaseUrl = formatOpts?.bridgeBaseUrl;
+  const agentId = formatOpts?.agentId;
   const parts: string[] = [];
   const l1 = formatL1Memories(l1Items, { includeWrapper: includeL1Wrapper });
   if (l1) {
@@ -164,7 +189,7 @@ export function formatRecallContext(
   if (sceneBlock && (!persona || !persona.includes('Scene Navigation'))) {
     parts.push(sceneBlock);
   }
-  const skillBlock = formatSkills(skills, { includeFooter: includeSkillsFooter });
+  const skillBlock = formatSkills(skills, { includeFooter: includeSkillsFooter, bridgeBaseUrl, agentId });
   if (skillBlock) {
     parts.push(skillBlock);
   }

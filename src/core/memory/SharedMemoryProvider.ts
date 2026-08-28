@@ -424,6 +424,8 @@ export class SharedMemoryProvider {
       const formatted = formatRecallContext(l1Items, persona, scenes, skills, skillToolsBlock, {
         includeL1Wrapper: shouldIncludeL1WrapperForMode(injectMode),
         includeSkillsFooter: shouldIncludeSkillsFooterForMode(injectMode),
+        bridgeBaseUrl: this.skillBridgeBaseUrl,
+        agentId: memoryAgentId,
       });
       if (!formatted) {
         if (settings.debug) {

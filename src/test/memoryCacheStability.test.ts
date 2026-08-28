@@ -190,9 +190,9 @@ suite('MemoryCacheStability', () => {
   });
 
   suite('shouldIncludeSkillsFooterForMode', () => {
-    test('footer only on full mode', () => {
+    test('footer on every memory-enabled turn (self-contained memory_skill_view recipe)', () => {
       assert.strictEqual(shouldIncludeSkillsFooterForMode('full'), true);
-      assert.strictEqual(shouldIncludeSkillsFooterForMode('l1-only'), false);
+      assert.strictEqual(shouldIncludeSkillsFooterForMode('l1-only'), true);
       assert.strictEqual(shouldIncludeSkillsFooterForMode('none'), false);
     });
   });
