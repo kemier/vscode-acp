@@ -17634,7 +17634,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
     /** Pi (pi-acp) signals /compact completion via agent_message_chunk + end_turn,
      *  same pattern as Claude — no _meta.contextCompaction meta. */
     function isPiAgent() {
-      return /pi\\s*agent|pi-acp/i.test(currentAgentLabel());
+      return /pi(\s*agent|-acp)?$/i.test(currentAgentLabel());
     }
 
     /** Agent post-compact noise that must not land in the chat panel. */
