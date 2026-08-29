@@ -166,14 +166,30 @@ export interface SessionManagerEvents {
  * Handles both the fresh-recall blob and the cached (last-injected) blob.
  */
 function stripSkillsSection(text: string): string {
-  if (!text || (!text.includes('<available_skills>') && !text.includes('<memory_skill_tools>'))) {
+  if (!text || !text.includes('<available_skills>')) {
     return text;
   }
   return text
     .replace(/<available_skills>[\s\S]*?<\/available_skills>\n?/g, '')
-    .replace(/<memory_skill_tools>[\s\S]*?<\/memory_skill_tools>\n?/g, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+}
+
+/**
+ * Replace the agent_id in <memory_skill_tools> curl recipes so a forked
+ * session's target agent can immediately use the memory API without
+ * waiting for its own first full-injection turn.
+ */
+function remapSkillToolsForAgent(text: string, agentName: string): string {
+  if (!text || !text.includes('<memory_skill_tools>')) {
+    return text;
+  }
+  const memoryAgentId = resolveMemoryAgentId(agentName, readMemorySettings().agentIdMap);
+  // Replace agent_id values in the curl -d JSON payloads.
+  return text.replace(
+    /(<memory_skill_tools>[\s\S]*?)"agent_id":"[^"]*"/g,
+    (match, prefix) => prefix + `"agent_id":"${memoryAgentId}"`,
+  );
 }
 
 export class SessionManager extends EventEmitter {
@@ -247,7 +263,7 @@ export class SessionManager extends EventEmitter {
     const cacheKey = sourceSessionId || this.getActiveSession()?.sessionId || '';
     const cached = this.getSessionMemoryBlocks(cacheKey);
     if (cached) {
-      return stripSkillsSection(cached);
+      return remapSkillToolsForAgent(stripSkillsSection(cached), agentName);
     }
     // 2. Fresh recall of the agent's own profile (persona + scenes).
     // includeSkills=false: the SOURCE agent's skills must NOT be carried into
@@ -264,7 +280,7 @@ export class SessionManager extends EventEmitter {
         query,
         supportsEmbedded: true,
         includeSkills: false,
-        includeSkillTools: false,
+        includeSkillTools: true,
         injectMode: 'full',
       });
       let joined = (blocks || [])
