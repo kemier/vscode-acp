@@ -8515,6 +8515,51 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          }
        }
 
+       // ASSISTANT messages: anchor BEFORE the next snapshot item in the SAME
+       // turn (the tool/thought that follows them in the snapshot), using
+       // ordinal matching for duplicate tools. This fixes two resume symptoms:
+       //  (1) "assistant msg + tool call grouped together" — when the loaded
+       //      replay dropped the assistant (exact-text findMergedHistoryAnchor
+       //      fails), the old backward walk anchored it after a nearby tool,
+       //      landing it INSIDE that tool's fold group.
+       //  (2) "some assistant msg not ordered" — the backward walk could skip
+       //      over intermediate assistants/tools absent from merged, placing
+       //      the orphan assistant after items that should follow it.
+       // Anchoring immediately before the FOLLOWING snapshot tool/thought keeps
+       // the assistant adjacent to its own tool and in turn order.
+       if (snapItem.kind === 'message' && snapItem.role === 'assistant') {
+         var _asstLogText = String(snapItem.text || '').trim().slice(0, 60);
+         for (var aAfter = snapIndex + 1; aAfter < snapshot.length; aAfter++) {
+           var aNext = snapshot[aAfter];
+           if (!aNext) continue;
+           // STOP at user-turn boundaries (and interrupt notices are skipped).
+           if (aNext.kind === 'message' && aNext.role === 'user' &&
+               !isSessionInterruptNotice(aNext.text)) {
+             break;
+           }
+           if (aNext.kind === 'message' && (aNext.role === 'system' || aNext.role === 'user') &&
+               isSessionInterruptNotice(aNext.text)) {
+             continue;
+           }
+           // Skip over the assistant's OWN trailing thoughts (they follow it in
+           // the snapshot) — anchor to the first tool/other-assistant after it.
+           var aAnchor = aNext.kind === 'toolCall'
+             ? findMergedToolAnchorOrdinal(merged, aNext, snapshot, aAfter)
+             : findMergedHistoryAnchor(merged, aNext);
+           if (aAnchor >= 0) {
+             merged.splice(aAnchor, 0, Object.assign({}, snapItem));
+             if (typeof resumeDiag === 'function') resumeDiag('[WV-DIAG] insertSnapshotItem(assistant): snapIdx=' + snapIndex +
+               ' anchored BEFORE next=' + (aNext.kind + (aNext.role ? ':' + aNext.role : '')) +
+               ' at merged[' + aAnchor + '] text="' + _asstLogText + '"');
+             return;
+           }
+         }
+         // No forward anchor found in the same turn — fall through to the
+         // generic backward/forward walk below.
+         if (typeof resumeDiag === 'function') resumeDiag('[WV-DIAG] insertSnapshotItem(assistant): snapIdx=' + snapIndex +
+           ' NO forward anchor in turn, falling back to generic walk text="' + _asstLogText + '"');
+       }
+
        var insertAt = merged.length;
        for (var before = snapIndex - 1; before >= 0; before--) {
          var prev = snapshot[before];
@@ -8582,6 +8627,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          return;
        }
        merged.splice(insertAt, 0, Object.assign({}, snapItem));
+       if (snapItem.kind === 'message' && snapItem.role === 'assistant') {
+         if (typeof resumeDiag === 'function') resumeDiag('[WV-DIAG] insertSnapshotItem(assistant): snapIdx=' + snapIndex +
+           ' generic-walk inserted at merged[' + insertAt + '] (tail=' + (insertAt === merged.length - 1) +
+           ') text="' + String(snapItem.text || '').trim().slice(0, 60) + '"');
+       }
      }
 
       // Resolve the snapshot position of a merged row.
@@ -8717,9 +8767,15 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          // from the webview snapshot's (e.g. Codex compacts the reply):
          // collapsed mode promoted the wrong (shorter) copy, expand showed
          // both copies, and collapsing again re-promoted the trailing copy.
-         if (snapshotAssistantHasMergedCounterpart(merged, snapItem, ti, snapshot)) continue;
+         if (snapshotAssistantHasMergedCounterpart(merged, snapItem, ti, snapshot)) {
+           if (typeof resumeDiag === 'function') resumeDiag('[WV-DIAG] main-loop(assistant): snapIdx=' + ti +
+             ' SKIPPED (loaded replay has terminal counterpart) text="' + ak.slice(0, 60) + '"');
+           continue;
+         }
          insertSnapshotItem(snapItem, ti);
          mergedAsstKeys[ak] = true;
+         if (typeof resumeDiag === 'function') resumeDiag('[WV-DIAG] main-loop(assistant): snapIdx=' + ti +
+           ' inserted (snapshot assistant not in loaded replay) text="' + ak.slice(0, 60) + '"');
        }
 
        /**
@@ -9250,6 +9306,21 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    var _diagLoadedKinds = {};
    for (var _dlk = 0; _dlk < chatHistory.length; _dlk++) { var _dli = chatHistory[_dlk]; if (_dli) { var _lk = _dli.kind + (_dli.role ? ':' + _dli.role : ''); _diagLoadedKinds[_lk] = (_diagLoadedKinds[_lk] || 0) + 1; } }
    vscode.postMessage({ type: 'debugLog', message: '[WV-DIAG] handleLoadSessionEnd: snapLen=' + _diagSnapLen + ' loadedLen=' + _diagLoadedLen + ' snapId=' + _diagSnapId + ' curId=' + _diagCurId + ' match=' + (_diagSnapId === _diagCurId) + ' snapHasAsst=' + _diagSnapHasAssistant + ' snapHasThought=' + _diagSnapHasThought + ' loadedHasAsst=' + _diagLoadedHasAssistant + ' loadedHasThought=' + _diagLoadedHasThought + ' snapKinds=' + JSON.stringify(_diagSnapKinds) + ' loadedKinds=' + JSON.stringify(_diagLoadedKinds) });
+   // DIAG: report the assistant/tool count mismatch that triggers the
+   // snapshot-overlay insertions. When the loaded replay drops assistant
+   // messages (Codex session/load does not replay agent_message_chunk), the
+   // snapshot supplies them — and the ordinal assistant anchoring below
+   // decides where they land. This log makes it easy to confirm the trigger
+   // and correlate with the insertSnapshotItem(assistant) logs.
+   var _diagSnapAsst = _diagSnapKinds['message:assistant'] || 0;
+   var _diagLoadedAsst = _diagLoadedKinds['message:assistant'] || 0;
+   var _diagSnapTool = _diagSnapKinds['toolCall'] || 0;
+   var _diagLoadedTool = _diagLoadedKinds['toolCall'] || 0;
+   var _diagAsstDelta = _diagSnapAsst - _diagLoadedAsst;
+   var _diagToolDelta = _diagSnapTool - _diagLoadedTool;
+   if (_diagAsstDelta !== 0 || _diagToolDelta !== 0) {
+     vscode.postMessage({ type: 'debugLog', message: '[WV-DIAG] resume merge count delta: assistant snap=' + _diagSnapAsst + ' loaded=' + _diagLoadedAsst + ' (delta ' + (_diagAsstDelta > 0 ? '+' : '') + _diagAsstDelta + '), tool snap=' + _diagSnapTool + ' loaded=' + _diagLoadedTool + ' (delta ' + (_diagToolDelta > 0 ? '+' : '') + _diagToolDelta + ') — snapshot will supply ' + Math.max(0, _diagAsstDelta) + ' extra assistant(s)' });
+   }
   // If session/load returned nothing (loadedLen === 0), the session was
   // not found on the agent side — the extension created a fresh session.
   // In this case, do NOT try to merge the stale snapshot (it may contain
