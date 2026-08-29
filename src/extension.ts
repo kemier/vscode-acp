@@ -1387,6 +1387,14 @@ export function activate(context: vscode.ExtensionContext): void {
         },
       );
 
+      // The fork reuses the same webview panel that was showing the SOURCE
+      // agent's conversation. connectToAgent only fires active-session-changed
+      // (→ notifyActiveSessionChanged → sendCurrentState), which does NOT clear
+      // the panel — so without an explicit reset the new agent's view would
+      // still show the prior agent's raw chat above the fork summary. Clear it
+      // so the target panel shows only the summary (and the target's reply).
+      chatWebviewProvider.clearChat(false);
+
       // 3. Send the conversation as a continuation prompt
       // Carry the SOURCE agent's injected memory/skills (persona, scenes,
       // available_skills) into the fork so the target agent sees the context
