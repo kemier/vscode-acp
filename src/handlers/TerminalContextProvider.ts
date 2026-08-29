@@ -1,6 +1,3 @@
-import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 import * as vscode from 'vscode';
 import { log } from '../utils/Logger';
 
@@ -25,7 +22,6 @@ export class TerminalContextProvider {
   private activeOutputs = new Map<vscode.TerminalShellExecution, string>();
 
   constructor() {
-    ensureZshShellIntegrationDirs();
     log('[TerminalContext] Provider initialized');
 
     this.disposables.push(
@@ -113,38 +109,5 @@ export class TerminalContextProvider {
 
   dispose(): void {
     this.disposables.forEach((d) => d.dispose());
-  }
-}
-
-/**
- * VS Code injects zsh shell integration via ZDOTDIR under
- * `$TMPDIR/$USER-$appName-zsh`. If that directory is missing, chmod of the
- * sticky bit fails and injection is aborted — `onDidStartTerminalShellExecution`
- * never fires and @terminal stays empty. Pre-create common app dirs so the
- * next terminal can activate shell integration.
- *
- * See https://github.com/microsoft/vscode/issues/246531
- */
-function ensureZshShellIntegrationDirs(): void {
-  if (process.platform === 'win32') {
-    return;
-  }
-  let tmp: string;
-  try {
-    tmp = fs.realpathSync(os.tmpdir());
-  } catch {
-    tmp = os.tmpdir();
-  }
-  const username = os.userInfo().username;
-  const appNames = ['code', 'code-insiders', 'cursor', 'cursor-insiders'];
-  for (const app of appNames) {
-    const dir = path.join(tmp, `${username}-${app}-zsh`);
-    try {
-      fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-      fs.chmodSync(dir, 0o1700);
-      log(`[TerminalContext] Ensured zsh SI dir: ${dir}`);
-    } catch (err) {
-      log(`[TerminalContext] Could not ensure zsh SI dir ${dir}: ${err}`);
-    }
   }
 }
