@@ -1376,16 +1376,26 @@ export function activate(context: vscode.ExtensionContext): void {
       }
 
       // 2. Connect to the target agent and create a new session
-      await vscode.window.withProgress(
-        {
-          location: vscode.ProgressLocation.Notification,
-          title: `Starting session with ${targetAgentName}...`,
-          cancellable: false,
-        },
-        async () => {
-          await sessionManager.connectToAgent(targetAgentName);
-        },
-      );
+      // Suppress intermediate active-session-changed(null) during the
+      // disconnect+reconnect — otherwise the webview briefly flashes
+      // "🔄 Resume <sourceAgent>" (the source agent is still the last
+      // connected agent) before the target session is ready.
+      chatWebviewProvider.suppressWebviewUpdates = true;
+      try {
+        await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: `Starting session with ${targetAgentName}...`,
+            cancellable: false,
+          },
+          async () => {
+            await sessionManager.connectToAgent(targetAgentName);
+          },
+        );
+      } finally {
+        chatWebviewProvider.suppressWebviewUpdates = false;
+        chatWebviewProvider.notifyActiveSessionChanged();
+      }
 
       // The fork reuses the same webview panel that was showing the SOURCE
       // agent's conversation. connectToAgent only fires active-session-changed
