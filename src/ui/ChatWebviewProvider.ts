@@ -19283,7 +19283,15 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       if (m.includes('gemma-3')) return 90000;
       if (m.includes('mixtral-8x22b')) return 65536;
       if (m.includes('deepseek')) return 262144;
-      // Claude (Kiro CLI uses Bedrock, not ericai-proxy)
+      // Claude (Kiro CLI uses Bedrock, not ericai-proxy). claude-opus-5 has a
+      // 1M-token window (verified from kiro session metadata:
+      // rts_model_state.model_info.context_window_tokens = 1000000) — must be
+      // matched BEFORE the generic claude/opus 200K fallback below, otherwise
+      // the ring under-reports kiro usage by ~5x (it would show pct/100*200K
+      // instead of pct/100*1M). Matched specifically to opus-5 (not the generic
+      // claude-opus) so other claude-opus variants whose window is unknown keep
+      // the 200K fallback.
+      if (m.includes('claude-opus-5') || m.includes('opus-5')) return 1000000;
       if (m.includes('claude') || m.includes('opus')) return 200000;
       if (m.includes('qwen')) return 32768;
       return 200000;
