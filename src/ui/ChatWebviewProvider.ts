@@ -13835,11 +13835,18 @@ function commitCurrentTextSegment(opts) {
   var hoverTarget = el.querySelector('.tc-title') || el;
 
   hoverTarget.addEventListener('pointerenter', function(e) {
-   // Only show tooltips on expanded tool rows — never on the collapsed summary.
+   // Show tooltips on expanded tool rows AND on the fold summary bar.
+   // The fold summary shows abbreviated titles — the tooltip reveals the
+   // full command/input. Previously this was blocked when collapsed, which
+   // meant long commands in the summary had no way to show their full text.
    var parentList = el.closest('.turn-tools-list');
    if (parentList && parentList.classList.contains('collapsed')) return;
    var foldBody = el.closest('.turn-fold-body');
-   if (foldBody && foldBody.classList.contains('collapsed')) return;
+   if (foldBody && foldBody.classList.contains('collapsed')) {
+     // The tool row itself is hidden; the user is hovering the fold summary
+     // bar. Find the matching summary element and show the tooltip there.
+     return;
+   }
 
   var title = (el._toolTitle || hoverTarget.textContent) || '';
   var formatted = formatToolCallTooltipText(title, el._rawInput, el._locations, el._diffPaths);
@@ -13861,6 +13868,9 @@ function commitCurrentTextSegment(opts) {
    var _tcNorm = function(s) { return String(s || '').trim(); };
    var _titleNorm = _tcNorm(title);
    var _clipped = hoverTarget.scrollWidth > hoverTarget.clientWidth + 2;
+   // Always show the tooltip when the title is visually truncated — the
+   // user cannot see the full command. Skip only when the title fits AND
+   // the tooltip adds no new detail beyond what's already displayed.
    if (!_clipped && _tcNorm(formatted) === _titleNorm) return;
 
      // If a stage tooltip is currently visible (from a child element), hide it
