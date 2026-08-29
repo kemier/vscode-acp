@@ -9233,6 +9233,15 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     isCompacting = false;
     manualCompacting = false;
     isClearing = false;
+    // A session switch (e.g. kiro → ericli) must not inherit the previous
+    // agent's image-support state. Clear it so updateAttachButtonVisibility
+    // defaults to hidden until the new session's state arrives — otherwise a
+    // switch from a vision-capable kiro session (opus 5) to a text-only ericli
+    // model (deepseek-v4-flash) kept the image attach button visible.
+    if (sessionState) {
+      sessionState.currentModelImageSupport = undefined;
+      if (sessionState.promptCapabilities) sessionState.promptCapabilities = undefined;
+    }
     compactedWarningText = '';
     compactedNoticeText = '';
     if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
@@ -15877,23 +15886,43 @@ function ericliModelSupportsImage(baseModelId) {
 function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
    if (!attachBtn) { return; }
    const caps = promptCaps || (sessionState && sessionState.promptCapabilities) || null;
+   // [WV-DIAG] Trace the attach-button decision inputs so we can see why a
+   // non-vision model (e.g. deepseek-v4-flash) still shows the image button.
+   // Logs agentName, currentModelId, caps.image, and the effective modelImageSupport.
+   if (typeof vscode !== 'undefined' && typeof vscode.postMessage === 'function') {
+     var _diagAgent = sessionState && sessionState.agentName ? sessionState.agentName : '';
+     var _diagCaps = caps ? (caps.image ? 'image=true' : 'image=false') : 'caps=null';
+     var _diagMIS = (modelImageSupport === undefined || modelImageSupport === null)
+       ? (sessionState && sessionState.currentModelImageSupport !== undefined ? String(sessionState.currentModelImageSupport) : 'undef')
+       : String(modelImageSupport);
+     vscode.postMessage({ type: 'debugLog', message: '[WV-DIAG] attachBtn: agent="' + _diagAgent + '" model="' + (currentModelId || 'null') + '" ' + _diagCaps + ' mis=' + _diagMIS });
+   }
    if (!caps || !caps.image) {
      attachBtn.style.display = 'none';
      return;
    }
    // For Kiro CLI, determine image support from model name — no catalog.
    var agentName = sessionState && sessionState.agentName ? sessionState.agentName : '';
-   if (agentName && /kiro/i.test(agentName) && currentModelId) {
-    var kiroBase = currentModelId.replace(/\\[(?:low|medium|high|xhigh|max|none)\\]$/, '');
-     attachBtn.style.display = /claude/i.test(kiroBase) ? '' : 'none';
+   if (agentName && /kiro/i.test(agentName)) {
+     // If no model is set yet (e.g. during a session switch, before the model
+     // picker is populated), default to HIDDEN — never fall through to a stale
+     // sessionState.currentModelImageSupport from a previous agent (a switch
+     // from a Claude/Opus Kiro session would otherwise keep the image button
+     // visible on a text-only model).
+     var kiroBase = (currentModelId || '').replace(/\\[(?:low|medium|high|xhigh|max|none)\\]$/, '');
+     attachBtn.style.display = kiroBase && /claude/i.test(kiroBase) ? '' : 'none';
      return;
    }
    // For EricCLI, determine image support from model name — same rationale as
    // Kiro: ericli does not publish per-model modalities, and its vision models
    // (kimi-k2.6, qwen3.8-27B, ...) are not in ~/.codex/model_catalog.json.
-   if (agentName && /(ericli|eric-cli|ericcli)/i.test(agentName) && currentModelId) {
-     var ericBase = currentModelId.replace(/\\[(?:low|medium|high|xhigh|max|none)\\]$/, '');
-     attachBtn.style.display = ericliModelSupportsImage(ericBase) ? '' : 'none';
+   if (agentName && /(ericli|eric-cli|ericcli)/i.test(agentName)) {
+     // Same guard as Kiro: with no model id yet (session switch in progress),
+     // default to hidden instead of inheriting the previous agent's
+     // currentModelImageSupport (e.g. kiro opus 5 → ericli deepseek-v4-flash
+     // left the image button visible on a text-only model).
+     var ericBase = (currentModelId || '').replace(/\\[(?:low|medium|high|xhigh|max|none)\\]$/, '');
+     attachBtn.style.display = ericBase && ericliModelSupportsImage(ericBase) ? '' : 'none';
      return;
    }
    // Codex / catalog-backed: only show when the catalog explicitly allows image.
