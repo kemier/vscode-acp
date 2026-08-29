@@ -159,6 +159,22 @@ export interface SessionManagerEvents {
   'cursor-create-plan': [params: any, respond: (result: any) => void];
 }
 
+/**
+ * Strip the <available_skills>…</available_skills> section from a memory blob.
+ * Used by recallMemoryForAgent so a fork does NOT carry the source agent's
+ * skill names into the target — the target can only recall its own skills.
+ * Handles both the fresh-recall blob and the cached (last-injected) blob.
+ */
+function stripSkillsSection(text: string): string {
+  if (!text || !text.includes('<available_skills>')) {
+    return text;
+  }
+  return text
+    .replace(/<available_skills>[\s\S]*?<\/available_skills>\n?/g, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export class SessionManager extends EventEmitter {
   on<K extends keyof SessionManagerEvents>(event: K, listener: (...args: SessionManagerEvents[K]) => void): this {
     return super.on(event, listener as any);
@@ -222,26 +238,35 @@ export class SessionManager extends EventEmitter {
    * when the in-memory per-session cache is empty — e.g. after a VS Code
    * reload, where the cache is not persisted across sessions.
    */
-  async recallMemoryForAgent(agentName: string, query: string): Promise<string> {
+  async recallMemoryForAgent(agentName: string, query: string, sourceSessionId?: string): Promise<string> {
     // 1. Prefer the in-memory cache (last injected for this session).
-    const cached = this.getSessionMemoryBlocks(this.getActiveSession()?.sessionId || '');
+    // At fork time the active session has already switched to the TARGET
+    // agent, so we must look up the SOURCE session's cache (the caller
+    // passes the source sessionId captured before connectToAgent).
+    const cacheKey = sourceSessionId || this.getActiveSession()?.sessionId || '';
+    const cached = this.getSessionMemoryBlocks(cacheKey);
     if (cached) {
-      return cached;
+      return stripSkillsSection(cached);
     }
-    // 2. Fresh recall of the agent's own profile (persona + scenes + skills).
+    // 2. Fresh recall of the agent's own profile (persona + scenes).
+    // includeSkills=false: the SOURCE agent's skills must NOT be carried into
+    // the fork — the target agent can only recall its OWN skills, so carrying
+    // the source's skill names would mislead it (it would see skills it cannot
+    // invoke). Persona + scenes (the context) are kept.
     if (!this.memoryProvider?.isEnabled()) {
       return '';
     }
     try {
       const blocks = await this.memoryProvider.buildRecallBlocks({
-        sessionId: this.getActiveSession()?.sessionId || '',
+        sessionId: cacheKey,
         agentName,
         query,
         supportsEmbedded: true,
-        includeSkillTools: true,
+        includeSkills: false,
+        includeSkillTools: false,
         injectMode: 'full',
       });
-      const joined = (blocks || [])
+      let joined = (blocks || [])
         .map((b) => {
           const t =
             b.type === 'resource' && (b as { resource?: { text?: string } }).resource?.text
@@ -253,6 +278,7 @@ export class SessionManager extends EventEmitter {
         })
         .filter(Boolean)
         .join('\n\n');
+      joined = stripSkillsSection(joined);
       return joined;
     } catch (e) {
       logError('recallMemoryForAgent failed', e);

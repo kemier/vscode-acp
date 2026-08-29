@@ -1415,7 +1415,10 @@ export function activate(context: vscode.ExtensionContext): void {
       // recallMemoryForAgent falls back to a fresh recall of the source
       // agent's profile when the per-session cache is empty (e.g. after a
       // VS Code reload, where the cache is not persisted).
-      const sourceMemory = await sessionManager.recallMemoryForAgent(sourceAgentName, forkBody);
+      // Pass the SOURCE sessionId so recallMemoryForAgent looks up the
+      // source session's injected-memory cache. The active session has
+      // already switched to the target agent by this point.
+      const sourceMemory = await sessionManager.recallMemoryForAgent(sourceAgentName, forkBody, sessionId);
       const forkPrompt = [
         forkedAsSummary
           ? 'The following is a summary of a conversation from another agent. Please continue this conversation:'
