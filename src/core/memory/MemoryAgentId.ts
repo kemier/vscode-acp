@@ -18,6 +18,7 @@ const BUILTIN_AGENT_ID_RULES: Array<{ test: RegExp; id: string }> = [
   { test: /opencode/i, id: 'opencode' },
   { test: /openclaw/i, id: 'openclaw' },
   { test: /copilot/i, id: 'copilot' },
+  { test: /\bpi\b/i, id: 'pi-agent' },
 ];
 
 /**
