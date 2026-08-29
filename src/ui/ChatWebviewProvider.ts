@@ -151,8 +151,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * Used by fork-to-agent and other extension-host commands that need
    * the webview's streaming lifecycle set up properly.
    */
-  dispatchPrompt(text: string): void {
-    this.postMessage({ type: 'sendPrompt', text });
+  dispatchPrompt(text: string, hideBubble?: boolean): void {
+    this.postMessage({ type: 'sendPrompt', text, hideBubble: hideBubble === true });
   }
   private toolCallDiffs = new Map<string, Array<{ path: string; oldText?: string; newText: string }>>();
   private terminalContext = new TerminalContextProvider();
@@ -5985,6 +5985,10 @@ let hasSteeredThisTurn = false;
 // next drain. Cleared by promptStart (turn actually started) and by the
 // promptEnd/error path (turn fully finished).
 let isSendingPrompt = false;
+// When true, the next handleSend() skips rendering a visible user bubble
+// (used by fork-to-agent so the forked summary isn't shown in the panel —
+// the summary is still sent to the agent for context, just not displayed).
+let suppressNextUserBubble = false;
 var pendingRenderRetries = {}; // keys of pending renderMarkdown retries
 var historyRenderGen = 0; // generation counter for history renders (invalidated on DOM rebuild)
 var suppressFoldOrdering = false; // true during renderChatHistory to skip intermediate re-ordering
@@ -8062,7 +8066,15 @@ function handleSend() {
    }
 
   wvProbe('handleSend POSTING', 'text=' + text.substring(0, 40));
-  addMessage('user', text || '(image)');
+  if (suppressNextUserBubble) {
+    // Fork-to-agent: the summary is sent to the agent for context but the
+    // user bubble is hidden. clearChat already reset the turn state, so we
+    // skip the visible bubble (and the chatHistory entry) entirely. Clear
+    // the flag so a subsequent normal send renders its bubble.
+    suppressNextUserBubble = false;
+  } else {
+    addMessage('user', text || '(image)');
+  }
    promptInput.value = '';
    const images = pendingImages.splice(0);
    imagePreviewStrip.innerHTML = '';
@@ -15927,6 +15939,11 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       case 'sendPrompt':
         if (typeof msg.text === 'string' && msg.text.length > 0) {
           promptInput.value = msg.text;
+          // Fork-to-agent can ask to hide the summary bubble (the summary is
+          // still sent to the agent for context, just not rendered in the
+          // panel). handleSend() checks suppressNextUserBubble and skips the
+          // visible bubble for this one send.
+          suppressNextUserBubble = msg.hideBubble === true;
           handleSend();
         }
         break;

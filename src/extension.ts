@@ -1427,7 +1427,10 @@ export function activate(context: vscode.ExtensionContext): void {
       // isProcessing → streaming chunks → promptEnd). Calling sendPrompt
       // directly from the extension host bypasses the webview's prompt
       // setup, causing the agent's streaming response to not render.
-      chatWebviewProvider.dispatchPrompt(forkPrompt);
+      // hideBubble=true: the forked summary is sent to the agent for context
+      // but not rendered as a user bubble in the panel (the user only wants
+      // to see the target agent's reply, not the summary of the source chat).
+      chatWebviewProvider.dispatchPrompt(forkPrompt, true);
 
       vscode.window.showInformationMessage(`Forked conversation from ${sourceAgentName} to ${targetAgentName}.`);
     } catch (e: any) {
