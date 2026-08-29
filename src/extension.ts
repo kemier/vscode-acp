@@ -1334,45 +1334,74 @@ export function activate(context: vscode.ExtensionContext): void {
         return;
       }
 
+      // 1a. Refuse to fork while a compaction is in progress. Forking mid-
+      // compaction both (i) kills the source agent while it is still
+      // summarizing the older history (disconnectAgent → SIGTERM aborts the
+      // compaction, losing those summaries) and (ii) exports only the
+      // in-progress compaction summary, so the target receives a near-empty
+      // prompt. Wait for the compaction to finish, then fork.
+      if (exported.compactionInProgress) {
+        vscode.window.showWarningMessage(
+          `${sourceAgentName} is currently compacting its conversation. Wait for compaction to finish, then fork again.`,
+        );
+        log(`forkToAgent: blocked — compaction in progress on ${sourceAgentName}`);
+        return;
+      }
+
       // 1b. Summarize it. Sending the raw transcript re-embeds the entire
       // conversation as a single text block, which pushed the target agent past
       // its context window on the very first prompt (an observed fork carried
       // 822k chars, itself containing an earlier fork's transcript verbatim).
       // A summary is what the target actually needs to continue.
+      //
+      // EXCEPTION: if the export ALREADY starts at a compaction boundary, the
+      // content IS the post-compaction summary (the agent's own compaction
+      // already summarized the older history). Re-summarizing it collapses the
+      // context further — a real fork turned 427K chars of already-summarized
+      // context into a useless 27 chars. In that case send the export raw.
       let forkBody = conversationText;
       let forkedAsSummary = true;
-      const summaryMessages = exported.messages.length
-        ? exported.messages
-        : [{ role: 'user', content: conversationText }];
-      try {
-        const summarized = await vscode.window.withProgress(
-          {
-            location: vscode.ProgressLocation.Notification,
-            title: `Summarizing conversation from ${sourceAgentName}...`,
-            cancellable: false,
-          },
-          async () => summarizeSession(`Forked from ${sourceAgentName}`, summaryMessages, readSessionSummarySettings()),
-        );
-        forkBody = summarized.summary;
+      if (exported.exportStartsAtCompactionBoundary) {
+        // The source agent's compaction already produced the summary; sending
+        // it verbatim preserves the context instead of double-summarizing it.
+        forkedAsSummary = true;
         log(
-          `forkToAgent: summarized ${conversationText.length} chars → ${forkBody.length} chars via ${summarized.model}`,
+          `forkToAgent: export starts at compaction boundary — sending ${conversationText.length} chars verbatim (no re-summarize)`,
         );
-      } catch (e: any) {
-        // Never silently fall back to the raw transcript — that is the exact
-        // behaviour that blew up the target's context. Make it the user's call.
-        const choice = await vscode.window.showWarningMessage(
-          `Could not summarize the conversation (${e?.message || e}).`,
-          {
-            modal: true,
-            detail: `Send the full transcript instead? It is ${conversationText.length} characters and may exceed ${targetAgentName}'s context window.`,
-          },
-          'Send full transcript',
-        );
-        if (choice !== 'Send full transcript') {
-          return;
+      } else {
+        const summaryMessages = exported.messages.length
+          ? exported.messages
+          : [{ role: 'user', content: conversationText }];
+        try {
+          const summarized = await vscode.window.withProgress(
+            {
+              location: vscode.ProgressLocation.Notification,
+              title: `Summarizing conversation from ${sourceAgentName}...`,
+              cancellable: false,
+            },
+            async () => summarizeSession(`Forked from ${sourceAgentName}`, summaryMessages, readSessionSummarySettings()),
+          );
+          forkBody = summarized.summary;
+          log(
+            `forkToAgent: summarized ${conversationText.length} chars → ${forkBody.length} chars via ${summarized.model}`,
+          );
+        } catch (e: any) {
+          // Never silently fall back to the raw transcript — that is the exact
+          // behaviour that blew up the target's context. Make it the user's call.
+          const choice = await vscode.window.showWarningMessage(
+            `Could not summarize the conversation (${e?.message || e}).`,
+            {
+              modal: true,
+              detail: `Send the full transcript instead? It is ${conversationText.length} characters and may exceed ${targetAgentName}'s context window.`,
+            },
+            'Send full transcript',
+          );
+          if (choice !== 'Send full transcript') {
+            return;
+          }
+          forkedAsSummary = false;
+          log(`forkToAgent: summarize failed (${e?.message || e}); user chose the full transcript`);
         }
-        forkedAsSummary = false;
-        log(`forkToAgent: summarize failed (${e?.message || e}); user chose the full transcript`);
       }
 
       // 2. Connect to the target agent and create a new session

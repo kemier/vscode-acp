@@ -73,6 +73,10 @@ export interface ConversationExportResult {
   text: string;
   /** The same content split per turn, for the summarizer. */
   messages: Array<{ role: string; content: string }>;
+  /** True when the export starts after a compaction boundary (content is the post-compaction summary). */
+  exportStartsAtCompactionBoundary?: boolean;
+  /** True when a compaction is currently in progress in the webview. */
+  compactionInProgress?: boolean;
 }
 
 /**
@@ -1692,6 +1696,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           this._conversationExportResolver?.({
             text: typeof message.text === 'string' ? message.text : '',
             messages: Array.isArray(message.messages) ? message.messages : [],
+            exportStartsAtCompactionBoundary: message.exportStartsAtCompactionBoundary === true,
+            compactionInProgress: message.compactionInProgress === true,
           });
           this._conversationExportResolver = undefined;
           break;
@@ -11815,6 +11821,18 @@ function orderCompactFoldContents(body) {
       });
      // Re-home interim segments in document order (avoid append-to-bottom).
      if (body && !suppressFoldOrdering) orderCompactFoldContents(body);
+     // [WV-DIAG] Dump the fold body children order AFTER the interleave sort so
+     // we can see whether tools and assistants are truly interleaved by
+     // data-history-index, or grouped (all tools, then all assistants). Gated on
+     // acp.debugResume — no-op in normal operation.
+     if (typeof resumeDiag === 'function' && body) {
+       var _foldOrder = Array.prototype.map.call(body.children, function(c) {
+         var _idx = c.getAttribute ? c.getAttribute('data-history-index') : null;
+         var _cls = c.className || c.tagName;
+         return _cls.split(' ')[0] + (_idx != null ? '#' + _idx : '');
+       }).join(' | ');
+       resumeDiag('[WV-DIAG] fold-body-after-sort: ' + _foldOrder);
+     }
    }
 
     function sessionMarkedInterrupted() {
@@ -16847,7 +16865,21 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
             _exportMsgs.push({ role: 'assistant', content: _tline });
           }
         }
-        vscode.postMessage({ type: 'conversationExported', text: _exportParts.join('\\n\\n'), messages: _exportMsgs });
+        // Report whether the export starts at a compaction boundary (i.e. the
+        // content is ALREADY the post-compaction summary) and whether a
+        // compaction is currently in progress. forkToAgent (extension host)
+        // uses these to (a) refuse to fork mid-compaction — forking while
+        // isCompacting=true both kills the source agent mid-summarize and
+        // yields a near-empty export — and (b) skip the SECOND summarization
+        // when the export is already the compaction summary, which collapsed
+        // 427K chars of context to 27 chars in a real fork.
+        vscode.postMessage({
+          type: 'conversationExported',
+          text: _exportParts.join('\\n\\n'),
+          messages: _exportMsgs,
+          exportStartsAtCompactionBoundary: _exportStart > 0,
+          compactionInProgress: !!isCompacting,
+        });
         break;
       }
       case 'kiroGoalStatus':
