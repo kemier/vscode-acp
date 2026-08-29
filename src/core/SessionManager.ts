@@ -166,11 +166,12 @@ export interface SessionManagerEvents {
  * Handles both the fresh-recall blob and the cached (last-injected) blob.
  */
 function stripSkillsSection(text: string): string {
-  if (!text || !text.includes('<available_skills>')) {
+  if (!text || (!text.includes('<available_skills>') && !text.includes('<memory_skill_tools>'))) {
     return text;
   }
   return text
     .replace(/<available_skills>[\s\S]*?<\/available_skills>\n?/g, '')
+    .replace(/<memory_skill_tools>[\s\S]*?<\/memory_skill_tools>\n?/g, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }

@@ -100,7 +100,7 @@ export function resetMemoryInjectGates(
  * (next prompt is `full` again).
  */
 export function shouldInjectSkillToolsForMode(mode: MemoryInjectMode): boolean {
-  return mode === 'full';
+  return mode !== 'none';
 }
 
 /**
