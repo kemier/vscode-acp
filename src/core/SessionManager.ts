@@ -892,14 +892,14 @@ export class SessionManager extends EventEmitter {
     // Shared memory: first real prompt prepends L3 persona + L2 scenes + L1.
     // Later turns append L1 only (query-related). Codex included: L1 is new
     // incremental input items (pure append), so previous_response_id prefix
-    // is unchanged. Slash commands are handled by the agent adapter (pi-acp,
-    // codex-acp) or locally (Kiro) — they must NOT get memory injected because
-    // the adapter's slash-command interception (e.g. pi-acp's /compact) requires
-    // the message to start with '/' for matching. Injecting <agent-memory> before
-    // the '/' breaks the interception and the command falls through to the LLM.
+    // is unchanged. Slash commands (e.g. /compact) are intercepted by the
+    // agent adapter (pi-acp, codex-acp) based on the message starting with
+    // '/'. Memory blocks must come AFTER the user text for slash commands so
+    // the adapter's startsWith('/') check still matches. For non-slash
+    // commands, memory is prepended (full mode) or appended (l1-only).
     const profileAlreadyInjected = this.memoryProfileInjectedSessions.has(sessionId);
     const memoryInjectMode =
-      !this.memoryProvider?.isEnabled() || isSlashCommand
+      !this.memoryProvider?.isEnabled()
         ? 'none'
         : resolveMemoryInjectMode(session.agentName, {
             sessionAlreadyPrompted: this.promptedSessions.has(sessionId),
@@ -935,7 +935,11 @@ export class SessionManager extends EventEmitter {
           );
         }
         if (memoryBlocks.length > 0) {
-          if (memoryInjectMode === 'full') {
+          // For slash commands, append memory after the user text so the
+          // adapter's startsWith('/') interception still matches. Non-slash
+          // commands keep the existing behavior (prepend for full, append
+          // for l1-only).
+          if (memoryInjectMode === 'full' && !isSlashCommand) {
             prompt.push(...memoryBlocks);
             if (
               shouldMarkProfileInjectedAfterRecall({
@@ -947,6 +951,16 @@ export class SessionManager extends EventEmitter {
             }
           } else {
             pendingL1Blocks = memoryBlocks;
+            if (memoryInjectMode === 'full') {
+              if (
+                shouldMarkProfileInjectedAfterRecall({
+                  memoryInjectMode,
+                  memoryBlocksCount: memoryBlocks.length,
+                })
+              ) {
+                this.memoryProfileInjectedSessions.add(sessionId);
+              }
+            }
           }
         }
         const memorySettings = readMemorySettings();
