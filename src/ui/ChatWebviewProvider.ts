@@ -13450,9 +13450,9 @@ function commitCurrentTextSegment(opts) {
        var searchTitle = formatSearchStubTitle(toolName, title, rawInput, locations);
        if (searchTitle) return searchTitle;
      }
-     if (kind === 'shell' && rawInput && rawInput.command) {
-       var cmd = Array.isArray(rawInput.command) ? rawInput.command.join(' ') : String(rawInput.command);
-       return cmd.replace(/\\s+/g, ' ').trim();
+     if (kind === 'shell') {
+       var cmd = commandFromToolRawInput(rawInput);
+       if (cmd) return cmd.replace(/\\s+/g, ' ').trim();
      }
    }
 
@@ -13476,6 +13476,14 @@ function commitCurrentTextSegment(opts) {
      if (tl.indexOf(String(baseEdit).toLowerCase()) >= 0) return 'Edit ' + path;
    }
 
+   // Bare shell tool names (e.g. legacy Codex "shell_command") add no display
+   // text on their own — substitute the command from rawInput so replayed /
+   // resumed history from ANY adapter shows the real command instead of a stub.
+   if (isBareShellToolTitle(t)) {
+     var cmdBare = commandFromToolRawInput(rawInput);
+     if (cmdBare) return cmdBare.replace(/\\s+/g, ' ').trim();
+   }
+
    if (!isCursorStubToolTitle(t) && t) return t;
 
    if (isAmbiguousFileStubTitle(t) && !path && isEmptyRawInput(rawInput)) {
@@ -13491,6 +13499,27 @@ function commitCurrentTextSegment(opts) {
    }
    return t || 'Tool Call';
  }
+
+  /** Extract a shell command from tool rawInput, including the legacy
+   *  { name, arguments: { cmd|command } } shape from raw-rollout fallback. */
+  function commandFromToolRawInput(rawInput) {
+    if (!rawInput || typeof rawInput !== 'object' || Array.isArray(rawInput)) return '';
+    if (typeof rawInput.command === 'string' && rawInput.command.trim()) return rawInput.command.trim();
+    if (Array.isArray(rawInput.command)) return rawInput.command.join(' ').trim();
+    var args = rawInput.arguments;
+    if (args && typeof args === 'object' && !Array.isArray(args)) {
+      var cmd = (typeof args.cmd === 'string' && args.cmd.trim()) ? args.cmd.trim() : '';
+      if (!cmd && typeof args.command === 'string' && args.command.trim()) cmd = args.command.trim();
+      if (cmd) return cmd;
+    }
+    return '';
+  }
+
+  /** Bare shell tool names that have no display value on their own. */
+  function isBareShellToolTitle(title) {
+    var t = String(title || '').trim().toLowerCase();
+    return t === 'shell_command' || t === 'exec_command';
+  }
 
   /**
    * Extract a file path from a tool call title.
