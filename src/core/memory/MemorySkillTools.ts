@@ -1,8 +1,11 @@
 /**
  * Injects read-only memory-skill tool recipes for the Cursor/ACP path.
  *
- * The LLM does not get native tools here — it uses Shell curl against the
+ * The LLM does not get native tools here — it uses Shell against the
  * extension-hosted MemorySkillBridge (localhost, no API key in the prompt).
+ *
+ * On Windows the recipe uses Invoke-RestMethod (PowerShell-safe). On other
+ * platforms it uses curl with single-quoted JSON (POSIX shells).
  */
 
 export interface MemorySkillToolsOptions {
@@ -10,31 +13,86 @@ export interface MemorySkillToolsOptions {
   bridgeBaseUrl: string;
   /** MemoryCore agent_id for the active ACP agent (Model B). */
   agentId: string;
+  /** Override platform detection (defaults to process.platform). */
+  platform?: NodeJS.Platform;
+}
+
+export type SkillBridgeShell = 'win32' | 'posix';
+
+export function resolveSkillBridgeShell(platform: NodeJS.Platform = process.platform): SkillBridgeShell {
+  return platform === 'win32' ? 'win32' : 'posix';
+}
+
+/** One-line POST /view recipe for the active shell. */
+export function formatSkillBridgeViewCommand(
+  bridgeBaseUrl: string,
+  agentId: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const base = bridgeBaseUrl.replace(/\/+$/, '');
+  const id = agentId.replace(/'/g, '').replace(/"/g, '\\"');
+  if (resolveSkillBridgeShell(platform) === 'win32') {
+    // PowerShell: single-quoted -Body keeps JSON double-quotes intact.
+    // Do not use bare `curl` — it aliases to Invoke-WebRequest.
+    return (
+      `Invoke-RestMethod -Method Post -Uri '${base}/view' ` +
+      `-ContentType 'application/json' ` +
+      `-Body '{"name":"<skill-name>","agent_id":"${id}"}'`
+    );
+  }
+  return (
+    `curl -sf -X POST ${base}/view ` +
+    `-H 'Content-Type: application/json' ` +
+    `-d '{"name":"<skill-name>","agent_id":"${id}"}'`
+  );
+}
+
+/** One-line POST /search recipe for the active shell. */
+export function formatSkillBridgeSearchCommand(
+  bridgeBaseUrl: string,
+  agentId: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const base = bridgeBaseUrl.replace(/\/+$/, '');
+  const id = agentId.replace(/'/g, '').replace(/"/g, '\\"');
+  if (resolveSkillBridgeShell(platform) === 'win32') {
+    return (
+      `Invoke-RestMethod -Method Post -Uri '${base}/search' ` +
+      `-ContentType 'application/json' ` +
+      `-Body '{"query":"<keywords>","agent_id":"${id}"}'`
+    );
+  }
+  return (
+    `curl -sf -X POST ${base}/search ` +
+    `-H 'Content-Type: application/json' ` +
+    `-d '{"query":"<keywords>","agent_id":"${id}"}'`
+  );
 }
 
 export function formatMemorySkillTools(opts: MemorySkillToolsOptions): string {
-  const base = opts.bridgeBaseUrl.replace(/\/+$/, '');
-  const agentId = opts.agentId.replace(/"/g, '\\"');
+  const platform = opts.platform ?? process.platform;
+  const viewCmd = formatSkillBridgeViewCommand(opts.bridgeBaseUrl, opts.agentId, platform);
+  const searchCmd = formatSkillBridgeSearchCommand(opts.bridgeBaseUrl, opts.agentId, platform);
+  const shellHint =
+    resolveSkillBridgeShell(platform) === 'win32'
+      ? 'Shell Invoke-RestMethod (PowerShell — do not use the `curl` alias)'
+      : 'Shell curl';
 
   return [
     '<memory_skill_tools>',
     'The <available_skills> block above lists **name + description only**.',
     'Before following a memory skill — or when one skill references another as a prerequisite —',
-    'load the full SKILL.md with **memory_skill_view** (Shell curl).',
+    `load the full SKILL.md with **memory_skill_view** (${shellHint}).`,
     '',
     '  <tool name="memory_skill_view">',
-    `    curl -sf -X POST ${base}/view \\`,
-    `      -H 'Content-Type: application/json' \\`,
-    `      -d '{"name":"<skill-name>","agent_id":"${agentId}"}'`,
+    `    ${viewCmd}`,
     '    use: Load full SKILL.md for a memory skill by name. Use names from <available_skills>,',
     '         skill_search results, or backtick references inside another skill (e.g. prerequisites).',
     '         Returns JSON: { name, description, version, content }.',
     '  </tool>',
     '',
     '  <tool name="memory_skill_search">',
-    `    curl -sf -X POST ${base}/search \\`,
-    `      -H 'Content-Type: application/json' \\`,
-    `      -d '{"query":"<keywords>","agent_id":"${agentId}"}'`,
+    `    ${searchCmd}`,
     '    use: Semantic search across team memory skills when the skill you need is not listed above.',
     '  </tool>',
     '',

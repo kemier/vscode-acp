@@ -232,7 +232,7 @@ suite('MemoryFormat.formatSkills', () => {
   test('footer embeds self-contained memory_skill_view curl recipe when bridgeBaseUrl set', () => {
     const text = formatSkills(
       [{ skill_id: 's1', name: 'test', description: 'a test', version: 1 }],
-      { bridgeBaseUrl: 'http://127.0.0.1:8127/', agentId: 'ericli' },
+      { bridgeBaseUrl: 'http://127.0.0.1:8127/', agentId: 'ericli', platform: 'linux' },
     );
     assert.ok(text);
     assert.ok(text!.includes('memory-injected'));
@@ -242,6 +242,18 @@ suite('MemoryFormat.formatSkills', () => {
     assert.ok(text!.includes('memory skills MUST use the API'));
     // The static fallback ("see session history") must NOT appear when a base URL is set.
     assert.ok(!text!.includes('see session history'));
+  });
+
+  test('footer embeds PowerShell Invoke-RestMethod recipe on win32', () => {
+    const text = formatSkills(
+      [{ skill_id: 's1', name: 'test', description: 'a test', version: 1 }],
+      { bridgeBaseUrl: 'http://127.0.0.1:8127/', agentId: 'ericli', platform: 'win32' },
+    );
+    assert.ok(text);
+    assert.ok(text!.includes("Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8127/view'"));
+    assert.ok(text!.includes("Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8127/search'"));
+    assert.ok(text!.includes('"agent_id":"ericli"'));
+    assert.ok(!text!.includes('curl -sf'));
   });
 
   test('handles multiple skills', () => {
