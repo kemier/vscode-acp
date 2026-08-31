@@ -32,6 +32,7 @@ import { sendEvent } from '../utils/TelemetryManager';
 import { cleanSessionTitle } from '../utils/TitleCleaner';
 import { ACP_MATH_SPLIT_RE, createMathExtension } from '../utils/markdownMath';
 import { balanceMarkdownForPartialRender } from '../utils/markdownBalance';
+import { cleanAgentToolTitle } from '../utils/toolTitle';
 import { readSessionSummarySettings } from '../core/SessionSummaryConfig';
 import { summarizeSession } from '../core/SessionSummarizer';
 
@@ -1960,6 +1961,21 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         });
         if (target) {
           this.followCoalescer.submit(target);
+        }
+      }
+
+      // Normalize the one-line title: drop Kiro CLI's `Running: ` label and a
+      // redundant shell / `cd <dir> &&` preamble, matching what codex-acp
+      // already does agent-side so a row reads the same for every agent. The
+      // untouched command stays in rawInput for the tooltip and diff viewer.
+      // Applying this to an already-normalized Codex title is a no-op.
+      if (typeof updateData.title === 'string' && updateData.title) {
+        const cleanedTitle = cleanAgentToolTitle(
+          updateData.title,
+          this.sessionManager.getSession(activeId)?.cwd,
+        );
+        if (cleanedTitle && cleanedTitle !== updateData.title) {
+          updateData.title = cleanedTitle;
         }
       }
     }
