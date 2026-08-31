@@ -6261,14 +6261,23 @@ let isCompacting = false;  // true while /compact is running
    // Set the pending message; it will be sent once promptEnd fires
    // after the cancel completes.
    pendingSendAfterCancel = entry;
-   // Show the user bubble IMMEDIATELY on Send Now click for responsiveness —
-   // the user expects to see their message right away, not after the current
-   // turn ends. Mark the entry so the promptEnd drain path does not re-add
-   // the bubble (guard against double insertion). If the cancel is rejected
-   // and the message is not sent this cycle, the bubble still reflects the
-   // user's intent; the message is sent on the next promptEnd.
-   entry.bubbleShown = true;
-   addUserBubbleForQueuedEntry(entry);
+   // Do NOT add the user bubble yet. The in-flight turn is still streaming, and
+   // addUserBubbleForQueuedEntry resets currentTurnEl — so every tool_call /
+   // chunk that the cancelled turn still emits opened a FRESH turn BELOW the
+   // new bubble. The queued message then rendered ABOVE the prior turn's own
+   // commands, i.e. before the work it was meant to interrupt.
+   //
+   // The bubble is added by the promptEnd drain path instead (guarded by
+   // entry.bubbleShown), which runs after the cancelled turn has closed, so the
+   // message lands after the prior turn's content. promptEnd is guaranteed:
+   // the host forces it via the cancel-timeout fallback if the agent never
+   // acknowledges session/cancel.
+   //
+   // Immediate feedback comes from the status line rather than a chat row: a
+   // row inserted here would sit in the same wrong position we are fixing.
+   if (statusEl) {
+     statusEl.textContent = 'Interrupting — your message sends next…';
+   }
    vscode.postMessage({ type: 'cancelTurn' });
   } else {
      // Not processing — send directly now and show the bubble.
@@ -16525,9 +16534,10 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       setTimeout(() => {
         if (!isProcessing) {
           // Route slash commands through handleLocalSlashCommand so local UI
-          // is triggered. The bubble is only added here if the Send Now click
-          // did NOT already show it (entry.bubbleShown) — sendQueuedMessageNow
-          // adds it immediately for responsiveness, so we must not duplicate.
+          // is triggered. The bubble is added HERE, after the cancelled turn
+          // has closed, so the message lands below the prior turn's content.
+          // entry.bubbleShown stays as a guard for any future path that shows
+          // the bubble earlier — sendQueuedMessageNow deliberately does not.
           if (entry.text && entry.text.startsWith('/') && handleLocalSlashCommand(entry.text)) {
             // Local slash command handled it.
           } else {
