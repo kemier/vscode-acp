@@ -2487,6 +2487,21 @@ export class SessionManager extends EventEmitter {
         this.applyConfigOptions(sessionId, placeholder.configOptions);
       }
 
+      // Push the legacy `models` snapshot too. 'active-session-changed' is
+      // emitted BEFORE the loadSession request (so the panel switches
+      // immediately), which means the webview received its `state` while
+      // placeholder.models was still null — and notifyModelsUpdate is only
+      // wired to 'model-changed', so nothing told it afterwards. The webview's
+      // currentModelId therefore stayed null for the whole resumed session, and
+      // the Kiro/EricCLI attach-button rule (which reads currentModelId, not
+      // promptCapabilities) hid the image button even on a vision model:
+      // observed as `[WV-DIAG] attachBtn: agent="Kiro CLI" model="null"
+      // image=true` on a claude-opus-5 session.
+      const loadedModelId = placeholder.models?.currentModelId;
+      if (loadedModelId) {
+        this.emit('model-changed', sessionId, loadedModelId);
+      }
+
       // If the agent didn't return configOptions, probe for them.
       if (!placeholder.configOptions || placeholder.configOptions.length === 0) {
         void this.probeOrSynthesizeConfigOptions(sessionId);

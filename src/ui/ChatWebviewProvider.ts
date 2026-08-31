@@ -6317,6 +6317,32 @@ let isCompacting = false;  // true while /compact is running
 //   - the transition tick (sendPrompt posted, promptStart not yet received)
 //     queues instead of racing the in-flight prompt.
 /**
+ * The model id carried by a session's configOptions, or '' when absent.
+ *
+ * Agents that use configOptions exclusively (Kiro CLI) express the active model
+ * as the option with category 'model'; the legacy models field may be missing
+ * entirely. The attach-button rule for Kiro / EricCLI reads currentModelId, so
+ * without this the image button stays hidden on a vision model.
+ *
+ * Matches SessionManager's lookup (o.category === 'model') and falls back to
+ * an id of 'model' for agents that set only the id.
+ */
+function modelIdFromConfigOptions(configOptions) {
+  if (!Array.isArray(configOptions)) return '';
+  for (var i = 0; i < configOptions.length; i++) {
+    var o = configOptions[i];
+    if (!o || typeof o !== 'object') continue;
+    var cat = String(o.category || '').toLowerCase();
+    var id = String(o.id || '').toLowerCase();
+    if (cat === 'model' || id === 'model') {
+      var v = o.currentValue;
+      return typeof v === 'string' ? v.trim() : '';
+    }
+  }
+  return '';
+}
+
+/**
  * Explain WHY a tool call was routed into the subagent/crew UI, or 'none'.
  *
  * Mirrors isSubagentSpawnTitle / looksLikeClaudeAgentSpawn but returns the
@@ -10077,16 +10103,27 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
 
    function updateModelPicker(models) {
+     // Track the model identity FIRST, before any early return. The attach-button
+     // rule for Kiro / EricCLI reads currentModelId (those agents publish no
+     // per-model modalities, so the model name is the only signal). Returning
+     // early left currentModelId null, so the image button stayed hidden even on
+     // a vision model such as claude-opus-5.
+     if (models && models.availableModels && models.availableModels.length > 0) {
+       availableModels = models.availableModels;
+       currentModelId = models.currentModelId || null;
+     }
      // If configOptions are active, don't show the legacy model picker.
-     if (useConfigOptions) { modelPickerWrap.classList.add('hidden'); return; }
+     if (useConfigOptions) {
+       modelPickerWrap.classList.add('hidden');
+       updateAttachButtonVisibility();
+       return;
+     }
      if (!models || !models.availableModels || models.availableModels.length === 0) {
         modelPickerWrap.classList.add('hidden');
         availableModels = [];
         currentModelId = null;
         return;
       }
-      availableModels = models.availableModels;
-      currentModelId = models.currentModelId || null;
       modelPickerWrap.classList.remove('hidden');
       const current = availableModels.find(m => m.modelId === currentModelId);
       modelPickerLabel.textContent = current ? current.name : 'Model';
@@ -10305,6 +10342,16 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         modePickerWrap.classList.add('hidden');
         modelPickerWrap.classList.add('hidden');
         renderConfigPickers(configOptions);
+        // Adopt the model from the config option. For agents that publish
+        // configOptions INSTEAD of the legacy models field, this is the only
+        // place the active model becomes known — and the Kiro / EricCLI
+        // attach-button rule reads currentModelId, so without this the image
+        // button stays hidden on a vision model after a resume.
+        var _cfgModel = modelIdFromConfigOptions(configOptions);
+        if (_cfgModel) {
+          currentModelId = _cfgModel;
+        }
+        updateAttachButtonVisibility();
       } else {
         configOptionsContainer.innerHTML = '';
       }
