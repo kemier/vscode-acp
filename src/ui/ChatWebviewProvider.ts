@@ -176,7 +176,19 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * the webview's streaming lifecycle set up properly.
    */
   dispatchPrompt(text: string, hideBubble?: boolean): void {
-    this.postMessage({ type: 'sendPrompt', text, hideBubble: hideBubble === true });
+    this.postMessage({
+      type: 'sendPrompt',
+      text,
+      hideBubble: hideBubble === true,
+      // Carry the session fact with the prompt. handleSend() bails on
+      // !hasActiveSession WITHOUT consuming the input, so a stale webview flag
+      // left the forked summary sitting in the composer waiting for a manual
+      // Send. The flag is set from a `state` message, and fork-to-agent connects
+      // the target agent inside a suppressWebviewUpdates window — so its
+      // delivery races this dispatch. The host knows whether a session exists,
+      // so it is authoritative here rather than the webview's cached copy.
+      hasActiveSession: !!this.sessionManager.getActiveSessionId(),
+    });
   }
   private toolCallDiffs = new Map<string, Array<{ path: string; oldText?: string; newText: string }>>();
   private terminalContext = new TerminalContextProvider();
@@ -16278,6 +16290,24 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       // guards, and the user bubble).
       case 'sendPrompt':
         if (typeof msg.text === 'string' && msg.text.length > 0) {
+          // Host-dispatched prompt (fork-to-agent). The host tells us whether a
+          // session exists, because handleSend() bails on !hasActiveSession
+          // without consuming the input — which left the forked summary in the
+          // composer awaiting a manual Send. The webview's own flag comes from a
+          // state message that races this dispatch.
+          if (msg.hasActiveSession === true) {
+            hasActiveSession = true;
+          }
+          // Trace the guard inputs: if a dispatched prompt still does not send,
+          // this names which handleSend() guard swallowed it.
+          resumeDiag('[WV-DIAG] dispatchPrompt: len=' + msg.text.length +
+            ' hideBubble=' + (msg.hideBubble === true) +
+            ' hasActiveSession=' + hasActiveSession +
+            ' isProcessing=' + isProcessing +
+            ' isSendingPrompt=' + isSendingPrompt +
+            ' isLoadingSession=' + isLoadingSession +
+            ' isCompacting=' + isCompacting +
+            ' isClearing=' + isClearing);
           promptInput.value = msg.text;
           // Fork-to-agent can ask to hide the summary bubble (the summary is
           // still sent to the agent for context, just not rendered in the
