@@ -82,4 +82,55 @@ suite('tool-call title normalization', () => {
   test('a stripped cd keeps the trailing lines of a multi-line command', () => {
     assert.strictEqual(cleanAgentToolTitle('cd /tmp && echo one\necho two', CWD), 'echo one\necho two');
   });
+
+  // Kiro CLI replays shell tool calls with the tool NAME as the title, so the
+  // command lives only in rawInput. Without substituting here, the webview's own
+  // bare-title fallback re-inserts the RAW command and the `cd` survives — which
+  // is what still showed `cd <other-worktree> && grep …` on resume.
+  suite('bare tool name + rawInput command', () => {
+    test('substitutes the command and strips a foreign cd', () => {
+      assert.strictEqual(
+        cleanAgentToolTitle('shell', CWD, {
+          command: 'cd /workspace/git/ezennin/vscode-acp-a2a-memory && grep -n "^import" src/x.ts',
+        }),
+        'grep -n "^import" src/x.ts',
+      );
+    });
+
+    test('keeps a cd that targets the session cwd', () => {
+      assert.strictEqual(
+        cleanAgentToolTitle('shell', CWD, { command: `cd ${CWD} && npm test` }),
+        `cd ${CWD} && npm test`,
+      );
+    });
+
+    test('handles the legacy arguments.cmd / arguments.command shapes', () => {
+      assert.strictEqual(
+        cleanAgentToolTitle('exec_command', CWD, { arguments: { cmd: 'cd /tmp && ls' } }),
+        'ls',
+      );
+      assert.strictEqual(
+        cleanAgentToolTitle('shell_command', CWD, { arguments: { command: 'cd /tmp && ls' } }),
+        'ls',
+      );
+    });
+
+    test('array command form is joined', () => {
+      assert.strictEqual(cleanAgentToolTitle('shell', CWD, { command: ['ls', '-la'] }), 'ls -la');
+    });
+
+    test('a real command title is never replaced by rawInput', () => {
+      // Has whitespace, so it is a description — not a bare tool name.
+      assert.strictEqual(
+        cleanAgentToolTitle('npm test', CWD, { command: 'cd /tmp && something-else' }),
+        'npm test',
+      );
+    });
+
+    test('bare name with no usable rawInput is left alone', () => {
+      assert.strictEqual(cleanAgentToolTitle('shell', CWD), 'shell');
+      assert.strictEqual(cleanAgentToolTitle('shell', CWD, {}), 'shell');
+      assert.strictEqual(cleanAgentToolTitle('read', CWD, { path: '/a/b.ts' }), 'read');
+    });
+  });
 });

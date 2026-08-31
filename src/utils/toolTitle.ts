@@ -72,13 +72,72 @@ export function stripShellPrefix(command: string, cwd?: string): string {
 const RUNNING_PREFIX = /^Running:[ \t]+/;
 
 /**
+ * Extract a shell command from a tool call's rawInput, including the legacy
+ * `{ arguments: { cmd | command } }` shape used by raw-rollout fallbacks.
+ */
+function commandFromRawInput(rawInput: unknown): string {
+  if (!rawInput || typeof rawInput !== 'object' || Array.isArray(rawInput)) {
+    return '';
+  }
+  const ri = rawInput as Record<string, unknown>;
+  if (typeof ri.command === 'string' && ri.command.trim()) {
+    return ri.command.trim();
+  }
+  if (Array.isArray(ri.command)) {
+    return ri.command.join(' ').trim();
+  }
+  const args = ri.arguments;
+  if (args && typeof args === 'object' && !Array.isArray(args)) {
+    const a = args as Record<string, unknown>;
+    for (const key of ['cmd', 'command'] as const) {
+      const v = a[key];
+      if (typeof v === 'string' && v.trim()) {
+        return v.trim();
+      }
+    }
+  }
+  return '';
+}
+
+/**
+ * True when a title is a bare tool NAME rather than a description of the work.
+ *
+ * Kiro CLI replays shell tool calls with the tool name alone (`shell`,
+ * `execute`, `shell_command`, …), so the command exists only in rawInput. A
+ * single token with no whitespace is never a shell command worth showing when a
+ * real command is available alongside it.
+ */
+function isBareToolName(title: string): boolean {
+  const t = title.trim();
+  return t.length > 0 && t.length <= 24 && !/\s/.test(t);
+}
+
+/**
  * Normalize an agent-supplied tool-call title for display.
  *
- * Returns the input unchanged when there is nothing to strip, so callers can
- * apply it unconditionally to every agent's titles.
+ * When the agent supplied only a bare tool name and rawInput carries the real
+ * command, the command is substituted (normalized). Doing this here rather than
+ * in the webview matters twice over: the session cwd is only known on this side,
+ * and the webview's own bare-title fallback would otherwise re-insert the raw,
+ * unstripped command and undo the normalization.
+ *
+ * Returns the input unchanged when there is nothing to do, so callers can apply
+ * it unconditionally to every agent's titles.
  */
-export function cleanAgentToolTitle(title: string | null | undefined, cwd?: string): string {
+export function cleanAgentToolTitle(
+  title: string | null | undefined,
+  cwd?: string,
+  rawInput?: unknown,
+): string {
   const raw = typeof title === 'string' ? title : '';
+  // Bare tool name + a real command in rawInput → show the command.
+  if (isBareToolName(raw)) {
+    const cmd = commandFromRawInput(rawInput);
+    if (cmd) {
+      const fromRaw = stripShellPrefix(cmd, cwd);
+      return fromRaw.trim() ? fromRaw : cmd;
+    }
+  }
   if (!raw.trim()) {
     return raw;
   }

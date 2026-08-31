@@ -1973,6 +1973,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         const cleanedTitle = cleanAgentToolTitle(
           updateData.title,
           this.sessionManager.getSession(activeId)?.cwd,
+          updateData.rawInput,
         );
         if (cleanedTitle && cleanedTitle !== updateData.title) {
           updateData.title = cleanedTitle;
