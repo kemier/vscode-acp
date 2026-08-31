@@ -53,6 +53,17 @@ const RESUME_DIAG_MARKERS = [
   '[WV-DIAG]',
   '[WV-MERGE]',
   '[REPLAY-TRACE]',
+  // Replay ORDER trace. session/load replays a turn as
+  // tool → text → tool → text …; if chatHistory ends up grouped
+  // (all tools, then all texts) the fold renders one big tool block followed
+  // by every reply, which is the "grouped per section instead of interleaved"
+  // resume symptom. These three markers give the three orders needed to tell
+  // WHERE the interleave is lost: host post order ([WV-ORDER] host-post),
+  // webview arrival order ([WV-ORDER] wv-recv), and the chatHistory push order
+  // ([WV-ADDTC] for tools / [WV-COMMIT] for assistant text).
+  '[WV-ORDER]',
+  '[WV-ADDTC]',
+  '[WV-COMMIT]',
   'UMC chunk:',
   'UMC load-turn:',
   'restoreState',
@@ -4049,11 +4060,48 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * Queues messages while the webview hasn't sent 'ready' yet.
    */
   private postMessage(message: any): void {
+    this.traceReplayPost(message);
     if (this.webviewReady) {
       this.view?.webview.postMessage(message);
     } else {
       this.pendingMessages.push(message);
     }
+  }
+
+  /**
+   * Record the exact order in which session/update messages are handed to the
+   * webview during a session/load replay.
+   *
+   * The coalesced text path (StreamCoalescer.onFlush) and the direct path
+   * (tool_call, plan_update, …) both funnel through postMessage, so logging
+   * here — rather than at each call site — captures the true post order.
+   * Diffing it against the webview's arrival order and the chatHistory push
+   * order localizes a lost interleave to exactly one stage.
+   *
+   * No-op unless `acp.debugResume` is on AND the session is mid-load.
+   */
+  private replayPostSeq = 0;
+
+  private traceReplayPost(message: any): void {
+    if (!message || message.type !== 'sessionUpdate' || !this.isDebugResume()) {
+      return;
+    }
+    const sessionId = message.sessionId as string | undefined;
+    if (!sessionId || !this.sessionManager.isLoading(sessionId)) {
+      this.replayPostSeq = 0;
+      return;
+    }
+    const upd = message.update as any;
+    const kind = String(upd?.sessionUpdate || '?');
+    let detail = '';
+    if (kind === 'agent_message_chunk' || kind === 'agent_thought_chunk') {
+      detail = ` id=${upd?.messageId || '-'} len=${String(upd?.content?.text || '').length}`;
+    } else if (kind === 'tool_call' || kind === 'tool_call_update') {
+      detail = ` tool="${String(upd?.title || '').replace(/\s+/g, ' ').slice(0, 40)}"`;
+    } else if (kind === 'user_message_chunk') {
+      detail = ` len=${String(upd?.content?.text || '').length}`;
+    }
+    this.logResumeDiag(`[WV-ORDER] host-post #${++this.replayPostSeq} ${kind}${detail}`);
   }
 
   /**
@@ -8280,6 +8328,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     // True while a session/load replay is in progress. Used to suppress
     // per-chunk markdown rendering until the replay finishes.
     let isLoadingSession = false;
+    // Monotonic counter for the [WV-ORDER] replay arrival trace. Reset at each
+    // handleLoadSessionStart so the numbering matches one replay.
+    let replayRecvSeq = 0;
     // Snapshot of chatHistory kinds/roles captured at render time so the trace
     // can show the exact ordering the replay path consumes.
     function traceHistorySnapshot() {
@@ -8399,6 +8450,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       }
 
       var merged = [];
+      // Row identity → position in the LOADED replay. The agent's session/load
+      // replay IS the transcript chronology, so it is authoritative for the
+      // order of every row it contains; only snapshot-ONLY rows (inserted
+      // below) need snapshot-relative placement. See flushBucket().
+      var loadedOrder = new Map();
       for (var li = 0; li < loaded.length; li++) {
         var item = loaded[li];
         if (!item) continue;
@@ -8410,8 +8466,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
             var ct = String(copy.title || '').trim();
             if (ct && statusByTitle[ct]) copy.status = statusByTitle[ct];
           }
+          loadedOrder.set(copy, li);
           merged.push(copy);
         } else {
+          loadedOrder.set(item, li);
           merged.push(item);
         }
       }
@@ -8640,79 +8698,53 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        }
      }
 
-      // Resolve the snapshot position of a merged row.
-      //
-      // When "used" is supplied, snapshot slots already claimed by earlier rows
-      // are skipped, so the Nth row that matches a given signature maps to the
-      // Nth matching snapshot slot. This matters because a single turn often
-      // repeats the same tool title (several Edit of the same file). Matching on
-      // title alone always returned the FIRST such slot, so every one of those
-      // tools shared one sort key, they collapsed into a single block, and the
-      // thoughts that were interleaved between them (which keep their own,
-      // higher keys) were all pushed after the block - the "tool calls grouped
-      // at the top, thinking after" symptom on resume.
-      //
-      // Called without "used" the behaviour is unchanged (first match wins).
-      function snapshotOrderIndex(item, used) {
-        if (!item) return Number.MAX_SAFE_INTEGER;
-        var firstHit = -1;
-        for (var si = 0; si < snapshot.length; si++) {
-          var s = snapshot[si];
-          if (!s || s.kind !== item.kind) continue;
-          var hit = false;
-          if (item.kind === 'thought') {
-            var a = thoughtPrefixKey(item.text);
-            var b = thoughtPrefixKey(s.text);
-            if (a && b && (a === b || b.indexOf(a) === 0 || a.indexOf(b) === 0)) hit = true;
-          }
-          if (item.kind === 'toolCall') {
-            if (item.toolCallId && s.toolCallId && item.toolCallId === s.toolCallId) hit = true;
-            else if (String(item.title || '').trim() === String(s.title || '').trim()) hit = true;
-          }
-          if (item.kind === 'message' && item.role === 'assistant') {
-            if (String(item.text || '').trim() === String(s.text || '').trim()) hit = true;
-          }
-          if (item.kind === 'message' && (item.role === 'system' || item.role === 'error')) {
-            if (String(item.text || '').trim() === String(s.text || '').trim()) hit = true;
-          }
-          if (!hit) continue;
-          if (firstHit < 0) firstHit = si;
-          if (!used || !used[si]) return si;
-        }
-        // Every matching slot is already claimed (the merged timeline holds more
-        // copies than the snapshot). Reuse the first match rather than reporting
-        // "not found", which would fling the row to the tail of its turn.
-        return firstHit >= 0 ? firstHit : Number.MAX_SAFE_INTEGER;
-      }
 
       function reconcileInterleavedOrderFromSnapshot() {
         var rebuilt = [];
         var bucket = [];
         function flushBucket() {
           if (!bucket.length) return;
-          // Score every row ONCE, walking the bucket in merged order, claiming
-          // snapshot slots as we go. Computing the key up front (instead of
-          // inside the comparator) is what makes duplicate rows resolve to
-          // distinct, ordered slots: the first Edit takes the first matching
-          // snapshot slot, the second Edit the second, and so on. The thoughts
-          // between them keep their own keys, so the sort restores the real
-          // interleaving instead of hoisting every tool into one block.
-          var used = {};
+          // Key every row ONCE, walking the bucket in merged order.
+          //
+          // Rows that came from the agent's session/load replay keep their
+          // REPLAY order — the replay is the transcript chronology, so it is
+          // authoritative for anything it contains. Snapshot-ONLY rows (thoughts
+          // that the agent does not replay, assistants missing from a compacted
+          // replay) inherit the key of the row they were anchored after, +0.5,
+          // so they stay exactly where insertSnapshotItem placed them.
+          //
+          // This previously scored EVERY row with snapshotOrderIndex, which made
+          // the webview snapshot authoritative for intra-turn order. Two ways
+          // that broke a correct replay:
+          //   1. a row whose snapshot slot was missing scored MAX_SAFE_INTEGER
+          //      and sank behind every matched row;
+          //   2. when slots did match, the snapshot's order was re-imposed
+          //      verbatim over the replay's.
+          // Either way the result is persisted by saveState, so a wrong order
+          // became the next snapshot and was re-imposed on every later resume.
+          // Symptom: an ericli turn replayed as tool→text→tool→text rendered as
+          // one leading tool block followed by every reply ("grouped per
+          // section instead of interleaved").
+          //
+          // Duplicate same-title tools no longer need ordinal slot claiming
+          // here: they carry distinct replay positions, and the thoughts spliced
+          // between them by insertSnapshotItem inherit the preceding tool's key.
           var decorated = [];
+          var lastKnownKey = -1;
           for (var bi = 0; bi < bucket.length; bi++) {
-            decorated.push({
-              row: bucket[bi],
-              key: (function(r) {
-                var k = snapshotOrderIndex(r, used);
-                if (k !== Number.MAX_SAFE_INTEGER) used[k] = true;
-                return k;
-              })(bucket[bi]),
-              idx: bi
-            });
+            var bRow = bucket[bi];
+            var bKey;
+            if (bRow && loadedOrder.has(bRow)) {
+              bKey = loadedOrder.get(bRow);
+              lastKnownKey = bKey;
+            } else {
+              bKey = lastKnownKey + 0.5;
+            }
+            decorated.push({ row: bRow, key: bKey, idx: bi });
           }
           decorated.sort(function(a, b) {
             if (a.key !== b.key) return a.key - b.key;
-            // Equal keys keep merged order (rows absent from the snapshot).
+            // Equal keys keep merged order (consecutive snapshot-only rows).
             return a.idx - b.idx;
           });
           for (var di = 0; di < decorated.length; di++) rebuilt.push(decorated[di].row);
@@ -8720,18 +8752,16 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         }
         // Interrupt notices are turn artefacts, not real user prompts — they
         // must act as BOUNDARIES in the merged timeline, not as bucket content.
-        // Bucketing them would sort them to the absolute tail (they have no
-        // snapshotOrderIndex → MAX_SAFE_INTEGER), i.e. AFTER the final completed
-        // turn. reconcileInterruptedSessionFlag → applyInterruptNoticesFromHistory
-        // would then brand the last FINISHED assistant as interrupted and the
-        // collapsed title shows "Interrupted" after a normal reload + resume.
+        // They also delimit turns for reconcileInterruptedSessionFlag →
+        // applyInterruptNoticesFromHistory: swallowed into a bucket, a notice
+        // could end up after the turn's final assistant, branding a FINISHED
+        // reply as interrupted so the collapsed title reads "Interrupted"
+        // after a normal reload + resume.
         for (var ri = 0; ri < merged.length; ri++) {
           var row = merged[ri];
           // System and error messages act as turn boundaries (they reset
           // the turn in renderChatHistory), so they must also act as
-          // bucket boundaries here. Without this, compaction notices
-          // (system messages) get sorted to the end of their bucket because
-          // snapshotOrderIndex returns MAX_SAFE_INTEGER for unmatched items.
+          // bucket boundaries here — a bucket must never span two turns.
           if (row && row.kind === 'message' && (row.role === 'user' || row.role === 'system' || row.role === 'error')) {
             flushBucket();
             rebuilt.push(row);
@@ -9228,6 +9258,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    for (var _rk in pendingRenderRetries) { delete pendingRenderRetries[_rk]; }
    dismissPsPanel(true);
     isLoadingSession = true;
+    replayRecvSeq = 0;
     // A historical "Context compacted" tool_call during session/load must NOT
     // leave isCompacting stuck true — that silently blocks handleSend().
     isCompacting = false;
@@ -13101,7 +13132,7 @@ function commitCurrentTextSegment(opts) {
       if (isCursorAgentSession() && !isLoadingSession) {
         completeInFlightToolCalls(toolCallId);
       }
-      vscode.postMessage({ type: 'debugLog', message: '[WV-ADDTC] title="' + title + '" id=' + (toolCallId || '').slice(0, 12) + ' chatHistoryLen BEFORE=' + chatHistory.length + ' currentAssistantTextLen=' + currentAssistantText.length + ' hasCurrentAssistantEl=' + !!currentAssistantEl });
+      vscode.postMessage({ type: 'debugLog', message: '[WV-ADDTC] title="' + String(title || '').replace(/\\s+/g, ' ').slice(0, 60) + '" id=' + (toolCallId || '').slice(0, 12) + ' chatHistoryLen BEFORE=' + chatHistory.length + ' currentAssistantTextLen=' + currentAssistantText.length + ' hasCurrentAssistantEl=' + !!currentAssistantEl });
       // Commit any in-progress thought BEFORE assistant text and tool call
       // so chatHistory order stays thought → text → tools. Without this,
       // commitOrDiscardCurrentThought runs later in ensureTurnTools (called
@@ -17886,6 +17917,22 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       return;
     }
     const type = update.sessionUpdate;
+
+    // Replay ORDER trace (see RESUME_DIAG_MARKERS). Logs the order updates
+    // ARRIVE at the webview during session/load, plus the state that decides
+    // whether the next tool call commits the pending assistant text. If
+    // pendTxt=0 when a tool_call arrives even though its text was posted
+    // first, the interleave was lost between host post and webview arrival.
+    if (isLoadingSession) {
+      var _ordTxt = update.content && update.content.type === 'text' && update.content.text
+        ? String(update.content.text).length : 0;
+      resumeDiag('[WV-ORDER] wv-recv #' + (++replayRecvSeq) + ' ' + type +
+        ' id=' + (update.messageId || '-') +
+        ' len=' + _ordTxt +
+        ' pendTxt=' + currentAssistantText.length +
+        ' hasAsstEl=' + !!currentAssistantEl +
+        ' hist=' + chatHistory.length);
+    }
 
     // [DEBUG-SUBAGENT] Log every update type received by webview
     if (DEBUG && (type === 'agent_message_chunk' || type === 'tool_call' || type === 'agent_thought_chunk')) {
