@@ -165,9 +165,9 @@ suite('MemoryCacheStability', () => {
   });
 
   suite('shouldInjectSkillToolsForMode (curl recipe once per profile)', () => {
-    test('skill tools block only on full mode', () => {
+    test('skill tools block injected on all modes except none', () => {
       assert.strictEqual(shouldInjectSkillToolsForMode('full'), true);
-      assert.strictEqual(shouldInjectSkillToolsForMode('l1-only'), false);
+      assert.strictEqual(shouldInjectSkillToolsForMode('l1-only'), true);
       assert.strictEqual(shouldInjectSkillToolsForMode('none'), false);
     });
 
@@ -176,10 +176,11 @@ suite('MemoryCacheStability', () => {
         promptedSessions: new Set<string>(['sess-1']),
         memoryProfileInjectedSessions: new Set<string>(['sess-1']),
       };
+      // l1-only (profile already injected) still injects the curl recipe.
       assert.strictEqual(shouldInjectSkillToolsForMode(resolveMemoryInjectMode('codex-acp', {
         sessionAlreadyPrompted: gates.promptedSessions.has('sess-1'),
         profileAlreadyInjected: gates.memoryProfileInjectedSessions.has('sess-1'),
-      })), false);
+      })), true);
 
       resetMemoryInjectGates('sess-1', gates);
       assert.strictEqual(shouldInjectSkillToolsForMode(resolveMemoryInjectMode('codex-acp', {
