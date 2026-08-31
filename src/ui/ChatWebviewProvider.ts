@@ -6308,6 +6308,27 @@ let isCompacting = false;  // true while /compact is running
 //   - messages drain strictly FIFO, one per agent turn;
 //   - the transition tick (sendPrompt posted, promptStart not yet received)
 //     queues instead of racing the in-flight prompt.
+/**
+ * True when an incoming agent_thought_chunk has no turn to belong to and must
+ * be dropped rather than appended.
+ *
+ * A thought that arrives while the panel is idle — session/load finished,
+ * nothing streaming, no compaction, and outside the post-end_turn tail-grace
+ * window — cannot be attached to any turn. Appending it pushes a thought block
+ * to the very END of chatHistory, after the entire conversation: the "thinking
+ * blocks grouped at the bottom" symptom on resume. Measured on a Kiro resume:
+ * chatHistory ended with ten consecutive thoughts (indices 672-681) even though
+ * the wire delivered them interleaved, because the replay tail landed after
+ * loadSessionEnd had already flipped isLoadingSession to false.
+ *
+ * This mirrors the guard the agent_message_chunk case has always had. The
+ * tail-grace window is what keeps a legitimately late final thought (agent
+ * still flushing after end_turn) from being discarded.
+ */
+function shouldDropIdleThoughtChunk(isLoadingSession, isProcessing, isCompacting, inTailGrace) {
+  return !isLoadingSession && !isProcessing && !isCompacting && !inTailGrace;
+}
+
 function queueIsMutatingCommand(text) {
   // NOTE: this block lives inside the webview HTML template literal, so every
   // backslash must be DOUBLED (\\/) — a single backslash is collapsed by the
@@ -18415,6 +18436,15 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
          const content = update.content;
          if (content && content.type === 'text') {
            endCompactingOnAgentResume();
+           // Stale replay tail: a thought with no turn to attach to would be
+           // appended after the whole conversation. See
+           // shouldDropIdleThoughtChunk for why (and the measured case).
+           var _thoughtTailGrace = Date.now() <= turnTailGraceUntil;
+           if (shouldDropIdleThoughtChunk(isLoadingSession, isProcessing, isCompacting, _thoughtTailGrace)) {
+             resumeDiag('[WV-DIAG] thought-drop: idle chunk, no active turn (len=' +
+               String(content.text || '').length + ')');
+             break;
+           }
            // Cursor: model thinking again means prior tools finished.
            if (isCursorAgentSession() && !isLoadingSession && String(content.text || '').trim()) {
              completeInFlightToolCalls(null);
