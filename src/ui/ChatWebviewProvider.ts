@@ -65,6 +65,14 @@ const RESUME_DIAG_MARKERS = [
   '[WV-ORDER]',
   '[WV-ADDTC]',
   '[WV-COMMIT]',
+  // Subagent/crew routing. A resumed Kiro session rendered a "spawned 1
+  // subagent" card although the agent reported an empty subagent list and no
+  // tool call in the session had a qualifying title or rawInput — so the
+  // trigger is not on the wire and has to be caught where the card is built.
+  // [WV-CREW] names the predicate that fired; [STAGE-DBG] (already emitted
+  // unconditionally, previously filtered out here) shows the stage role.
+  '[WV-CREW]',
+  '[STAGE-DBG]',
   'UMC chunk:',
   'UMC load-turn:',
   'restoreState',
@@ -6308,6 +6316,42 @@ let isCompacting = false;  // true while /compact is running
 //   - messages drain strictly FIFO, one per agent turn;
 //   - the transition tick (sendPrompt posted, promptStart not yet received)
 //     queues instead of racing the in-flight prompt.
+/**
+ * Explain WHY a tool call was routed into the subagent/crew UI, or 'none'.
+ *
+ * Mirrors isSubagentSpawnTitle / looksLikeClaudeAgentSpawn but returns the
+ * specific predicate that fired, so a false "spawned N subagent(s)" card can be
+ * traced to its trigger. Diagnostics only — the routing decision still belongs
+ * to isSubagentSpawnTitle.
+ *
+ * Why this exists: a Kiro resume rendered a "spawned 1 subagent" card although
+ * the agent reported {"subagents": [], "pendingStages": []} and NO tool call in
+ * the whole session had a qualifying title or rawInput (title census: shell,
+ * write, read, grep, glob, Running:, Editing, Creating). The trigger was not on
+ * the wire, so it has to be identified at the moment the card is built.
+ *
+ * Uses indexOf rather than regexes: this lives inside the webview template
+ * literal, where a single-backslash escape would be collapsed and corrupt the
+ * emitted script.
+ */
+function subagentSpawnReason(title, rawInput) {
+  var tn = String(title || '').trim();
+  var tl = tn.toLowerCase();
+  var ri = (rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput)) ? rawInput : null;
+  if (ri && typeof ri.subagent_type === 'string' && ri.subagent_type.trim()) {
+    return 'rawInput.subagent_type=' + ri.subagent_type.trim();
+  }
+  if (ri && String(ri._toolName || '').trim().toLowerCase() === 'agent') {
+    return 'rawInput._toolName=agent';
+  }
+  if (tl === 'task' || tl === 'agent' || tl === 'subagent') return 'title==' + tl;
+  if (tn === 'spawnAgent' || tn === 'spawn_agent' || tn === 'spawn_agents_on_csv') return 'title==' + tn;
+  if (tl.indexOf('spawn') === 0 && tl.indexOf('agent') >= 0) return 'title:spawn*agent';
+  if (tl.indexOf('spawning') >= 0 && tl.indexOf('agent') >= 0) return 'title:spawning+agent';
+  if (tl.indexOf('agent crew') >= 0) return 'title:agent-crew';
+  return 'none';
+}
+
 /**
  * True when an incoming agent_thought_chunk has no turn to belong to and must
  * be dropped rather than appended.
@@ -14830,6 +14874,20 @@ function commitCurrentTextSegment(opts) {
      // Kiro stages[] → aggregate into one Kiro-style crew card.
      var hasKiroStages = rawInput && typeof rawInput === 'object' &&
        Array.isArray(rawInput.stages) && rawInput.stages.length > 0;
+     // Trace every crew routing decision so a FALSE "spawned N subagent(s)" card
+     // can be traced to the predicate + payload that produced it. Gated on
+     // acp.debugResume; silent when nothing matches.
+     var _crewReason = subagentSpawnReason(title, rawInput);
+     if (_crewReason !== 'none') {
+       resumeDiag('[WV-CREW] route: reason=' + _crewReason +
+         ' title="' + String(title || '').replace(/\\s+/g, ' ').slice(0, 60) + '"' +
+         ' kind=' + String(toolKind) +
+         ' hasKiroStages=' + !!hasKiroStages +
+         ' loading=' + isLoadingSession + ' processing=' + isProcessing +
+         ' id=' + String(toolCallId || '').slice(0, 12) +
+         ' riKeys=' + (rawInput && typeof rawInput === 'object'
+           ? Object.keys(rawInput).join(',') : typeof rawInput));
+     }
      if (isSubagentSpawnTitle(title, rawInput) && !hasKiroStages) {
        addOrExtendSubagentCrew(toolCallId, title, status, rawInput, toolKind, locations);
        return;
