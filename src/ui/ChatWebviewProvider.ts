@@ -2803,6 +2803,19 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // stopProcesses() clears its internal backgroundProcesses map but never
     // emits tool_call_update notifications for the killed processes.
     this.postMessage({ type: 'processesStopped' });
+    // An explicit /stop means the user is done with this turn. Killing the
+    // processes does NOT end the ACP turn: the agent's prompt promise stays
+    // pending, so no promptEnd arrives, a queued "Send Now" message never
+    // drains and the composer stays blocked showing "Interrupting…".
+    // Measured: `Stop processes for session …` was the LAST line in the log,
+    // 8 minutes after the cancel, with no promptEnd and no new turn.
+    // Route through the same cancel + 5s fallback path so the turn reliably
+    // ends. handleCancelTurn dedups when a fallback is already pending, and
+    // this is a no-op when nothing is in flight.
+    if (this.sessionManager.isPromptInFlight(activeId)) {
+      log(`Stop processes: turn still in flight for ${activeId}, requesting cancel so the turn ends`);
+      await this.handleCancelTurn();
+    }
   }
 
   /**
