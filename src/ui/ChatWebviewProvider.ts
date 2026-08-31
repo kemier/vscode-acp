@@ -2614,28 +2614,34 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // without flushing, promptEnd arrives at the webview first and
       // commitCurrentTextSegment commits incomplete text.
       this.streamCoalescer.flush(activeId);
+      // ── Stale-resolution guard, BEFORE touching shared cancel state ──────
+      // When "Send Now" fires the cancel fallback, forceAbortPrompt removes the
+      // session from the in-flight set so a NEW sendPrompt can start (bumping
+      // _cancelGeneration). The OLD promise is still alive — when the agent
+      // finally processes the cancel (13s in one measured ericli session, and
+      // 60-90s for long-running commands) it resolves here.
+      //
+      // This must not touch _cancelFallbackTimer / _pendingPromptSessionId,
+      // because those now belong to the NEW prompt. Clearing them stranded the
+      // next cancel: handleCancelTurn armed its fallback, the fallback's
+      // `_pendingPromptSessionId === activeId` guard was false, so it silently
+      // did nothing — no promptEnd, the turn never ended, the queued Send Now
+      // message never drained and the "Interrupting" status stuck forever.
+      // Measured: `Cancelling turn` at 06:38:22 with no `Cancel fallback` line
+      // after it, where the earlier cancel at 06:36:10 did produce one.
+      if (promptGeneration !== this._cancelGeneration) {
+        log(
+          `handleSendPrompt: stale response (gen ${promptGeneration} → ${this._cancelGeneration}), suppressing promptEnd (cancel state left to the current prompt)`,
+        );
+        this.onAgentTurnEnded(activeId);
+        return;
+      }
       // Agent acknowledged — cancel the fallback timer and clear pending session.
       if (this._cancelFallbackTimer) {
         clearTimeout(this._cancelFallbackTimer);
         this._cancelFallbackTimer = null;
       }
       this._pendingPromptSessionId = null;
-      // ── Stale promptEnd guard ───────────────────────────────────────────
-      // When "Send Now" fires the cancel fallback, forceAbortPrompt removes
-      // the session from the in-flight set, allowing a NEW sendPrompt to
-      // start (which increments _cancelGeneration again). But the OLD
-      // sendPrompt promise is still alive — when the agent finally processes
-      // the cancel (can be 60-90s later for long-running commands), the old
-      // promise resolves and would post a STALE promptEnd(cancelled) that
-      // kills the new turn ("— Conversation interrupted —"). Guard: if the
-      // generation changed since this prompt started, the response is stale.
-      if (promptGeneration !== this._cancelGeneration) {
-        log(
-          `handleSendPrompt: stale response (gen ${promptGeneration} → ${this._cancelGeneration}), suppressing promptEnd`,
-        );
-        this.onAgentTurnEnded(activeId);
-        return;
-      }
       // Render the accumulated assistant text as markdown
       // The webview will have sent us the raw text via promptEnd handling
       // Only deliver promptEnd to the webview if this session is still the
@@ -2659,20 +2665,23 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       this.onAgentTurnEnded(activeId);
       this.sessionManager.touchHistory(activeId);
     } catch (e: any) {
+      // Stale-resolution guard FIRST — same reasoning as the success path: a
+      // superseded prompt failing late must not clear the cancel state that now
+      // belongs to the current prompt, or the next cancel's fallback is
+      // stranded and the turn never ends.
+      if (promptGeneration !== this._cancelGeneration) {
+        log(
+          `handleSendPrompt: stale error (gen ${promptGeneration} → ${this._cancelGeneration}), suppressing promptEnd (cancel state left to the current prompt)`,
+        );
+        this.streamCoalescer.flush(activeId);
+        return;
+      }
       // Clear fallback timer and pending session on error too.
       if (this._cancelFallbackTimer) {
         clearTimeout(this._cancelFallbackTimer);
         this._cancelFallbackTimer = null;
       }
       this._pendingPromptSessionId = null;
-      // Stale promptEnd guard (error path): same race as the success path.
-      if (promptGeneration !== this._cancelGeneration) {
-        log(
-          `handleSendPrompt: stale error (gen ${promptGeneration} → ${this._cancelGeneration}), suppressing promptEnd`,
-        );
-        this.streamCoalescer.flush(activeId);
-        return;
-      }
       logError('Prompt failed', e);
       const errMsg = formatAcpErrorMessage(e, 'Prompt failed');
       // Suppress the error if the connection was closed because the user
