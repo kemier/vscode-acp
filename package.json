@@ -393,6 +393,11 @@
           "default": "",
           "description": "Default working directory for agent sessions. Leave empty to use the current workspace folder."
         },
+        "acp.debug": {
+          "type": "boolean",
+          "default": false,
+          "description": "Master debug switch. When enabled, verbose diagnostics such as [FORK-DEBUG] (fork-to-agent memory/skill injection) are logged to the ACP Client output channel."
+        },
         "acp.debugResume": {
           "type": "boolean",
           "default": false,

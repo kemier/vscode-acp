@@ -1035,12 +1035,16 @@ export class SessionManager extends EventEmitter {
             }
           }
           const skillList = forkSkills.length > 0 ? forkSkills.join(', ') : '(none in injected block)';
-          log(
-            `[FORK-DEBUG] forked prompt → target agent=${session.agentName} (memoryAgentId=${memoryAgentId}) ` +
-              `mode=${memoryInjectMode} blocks=${memoryBlocks.length} bytes=${blobBytes} ` +
-              `persona=${/user-persona/i.test(memoryBlocks.map((b) => (b as any)?.resource?.text || '').join(''))} ` +
-              `skills=[${skillList}]`,
-          );
+          // Gate this verbose fork diagnostic behind acp.debug (master debug switch)
+          // so it only appears when explicitly enabled, not on every fork.
+          if (vscode.workspace.getConfiguration('acp').get<boolean>('debug', false)) {
+            log(
+              `[FORK-DEBUG] forked prompt → target agent=${session.agentName} (memoryAgentId=${memoryAgentId}) ` +
+                `mode=${memoryInjectMode} blocks=${memoryBlocks.length} bytes=${blobBytes} ` +
+                `persona=${/user-persona/i.test(memoryBlocks.map((b) => (b as any)?.resource?.text || '').join(''))} ` +
+                `skills=[${skillList}]`,
+            );
+          }
         }
       } catch (e) {
         logError('Memory recall failed', e);
