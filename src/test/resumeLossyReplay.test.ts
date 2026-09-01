@@ -210,3 +210,39 @@ suite('pre-load turn merge dedupe', () => {
     );
   });
 });
+
+suite('replay tail after load end', () => {
+  test('loadSessionEnd is deferred past the coalescer interval and re-flushes', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const constMatch = src.match(/const LOAD_END_TAIL_FLUSH_MS = (\d+);/);
+    assert.ok(constMatch, 'LOAD_END_TAIL_FLUSH_MS not defined');
+    const delay = Number(constMatch![1]);
+    const intervalMatch = src.match(/flushIntervalMs: (\d+),/);
+    assert.ok(intervalMatch, 'coalescer flushIntervalMs not found');
+    assert.ok(
+      delay > Number(intervalMatch![1]),
+      `load-end delay (${delay}ms) must exceed the coalescer interval (${intervalMatch![1]}ms)`,
+    );
+
+    const idx = src.indexOf('notifyLoadSessionEnd(ok: boolean): void {');
+    assert.ok(idx > 0, 'notifyLoadSessionEnd not found');
+    const body = src.slice(idx, idx + 2400);
+    assert.ok(
+      body.indexOf('setTimeout(() => {') > 0 && body.indexOf('LOAD_END_TAIL_FLUSH_MS') > 0,
+      'loadSessionEnd must be posted from the deferred callback',
+    );
+    const flushIdx = body.lastIndexOf('this.streamCoalescer.flush(activeId);');
+    const postIdx = body.indexOf("this.postMessage({ type: 'loadSessionEnd', ok });");
+    assert.ok(flushIdx > 0 && postIdx > flushIdx, 'the final flush must run BEFORE loadSessionEnd is posted');
+  });
+
+  test('a dropped replay tail chunk is visible in the resume diagnostics', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const markers = src.slice(
+      src.indexOf('const RESUME_DIAG_MARKERS = ['),
+      src.indexOf('function isResumeDiagWebviewMessage'),
+    );
+    assert.ok(markers.indexOf("'[WV-CHUNK-DROP]'") > 0, 'the chunk-drop marker must be logged under acp.debugResume');
+    assert.ok(markers.indexOf("'[WV-LOAD-TAIL]'") > 0, 'the load-tail flush marker must be logged');
+  });
+});

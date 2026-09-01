@@ -74,6 +74,11 @@ const RESUME_DIAG_MARKERS = [
   // unconditionally, previously filtered out here) shows the stage role.
   '[WV-CREW]',
   '[STAGE-DBG]',
+  // A replay tail chunk that arrives after loadSessionEnd is dropped as an
+  // "idle" chunk — that is how an ericli resume lost its last summary. Keep the
+  // drop visible so the next occurrence is one grep away.
+  '[WV-CHUNK-DROP]',
+  '[WV-LOAD-TAIL]',
   'UMC chunk:',
   'UMC load-turn:',
   'restoreState',
@@ -81,8 +86,17 @@ const RESUME_DIAG_MARKERS = [
   'orphan merge:',
 ];
 
-function isResumeDiagWebviewMessage(message: string): boolean {
-  if (!message) {
+/**
+ * How long `notifyLoadSessionEnd` waits before declaring a replay finished.
+ *
+ * Must exceed the StreamCoalescer interval (8 ms) so a final
+ * agent_message_chunk whose handler runs after the session/load response still
+ * reaches the webview while `isLoadingSession` is true. Small enough to be
+ * invisible: the load overlay is already up.
+ */
+const LOAD_END_TAIL_FLUSH_MS = 30;
+
+function isResumeDiagWebviewMessage(message: string): boolean {  if (!message) {
     return false;
   }
   return RESUME_DIAG_MARKERS.some((marker) => message.includes(marker));
@@ -4396,7 +4410,34 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     if (activeId) {
       this.streamCoalescer.flush(activeId);
     }
-    this.postMessage({ type: 'loadSessionEnd', ok });
+    // …but flushing here is not sufficient on its own. The agent can put its
+    // final agent_message_chunk on the wire immediately before the session/load
+    // response (measured: 2 ms), and the notification handler that appends it to
+    // the coalescer runs AFTER the response promise resolves — i.e. after the
+    // flush above. The chunk then reached the webview behind loadSessionEnd,
+    // where isLoadingSession was already false and the idle-chunk guard dropped
+    // it: an ericli resume lost the whole final summary of its last turn that
+    // way, and the interim reply was promoted in its place.
+    //
+    // Give the notification queue one macrotask to drain (longer than the
+    // coalescer interval), flush again, and only then declare the replay over.
+    // The delay is invisible to the user — the load overlay is already up.
+    setTimeout(() => {
+      if (this.suppressWebviewUpdates) {
+        return;
+      }
+      if (activeId) {
+        const pending = this.streamCoalescer._pending(activeId);
+        if (pending && (pending.msg || pending.thought)) {
+          getOutputChannel().appendLine(
+            `[ACP-DEBUG] [WV-LOAD-TAIL] flushing replay tail after load response: ` +
+              `msg=${pending.msg.length} thought=${pending.thought.length}`,
+          );
+        }
+        this.streamCoalescer.flush(activeId);
+      }
+      this.postMessage({ type: 'loadSessionEnd', ok });
+    }, LOAD_END_TAIL_FLUSH_MS);
     // Cursor batch enrich is requested by the webview after snapshot-merge +
     // renderChatHistory (handleLoadSessionEnd). Scheduling here races ahead of
     // merge and enrichments get wiped when chatHistory is rebuilt.
