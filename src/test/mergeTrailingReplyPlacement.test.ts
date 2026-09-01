@@ -134,6 +134,56 @@ suite('merge trailing reply placement (second-resume regression)', () => {
     assert.deepStrictEqual(shape(merged), shape(repaired), 'a second resume must reproduce the same order');
   });
 
+  test('a snapshot that already holds the reply in the WRONG place self-heals', () => {
+    const merge = loadMerge();
+    // What two bad resumes left on disk: the reply spliced into turn 1.
+    const corrupted = [
+      user('q1'),
+      tool('tc-1', 'ls'),
+      asst('THE SUMMARY'),
+      asst('a1'),
+      user('q2'),
+      tool('tc-3', 'grep x'),
+      tool('tc-2', 'grep y'),
+    ];
+    // The replay tail is now committed BEFORE the merge, so the loaded timeline
+    // ends with the reply in true wire order.
+    const loaded = [
+      user('q1'),
+      tool('tc-1', 'ls'),
+      asst('a1'),
+      user('q2'),
+      tool('tc-3', 'grep x'),
+      tool('tc-4', 'grep y'),
+      asst('THE SUMMARY'),
+    ];
+
+    const merged = merge(loaded, corrupted);
+    const summaries = shape(merged).filter((r) => r === 'assistant:THE SUMMARY');
+    assert.strictEqual(summaries.length, 1, 'the stale copy must be deduped, not added again');
+    assert.strictEqual(
+      shape(merged)[merged.length - 1],
+      'assistant:THE SUMMARY',
+      'the surviving copy must be the one at the end',
+    );
+  });
+
+  test('the replay tail is committed BEFORE the snapshot merge', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const endIdx = src.indexOf('function handleLoadSessionEnd(ok) {');
+    assert.ok(endIdx > 0, 'handleLoadSessionEnd not found');
+    const body = src.slice(endIdx, endIdx + 30000);
+    const commitIdx = body.indexOf("'[WV-LOAD-TAIL] committing replay tail reply before merge");
+    const mergeIdx = body.indexOf('chatHistory = mergeLoadedWithSnapshotOverlay(');
+    assert.ok(commitIdx > 0, 'the replay tail is never committed in handleLoadSessionEnd');
+    assert.ok(mergeIdx > 0, 'the snapshot merge call moved');
+    assert.ok(commitIdx < mergeIdx, 'the commit must happen BEFORE the merge or the stale copy wins');
+    assert.ok(
+      body.indexOf('but that text is ALREADY in the snapshot') < 0,
+      'the merge must no longer discard the authoritative replay tail',
+    );
+  });
+
   test('the ordinal helper is asked for the ANCHOR tool position, never the inserted item', () => {
     const src = fs.readFileSync(SOURCE, 'utf8');
     assert.ok(

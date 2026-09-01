@@ -9676,6 +9676,22 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    resetResumeConnectUi();
    hideEmpty();
    isLoadingSession = false;
+   // Commit the replay's trailing reply BEFORE anything merges the snapshot.
+   //
+   // The agent's final agent_message_chunk arrives at the very end of the
+   // replay and only lives in currentAssistantText until something commits it.
+   // The full-snapshot merge below used to run first and then DISCARD that text
+   // ("it is already in the snapshot") — which is false once the snapshot itself
+   // holds the reply in the wrong place: a previous resume had spliced it into
+   // an earlier turn, so the merge kept the bad position (merged[81]) and threw
+   // away the authoritative copy. Committing first makes the loaded timeline —
+   // which is in true wire order — end with the reply, and the snapshot's stale
+   // copy is then skipped by the merge's text dedup.
+   if (currentAssistantText) {
+     vscode.postMessage({ type: 'debugLog', message:
+       '[WV-LOAD-TAIL] committing replay tail reply before merge (len=' + currentAssistantText.length + ')' });
+     finalizeCurrentAssistantTurn();
+   }
    // The live snapshot belongs to whatever session was last on screen. When
    // that is NOT the session we just loaded (A → B → A switch), fall back to
    // this session's archived history so the merge below can still restore what
@@ -9937,14 +9953,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        chatHistory = _merged;
        var _mergedUserCount = countRealUsers(_merged);
       vscode.postMessage({ type: 'debugLog', message: '[WV-MERGE] full snapshot merge: ' + _merged.length + ' items (snap=' + preLoadChatHistorySnapshot.length + ' loaded=' + _diagLoadedLen + ' injectedUsers=' + _injectedUsers + ' mergedUsers=' + _mergedUserCount + ')' });
-      // The snapshot already contains every assistant message from the live
-      // session (it was saved before the reload). The agent_message_chunk
-      // events replayed during session/load accumulated text into
-      // currentAssistantText, but that text is ALREADY in the snapshot.
-      // Clear it so finalizeCurrentAssistantTurn() (called below) does not
-      // push a duplicate assistant message — the dedup guard there only
-      // checks the LAST chatHistory entry, which after a full-snapshot merge
-      // is often a tool_call, causing the guard to miss the duplicate.
+      // The replay's trailing reply was already committed at the top of
+      // handleLoadSessionEnd, so the loaded timeline carried it into the merge
+      // and the snapshot's copy was skipped by the text dedup. Nothing is left
+      // in currentAssistantText to clear — only reset the DOM pointers so the
+      // next turn starts clean.
       currentAssistantEl = null;
       currentAssistantText = '';
       if (currentTurnEl) { currentTurnEl = null; }

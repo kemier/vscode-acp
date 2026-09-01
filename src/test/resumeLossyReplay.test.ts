@@ -99,7 +99,7 @@ suite('per-session history archive', () => {
     );
     const endIdx = src.indexOf('function handleLoadSessionEnd(ok) {');
     assert.ok(endIdx > 0, 'handleLoadSessionEnd not found');
-    const head = src.slice(endIdx, endIdx + 1600);
+    const head = src.slice(endIdx, endIdx + 3200);
     assert.ok(
       head.indexOf('sessionHistoryArchive[_archiveCurId]') > 0,
       'handleLoadSessionEnd does not fall back to the archived history',
