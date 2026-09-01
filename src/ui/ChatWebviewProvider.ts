@@ -12031,6 +12031,35 @@ function orderCompactFoldContents(body) {
           a.classList.remove('assistant-summary');
         }
       });
+     // A completed tool call whose history index is ABOVE the promoted summary's
+     // index is a resume-merge history-index mis-ordering: the tool belongs
+     // *before* the final reply but got a higher index on replay (e.g. the last
+     // tool#276 vs summary#275). If left in the fold, orderCompactFoldContents
+     // sorts it to the end of the fold body, so expanding shows the tool AFTER
+     // the promoted summary. Re-home it to sit immediately BEFORE the summary in
+     // the turn so the expanded fold reads tool → summary (matching the wire
+     // order where the tool precedes the final reply). Only completed tools — a
+     // running/pending tool after the summary means a genuinely interrupted
+     // turn (handled by the forceFold branch above).
+     if (body && !suppressFoldOrdering) {
+       var _summaryIdx = assistantHistoryIndex(summaryEl);
+       var _trailingTools = Array.prototype.slice.call(
+         body.querySelectorAll('.turn-tools')
+       ).filter(function(tc) {
+         var _ti = assistantHistoryIndex(tc);
+         if (_ti <= _summaryIdx) return false;
+         return !tc.querySelector(
+           '.tc-icon.running, .tc-icon.in_progress, .tc-icon.pending, ' +
+           '.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending'
+         );
+       });
+       if (_trailingTools.length) {
+         _trailingTools.forEach(function(tc) {
+           if (tc.parentNode) tc.parentNode.removeChild(tc);
+           turn.insertBefore(tc, summaryEl);
+         });
+       }
+     }
      // Re-home interim segments in document order (avoid append-to-bottom).
      if (body && !suppressFoldOrdering) orderCompactFoldContents(body);
      // [WV-DIAG] Trailing-tool-after-summary probe: reports any completed tool
