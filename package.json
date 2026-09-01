@@ -1,7 +1,7 @@
 {
   "name": "acp-client",
   "displayName": "ACP Client",
-  "description": "Agent Client Protocol client for VS Code \u2014 connect to GitHub Copilot, Claude Code, Gemini CLI, Qwen Code, Codex CLI, OpenCode, OpenClaw, Kiro CLI, Hermes Agent, and any ACP-compatible AI coding agent",
+  "description": "Agent Client Protocol client for VS Code — connect to GitHub Copilot, Claude Code, Gemini CLI, Qwen Code, Codex CLI, OpenCode, OpenClaw, Kiro CLI, Hermes Agent, and any ACP-compatible AI coding agent",
   "version": "0.3.5",
   "publisher": "formulahendry",
   "license": "MIT",
@@ -349,7 +349,9 @@
             },
             "Cursor": {
               "command": "cursor-agent",
-              "args": ["acp"],
+              "args": [
+                "acp"
+              ],
               "env": {}
             }
           }
@@ -458,7 +460,7 @@
         "acp.memory.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable TencentDB Agent Memory (Model B): shared team memory with per-agent profiles (codex/claude/kiro/\u2026). Requires a running MemoryCore Gateway."
+          "description": "Enable TencentDB Agent Memory (Model B): shared team memory with per-agent profiles (codex/claude/kiro/…). Requires a running MemoryCore Gateway."
         },
         "acp.memory.endpoint": {
           "type": "string",
@@ -488,7 +490,7 @@
         "acp.memory.agentIdMap": {
           "type": "object",
           "default": {},
-          "description": "Optional map of ACP agent config name \u2192 MemoryCore agent_id. Unmapped names use built-in heuristics (Codex\u2192codex, Claude\u2192claude, Kiro\u2192kiro, \u2026)."
+          "description": "Optional map of ACP agent config name → MemoryCore agent_id. Unmapped names use built-in heuristics (Codex→codex, Claude→claude, Kiro→kiro, …)."
         },
         "acp.memory.recallMaxResults": {
           "type": "number",
@@ -575,7 +577,7 @@
     "format:check": "prettier --check \"src/**/*.ts\""
   },
   "dependencies": {
-    "@agentclientprotocol/sdk": "^1.1.0",
+    "@agentclientprotocol/sdk": "^1.4.0",
     "@vscode/extension-telemetry": "^1.5.0",
     "katex": "^0.18.1",
     "marked": "^15.0.0",
