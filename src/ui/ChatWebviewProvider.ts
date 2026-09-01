@@ -8906,6 +8906,28 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          // generic backward/forward walk below.
          if (typeof resumeDiag === 'function') resumeDiag('[WV-DIAG] insertSnapshotItem(assistant): snapIdx=' + snapIndex +
            ' NO forward anchor in turn, falling back to generic walk text="' + _asstLogText + '"');
+         // …unless nothing follows it in the snapshot at all. Then it IS the
+         // final reply of the last turn and belongs at the very end. The generic
+         // walk anchors backward, which put it in the middle of the history when
+         // a same-titled tool matched earlier — and the corrupted position then
+         // became the next resume's snapshot, so the summary never came back.
+         var _hasLaterSnapItem = false;
+         for (var aTail = snapIndex + 1; aTail < snapshot.length; aTail++) {
+           var aTailItem = snapshot[aTail];
+           if (!aTailItem) continue;
+           if (aTailItem.kind === 'message' && (aTailItem.role === 'system' || aTailItem.role === 'user') &&
+               isSessionInterruptNotice(aTailItem.text)) {
+             continue;
+           }
+           _hasLaterSnapItem = true;
+           break;
+         }
+         if (!_hasLaterSnapItem) {
+           merged.push(Object.assign({}, snapItem));
+           if (typeof resumeDiag === 'function') resumeDiag('[WV-DIAG] insertSnapshotItem(assistant): snapIdx=' + snapIndex +
+             ' trailing reply — appended at merged[' + (merged.length - 1) + '] text="' + _asstLogText + '"');
+           return;
+         }
        }
 
        var insertAt = merged.length;
@@ -8926,8 +8948,13 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
              isSessionInterruptNotice(prev.text)) {
            continue;
          }
+         // The ordinal must be that of the ANCHOR tool (index 'before'), not of
+         // the item being inserted. Passing snapIndex counted every later
+         // occurrence too, so a tool from the LAST turn mapped onto a
+         // same-titled tool in the middle of the history and the trailing final
+         // reply was spliced in there (measured: snapshot[249] → merged[81]).
          var anchor = prev.kind === 'toolCall'
-           ? findMergedToolAnchorOrdinal(merged, prev, snapshot, snapIndex)
+           ? findMergedToolAnchorOrdinal(merged, prev, snapshot, before)
            : findMergedHistoryAnchor(merged, prev);
          if (anchor >= 0) {
            insertAt = anchor + 1;
@@ -8954,7 +8981,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
              continue;
            }
            var fwdAnchor = nextItem.kind === 'toolCall'
-             ? findMergedToolAnchorOrdinal(merged, nextItem, snapshot, snapIndex)
+             ? findMergedToolAnchorOrdinal(merged, nextItem, snapshot, after2)
              : findMergedHistoryAnchor(merged, nextItem);
            if (fwdAnchor >= 0) {
              insertAt = fwdAnchor;
@@ -9559,6 +9586,13 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    for (var _rk in pendingRenderRetries) { delete pendingRenderRetries[_rk]; }
    dismissPsPanel(true);
     isLoadingSession = true;
+    // Arm the replay-tail window NOW, not at load end. showSessionConnected
+    // clears isLoadingSession as soon as the session/load response resolves —
+    // before handleLoadSessionEnd runs — so a final chunk arriving in that gap
+    // saw isLoadingSession=false AND loadTailGrace=false and was dropped
+    // (measured: [WV-CHUNK-DROP] 205 ms BEFORE handleLoadSessionEnd). Every
+    // replay update refreshes the window, so it always extends past the replay.
+    loadTailGraceUntil = Date.now() + LOAD_TAIL_GRACE_MS;
     replayRecvSeq = 0;
     // A historical "Context compacted" tool_call during session/load must NOT
     // leave isCompacting stuck true — that silently blocks handleSend().
@@ -18440,6 +18474,9 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
     // pendTxt=0 when a tool_call arrives even though its text was posted
     // first, the interleave was lost between host post and webview arrival.
     if (isLoadingSession) {
+      // Keep the replay-tail window alive for as long as the replay runs, so a
+      // chunk that lands right after the response is still adopted.
+      loadTailGraceUntil = Date.now() + LOAD_TAIL_GRACE_MS;
       var _ordTxt = update.content && update.content.type === 'text' && update.content.text
         ? String(update.content.text).length : 0;
       resumeDiag('[WV-ORDER] wv-recv #' + (++replayRecvSeq) + ' ' + type +
