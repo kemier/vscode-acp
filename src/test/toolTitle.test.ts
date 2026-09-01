@@ -64,6 +64,16 @@ suite('tool-call title normalization', () => {
     );
   });
 
+  test('an already-normalized relative cd is idempotent, whatever the host cwd is', () => {
+    // Adapters (codex-acp / pi-acp / claude-code-acp) normalize agent-side and
+    // emit "cd src/ui && npm test". Resolving that against process.cwd() instead
+    // of the session cwd made the client strip it again.
+    assert.strictEqual(cleanAgentToolTitle('cd src/ui && npm test', CWD), 'cd src/ui && npm test');
+    assert.strictEqual(cleanAgentToolTitle('cd scripts; node deploy-all.js', CWD), 'cd scripts; node deploy-all.js');
+    // A relative escape is still not a subdirectory.
+    assert.strictEqual(cleanAgentToolTitle('cd ../other-repo && ls', CWD), 'ls');
+  });
+
   test('a sibling repo is still stripped — it is not inside the cwd', () => {
     assert.strictEqual(
       cleanAgentToolTitle('cd /workspace/git/ezennin/vscode-acp-a2a-memory; grep -n foo src/x.ts', CWD),

@@ -30,7 +30,15 @@ function subdirOfCwd(target: string, cwd?: string): string | null {
     return null;
   }
   try {
-    const rel = relativePath(resolvePath(cwd), resolvePath(target));
+    // A RELATIVE target is relative to the session cwd, never to the extension
+    // host's process.cwd(). Resolving it against the process would land outside
+    // the session root, so an already-normalized title from an adapter
+    // ("cd src/ui && npm test") looked foreign and got stripped again — the
+    // client would undo agent-side normalization depending on where the host
+    // happened to be started.
+    const base = resolvePath(cwd);
+    const abs = isAbsolutePath(target) ? resolvePath(target) : resolvePath(base, target);
+    const rel = relativePath(base, abs);
     if (!rel || rel === '.' || rel.startsWith('..') || isAbsolutePath(rel)) {
       return null;
     }
