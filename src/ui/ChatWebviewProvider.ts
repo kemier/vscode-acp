@@ -6648,6 +6648,37 @@ const builtinCommands = [
     // we capture the PREVIOUS session ID in showSessionConnected before
     // overwriting sessionState.
     let preLoadSnapshotSessionId = null;
+    /**
+     * Per-session history archive, keyed by session ID.
+     *
+     * The live snapshot (preLoadChatHistorySnapshot) only ever covers the
+     * session that was on screen when the load started, so switching A → B → A
+     * left A with no snapshot and no way to repair a lossy replay. That matters
+     * because several agents drop assistant text on session/load: Kiro omits
+     * every assistant record that carries no tool call (i.e. each end-of-turn
+     * reply, plus its thinking), and Codex does not replay agent_message_chunk
+     * at all. Without a snapshot for the session being loaded, the final reply
+     * simply disappears from the restored transcript.
+     *
+     * In-memory only — it holds slices of chatHistory that are already in
+     * memory, so it costs nothing extra, and it is bounded to the most recent
+     * few sessions.
+     */
+    var SESSION_ARCHIVE_MAX_SESSIONS = 6;
+    let sessionHistoryArchive = {};
+    let sessionHistoryArchiveOrder = [];
+
+    function archiveSessionHistory(sessionId, items) {
+      if (!sessionId || !items || !items.length) return;
+      if (!sessionHistoryArchive[sessionId]) {
+        sessionHistoryArchiveOrder.push(sessionId);
+      }
+      sessionHistoryArchive[sessionId] = items.slice();
+      while (sessionHistoryArchiveOrder.length > SESSION_ARCHIVE_MAX_SESSIONS) {
+        var evicted = sessionHistoryArchiveOrder.shift();
+        if (evicted !== sessionId) delete sessionHistoryArchive[evicted];
+      }
+    }
    let previousSessionId = null;
    // Tracks the session ID that the current chatHistory was built for.
    // Set in restoreState (from saved state) and in showSessionConnected
@@ -9450,6 +9481,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     // - Session switch (A→B): chatHistoryOriginSessionId = A (the previously
     //   displayed session), which won't match B — merge is correctly skipped.
     preLoadSnapshotSessionId = chatHistoryOriginSessionId || previousSessionId || null;
+    // Keep the outgoing session's history so switching BACK to it can still
+    // repair a lossy replay (see sessionHistoryArchive).
+    archiveSessionHistory(preLoadSnapshotSessionId, preLoadChatHistorySnapshot);
     // Reset all chat state; behaves like clearChat but keeps the session
     // banner / input area structure intact.
     chatHistory = [];
@@ -9489,6 +9523,21 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    resetResumeConnectUi();
    hideEmpty();
    isLoadingSession = false;
+   // The live snapshot belongs to whatever session was last on screen. When
+   // that is NOT the session we just loaded (A → B → A switch), fall back to
+   // this session's archived history so the merge below can still restore what
+   // the agent's replay dropped — for Kiro that is every end-of-turn reply,
+   // which is why a resumed session came back with its summary missing.
+   var _archiveCurId = (sessionState && sessionState.sessionId) || null;
+   if (_archiveCurId && preLoadSnapshotSessionId !== _archiveCurId &&
+       sessionHistoryArchive[_archiveCurId] && sessionHistoryArchive[_archiveCurId].length) {
+     var _archived = sessionHistoryArchive[_archiveCurId];
+     vscode.postMessage({ type: 'debugLog', message:
+       '[WV-DIAG] resume merge: snapshot belongs to ' + preLoadSnapshotSessionId +
+       ' — using archived history for ' + _archiveCurId + ' (' + _archived.length + ' items)' });
+     preLoadChatHistorySnapshot = _archived.slice();
+     preLoadSnapshotSessionId = _archiveCurId;
+   }
    // DIAG: log merge diagnostics
    var _diagSnapLen = preLoadChatHistorySnapshot ? preLoadChatHistorySnapshot.length : 0;
    var _diagLoadedLen = chatHistory.length;

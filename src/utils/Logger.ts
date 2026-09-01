@@ -137,6 +137,37 @@ export function logStderr(agentName: string, line: string): void {
   }
 }
 
+/** Cap on replay chunk lines per load so a token-streaming agent can't flood. */
+export const REPLAY_CHUNK_LINE_CAP = 600;
+let _replayChunkLines = 0;
+
+/**
+ * Should this assistant/thought chunk be traced?
+ *
+ * Outside a replay these are per-token deltas (dozens per second) and are
+ * dropped. While a `session/load` is unanswered they ARE the replay
+ * chronology, and their order is the only way to tell an agent-side ordering
+ * bug (agent replays text after its own tool calls) from a client-side merge
+ * bug — so trace them, up to a cap.
+ */
+export function shouldTraceReplayChunk(pendingRequestMethods: Iterable<string>, emittedLines: number): boolean {
+  if (emittedLines >= REPLAY_CHUNK_LINE_CAP) {
+    return false;
+  }
+  for (const method of pendingRequestMethods) {
+    if (method === 'session/load') {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** One-line, length-capped preview of a replayed chunk's text. */
+export function replayChunkPreview(text: unknown): string {
+  const oneLine = (typeof text === 'string' ? text : '').replace(/\s+/g, ' ').trim();
+  return oneLine.length > 70 ? oneLine.slice(0, 70) + '…' : oneLine;
+}
+
 export function logTraffic(direction: 'send' | 'recv', data: unknown): void {
   const config = vscode.workspace.getConfiguration('acp');
   if (!config.get<boolean>('logTraffic', true)) {
@@ -161,6 +192,9 @@ export function logTraffic(direction: 'send' | 'recv', data: unknown): void {
       if (direction === 'send') {
         _outgoingRequestMethods.set(id, method);
         trimPendingRequestMap(_outgoingRequestMethods);
+        if (method === 'session/load') {
+          _replayChunkLines = 0;
+        }
       } else {
         _incomingRequestMethods.set(id, method);
         trimPendingRequestMap(_incomingRequestMethods);
@@ -179,7 +213,16 @@ export function logTraffic(direction: 'send' | 'recv', data: unknown): void {
         const update = params?.update as Record<string, unknown> | undefined;
         const kind = update?.sessionUpdate as string | undefined;
         if (kind === 'agent_message_chunk' || kind === 'agent_thought_chunk') {
-          return;
+          // During a session/load these are the replay chronology — trace one
+          // compact line each (capped). Outside replay they are token deltas.
+          if (!shouldTraceReplayChunk(_outgoingRequestMethods.values(), _replayChunkLines)) {
+            return;
+          }
+          _replayChunkLines++;
+          const content = update?.content as Record<string, unknown> | undefined;
+          const preview = replayChunkPreview(content?.text);
+          const tag = kind === 'agent_message_chunk' ? 'asst' : 'thought';
+          chunkLine = `[${timestamp}] ${arrow} replay[${tag}] ${JSON.stringify(preview)}`;
         } else if (kind === 'tool_call_update') {
           // Collapse tool_call_update notifications (terminal output deltas,
           // progress text) to a single line — these are high-frequency and
