@@ -49,6 +49,21 @@ suite('tool-call title normalization', () => {
     assert.strictEqual(cleanAgentToolTitle(`cd ${CWD}/ && npm test`, CWD), `cd ${CWD}/ && npm test`);
   });
 
+  test('a semicolon-separated cd preamble is treated like &&', () => {
+    // Kiro CLI emits the `;` form; only `&&` was handled, so a whole
+    // "cd /other/repo; grep …" preamble stayed in the fold title.
+    assert.strictEqual(
+      cleanAgentToolTitle(
+        'cd /workspace/git/ezennin/vscode-acp-a2a-memory; grep -n "suppressFoldOrdering" src/ui/ChatWebviewProvider.ts | cut -c1-150',
+        CWD,
+      ),
+      'grep -n "suppressFoldOrdering" src/ui/ChatWebviewProvider.ts | cut -c1-150',
+    );
+    assert.strictEqual(cleanAgentToolTitle('Running: cd /tmp;ls -la', CWD), 'ls -la');
+    // …and the cwd-preserving rule still applies to the `;` form.
+    assert.strictEqual(cleanAgentToolTitle(`cd ${CWD}; npm test`, CWD), `cd ${CWD}; npm test`);
+  });
+
   test('strips the cd preamble when no cwd is known', () => {
     assert.strictEqual(cleanAgentToolTitle('Running: cd /anywhere && npm test'), 'npm test');
   });

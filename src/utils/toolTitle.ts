@@ -32,6 +32,9 @@ function isSameDir(a: string, b: string): boolean {
 /**
  * Strip a login-shell wrapper and a redundant `cd` preamble from a command.
  *
+ * Recognises both `cd <dir> && <cmd>` and `cd <dir>; <cmd>`, plus a bare
+ * `cd <dir>` followed by the command on the next line.
+ *
  * When `cwd` is given and the `cd` target IS that directory, the `cd` is KEPT:
  * the command genuinely runs in the session's working directory and showing it
  * makes that explicit. When the `cd` points somewhere else it is stripped,
@@ -48,8 +51,11 @@ export function stripShellPrefix(command: string, cwd?: string): string {
   const nl = withoutShell.indexOf('\n');
   const firstLine = (nl === -1 ? withoutShell : withoutShell.slice(0, nl)).trim();
   const rest = nl === -1 ? '' : withoutShell.slice(nl + 1);
-  // `cd <dir> && <cmd>` — cd and the command share the first line.
-  const cdAnd = firstLine.match(/^cd\s+(\S[^&]*?)\s*&&\s*(.+)$/);
+  // `cd <dir> && <cmd>` / `cd <dir>; <cmd>` — cd and the command share the
+  // first line. Both separators are common in agent output (Kiro CLI emits the
+  // `;` form), and handling only `&&` left the whole `cd /some/other/repo; …`
+  // preamble in the fold title.
+  const cdAnd = firstLine.match(/^cd\s+(\S[^;&]*?)\s*(?:&&|;)\s*(.+)$/);
   if (cdAnd && cdAnd[2]) {
     const inline = cdAnd[2].trim();
     if (cwd && isSameDir(cdAnd[1].trim(), cwd)) {
