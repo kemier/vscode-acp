@@ -12031,16 +12031,19 @@ function orderCompactFoldContents(body) {
           a.classList.remove('assistant-summary');
         }
       });
+     // Re-home interim segments in document order (avoid append-to-bottom).
+     if (body && !suppressFoldOrdering) orderCompactFoldContents(body);
      // A completed tool call whose history index is ABOVE the promoted summary's
-     // index is a resume-merge history-index mis-ordering: the tool belongs
-     // *before* the final reply but got a higher index on replay (e.g. the last
-     // tool#276 vs summary#275). If left in the fold, orderCompactFoldContents
-     // sorts it to the end of the fold body, so expanding shows the tool AFTER
-     // the promoted summary. Re-home it to sit immediately BEFORE the summary in
-     // the turn so the expanded fold reads tool → summary (matching the wire
-     // order where the tool precedes the final reply). Only completed tools — a
-     // running/pending tool after the summary means a genuinely interrupted
-     // turn (handled by the forceFold branch above).
+     // index is a resume-merge history-index mis-ordering (e.g. last tool#294 vs
+     // summary#293). orderCompactFoldContents sorts it to the end of the fold
+     // body, so expanding shows the tool AFTER the promoted summary. Re-home it
+     // to sit immediately BEFORE the summary in the turn so the expanded fold
+     // reads tool → summary (matching the wire order where the tool precedes the
+     // final reply). This MUST run AFTER orderCompactFoldContents — running it
+     // before is defeated because the sort re-collects the tool from
+     // turn.children and pulls it back into the body. Only completed tools — a
+     // running/pending tool after the summary means a genuinely interrupted turn
+     // (handled by the forceFold branch above).
      if (body && !suppressFoldOrdering) {
        var _summaryIdx = assistantHistoryIndex(summaryEl);
        var _trailingTools = Array.prototype.slice.call(
@@ -12060,8 +12063,6 @@ function orderCompactFoldContents(body) {
          });
        }
      }
-     // Re-home interim segments in document order (avoid append-to-bottom).
-     if (body && !suppressFoldOrdering) orderCompactFoldContents(body);
      // [WV-DIAG] Trailing-tool-after-summary probe: reports any completed tool
      // call whose history index is ABOVE the promoted summary's index, plus the
      // summary's own DOM position relative to the fold body. This isolates the
