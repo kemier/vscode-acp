@@ -58,10 +58,9 @@ suite('tool-call title normalization', () => {
       'cd scripts; node deploy-all.js',
     );
     // Newline form keeps the relative cd on its own line.
-    assert.strictEqual(
-      cleanAgentToolTitle(`cd ${CWD}/scripts\nnode deploy-all.js`, CWD),
-      'cd scripts\nnode deploy-all.js',
-    );
+    // The newline form is stripped even for a subdirectory: only the first line
+    // is rendered, so keeping "cd scripts" would hide the command.
+    assert.strictEqual(cleanAgentToolTitle(`cd ${CWD}/scripts\nnode deploy-all.js`, CWD), 'node deploy-all.js');
   });
 
   test('an already-normalized relative cd is idempotent, whatever the host cwd is', () => {

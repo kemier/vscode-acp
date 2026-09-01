@@ -91,10 +91,10 @@ export function stripShellPrefix(command: string, cwd?: string): string {
   // Bare `cd <dir>` on its own line — the command starts on the next line.
   const cdOnly = firstLine.match(/^cd\s+(\S.*)$/);
   if (cdOnly && rest.trim()) {
-    const subOnly = subdirOfCwd(cdOnly[1].trim(), cwd);
-    if (subOnly) {
-      return `cd ${subOnly}\n${rest.replace(/^\n+/, '')}`;
-    }
+    // The newline form is always stripped, even for a subdirectory: the client
+    // renders only the FIRST line of a title, so keeping "cd src" would show the
+    // directory and hide the command. The single-line && / ; form keeps the
+    // relative cd because there both fit on the rendered line.
     return rest.replace(/^\n+/, '');
   }
   return withoutShell;
