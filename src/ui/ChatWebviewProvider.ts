@@ -9355,6 +9355,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       // them in the snapshot — prevents duplicate assistant summaries
       // when session/load replay already delivered agent_message_chunk.
       var loadedAssistantTexts = {};
+      // Same for thoughts. Without this the merge re-added EVERY snapshot
+      // thought of the turn, even the ones session/load had just replayed, and
+      // spliced them in as one contiguous block at the end of the turn — the
+      // "thinking blocks are grouped at the bottom, right before the summary"
+      // symptom (a Kiro resume re-added 24 duplicate thoughts that way).
+      var loadedThoughtKeys = {};
       for (var k = loadedLastUserIdx + 1; k < chatHistory.length; k++) {
         var cur = chatHistory[k];
         if (!cur) continue;
@@ -9365,6 +9371,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         if (cur.kind === 'toolCall') {
           loadedToolCount++;
           if (cur.toolCallId) haveIds[cur.toolCallId] = true;
+        }
+        if (cur.kind === 'thought' && cur.text) {
+          loadedThoughtKeys[thoughtPrefixKey(cur.text)] = true;
         }
         if (cur.kind === 'message' && cur.role === 'assistant' && cur.text) {
           loadedAssistantTexts[String(cur.text).trim()] = true;
@@ -9379,7 +9388,13 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         if (item.kind === 'message' && item.role === 'user' && isSessionInterruptNotice(item.text)) {
           return false;
         }
-        if (item.kind === 'thought') return true;
+        if (item.kind === 'thought') {
+          // Only thoughts the replay did NOT deliver. Keyed on the first 120
+          // chars so a streamed/truncated copy still matches.
+          var _snapThoughtKey = item.text ? thoughtPrefixKey(item.text) : '';
+          if (_snapThoughtKey && loadedThoughtKeys[_snapThoughtKey]) return false;
+          return true;
+        }
         if (item.kind === 'message' && item.role === 'assistant') {
           // Skip if this assistant text is already in the loaded chatHistory
           // (session/load replay delivered the agent_message_chunk).
@@ -9423,7 +9438,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       }
       vscode.postMessage({
         type: 'debugLog',
-        message: '[WV-MERGE] restored ' + missing.length + ' pre-load item(s) into turn (tools=' + missingTools.length + ' interrupted=' + _mergeHasInterrupted + ')',
+        message: '[WV-MERGE] restored ' + missing.length + ' pre-load item(s) into turn (tools=' + missingTools.length +
+          ' thoughts=' + missing.filter(function(x) { return x.kind === 'thought'; }).length +
+          ' interrupted=' + _mergeHasInterrupted + ')',
       });
       return true;
     }

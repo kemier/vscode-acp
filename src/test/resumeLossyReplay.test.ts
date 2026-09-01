@@ -110,3 +110,103 @@ suite('per-session history archive', () => {
     );
   });
 });
+
+/**
+ * The pre-load turn merge re-adds what the replay dropped. It used to treat
+ * EVERY snapshot thought as missing, so a replay that already carried the
+ * turn's thoughts got them spliced back in as one block at the end of the turn
+ * — thinking cards bunched at the bottom, right before the summary.
+ *
+ * Runs the real filter predicate out of ChatWebviewProvider.ts.
+ */
+suite('pre-load turn merge dedupe', () => {
+  type Item = Record<string, unknown>;
+
+  function runFilter(
+    snap: Item[],
+    loaded: { toolIds?: string[]; thoughts?: string[]; assistantTexts?: string[] },
+  ): Item[] {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const start = src.indexOf('var missing = collectSnapTurn(false).filter(function(item) {');
+    assert.ok(start > 0, 'missing-item filter not found');
+    const end = src.indexOf('if (!missing.length) return false;', start);
+    assert.ok(end > start, 'end of missing-item filter not found');
+    const code = src.slice(start, end).replace('collectSnapTurn(false)', 'SNAP');
+
+    const haveIds: Record<string, boolean> = {};
+    for (const id of loaded.toolIds || []) {
+      haveIds[id] = true;
+    }
+    const thoughtPrefixKey = (text: unknown) =>
+      String(text || '')
+        .trim()
+        .slice(0, 120);
+    const loadedThoughtKeys: Record<string, boolean> = {};
+    for (const t of loaded.thoughts || []) {
+      loadedThoughtKeys[thoughtPrefixKey(t)] = true;
+    }
+    const loadedAssistantTexts: Record<string, boolean> = {};
+    for (const t of loaded.assistantTexts || []) {
+      loadedAssistantTexts[String(t).trim()] = true;
+    }
+    const factory = new Function(
+      'SNAP',
+      'haveIds',
+      'loadedThoughtKeys',
+      'loadedAssistantTexts',
+      'isSessionInterruptNotice',
+      'thoughtPrefixKey',
+      code + '\nreturn missing;',
+    );
+    return factory(
+      snap,
+      haveIds,
+      loadedThoughtKeys,
+      loadedAssistantTexts,
+      (t: string) => /^\[Request interrupted by user\]/i.test(String(t || '').trim()),
+      thoughtPrefixKey,
+    ) as Item[];
+  }
+
+  test('a thought the replay already delivered is not re-added', () => {
+    const missing = runFilter([{ kind: 'thought', text: 'Checking the fold order' }], {
+      thoughts: ['Checking the fold order'],
+    });
+    assert.deepStrictEqual(missing, []);
+  });
+
+  test('a thought only the snapshot has is still re-added', () => {
+    const missing = runFilter(
+      [
+        { kind: 'thought', text: 'Replayed one' },
+        { kind: 'thought', text: 'Dropped by the replay' },
+      ],
+      { thoughts: ['Replayed one'] },
+    );
+    assert.strictEqual(missing.length, 1);
+    assert.strictEqual(missing[0].text, 'Dropped by the replay');
+  });
+
+  test('thought matching tolerates a truncated/streamed copy', () => {
+    const long = 'x'.repeat(200);
+    const missing = runFilter([{ kind: 'thought', text: long }], { thoughts: [long.slice(0, 120) + ' more'] });
+    assert.deepStrictEqual(missing, [], 'first 120 chars must be enough to match');
+  });
+
+  test('assistant and tool dedupe still hold', () => {
+    const missing = runFilter(
+      [
+        { kind: 'message', role: 'assistant', text: 'already replayed' },
+        { kind: 'message', role: 'assistant', text: 'the dropped summary' },
+        { kind: 'toolCall', toolCallId: 'tc-1' },
+        { kind: 'toolCall', toolCallId: 'tc-2' },
+        { kind: 'message', role: 'user', text: '[Request interrupted by user]' },
+      ],
+      { assistantTexts: ['already replayed'], toolIds: ['tc-1'] },
+    );
+    assert.deepStrictEqual(
+      missing.map((m) => m.text || m.toolCallId),
+      ['the dropped summary', 'tc-2'],
+    );
+  });
+});
