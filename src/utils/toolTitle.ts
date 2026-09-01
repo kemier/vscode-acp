@@ -112,6 +112,77 @@ function isBareToolName(title: string): boolean {
   return t.length > 0 && t.length <= 24 && !/\s/.test(t);
 }
 
+/** Basename for display; handles both separators without touching node:path. */
+function baseName(p: string): string {
+  const cleaned = p.trim().replace(/[\\/]+$/, '');
+  const idx = Math.max(cleaned.lastIndexOf('/'), cleaned.lastIndexOf('\\'));
+  return idx >= 0 ? cleaned.slice(idx + 1) : cleaned;
+}
+
+/** Write sub-verbs some agents put in `rawInput.command` instead of a shell command. */
+const WRITE_SUB_VERBS = /^(create|strreplace|insert|append|write|edit|delete|remove)$/i;
+
+/**
+ * Describe a read/write tool call from its rawInput.
+ *
+ * Kiro CLI labels tool calls richly while streaming (`Reading foo.ts:10-40`,
+ * `Editing foo.ts`) but replays them on session/load with the bare tool name
+ * (`read`, `write`) — and for `write` the only other hint is
+ * `rawInput.command: "strReplace" | "create"`, which is why a resumed row read
+ * just "read" or "create". The wording here mirrors the live titles so a
+ * resumed row looks like the row it replaces.
+ */
+export function describeToolFromRawInput(rawInput: unknown): string {
+  if (!rawInput || typeof rawInput !== 'object' || Array.isArray(rawInput)) {
+    return '';
+  }
+  const ri = rawInput as Record<string, unknown>;
+
+  // Read tool: { operations: [{ mode, path, offset, limit } | { image_paths }] }
+  const ops = ri.operations;
+  if (Array.isArray(ops) && ops.length > 0) {
+    const parts: string[] = [];
+    for (const op of ops) {
+      if (!op || typeof op !== 'object') {
+        continue;
+      }
+      const o = op as Record<string, unknown>;
+      const imagePaths = Array.isArray(o.image_paths) ? (o.image_paths as unknown[]) : [];
+      if (imagePaths.length > 0) {
+        for (const ip of imagePaths) {
+          if (typeof ip === 'string' && ip.trim()) {
+            parts.push(baseName(ip));
+          }
+        }
+        continue;
+      }
+      if (typeof o.path !== 'string' || !o.path.trim()) {
+        continue;
+      }
+      const name = baseName(o.path);
+      const offset = typeof o.offset === 'number' ? o.offset : null;
+      const limit = typeof o.limit === 'number' ? o.limit : null;
+      // Live wording: offset 1960 + limit 60 → "foo.ts:1961-2020".
+      parts.push(offset !== null && limit !== null ? `${name}:${offset + 1}-${offset + limit}` : name);
+    }
+    if (parts.length > 0) {
+      return `Reading ${parts.join(', ')}`;
+    }
+  }
+
+  // Write/edit tools: a single path plus a sub-verb in `command`.
+  const pathish = [ri.path, ri.file_path, ri.filePath].find((v) => typeof v === 'string' && (v as string).trim());
+  if (typeof pathish === 'string') {
+    const name = baseName(pathish);
+    const verb = typeof ri.command === 'string' ? ri.command.trim().toLowerCase() : '';
+    if (verb === 'create') {
+      return `Creating ${name}`;
+    }
+    return WRITE_SUB_VERBS.test(verb) ? `Editing ${name}` : name;
+  }
+  return '';
+}
+
 /**
  * Normalize an agent-supplied tool-call title for display.
  *
@@ -124,19 +195,23 @@ function isBareToolName(title: string): boolean {
  * Returns the input unchanged when there is nothing to do, so callers can apply
  * it unconditionally to every agent's titles.
  */
-export function cleanAgentToolTitle(
-  title: string | null | undefined,
-  cwd?: string,
-  rawInput?: unknown,
-): string {
+export function cleanAgentToolTitle(title: string | null | undefined, cwd?: string, rawInput?: unknown): string {
   const raw = typeof title === 'string' ? title : '';
-  // Bare tool name + a real command in rawInput → show the command.
+  // Bare tool name → recover a description from rawInput.
   if (isBareToolName(raw)) {
     const cmd = commandFromRawInput(rawInput);
-    if (cmd) {
+    // `command: "strReplace"` is a write sub-verb, not a shell command; using it
+    // as the title produced the "create" / "strReplace" stub rows on resume.
+    if (cmd && !WRITE_SUB_VERBS.test(cmd)) {
       const fromRaw = stripShellPrefix(cmd, cwd);
       return fromRaw.trim() ? fromRaw : cmd;
     }
+    const described = describeToolFromRawInput(rawInput);
+    if (described) {
+      return described;
+    }
+    // Nothing better available — the tool name beats a sub-verb.
+    return raw;
   }
   if (!raw.trim()) {
     return raw;

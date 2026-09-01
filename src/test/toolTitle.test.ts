@@ -45,10 +45,7 @@ suite('tool-call title normalization', () => {
   });
 
   test('keeps a cd preamble that targets the session cwd', () => {
-    assert.strictEqual(
-      cleanAgentToolTitle(`Running: cd ${CWD} && npm test`, CWD),
-      `cd ${CWD} && npm test`,
-    );
+    assert.strictEqual(cleanAgentToolTitle(`Running: cd ${CWD} && npm test`, CWD), `cd ${CWD} && npm test`);
     assert.strictEqual(cleanAgentToolTitle(`cd ${CWD}/ && npm test`, CWD), `cd ${CWD}/ && npm test`);
   });
 
@@ -105,14 +102,8 @@ suite('tool-call title normalization', () => {
     });
 
     test('handles the legacy arguments.cmd / arguments.command shapes', () => {
-      assert.strictEqual(
-        cleanAgentToolTitle('exec_command', CWD, { arguments: { cmd: 'cd /tmp && ls' } }),
-        'ls',
-      );
-      assert.strictEqual(
-        cleanAgentToolTitle('shell_command', CWD, { arguments: { command: 'cd /tmp && ls' } }),
-        'ls',
-      );
+      assert.strictEqual(cleanAgentToolTitle('exec_command', CWD, { arguments: { cmd: 'cd /tmp && ls' } }), 'ls');
+      assert.strictEqual(cleanAgentToolTitle('shell_command', CWD, { arguments: { command: 'cd /tmp && ls' } }), 'ls');
     });
 
     test('array command form is joined', () => {
@@ -121,16 +112,79 @@ suite('tool-call title normalization', () => {
 
     test('a real command title is never replaced by rawInput', () => {
       // Has whitespace, so it is a description — not a bare tool name.
-      assert.strictEqual(
-        cleanAgentToolTitle('npm test', CWD, { command: 'cd /tmp && something-else' }),
-        'npm test',
-      );
+      assert.strictEqual(cleanAgentToolTitle('npm test', CWD, { command: 'cd /tmp && something-else' }), 'npm test');
     });
 
     test('bare name with no usable rawInput is left alone', () => {
       assert.strictEqual(cleanAgentToolTitle('shell', CWD), 'shell');
       assert.strictEqual(cleanAgentToolTitle('shell', CWD, {}), 'shell');
-      assert.strictEqual(cleanAgentToolTitle('read', CWD, { path: '/a/b.ts' }), 'read');
+      // A write sub-verb is not a shell command and must not become the title.
+      assert.strictEqual(cleanAgentToolTitle('write', CWD, { command: 'strReplace' }), 'write');
+    });
+  });
+
+  /**
+   * Kiro streams rich titles ("Reading foo.ts:10-40", "Editing foo.ts") but
+   * replays the bare tool name on session/load, so a resumed row showed "read"
+   * or — worse — the write sub-verb "create". Rebuild the live wording from
+   * rawInput.
+   */
+  suite('bare tool name + rawInput paths (resume)', () => {
+    test('read operations become the live Reading wording', () => {
+      assert.strictEqual(
+        cleanAgentToolTitle('read', CWD, {
+          operations: [{ mode: 'Line', path: '/w/src/ui/ChatWebviewProvider.ts', offset: 1960, limit: 60 }],
+        }),
+        'Reading ChatWebviewProvider.ts:1961-2020',
+      );
+    });
+
+    test('multiple read operations are comma-joined', () => {
+      assert.strictEqual(
+        cleanAgentToolTitle('read', CWD, {
+          operations: [
+            { mode: 'Line', path: '/w/a.ts', offset: 0, limit: 10 },
+            { mode: 'Directory', path: '/w/src' },
+          ],
+        }),
+        'Reading a.ts:1-10, src',
+      );
+    });
+
+    test('image reads fall back to basenames', () => {
+      assert.strictEqual(
+        cleanAgentToolTitle('read', CWD, { operations: [{ mode: 'Image', image_paths: ['/w/shot.png'] }] }),
+        'Reading shot.png',
+      );
+    });
+
+    test('write strReplace/insert become Editing <file>', () => {
+      assert.strictEqual(
+        cleanAgentToolTitle('write', CWD, { command: 'strReplace', path: '/w/src/Logger.ts' }),
+        'Editing Logger.ts',
+      );
+      assert.strictEqual(
+        cleanAgentToolTitle('write', CWD, { command: 'insert', path: '/w/src/Logger.ts' }),
+        'Editing Logger.ts',
+      );
+    });
+
+    test('write create becomes Creating <file>', () => {
+      assert.strictEqual(
+        cleanAgentToolTitle('write', CWD, { command: 'create', path: '/w/src/New.ts' }),
+        'Creating New.ts',
+      );
+    });
+
+    test('a path with no verb still beats the bare tool name', () => {
+      assert.strictEqual(cleanAgentToolTitle('read', CWD, { path: '/a/b.ts' }), 'b.ts');
+    });
+
+    test('a real shell command still wins over path derivation', () => {
+      assert.strictEqual(
+        cleanAgentToolTitle('shell', CWD, { command: 'grep -n foo bar.ts', path: '/a/b.ts' }),
+        'grep -n foo bar.ts',
+      );
     });
   });
 });
