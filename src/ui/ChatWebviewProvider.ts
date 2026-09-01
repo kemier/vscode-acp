@@ -11321,12 +11321,48 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          if (willExpand) {
            var _outsideAsst = turn.querySelectorAll(':scope > .message.assistant.assistant-summary');
            if (_outsideAsst.length && body) {
+             // Resume merge can stamp the turn's LAST tool with a history index
+             // ABOVE the final reply's (e.g. tool#318 vs summary#317). Folding
+             // the summary back in as an interim segment then lets the index
+             // sort drop that tool BELOW the reply — the "last tool call shows
+             // after the summary when expanded" bug. Pin the demoted summary
+             // behind every completed tool of the turn via the fold-order
+             // override (data-history-index stays untouched — snapshot merging
+             // keys off it). Running/pending tools are ignored: a tool still in
+             // flight after the reply is a genuine interruption and keeps its
+             // real position.
+             var _maxDoneToolIdx = -1;
+             Array.prototype.forEach.call(
+               turn.querySelectorAll('.turn-tools'),
+               function(tc) {
+                 if (turnElHasRunningTools(tc)) return;
+                 var _ti = assistantHistoryIndex(tc);
+                 if (_ti > _maxDoneToolIdx) _maxDoneToolIdx = _ti;
+               }
+             );
              _outsideAsst.forEach(function(a) {
                a.classList.add('assistant-interim');
                a.classList.remove('assistant-summary');
+               var _ai = assistantHistoryIndex(a);
+               if (_ai >= 0 && _maxDoneToolIdx > _ai) {
+                 a.setAttribute('data-fold-sort-key', String(_maxDoneToolIdx + 0.5));
+               } else {
+                 a.removeAttribute('data-fold-sort-key');
+               }
                body.appendChild(a);
              });
              orderCompactFoldContents(body);
+             // [WV-DIAG] Order the user actually sees after expanding. Gated on
+             // acp.debugResume — no-op in normal operation.
+             if (typeof resumeDiag === 'function') {
+               resumeDiag(
+                 '[WV-DIAG] fold-expand-order: maxDoneToolIdx=' + _maxDoneToolIdx +
+                 ' body=[' + Array.prototype.map.call(body.children, function(c) {
+                   var _i = c.getAttribute ? (c.getAttribute('data-fold-sort-key') || c.getAttribute('data-history-index')) : null;
+                   return String(c.className || c.tagName).split(' ')[0] + (_i != null ? '#' + _i : '');
+                 }).join(' | ') + ']'
+               );
+             }
            }
          } else {
            // Collapse: re-promote the last assistant outside the fold.
@@ -11758,6 +11794,15 @@ function orderCompactFoldContents(body) {
     // Node.compareDocumentPosition returns 0 for nodes not yet in the DOM,
     // which collapsed all later-created .turn-tools groups into one block.
     function historyOrder(el) {
+      // Explicit fold-order override. data-history-index is the snapshot key
+      // (merge/dedup rely on it and must never be rewritten), so callers that
+      // KNOW the chronology — e.g. the fold expander, which knows the demoted
+      // element was the turn's final reply — pin the position here instead.
+      var ov = el && el.getAttribute ? el.getAttribute('data-fold-sort-key') : null;
+      if (ov !== null && ov !== undefined && String(ov).trim() !== '') {
+        var on = Number(ov);
+        if (Number.isFinite(on)) return on;
+      }
       var v = el && el.getAttribute ? el.getAttribute('data-history-index') : null;
       if (v !== null && v !== undefined && String(v).trim() !== '') {
         var n = Number(v);
@@ -12033,36 +12078,6 @@ function orderCompactFoldContents(body) {
       });
      // Re-home interim segments in document order (avoid append-to-bottom).
      if (body && !suppressFoldOrdering) orderCompactFoldContents(body);
-     // A completed tool call whose history index is ABOVE the promoted summary's
-     // index is a resume-merge history-index mis-ordering (e.g. last tool#294 vs
-     // summary#293). orderCompactFoldContents sorts it to the end of the fold
-     // body, so expanding shows the tool AFTER the promoted summary. Re-home it
-     // to sit immediately BEFORE the summary in the turn so the expanded fold
-     // reads tool → summary (matching the wire order where the tool precedes the
-     // final reply). This MUST run AFTER orderCompactFoldContents — running it
-     // before is defeated because the sort re-collects the tool from
-     // turn.children and pulls it back into the body. Only completed tools — a
-     // running/pending tool after the summary means a genuinely interrupted turn
-     // (handled by the forceFold branch above).
-     if (body && !suppressFoldOrdering) {
-       var _summaryIdx = assistantHistoryIndex(summaryEl);
-       var _trailingTools = Array.prototype.slice.call(
-         body.querySelectorAll('.turn-tools')
-       ).filter(function(tc) {
-         var _ti = assistantHistoryIndex(tc);
-         if (_ti <= _summaryIdx) return false;
-         return !tc.querySelector(
-           '.tc-icon.running, .tc-icon.in_progress, .tc-icon.pending, ' +
-           '.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending'
-         );
-       });
-       if (_trailingTools.length) {
-         _trailingTools.forEach(function(tc) {
-           if (tc.parentNode) tc.parentNode.removeChild(tc);
-           turn.insertBefore(tc, summaryEl);
-         });
-       }
-     }
      // [WV-DIAG] Trailing-tool-after-summary probe: reports any completed tool
      // call whose history index is ABOVE the promoted summary's index, plus the
      // summary's own DOM position relative to the fold body. This isolates the

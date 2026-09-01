@@ -40,10 +40,13 @@ interface FakeEl {
   appendChild(child: FakeEl): FakeEl;
 }
 
-function makeEl(className: string, historyIndex?: number): FakeEl {
+function makeEl(className: string, historyIndex?: number, foldSortKey?: number): FakeEl {
   const attrs: Record<string, string> = {};
   if (historyIndex !== undefined) {
     attrs['data-history-index'] = String(historyIndex);
+  }
+  if (foldSortKey !== undefined) {
+    attrs['data-fold-sort-key'] = String(foldSortKey);
   }
   const el: FakeEl = {
     className,
@@ -88,7 +91,7 @@ function makeEl(className: string, historyIndex?: number): FakeEl {
   return el;
 }
 
-type Spec = Array<[string, number | undefined, number?]>;
+type Spec = Array<[string, number | undefined, number?, number?]>;
 
 function order(spec: Spec): string {
   const vscodeStub = { postMessage: () => undefined };
@@ -98,8 +101,8 @@ function order(spec: Spec): string {
   const turn = makeEl('turn');
   const body = makeEl('turn-fold-body');
   turn.appendChild(body);
-  for (const [cls, idx, childIdx] of spec) {
-    const el = makeEl(cls, idx);
+  for (const [cls, idx, childIdx, foldSortKey] of spec) {
+    const el = makeEl(cls, idx, foldSortKey);
     if (childIdx !== undefined) {
       el.appendChild(makeEl('tool-call-inline', childIdx));
     }
@@ -143,6 +146,62 @@ suite('compact fold ordering', () => {
       ['turn-tools', 131],
     ]);
     assert.strictEqual(result, 'thought-block | turn-tools | message | turn-tools');
+  });
+
+  test('a mis-indexed trailing tool sorts after the reply without an override', () => {
+    // Resume merge can stamp the turn's last tool ABOVE the final reply
+    // (tool#318 vs summary#317). This is the raw (buggy) shape: expanding the
+    // fold then shows the tool call AFTER the summary.
+    const result = order([
+      ['turn-tools', 316],
+      ['message assistant assistant-interim', 317],
+      ['turn-tools', 318],
+    ]);
+    assert.strictEqual(result, 'turn-tools | message | turn-tools');
+  });
+
+  test('data-fold-sort-key pins the demoted summary after the trailing tool', () => {
+    // What the fold expander does: the demoted summary is known to be the
+    // turn's final reply, so it is pinned behind every completed tool.
+    const result = order([
+      ['turn-tools', 316],
+      ['message assistant assistant-interim', 317, undefined, 318.5],
+      ['turn-tools', 318],
+    ]);
+    assert.strictEqual(result, 'turn-tools | turn-tools | message');
+  });
+
+  test('expanding a fold pins the demoted summary via data-fold-sort-key', () => {
+    // Source guard: the expand branch must stamp the override, otherwise the
+    // index sort drops the reply above the mis-indexed trailing tool again.
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const expandIdx = src.indexOf(
+      "var _outsideAsst = turn.querySelectorAll(':scope > .message.assistant.assistant-summary');",
+    );
+    assert.ok(expandIdx > 0, 'fold expand branch missing');
+    const after = src.slice(expandIdx, expandIdx + 2000);
+    assert.ok(
+      after.indexOf("a.setAttribute('data-fold-sort-key'") > 0,
+      'expand branch does not pin the demoted summary',
+    );
+    assert.ok(
+      after.indexOf('turnElHasRunningTools(tc)') > 0,
+      'expand branch must ignore running tools when computing the pin',
+    );
+  });
+
+  test('promote never re-homes tool groups out of the fold body', () => {
+    // A .turn-tools moved onto the turn itself stays visible while collapsed
+    // (compact mode only hides .turn-fold-body), which leaked a stray tool card
+    // next to the summary.
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const promoteIdx = src.indexOf('function promoteFinalAssistantForTurn(');
+    assert.ok(promoteIdx > 0, 'promoteFinalAssistantForTurn missing');
+    const body = src.slice(promoteIdx, src.indexOf('function sessionMarkedInterrupted', promoteIdx));
+    assert.ok(
+      body.indexOf('turn.insertBefore(tc, summaryEl)') < 0,
+      'promote must not move tool groups outside the fold body',
+    );
   });
 
   test('the live tool path stamps the history index it just pushed', () => {
