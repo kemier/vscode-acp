@@ -236,6 +236,34 @@ suite('replay tail after load end', () => {
     assert.ok(flushIdx > 0 && postIdx > flushIdx, 'the final flush must run BEFORE loadSessionEnd is posted');
   });
 
+  test('a straggling reply after the replay is adopted, not dropped', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    // The window must be armed once the replay is on screen…
+    assert.ok(
+      src.indexOf('loadTailGraceUntil = Date.now() + LOAD_TAIL_GRACE_MS;') > 0,
+      'the load-tail grace window is never armed',
+    );
+    // …consulted by the message drop guard…
+    const dropIdx = src.indexOf(
+      'if (!isLoadingSession && !isProcessing && !isCompacting && !_inTailGrace && !_inLoadTailGrace) {',
+    );
+    assert.ok(dropIdx > 0, 'the message drop guard does not consider the load-tail window');
+    // …and NOT by the thought guard, or a resumed session grows a stray
+    // Thinking card at the bottom again.
+    const thoughtGuard = src.slice(
+      src.indexOf('shouldDropIdleThoughtChunk(isLoadingSession'),
+      src.indexOf('shouldDropIdleThoughtChunk(isLoadingSession') + 200,
+    );
+    assert.ok(thoughtGuard.indexOf('loadTailGrace') < 0, 'thoughts must keep their idle-drop guard');
+    // The adopted chunk needs an explicit commit + promote (no promptEnd comes).
+    const adoptIdx = src.indexOf('function adoptLoadTailChunk(len) {');
+    assert.ok(adoptIdx > 0, 'adoptLoadTailChunk missing');
+    const adopt = src.slice(adoptIdx, adoptIdx + 1400);
+    assert.ok(adopt.indexOf('finalizeCurrentAssistantTurn();') > 0, 'straggler is never committed to chatHistory');
+    assert.ok(adopt.indexOf('promoteFinalAssistantForTurn(_turn)') > 0, 'promote is not re-run for the straggler');
+    assert.ok(adopt.indexOf('saveState();') > 0, 'the adopted straggler is not persisted');
+  });
+
   test('a dropped replay tail chunk is visible in the resume diagnostics', () => {
     const src = fs.readFileSync(SOURCE, 'utf8');
     const markers = src.slice(

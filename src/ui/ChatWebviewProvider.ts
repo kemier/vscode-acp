@@ -6152,6 +6152,19 @@ let isForceCancelled = false; // true after cancel fallback forces promptEnd
 // We accept chunks for a short window after promptEnd and append them to the
 // last committed assistant bubble instead of dropping.
 let turnTailGraceUntil = 0; // timestamp until which late chunks are accepted
+// Same problem at the OTHER turn boundary: session/load. An agent can put its
+// final agent_message_chunk on the wire microseconds before the session/load
+// response (ericli: 1-2 ms), and its notification handler can run after the
+// response resolves — so the chunk reaches the webview behind loadSessionEnd,
+// where isLoadingSession is already false and the guard above dropped it. That
+// lost the entire final summary of a resumed turn, and the INTERIM reply was
+// promoted in its place ("Let me investigate how …" left sitting in the panel).
+// The host now defers loadSessionEnd to flush the tail first; this window is the
+// belt-and-braces net for agents that emit the text truly after the response.
+// Messages only — thoughts keep their idle-drop guard so a resumed session does
+// not grow a stray Thinking card at the bottom.
+let loadTailGraceUntil = 0;
+let _loadTailCommitTimer = null;
 let _pendingStaleInFlightWatchdogTimer = null;
 // When a state.isPromptInFlight latch is suspected of being stale (no send in
 // flight, no user prompt, nothing streaming), arm a short watchdog. If no real
@@ -6161,6 +6174,8 @@ let _pendingStaleInFlightWatchdogTimer = null;
 // the Send button would stay stuck on "■ Stop" forever.
 const STALE_INFLIGHT_WATCHDOG_MS = 3000;
 const TURN_TAIL_GRACE_MS = 1500;
+/** Window after a replay ends in which a straggling reply chunk is still taken. */
+const LOAD_TAIL_GRACE_MS = 2500;
 let hasSentPrompt = false;
 // Track whether the last sent prompt was a slash command (e.g. /ps, /stats).
 // Used to delay queue draining after slash command output so the result
@@ -10123,6 +10138,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     if (loadOverlay) loadOverlay.classList.remove('visible');
     if (inputArea) inputArea.classList.remove('disabled');
     updateSendButton();
+    // The replay is on screen. Keep taking a straggling reply chunk for a short
+    // window — an agent can emit its last text after the session/load response,
+    // and dropping it loses the turn's whole summary (see loadTailGraceUntil).
+    loadTailGraceUntil = Date.now() + LOAD_TAIL_GRACE_MS;
      // Batch-render markdown for every assistant message (now that DOM
      // elements are guaranteed to exist from the rebuild above).
      if (assistantItems.length > 0) {
@@ -16144,6 +16163,37 @@ forceCollapseTurnFolds();
      * batched at loadSessionEnd). Resets all per-turn DOM/state pointers so
      * the next turn starts fresh.
      */
+    /**
+     * Adopt a reply chunk that arrived just after the replay ended.
+     *
+     * renderChatHistory clears currentTurnEl, so an accepted straggler would
+     * start a brand-new turn at the bottom of the panel. Point it at the turn
+     * the replay just finished instead, then commit + re-promote on a short
+     * debounce (there is no promptEnd coming to do either).
+     */
+    function adoptLoadTailChunk(len) {
+      if (!currentTurnEl) {
+        var _turns = messagesEl.querySelectorAll('.turn');
+        if (_turns.length) currentTurnEl = _turns[_turns.length - 1];
+      }
+      vscode.postMessage({ type: 'debugLog', message:
+        '[WV-LOAD-TAIL] adopted straggler reply chunk after replay (len=' + len +
+        ', turn=' + (currentTurnEl && currentTurnEl.dataset ? (currentTurnEl.dataset.historyIndex ?? '?') : 'none') + ')' });
+      if (_loadTailCommitTimer) clearTimeout(_loadTailCommitTimer);
+      _loadTailCommitTimer = setTimeout(function() {
+        _loadTailCommitTimer = null;
+        var _turn = currentTurnEl;
+        finalizeCurrentAssistantTurn();
+        if (_turn && compactMode) {
+          ensureTurnFoldStructure(_turn, true);
+          promoteFinalAssistantForTurn(_turn);
+        }
+        saveState();
+        vscode.postMessage({ type: 'debugLog', message:
+          '[WV-LOAD-TAIL] committed straggler reply, chatHistoryLen=' + chatHistory.length });
+      }, 300);
+    }
+
     function finalizeCurrentAssistantTurn() {
       if (currentThoughtEl || currentThoughtText || thoughtDomBase) {
         commitOrDiscardCurrentThought();
@@ -16678,6 +16728,10 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        // agent began a fresh turn, so late chunks from the previous turn must
        // no longer be accepted.
        turnTailGraceUntil = 0;
+       // Same for the replay-tail window: a fresh turn means anything still
+       // arriving belongs to THIS turn, not to the resumed transcript.
+       loadTailGraceUntil = 0;
+       if (_loadTailCommitTimer) { clearTimeout(_loadTailCommitTimer); _loadTailCommitTimer = null; }
        currentMessageId = null;
          lastCommittedAssistantEl = null;
          lastCommittedMessageId = null;
@@ -18458,12 +18512,21 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       // the last committed assistant bubble. Without this the final answer is
       // silently dropped → premature end_turn / "nothing happened".
       var _inTailGrace = Date.now() <= turnTailGraceUntil;
+      // Straggler from the replay we just finished (see loadTailGraceUntil).
+      var _inLoadTailGrace = !isLoadingSession && Date.now() <= loadTailGraceUntil;
       if (content && content.type === 'text' && String(content.text || '').trim()) {
         vscode.postMessage({ type: 'debugLog', message: '[WV-CHUNK] text="' + String(content.text).replace(/\\s+/g, ' ').slice(0, 60) + '" len=' + String(content.text).length + ' isLoadingSession=' + isLoadingSession + ' isProcessing=' + isProcessing + ' isCompacting=' + isCompacting + ' inTailGrace=' + _inTailGrace + ' tailGraceUntil=' + turnTailGraceUntil + ' now=' + Date.now() + ' messageId=' + (update.messageId || '') });
       }
-      if (!isLoadingSession && !isProcessing && !isCompacting && !_inTailGrace) {
-        vscode.postMessage({ type: 'debugLog', message: '[WV-CHUNK-DROP] dropped: text="' + (content && content.text ? String(content.text).replace(/\\s+/g, ' ').slice(0, 60) : '') + '" isLoadingSession=' + isLoadingSession + ' isProcessing=' + isProcessing + ' isCompacting=' + isCompacting + ' inTailGrace=' + _inTailGrace });
+      if (!isLoadingSession && !isProcessing && !isCompacting && !_inTailGrace && !_inLoadTailGrace) {
+        vscode.postMessage({ type: 'debugLog', message: '[WV-CHUNK-DROP] dropped: text="' + (content && content.text ? String(content.text).replace(/\\s+/g, ' ').slice(0, 60) : '') + '" isLoadingSession=' + isLoadingSession + ' isProcessing=' + isProcessing + ' isCompacting=' + isCompacting + ' inTailGrace=' + _inTailGrace + ' loadTailGrace=' + _inLoadTailGrace });
         break;
+      }
+      // A replay straggler has no promptEnd behind it, so nothing would ever
+      // commit it to chatHistory or re-run the promote that decides which reply
+      // is the visible summary. Attach it to the turn the replay just rendered
+      // and schedule that commit + promote ourselves.
+      if (_inLoadTailGrace && content && content.type === 'text' && String(content.text || '').trim()) {
+        adoptLoadTailChunk(String(content.text).length);
       }
       // Real agent activity — the state.isPromptInFlight latch was genuine.
       if (_pendingStaleInFlightWatchdogTimer) { clearTimeout(_pendingStaleInFlightWatchdogTimer); _pendingStaleInFlightWatchdogTimer = null; }
