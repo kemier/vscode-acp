@@ -12033,6 +12033,37 @@ function orderCompactFoldContents(body) {
       });
      // Re-home interim segments in document order (avoid append-to-bottom).
      if (body && !suppressFoldOrdering) orderCompactFoldContents(body);
+     // [WV-DIAG] Trailing-tool-after-summary probe: reports any completed tool
+     // call whose history index is ABOVE the promoted summary's index, plus the
+     // summary's own DOM position relative to the fold body. This isolates the
+     // "tool shows after summary when expanded" case — a resume-merge
+     // history-index mis-ordering where the last tool sorts after the promoted
+     // summary inside the fold. Gated on acp.debugResume — no-op in normal
+     // operation.
+     if (typeof resumeDiag === 'function') {
+       var _sIdx = assistantHistoryIndex(summaryEl);
+       var _trail = Array.prototype.slice.call(
+         turn.querySelectorAll('.turn-tools')
+       ).map(function(tc) {
+         var _ti = assistantHistoryIndex(tc);
+         var _running = !!tc.querySelector(
+           '.tc-icon.running, .tc-icon.in_progress, .tc-icon.pending, ' +
+           '.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending'
+         );
+         var _parent = tc.parentNode && tc.parentNode.className ? tc.parentNode.className.split(' ')[0] : (tc.parentNode ? tc.parentNode.tagName : '?');
+         return 'tool#' + _ti + (tc === summaryEl ? '(=summary?)' : '') + (_running ? '[running]' : '[done]') + '@' + _parent;
+       }).filter(function(s) { return s.indexOf('tool#') === 0; });
+       var _turnKids = Array.prototype.map.call(turn.children, function(c) {
+         var _idx = c.getAttribute ? c.getAttribute('data-history-index') : null;
+         var _cls = c.className || c.tagName;
+         return _cls.split(' ')[0] + (_idx != null ? '#' + _idx : '');
+       }).join(' | ');
+       resumeDiag(
+         '[WV-DIAG] promote-trailing-probe: summaryIdx=' + _sIdx +
+         ' summaryParent=' + (summaryEl.parentNode ? (summaryEl.parentNode.className || summaryEl.parentNode.tagName) : '?') +
+         ' turnKids=[' + _turnKids + '] trailingTools=[' + _trail.join(', ') + ']'
+       );
+     }
      // [WV-DIAG] Dump the fold body children order AFTER the interleave sort so
      // we can see whether tools and assistants are truly interleaved by
      // data-history-index, or grouped (all tools, then all assistants). Gated on
