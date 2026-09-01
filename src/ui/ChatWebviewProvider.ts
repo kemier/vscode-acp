@@ -33,6 +33,7 @@ import { cleanSessionTitle } from '../utils/TitleCleaner';
 import { ACP_MATH_SPLIT_RE, createMathExtension } from '../utils/markdownMath';
 import { balanceMarkdownForPartialRender } from '../utils/markdownBalance';
 import { cleanAgentToolTitle } from '../utils/toolTitle';
+import { orderedLinkRoots, symbolFallbackFromLinkText } from '../utils/codeLink';
 import { readSessionSummarySettings } from '../core/SessionSummaryConfig';
 import { summarizeSession } from '../core/SessionSummarizer';
 
@@ -3055,6 +3056,34 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     }
   }
 
+  /**
+   * Roots a relative code link may be resolved against, most specific first.
+   *
+   * The agent's own cwd comes first: `src/foo.cpp` in a session working in
+   * another repo is relative to THAT repo, not to this workspace. Workspace
+   * folders follow, so links about the open project keep working.
+   */
+  private linkResolutionRoots(): string[] {
+    const activeId = this.sessionManager.getActiveSessionId();
+    return orderedLinkRoots(
+      activeId ? this.sessionManager.getSession(activeId)?.cwd : undefined,
+      this.sessionManager.getOpenSessions().map((s) => s.cwd),
+      (vscode.workspace.workspaceFolders || []).map((f) => f.uri.fsPath),
+    );
+  }
+
+  /**
+   * Symbol name to fall back on when a link's file cannot be opened — or
+   * undefined when the link text is a path rather than a symbol.
+   *
+   * The old regex took the first identifier out of ANY link text, so clicking
+   * `src/llama-memory-recurrent.cpp:898` searched the workspace for a symbol
+   * named "src", matched 15349 candidates and jumped into an unrelated repo.
+   */
+  private symbolFallbackFromLinkText(linkText?: string): string | undefined {
+    return symbolFallbackFromLinkText(linkText);
+  }
+
   private async handleOpenFile(
     filePath: string,
     lineNumber?: number,
@@ -3097,6 +3126,17 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // to workspace search by filename.
       let doc: vscode.TextDocument | undefined;
       const tryPaths: vscode.Uri[] = [uri];
+
+      // A relative path from the agent is relative to the AGENT's cwd, which is
+      // not necessarily the workspace root: an ericli session working in
+      // /workspace/git/ezennin/llama.cpp emits `src/llama-memory-recurrent.cpp`,
+      // and joining that onto this workspace root resolves to nothing. Try every
+      // known session cwd, then every workspace folder.
+      if (!isAbsolute) {
+        for (const root of this.linkResolutionRoots()) {
+          tryPaths.push(vscode.Uri.joinPath(vscode.Uri.file(root), cleanPath));
+        }
+      }
 
       // If the path contains ".." segments, also try resolving from parent
       // directories of the workspace root (handles sibling repos like
@@ -3192,7 +3232,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         // File not found — if we have a symbol name (linkText), fall back
         // to workspace symbol search (LSP / ripgrep) to find the definition
         // in any file, not just the (possibly hallucinated) path from the LLM.
-        const symFallback = linkText?.match(/^([a-zA-Z_][a-zA-Z0-9_]*(?:::[a-zA-Z_][a-zA-Z0-9_]*)*)/)?.[1];
+        const symFallback = this.symbolFallbackFromLinkText(linkText);
         if (symFallback) {
           getOutputChannel().appendLine(
             `[ACP-DEBUG] handleOpenFile: file not found, falling back to symbol search: "${symFallback}"`,
@@ -3209,9 +3249,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         // If not, search nearby lines (±80) for the symbol name and jump
         // to the closest match that looks like a definition.
         let effectiveLine = lineNumber;
-        // Extract symbol name from linkText (e.g. "fen_shutdown()" → "fen_shutdown")
-        const symMatch = linkText?.match(/^([a-zA-Z_][a-zA-Z0-9_]*(?:::[a-zA-Z_][a-zA-Z0-9_]*)*)/);
-        const fullSym = symMatch?.[1];
+        // Extract symbol name from linkText (e.g. "fen_shutdown()" → "fen_shutdown").
+        // Guarded: a path-shaped link text yields no symbol, so `foo/bar.cpp:898`
+        // no longer "corrects" the line to the nearest line containing "foo".
+        const fullSym = this.symbolFallbackFromLinkText(linkText);
         // For Type::method(), use the method name for line searching
         // (the class name appears on many lines, the method name is more specific)
         const symName = fullSym?.includes('::') ? fullSym.split('::').pop() : fullSym;
@@ -3330,7 +3371,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     } catch (e) {
       // If the file could not be opened but we have a symbol name,
       // fall back to workspace symbol search (LSP / ripgrep).
-      const symFallback = linkText?.match(/^([a-zA-Z_][a-zA-Z0-9_]*(?:::[a-zA-Z_][a-zA-Z0-9_]*)*)/)?.[1];
+      const symFallback = this.symbolFallbackFromLinkText(linkText);
       if (symFallback) {
         getOutputChannel().appendLine(
           `[ACP-DEBUG] handleOpenFile: error opening file, falling back to symbol search: "${symFallback}"`,
