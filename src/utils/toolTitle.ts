@@ -1,4 +1,4 @@
-import { resolve as resolvePath } from 'node:path';
+import { isAbsolute as isAbsolutePath, relative as relativePath, resolve as resolvePath } from 'node:path';
 
 /**
  * Tool-call title normalization shared by every agent.
@@ -19,13 +19,24 @@ import { resolve as resolvePath } from 'node:path';
  * no-op rather than a second transformation.
  */
 
-/** True when two paths denote the same directory (trailing slashes ignored). */
-function isSameDir(a: string, b: string): boolean {
-  const normalize = (p: string) => p.replace(/\/+$/, '') || '/';
+/**
+ * Relative path when `target` is a directory INSIDE `cwd`, else null.
+ *
+ * `cwd` itself returns null: running in the session directory is the default and
+ * needs no announcement in the title.
+ */
+function subdirOfCwd(target: string, cwd?: string): string | null {
+  if (!cwd) {
+    return null;
+  }
   try {
-    return normalize(resolvePath(a)) === normalize(resolvePath(b));
+    const rel = relativePath(resolvePath(cwd), resolvePath(target));
+    if (!rel || rel === '.' || rel.startsWith('..') || isAbsolutePath(rel)) {
+      return null;
+    }
+    return rel;
   } catch {
-    return false;
+    return null;
   }
 }
 
@@ -35,10 +46,14 @@ function isSameDir(a: string, b: string): boolean {
  * Recognises both `cd <dir> && <cmd>` and `cd <dir>; <cmd>`, plus a bare
  * `cd <dir>` followed by the command on the next line.
  *
- * When `cwd` is given and the `cd` target IS that directory, the `cd` is KEPT:
- * the command genuinely runs in the session's working directory and showing it
- * makes that explicit. When the `cd` points somewhere else it is stripped,
- * because the interesting part is the command, not the navigation.
+ * What happens to the `cd` depends on where it points, relative to `cwd`:
+ *  - the session cwd itself → STRIPPED. That is where the command runs by
+ *    default, so `cd /long/path/to/repo && …` is pure noise in a one-line title.
+ *  - a directory INSIDE the session cwd → KEPT, rewritten relative:
+ *    `cd /repo/src/ui && npm test` shows as `cd src/ui && npm test`. The
+ *    location matters here and the relative form is what a reader needs.
+ *  - anywhere else (another repo, /tmp, …) → STRIPPED; the command is the
+ *    interesting part, not the navigation.
  *
  * A bare `cd <dir>` with no following command is returned unchanged — there is
  * nothing else to show.
@@ -55,19 +70,22 @@ export function stripShellPrefix(command: string, cwd?: string): string {
   // first line. Both separators are common in agent output (Kiro CLI emits the
   // `;` form), and handling only `&&` left the whole `cd /some/other/repo; …`
   // preamble in the fold title.
-  const cdAnd = firstLine.match(/^cd\s+(\S[^;&]*?)\s*(?:&&|;)\s*(.+)$/);
-  if (cdAnd && cdAnd[2]) {
-    const inline = cdAnd[2].trim();
-    if (cwd && isSameDir(cdAnd[1].trim(), cwd)) {
-      return firstLine;
+  const cdAnd = firstLine.match(/^cd\s+(\S[^;&]*?)\s*(&&|;)\s*(.+)$/);
+  if (cdAnd && cdAnd[3]) {
+    const inline = cdAnd[3].trim();
+    const sub = subdirOfCwd(cdAnd[1].trim(), cwd);
+    if (sub) {
+      const joined = `cd ${sub}${cdAnd[2] === ';' ? ';' : ' &&'} ${inline}`;
+      return rest ? `${joined}\n${rest}` : joined;
     }
     return rest ? `${inline}\n${rest}` : inline;
   }
   // Bare `cd <dir>` on its own line — the command starts on the next line.
   const cdOnly = firstLine.match(/^cd\s+(\S.*)$/);
   if (cdOnly && rest.trim()) {
-    if (cwd && isSameDir(cdOnly[1].trim(), cwd)) {
-      return withoutShell;
+    const subOnly = subdirOfCwd(cdOnly[1].trim(), cwd);
+    if (subOnly) {
+      return `cd ${subOnly}\n${rest.replace(/^\n+/, '')}`;
     }
     return rest.replace(/^\n+/, '');
   }

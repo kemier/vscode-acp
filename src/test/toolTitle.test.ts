@@ -44,9 +44,31 @@ suite('tool-call title normalization', () => {
     assert.strictEqual(cleanAgentToolTitle('cd /tmp\nls -la', CWD), 'ls -la');
   });
 
-  test('keeps a cd preamble that targets the session cwd', () => {
-    assert.strictEqual(cleanAgentToolTitle(`Running: cd ${CWD} && npm test`, CWD), `cd ${CWD} && npm test`);
-    assert.strictEqual(cleanAgentToolTitle(`cd ${CWD}/ && npm test`, CWD), `cd ${CWD}/ && npm test`);
+  test('strips the cd even when it targets the session cwd', () => {
+    // The session already runs there — announcing it in a one-line title is noise.
+    assert.strictEqual(cleanAgentToolTitle(`Running: cd ${CWD} && npm test`, CWD), 'npm test');
+    assert.strictEqual(cleanAgentToolTitle(`cd ${CWD}/ && npm test`, CWD), 'npm test');
+    assert.strictEqual(cleanAgentToolTitle(`cd ${CWD}; npm test`, CWD), 'npm test');
+  });
+
+  test('keeps a cd into a subdirectory, rewritten relative to the cwd', () => {
+    assert.strictEqual(cleanAgentToolTitle(`cd ${CWD}/src/ui && npm test`, CWD), 'cd src/ui && npm test');
+    assert.strictEqual(
+      cleanAgentToolTitle(`Running: cd ${CWD}/scripts; node deploy-all.js`, CWD),
+      'cd scripts; node deploy-all.js',
+    );
+    // Newline form keeps the relative cd on its own line.
+    assert.strictEqual(
+      cleanAgentToolTitle(`cd ${CWD}/scripts\nnode deploy-all.js`, CWD),
+      'cd scripts\nnode deploy-all.js',
+    );
+  });
+
+  test('a sibling repo is still stripped — it is not inside the cwd', () => {
+    assert.strictEqual(
+      cleanAgentToolTitle('cd /workspace/git/ezennin/vscode-acp-a2a-memory; grep -n foo src/x.ts', CWD),
+      'grep -n foo src/x.ts',
+    );
   });
 
   test('a semicolon-separated cd preamble is treated like &&', () => {
@@ -60,8 +82,8 @@ suite('tool-call title normalization', () => {
       'grep -n "suppressFoldOrdering" src/ui/ChatWebviewProvider.ts | cut -c1-150',
     );
     assert.strictEqual(cleanAgentToolTitle('Running: cd /tmp;ls -la', CWD), 'ls -la');
-    // …and the cwd-preserving rule still applies to the `;` form.
-    assert.strictEqual(cleanAgentToolTitle(`cd ${CWD}; npm test`, CWD), `cd ${CWD}; npm test`);
+    // …and the cwd form is stripped for `;` exactly as for `&&`.
+    assert.strictEqual(cleanAgentToolTitle(`cd ${CWD}; npm test`, CWD), 'npm test');
   });
 
   test('strips the cd preamble when no cwd is known', () => {
@@ -76,7 +98,10 @@ suite('tool-call title normalization', () => {
   test('unwraps a login-shell wrapper', () => {
     assert.strictEqual(stripShellPrefix("bash -lc 'cd /tmp && ls -la'", CWD), 'ls -la');
     assert.strictEqual(stripShellPrefix("/bin/bash -c 'npm test'"), 'npm test');
-    assert.strictEqual(stripShellPrefix("bash -c 'cd /workspace && ls'", '/workspace'), 'cd /workspace && ls');
+    // The cd targets the cwd itself → stripped along with the shell wrapper.
+    assert.strictEqual(stripShellPrefix("bash -c 'cd /workspace && ls'", '/workspace'), 'ls');
+    // A subdirectory of the cwd survives, relative.
+    assert.strictEqual(stripShellPrefix("bash -c 'cd /workspace/src && ls'", '/workspace'), 'cd src && ls');
   });
 
   test('is idempotent, so an already-normalized Codex title is unchanged', () => {
@@ -109,10 +134,11 @@ suite('tool-call title normalization', () => {
       );
     });
 
-    test('keeps a cd that targets the session cwd', () => {
+    test('drops a cd that targets the session cwd, keeps a subdirectory', () => {
+      assert.strictEqual(cleanAgentToolTitle('shell', CWD, { command: `cd ${CWD} && npm test` }), 'npm test');
       assert.strictEqual(
-        cleanAgentToolTitle('shell', CWD, { command: `cd ${CWD} && npm test` }),
-        `cd ${CWD} && npm test`,
+        cleanAgentToolTitle('shell', CWD, { command: `cd ${CWD}/src/test && npm test` }),
+        'cd src/test && npm test',
       );
     });
 
