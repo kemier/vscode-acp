@@ -139,6 +139,17 @@ export class MemorySkillBridge {
         this.json(res, 200, result);
         return;
       }
+      if (url === '/memory-search' || url === '/memory-search/') {
+        const query = typeof body.query === 'string' ? body.query.trim() : '';
+        if (!query) {
+          this.json(res, 400, { error: 'query is required' });
+          return;
+        }
+        const topK = typeof body.top_k === 'number' ? body.top_k : 5;
+        const result = await client.searchAtomic(iso, { query, limit: topK });
+        this.json(res, 200, result);
+        return;
+      }
       this.json(res, 404, { error: 'not found' });
     } catch (e) {
       logError('MemorySkillBridge request failed', e);

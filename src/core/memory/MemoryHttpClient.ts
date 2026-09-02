@@ -38,6 +38,8 @@ export interface AtomicSearchHit {
    *  filter recall to memories created since the last compaction. */
   created_at?: string;
   score?: number;
+  /** JSON array of L0 record IDs that contributed to this L1 memory. */
+  source_message_ids?: string[];
 }
 
 export interface ScenarioEntry {
