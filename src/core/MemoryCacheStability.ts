@@ -38,9 +38,18 @@ export function isIncrementalCacheAgent(agentName: string): boolean {
  */
 export function resolveMemoryInjectMode(
   _agentName: string,
-  opts: { sessionAlreadyPrompted: boolean; profileAlreadyInjected: boolean },
+  opts: { sessionAlreadyPrompted: boolean; profileAlreadyInjected: boolean; isSlashCommand?: boolean },
 ): MemoryInjectMode {
   void opts.sessionAlreadyPrompted;
+  // A slash command is not an LLM turn — the agent intercepts it — so memory is
+  // both useless and harmful there. Appending 5.8 KB after "/compact" made
+  // ericli's `userText.trim() === '/compact'` guard miss, the command fell
+  // through to the LLM, and the panel showed "Compacting conversation..." while
+  // a fresh chat round started. Agents whose interception is token-based are
+  // unaffected either way, so skipping is strictly safer.
+  if (opts.isSlashCommand) {
+    return 'none';
+  }
   return opts.profileAlreadyInjected ? 'l1-only' : 'full';
 }
 
@@ -80,10 +89,7 @@ export interface MemoryInjectGates {
  *
  * No-op for empty `sessionId` or sessions not present in either set.
  */
-export function resetMemoryInjectGates(
-  sessionId: string,
-  gates: MemoryInjectGates,
-): void {
+export function resetMemoryInjectGates(sessionId: string, gates: MemoryInjectGates): void {
   if (!sessionId) {
     return;
   }

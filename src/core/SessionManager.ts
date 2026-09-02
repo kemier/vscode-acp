@@ -100,7 +100,14 @@ export interface AgentCapabilitySummary {
  */
 export type { SelectionContext } from './ContextBlockBuilder';
 import { buildSelectionBlock, type SelectionContext } from './ContextBlockBuilder';
-import { isIncrementalCacheAgent, resolveMemoryInjectMode, resetMemoryInjectGates, shouldInjectSkillToolsForMode, shouldInjectSkillsForMode, shouldMarkProfileInjectedAfterRecall } from './MemoryCacheStability';
+import {
+  isIncrementalCacheAgent,
+  resolveMemoryInjectMode,
+  resetMemoryInjectGates,
+  shouldInjectSkillToolsForMode,
+  shouldInjectSkillsForMode,
+  shouldMarkProfileInjectedAfterRecall,
+} from './MemoryCacheStability';
 import type { SharedMemoryProvider } from './memory/SharedMemoryProvider';
 import { readMemorySettings, resolveMemoryAgentId } from './memory/MemoryConfig';
 
@@ -926,13 +933,16 @@ export class SessionManager extends EventEmitter {
     // the adapter's startsWith('/') check still matches. For non-slash
     // commands, memory is prepended (full mode) or appended (l1-only).
     const profileAlreadyInjected = this.memoryProfileInjectedSessions.has(sessionId);
-    const memoryInjectMode =
-      !this.memoryProvider?.isEnabled()
-        ? 'none'
-        : resolveMemoryInjectMode(session.agentName, {
-            sessionAlreadyPrompted: this.promptedSessions.has(sessionId),
-            profileAlreadyInjected,
-          });
+    const memoryInjectMode = !this.memoryProvider?.isEnabled()
+      ? 'none'
+      : resolveMemoryInjectMode(session.agentName, {
+          sessionAlreadyPrompted: this.promptedSessions.has(sessionId),
+          profileAlreadyInjected,
+          // A slash command is intercepted by the agent, not answered by the
+          // model — injecting memory there only risks defeating the agent's
+          // command match (see resolveMemoryInjectMode).
+          isSlashCommand,
+        });
     const memDebug = this.memoryProvider?.isEnabled() && this.memoryProvider.isDebug();
     const sendT0 = memDebug ? performance.now() : 0;
     if (memDebug) {
@@ -1101,7 +1111,9 @@ export class SessionManager extends EventEmitter {
 
     this.inFlightPromptSessions.add(sessionId);
     if (DEBUG_LIVE) {
-      log(`sendPrompt: IN-FLIGHT ADD session=${sessionId} slash=${isSlashCommand} text="${text.substring(0, 40)}" t+${(performance.now() - sendT0).toFixed(1)}ms`);
+      log(
+        `sendPrompt: IN-FLIGHT ADD session=${sessionId} slash=${isSlashCommand} text="${text.substring(0, 40)}" t+${(performance.now() - sendT0).toFixed(1)}ms`,
+      );
     }
     this.promptedSessions.add(sessionId);
     if (!isSlashCommand && this.memoryProvider?.isEnabled()) {
@@ -2358,9 +2370,7 @@ export class SessionManager extends EventEmitter {
 
   /** True when the given session is mid-replay via `session/load`. */
   hasInFlightSessionLoadFor(agentName: string, sessionId: string): boolean {
-    return (
-      this.loadingSessionIds.has(sessionId) && this.sessions.get(sessionId)?.agentName === agentName
-    );
+    return this.loadingSessionIds.has(sessionId) && this.sessions.get(sessionId)?.agentName === agentName;
   }
 
   private cancelSessionLoad(sessionId: string): void {

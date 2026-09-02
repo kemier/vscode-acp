@@ -46,7 +46,6 @@ suite('MemoryCacheStability', () => {
         'l1-only',
       );
     });
-
   });
 
   suite('resetMemoryInjectGates', () => {
@@ -146,7 +145,10 @@ suite('MemoryCacheStability', () => {
     test('after compaction skills are re-injected (dedup state cleared by resetL1Dedup)', () => {
       // The compaction path: gates reset → full mode → skills injected.
       // Dedup state is cleared by resetL1Dedup so all skills are fresh.
-      const gates = { promptedSessions: new Set<string>(['sess-1']), memoryProfileInjectedSessions: new Set<string>(['sess-1']) };
+      const gates = {
+        promptedSessions: new Set<string>(['sess-1']),
+        memoryProfileInjectedSessions: new Set<string>(['sess-1']),
+      };
       const before = resolveMemoryInjectMode('codex-acp', {
         sessionAlreadyPrompted: gates.promptedSessions.has('sess-1'),
         profileAlreadyInjected: gates.memoryProfileInjectedSessions.has('sess-1'),
@@ -177,16 +179,26 @@ suite('MemoryCacheStability', () => {
         memoryProfileInjectedSessions: new Set<string>(['sess-1']),
       };
       // l1-only (profile already injected) still injects the curl recipe.
-      assert.strictEqual(shouldInjectSkillToolsForMode(resolveMemoryInjectMode('codex-acp', {
-        sessionAlreadyPrompted: gates.promptedSessions.has('sess-1'),
-        profileAlreadyInjected: gates.memoryProfileInjectedSessions.has('sess-1'),
-      })), true);
+      assert.strictEqual(
+        shouldInjectSkillToolsForMode(
+          resolveMemoryInjectMode('codex-acp', {
+            sessionAlreadyPrompted: gates.promptedSessions.has('sess-1'),
+            profileAlreadyInjected: gates.memoryProfileInjectedSessions.has('sess-1'),
+          }),
+        ),
+        true,
+      );
 
       resetMemoryInjectGates('sess-1', gates);
-      assert.strictEqual(shouldInjectSkillToolsForMode(resolveMemoryInjectMode('codex-acp', {
-        sessionAlreadyPrompted: gates.promptedSessions.has('sess-1'),
-        profileAlreadyInjected: gates.memoryProfileInjectedSessions.has('sess-1'),
-      })), true);
+      assert.strictEqual(
+        shouldInjectSkillToolsForMode(
+          resolveMemoryInjectMode('codex-acp', {
+            sessionAlreadyPrompted: gates.promptedSessions.has('sess-1'),
+            profileAlreadyInjected: gates.memoryProfileInjectedSessions.has('sess-1'),
+          }),
+        ),
+        true,
+      );
     });
   });
 
@@ -227,5 +239,39 @@ suite('MemoryCacheStability', () => {
         false,
       );
     });
+  });
+
+  test('a slash command gets no memory at all', () => {
+    // /compact and friends are intercepted by the agent, not answered by the
+    // model. Appending 5.8 KB of memory after "/compact" made ericli's
+    // `userText.trim() === '/compact'` guard miss, so the command fell through to
+    // the LLM: the panel showed "Compacting conversation..." while a new chat
+    // round started. Adapters that parse the command token (codex-acp, pi-acp,
+    // claude-code-acp) were unaffected, so skipping is safe for every agent.
+    assert.strictEqual(
+      resolveMemoryInjectMode('EricCLI', {
+        sessionAlreadyPrompted: true,
+        profileAlreadyInjected: false,
+        isSlashCommand: true,
+      }),
+      'none',
+    );
+    assert.strictEqual(
+      resolveMemoryInjectMode('EricCLI', {
+        sessionAlreadyPrompted: true,
+        profileAlreadyInjected: true,
+        isSlashCommand: true,
+      }),
+      'none',
+    );
+    // A normal prompt is unchanged.
+    assert.strictEqual(
+      resolveMemoryInjectMode('EricCLI', {
+        sessionAlreadyPrompted: true,
+        profileAlreadyInjected: true,
+        isSlashCommand: false,
+      }),
+      'l1-only',
+    );
   });
 });
