@@ -5959,6 +5959,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     <span class="label">Follow</span>
   </button>
   <span class="status" id="status"></span>
+  <span class="turn-elapsed" id="turn-elapsed-label" style="display:none"></span>
  <div class="goal-chip" id="goalChip">
    <span class="goal-icon">🎯</span>
    <span class="goal-text" id="goalText"></span>
@@ -8638,27 +8639,22 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
 
   /** Repaint the spinner label; no-op unless a plain spinner is showing. */
   function refreshTurnStatusLabel() {
-    if (!isProcessing || !statusEl) return;
-    // Never fight a labeled pill (compaction / clearing / summarizing).
+    if (!isProcessing) {
+      var hidden = document.getElementById('turn-elapsed-label');
+      if (hidden) hidden.style.display = 'none';
+      return;
+    }
     if (isCompacting || isClearing) return;
     var now = Date.now();
     var label = formatTurnStatusLabel(
       turnStartedAt ? now - turnStartedAt : 0,
       lastAgentUpdateAt ? now - lastAgentUpdateAt : 0
     );
-    var el = statusEl.querySelector('.turn-elapsed');
-    if (!el) {
-      el = document.createElement('span');
-      el.className = 'turn-elapsed';
-      // Insert before the spinner so the label reads "3s · spinner"
-      var spinner = statusEl.querySelector('.spinner');
-      if (spinner) {
-        statusEl.insertBefore(el, spinner);
-      } else {
-        statusEl.appendChild(el);
-      }
+    var el = document.getElementById('turn-elapsed-label');
+    if (el) {
+      el.style.display = '';
+      el.textContent = label;
     }
-    el.textContent = label;
   }
 
   /** Any agent frame counts as liveness for the idle figure. */
@@ -8676,6 +8672,8 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       turnStartedAt = 0;
       lastAgentUpdateAt = 0;
       hasSteeredThisTurn = false;
+      var _tl = document.getElementById('turn-elapsed-label');
+      if (_tl) _tl.style.display = 'none';
       // A turn ended (promptEnd / error) — the transition-tick guard is no
       // longer needed. This is the same point promptEnd clears it, kept here
       // as a safety net for any path that ends processing without promptEnd.
