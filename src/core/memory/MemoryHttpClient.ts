@@ -31,6 +31,12 @@ export interface AtomicSearchHit {
   id: string;
   type: string;
   content: string;
+  /** Session the L1 memory was captured from. Used to scope recall to the
+   *  current session (session + time filter after compaction). */
+  session_id?: string;
+  /** ISO timestamp when the L1 memory was created. Used with session_id to
+   *  filter recall to memories created since the last compaction. */
+  created_at?: string;
   score?: number;
 }
 

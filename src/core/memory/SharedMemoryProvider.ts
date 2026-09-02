@@ -221,6 +221,11 @@ export class SharedMemoryProvider {
     includeSkillTools?: boolean;
     /** Recall inject mode — controls incremental formatting (wrapper/footer). */
     injectMode?: MemoryInjectMode;
+    /** Epoch ms of the last compaction for this session. When set, L1 recall
+     *  is scoped to memories captured in THIS session since that time
+     *  (session + time filter). Before the first compaction this is unset and
+     *  recall stays global. */
+    lastCompactionTime?: number;
   }): Promise<ContentBlock[]> {
     const settings = this.getSettings();
     if (!isMemoryConfigured(settings)) {
@@ -287,6 +292,8 @@ export class SharedMemoryProvider {
               id: i.id,
               content: i.content,
               type: i.type,
+              session_id: i.session_id,
+              created_at: i.created_at,
               score: i.score,
             }))
           : [];
@@ -303,6 +310,34 @@ export class SharedMemoryProvider {
         l1Items = l1Items.filter((item) => item.score === undefined || item.score >= minScore);
         if (settings.debug && l1Items.length < before) {
           log(`L1 score filter: ${before} → ${l1Items.length} (minScore=${minScore})`);
+        }
+      }
+
+      // Session + time filter: after a compaction, scope L1 recall to memories
+      // captured in THIS session SINCE the last compaction. Memories from
+      // earlier in the session (pre-compaction) or from other sessions are
+      // excluded, so the post-compaction recall reflects only the current
+      // working window. Before the first compaction (lastCompactionTime unset)
+      // recall stays global (all sessions, all time).
+      if (opts.lastCompactionTime !== undefined) {
+        const before = l1Items.length;
+        const cutoff = opts.lastCompactionTime;
+        l1Items = l1Items.filter((item) => {
+          // Must belong to the current session.
+          if (item.session_id && item.session_id !== opts.sessionId) {
+            return false;
+          }
+          // Must have been created at/after the last compaction. Items without
+          // a created_at (gateway may omit it) are dropped to be safe — we
+          // cannot confirm they are in-window.
+          if (!item.created_at) {
+            return false;
+          }
+          const created = new Date(item.created_at).getTime();
+          return Number.isFinite(created) && created >= cutoff;
+        });
+        if (settings.debug && l1Items.length < before) {
+          log(`L1 session+time filter: ${before} → ${l1Items.length} (session=${opts.sessionId} since=${new Date(cutoff).toISOString()})`);
         }
       }
 

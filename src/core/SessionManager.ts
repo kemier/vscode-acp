@@ -289,6 +289,7 @@ export class SessionManager extends EventEmitter {
         includeSkills: false,
         includeSkillTools: true,
         injectMode: 'full',
+        lastCompactionTime: this.lastCompactionTimes.get(cacheKey),
       });
       let joined = (blocks || [])
         .map((b) => {
@@ -338,6 +339,10 @@ export class SessionManager extends EventEmitter {
   private promptedSessions: Set<string> = new Set();
   /** Sessions that already got L3 persona + L2 scene nav on a real prompt. */
   private memoryProfileInjectedSessions: Set<string> = new Set();
+  /** Epoch ms of the last context compaction per session. Used to scope L1
+   *  recall to memories captured in this session since that time
+   *  (session + time filter). Deleted on session clear/delete. */
+  private lastCompactionTimes: Map<string, number> = new Map();
 
   /**
    * Returns true if the given session has an in-flight `session/prompt`
@@ -392,6 +397,9 @@ export class SessionManager extends EventEmitter {
    * Safe to call more than once and for unknown sessions (no-op).
    */
   onContextCompacted(sessionId: string, summaryText?: string): void {
+    // Record the compaction time so subsequent L1 recall for this session is
+    // scoped to memories captured since this moment (session + time filter).
+    this.lastCompactionTimes.set(sessionId, Date.now());
     resetMemoryInjectGates(sessionId, {
       promptedSessions: this.promptedSessions,
       memoryProfileInjectedSessions: this.memoryProfileInjectedSessions,
@@ -660,6 +668,7 @@ export class SessionManager extends EventEmitter {
     this.agentSessions.delete(agentName);
     this.promptedSessions.delete(sessionId);
     this.memoryProfileInjectedSessions.delete(sessionId);
+    this.lastCompactionTimes.delete(sessionId);
     this.memoryProvider?.resetL1Dedup(sessionId);
 
     if (this.activeSessionId === sessionId) {
@@ -702,6 +711,7 @@ export class SessionManager extends EventEmitter {
       this.sessions.delete(sessionId);
       this.promptedSessions.delete(sessionId);
       this.memoryProfileInjectedSessions.delete(sessionId);
+      this.lastCompactionTimes.delete(sessionId);
       this.memoryProvider?.resetL1Dedup(sessionId);
       if (agentName) {
         this.agentSessions.delete(agentName);
@@ -970,6 +980,7 @@ export class SessionManager extends EventEmitter {
           supportsEmbedded: supportsEmbeddedContext,
           includeSkillTools: shouldInjectSkillToolsForMode(memoryInjectMode),
           injectMode: memoryInjectMode,
+          lastCompactionTime: this.lastCompactionTimes.get(sessionId),
           ...(memoryInjectMode === 'l1-only'
             ? {
                 includePersona: false,
