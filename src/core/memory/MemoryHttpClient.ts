@@ -72,6 +72,7 @@ export class MemoryHttpError extends Error {
 
 export class MemoryHttpClient {
   private readonly endpoint: string;
+  private readonly serviceId: string;
   private readonly headers: Record<string, string>;
   private readonly timeoutMs: number;
   private readonly retryCount: number;
@@ -89,6 +90,7 @@ export class MemoryHttpClient {
       throw new Error('MemoryHttpClient requires serviceId');
     }
     this.endpoint = opts.endpoint.replace(/\/+$/, '');
+    this.serviceId = opts.serviceId;
     this.timeoutMs = opts.timeoutMs ?? 15_000;
     this.retryCount = Math.max(0, opts.retryCount ?? 2);
     this.retryDelayMs = Math.max(0, opts.retryDelayMs ?? 1000);
@@ -297,8 +299,9 @@ export class MemoryHttpClient {
    * The gateway's worker then runs LLM skill extraction on the buffered
    * conversation. Maps to POST /v3/skill/conversation/force-archive.
    *
-   * `space_id` is intentionally omitted — the gateway falls back to the
-   * `x-tdai-service-id` header (set in `this.headers`), which equals
+   * NOTE: the gateway's forceArchiveRequestSchema REQUIRES `space_id` (no
+   * fallback to the x-tdai-service-id header, unlike /v3/skill/extract).
+   * We pass `this.serviceId`, which equals the x-tdai-service-id header and
    * `settings.serviceId`. `reason` is optional and, when set, is injected
    * into the extractor LLM prompt to prime the extraction intent.
    */
@@ -309,6 +312,7 @@ export class MemoryHttpClient {
     const { sessionId: _sessionId, ...rest } = iso;
     return this.post('/v3/skill/conversation/force-archive', {
       ...this.isolationBody(rest),
+      space_id: this.serviceId,
       session_id: params.sessionId,
       ...(params.reason ? { reason: params.reason } : {}),
     });
