@@ -390,6 +390,17 @@ export class SessionManager extends EventEmitter {
       memoryProfileInjectedSessions: this.memoryProfileInjectedSessions,
     });
     this.memoryProvider?.resetL1Dedup(sessionId);
+    // Force the gateway to archive the session's skill-extraction buffer so
+    // the summarized conversation can still become a recallable skill. Without
+    // this, a session that never crossed the ≥10 tool_call / ≥40KB threshold
+    // would only ever produce L0/L1 memory, never a skill. Best-effort: the
+    // provider swallows failures internally; the .catch is defense-in-depth.
+    const agentName = this.sessions.get(sessionId)?.agentName ?? '';
+    if (agentName) {
+      void this.memoryProvider
+        ?.flushSkillBuffer(sessionId, agentName, 'compaction')
+        .catch((e) => logError('flushSkillBuffer on compaction failed', e));
+    }
   }
 
   /** Public accessor for downstream UI. */

@@ -291,6 +291,29 @@ export class MemoryHttpClient {
     });
   }
 
+  /**
+   * Skill force-archive: force the gateway to archive the current per-session
+   * skill-extraction buffer, bypassing the ≥10 tool_call / ≥40KB thresholds.
+   * The gateway's worker then runs LLM skill extraction on the buffered
+   * conversation. Maps to POST /v3/skill/conversation/force-archive.
+   *
+   * `space_id` is intentionally omitted — the gateway falls back to the
+   * `x-tdai-service-id` header (set in `this.headers`), which equals
+   * `settings.serviceId`. `reason` is optional and, when set, is injected
+   * into the extractor LLM prompt to prime the extraction intent.
+   */
+  skillForceArchive(
+    iso: MemoryIsolation,
+    params: { sessionId: string; reason?: string },
+  ): Promise<{ status: string; task_id?: string; archived_at_ms?: number }> {
+    const { sessionId: _sessionId, ...rest } = iso;
+    return this.post('/v3/skill/conversation/force-archive', {
+      ...this.isolationBody(rest),
+      session_id: params.sessionId,
+      ...(params.reason ? { reason: params.reason } : {}),
+    });
+  }
+
   getSkill(
     iso: MemoryIsolation,
     skillId: string,

@@ -478,6 +478,39 @@ export class SharedMemoryProvider {
   }
   // (injectedSkillIds lives in the same SessionL1State — cleared together)
 
+  /**
+   * Force the gateway to archive the current skill-extraction buffer for a
+   * session, bypassing the ≥10 tool_call / ≥40KB threshold. Called after
+   * compaction so the summarized conversation can still be turned into a
+   * recallable skill (otherwise a session that never crossed the threshold
+   * would only ever produce L0/L1 memory, never a skill).
+   *
+   * Best-effort: a failure is logged but never throws, so a gateway hiccup
+   * cannot break the compaction path. No-op when memory is disabled, capture
+   * is off, or the session/agent cannot be resolved.
+   */
+  async flushSkillBuffer(sessionId: string, agentName: string, reason = 'compaction'): Promise<void> {
+    const settings = this.getSettings();
+    if (!isMemoryConfigured(settings) || !settings.captureEnabled) {
+      return;
+    }
+    if (!sessionId || !agentName.trim()) {
+      return;
+    }
+    try {
+      const memoryAgentId = resolveMemoryAgentId(agentName, settings.agentIdMap);
+      const client = this.getClient(settings);
+      const iso = this.isolation(settings, memoryAgentId, sessionId);
+      const result = await client.skillForceArchive(iso, { sessionId, reason });
+      log(
+        `Memory skill flush: status=${result.status} task_id=${result.task_id ?? ''} ` +
+          `(agent=${memoryAgentId}, session=${sessionId}, reason=${reason})`,
+      );
+    } catch (e) {
+      logError('Memory skill flush failed', e);
+    }
+  }
+
   /** Start accumulating assistant text for L0 capture after the turn ends. */
   beginTurn(sessionId: string, agentName: string, userText: string): void {
     const settings = this.getSettings();
