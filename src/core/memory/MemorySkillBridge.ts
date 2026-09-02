@@ -129,6 +129,16 @@ export class MemorySkillBridge {
         this.json(res, 200, result);
         return;
       }
+      if (url === '/conversation-lookup' || url === '/conversation-lookup/') {
+        const ids = Array.isArray(body.conversation_ids) ? (body.conversation_ids as string[]).filter((x) => typeof x === 'string') : [];
+        if (ids.length === 0) {
+          this.json(res, 400, { error: 'conversation_ids is required (non-empty array)' });
+          return;
+        }
+        const result = await client.getConversationsByIds(iso, ids);
+        this.json(res, 200, result);
+        return;
+      }
       this.json(res, 404, { error: 'not found' });
     } catch (e) {
       logError('MemorySkillBridge request failed', e);

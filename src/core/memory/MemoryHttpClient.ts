@@ -375,4 +375,16 @@ export class MemoryHttpClient {
       messages: params.messages,
     });
   }
+
+  /** Fetch raw L0 conversation messages by record IDs (L1→L0 drill-down). */
+  getConversationsByIds(
+    iso: MemoryIsolation,
+    conversationIds: string[],
+  ): Promise<{ messages: Array<{ id: string; role: string; content: string; recorded_at: string; session_id: string }>; total: number }> {
+    const { sessionId: _sessionId, ...rest } = iso;
+    return this.post('/v3/conversation/get-by-ids', {
+      ...this.isolationBody(rest),
+      conversation_ids: conversationIds,
+    });
+  }
 }
