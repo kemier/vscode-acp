@@ -6339,7 +6339,10 @@ let isCompacting = false;  // true while /compact is running
      saveState();
      addMessageDOM('user', entry.text || '(image)');
      // Reset turn + tool state so the next agent_message_chunk / tool_call
-     // creates a fresh turn container under this user bubble.
+     // creates a fresh turn container under this user bubble. Retire the tool
+     // registry too — this is the Send Now path, where the interrupted turn is
+     // still emitting and its ids may collide with the replacement turn's.
+     if (typeof retireToolCallRegistry === 'function') retireToolCallRegistry();
      currentTurnEl = null;
      currentToolsListEl = null;
      currentToolsCountEl = null;
@@ -7561,6 +7564,18 @@ var end = displayText.length;
     currentPsEl = null;
     if (psPanel) psPanel.style.display = 'none';
     let toolCalls = {};
+    // Tool rows from turns that have already ended, keyed by wire id.
+    //
+    // Agents may restart their tool-call numbering each turn — ericli minted
+    // tc-1..tc-8 for a turn and opened the NEXT turn at tc-1 again (traffic log
+    // 06:25:51). toolCalls was never cleared between turns, and DOM ids are
+    // 'tc-' + wireId, so the new turn's tc-1 resolved to the PREVIOUS turn's
+    // element: after a Send Now interrupt the old tool result and the old
+    // assistant text reappeared under the new prompt. Retiring at the turn
+    // boundary makes a repeated id unambiguous, while keeping late updates from
+    // the finished turn pointed at their original row.
+    let retiredToolCalls = {};
+    let toolIdRetireGen = 0;
     let toolCallDiffs = {};
 
    // --- /ps panel minimum display timer ---
@@ -10800,6 +10815,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      // let later agent chunks / placeSummaryAssistant scoop into the old fold
      // (Claude ACP often streams between turns after promptEnd).
      if (role === 'user') {
+       // Retire the finished turn's tool rows BEFORE the new turn opens: agents
+       // that restart their tool numbering each turn (ericli minted tc-1..tc-8
+       // then opened the next turn at tc-1) would otherwise have the new turn
+       // resolve to the previous turn's elements.
+       if (typeof retireToolCallRegistry === 'function') retireToolCallRegistry();
        currentTurnEl = null;
        currentToolsListEl = null;
        currentToolsCountEl = null;
@@ -11408,6 +11428,39 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
   }
 
+  /**
+   * Close the current turn's tool registry so the next turn cannot adopt it.
+   *
+   * Moves live rows into retiredToolCalls, renames their DOM ids (a duplicate id
+   * would make getElementById return the OLDER element) and drops the live
+   * data-tool-call-id attribute so stage selectors cannot match across turns.
+   * Returns the number of rows retired, for the test and the trace.
+   */
+  function retireToolCallRegistry() {
+    var moved = 0;
+    var k;
+    for (k in toolCalls) {
+      if (!Object.prototype.hasOwnProperty.call(toolCalls, k)) continue;
+      var el = toolCalls[k];
+      retiredToolCalls[k] = el;
+      if (el && el.id && String(el.id).indexOf('retired-') !== 0) {
+        el.setAttribute('data-live-tool-el-id', el.id);
+        el.id = 'retired-' + toolIdRetireGen + '-' + el.id;
+      }
+      moved++;
+    }
+    var stages = document.querySelectorAll('[data-tool-call-id]');
+    for (var i = 0; i < stages.length; i++) {
+      var v = stages[i].getAttribute('data-tool-call-id');
+      if (!v) continue;
+      stages[i].setAttribute('data-retired-tool-call-id', v);
+      stages[i].removeAttribute('data-tool-call-id');
+    }
+    toolCalls = {};
+    toolIdRetireGen++;
+    return moved;
+  }
+
   function lookupToolCallEl(toolCallId) {
     var keys = toolCallIdLookupKeys(toolCallId);
     var i;
@@ -11427,6 +11480,13 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       if (!Object.prototype.hasOwnProperty.call(toolCalls, k)) continue;
       if (wantFc && k.indexOf(wantFc) >= 0) return toolCalls[k];
       if (wantCall && k.indexOf(wantCall) === 0) return toolCalls[k];
+    }
+    // Last resort: a row from a turn that has already ended. A cancelled turn
+    // keeps emitting for a moment — the agent started a tool 750ms AFTER the
+    // cancel and reported it later — and that update belongs to its ORIGINAL
+    // row, not to whatever turn happens to be open now.
+    for (i = 0; i < keys.length; i++) {
+      if (retiredToolCalls[keys[i]]) return retiredToolCalls[keys[i]];
     }
     return null;
   }
