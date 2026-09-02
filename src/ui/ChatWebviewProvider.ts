@@ -5133,6 +5133,25 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       reply sits outside the fold. Fold body is HIDDEN by default when Collapse
       is on — missing .collapsed used to leave thoughts/tools visible. */
    .turn > .turn-tools-summary { margin: 2px 0; }
+   /* Plan-mode handoff row: the plan is ready but edits are blocked until the
+      collaboration mode leaves 'plan'. */
+   .message.system.implement-plan-row {
+     display: flex;
+     align-items: center;
+     gap: 6px;
+     flex-wrap: wrap;
+   }
+   .implement-plan-btn {
+     background: var(--vscode-button-background);
+     color: var(--vscode-button-foreground);
+     border: none;
+     border-radius: 3px;
+     padding: 2px 10px;
+     font-size: 0.9em;
+     cursor: pointer;
+   }
+   .implement-plan-btn:hover { background: var(--vscode-button-hoverBackground); }
+
    .turn-fold-body {
      display: flex;
      flex-direction: column;
@@ -10586,9 +10605,60 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       }
     });
 
+    // Plan mode: agents that expose a 'collaboration_mode' config option
+    // (ericli, codex-acp, claude-code-acp) refuse to execute while it is 'plan'
+    // — an "implement it" request is answered as a plan, so the code lands in
+    // the chat instead of on disk. Only ericli and claude-code-acp can leave the
+    // mode themselves; codex's design leaves it to the user. Offer the switch
+    // here so the handoff works for every agent.
+    let collabModeIsPlan = false;
+    let sawPlanThisTurn = false;
+    let implementPlanRowEl = null;
+
+    function planModeValueFrom(opts) {
+      for (var i = 0; i < (opts || []).length; i++) {
+        var o = opts[i];
+        if (o && (o.id === 'collaboration_mode' || o.category === 'collaboration_mode')) {
+          return String(o.currentValue == null ? '' : o.currentValue).toLowerCase();
+        }
+      }
+      return '';
+    }
+
+    function clearImplementPlanRow() {
+      if (implementPlanRowEl && implementPlanRowEl.parentNode) {
+        implementPlanRowEl.parentNode.removeChild(implementPlanRowEl);
+      }
+      implementPlanRowEl = null;
+    }
+
+    /** Offer the plan -> execution handoff once a plan-mode turn has produced a plan. */
+    function offerImplementPlan() {
+      if (!collabModeIsPlan || !sawPlanThisTurn || implementPlanRowEl) return;
+      var row = addMessageDOM('system', '');
+      if (!row) return;
+      row.classList.add('implement-plan-row');
+      row.textContent = 'Plan ready. Plan mode blocks edits — ';
+      var btn = document.createElement('button');
+      btn.className = 'implement-plan-btn';
+      btn.textContent = 'Implement this plan';
+      btn.title = 'Switch collaboration mode back to Default so the next message can apply changes';
+      btn.addEventListener('click', function () {
+        vscode.postMessage({ type: 'setConfigOption', configId: 'collaboration_mode', value: 'default' });
+        clearImplementPlanRow();
+        showTransientNotice('Switched to Default mode — send your next message to implement the plan.');
+      });
+      row.appendChild(btn);
+      implementPlanRowEl = row;
+      scrollToBottom();
+    }
+
     function setConfigOptionsState(opts) {
       configOptions = Array.isArray(opts) ? opts : [];
       useConfigOptions = configOptions.length > 0;
+      var _planVal = planModeValueFrom(configOptions);
+      collabModeIsPlan = _planVal === 'plan';
+      if (!collabModeIsPlan) clearImplementPlanRow();
 
       if (useConfigOptions) {
         // Hide legacy pickers — spec requires configOptions to be used exclusively
@@ -16784,6 +16854,10 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        // agent began a fresh turn, so late chunks from the previous turn must
        // no longer be accepted.
        turnTailGraceUntil = 0;
+       // A new turn: the plan handoff offer belongs to the turn that produced the
+       // plan, so drop both the flag and any row still on screen.
+       sawPlanThisTurn = false;
+       clearImplementPlanRow();
        // Same for the replay-tail window: a fresh turn means anything still
        // arriving belongs to THIS turn, not to the resumed transcript.
        loadTailGraceUntil = 0;
@@ -16958,6 +17032,12 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       // end_turn / "nothing happened" symptom).
       if (!_wasCancelled && !isLoadingSession && !_wasCompacting) {
         turnTailGraceUntil = Date.now() + TURN_TAIL_GRACE_MS;
+      }
+      // Plan-mode handoff: the turn produced a plan and the agent will not edit
+      // anything while collaboration_mode is 'plan'. Offer the switch instead of
+      // leaving the user to find the picker.
+      if (!_wasCancelled && !isLoadingSession) {
+        offerImplementPlan();
       }
       setProcessing(false, 'promptEnd');
       vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] after setProcessing(false): isProcessing=' + isProcessing + ' isCompacting=' + isCompacting + ' messageQueue.length=' + messageQueue.length + ' pendingSendAfterCancel=' + !!pendingSendAfterCancel });
@@ -18591,6 +18671,12 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       if (_inLoadTailGrace && content && content.type === 'text' && String(content.text || '').trim()) {
         adoptLoadTailChunk(String(content.text).length);
       }
+      // A proposed_plan block is the other way a plan arrives (ericli and codex
+      // ask the model to wrap the finished plan in one), so it also arms the
+      // implement-plan handoff offered at promptEnd.
+      if (content && content.type === 'text' && String(content.text || '').indexOf('<proposed_plan') >= 0) {
+        sawPlanThisTurn = true;
+      }
       // Real agent activity — the state.isPromptInFlight latch was genuine.
       if (_pendingStaleInFlightWatchdogTimer) { clearTimeout(_pendingStaleInFlightWatchdogTimer); _pendingStaleInFlightWatchdogTimer = null; }
       // Detect auto-compaction: if the agent sends "*Context compacted*" text
@@ -19205,6 +19291,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
 
         case 'plan': {
           addPlan(update);
+          if ((update.entries || []).length > 0) sawPlanThisTurn = true;
           break;
         }
 
