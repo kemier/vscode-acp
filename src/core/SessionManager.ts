@@ -391,18 +391,30 @@ export class SessionManager extends EventEmitter {
    *
    * Safe to call more than once and for unknown sessions (no-op).
    */
-  onContextCompacted(sessionId: string): void {
+  onContextCompacted(sessionId: string, summaryText?: string): void {
     resetMemoryInjectGates(sessionId, {
       promptedSessions: this.promptedSessions,
       memoryProfileInjectedSessions: this.memoryProfileInjectedSessions,
     });
     this.memoryProvider?.resetL1Dedup(sessionId);
+    const agentName = this.sessions.get(sessionId)?.agentName ?? '';
+    // Capture the summary that REPLACED the history. The per-turn path cannot:
+    // beginTurn skips slash commands, and manual compaction is `/compact`, so
+    // endTurn -> addConversation never runs for that turn. Without this the
+    // skill buffer was archived but the summarized content itself was lost, and
+    // the next conversation recalled pre-compaction fragments instead of the
+    // summary. Runs BEFORE the flush so the summary is part of what the gateway
+    // archives for skill extraction.
+    if (agentName && summaryText && summaryText.trim()) {
+      void this.memoryProvider
+        ?.captureCompactionSummary(sessionId, agentName, summaryText)
+        .catch((e) => logError('captureCompactionSummary on compaction failed', e));
+    }
     // Force the gateway to archive the session's skill-extraction buffer so
     // the summarized conversation can still become a recallable skill. Without
     // this, a session that never crossed the ≥10 tool_call / ≥40KB threshold
     // would only ever produce L0/L1 memory, never a skill. Best-effort: the
     // provider swallows failures internally; the .catch is defense-in-depth.
-    const agentName = this.sessions.get(sessionId)?.agentName ?? '';
     if (agentName) {
       void this.memoryProvider
         ?.flushSkillBuffer(sessionId, agentName, 'compaction')

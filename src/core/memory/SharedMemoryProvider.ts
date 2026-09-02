@@ -42,10 +42,7 @@ import {
   shouldIncludeSkillsFooterForMode,
   type MemoryInjectMode,
 } from '../MemoryCacheStability';
-import {
-  buildSkillConversationMessages,
-  type SkillToolCall,
-} from './SkillFeed';
+import { buildSkillConversationMessages, type SkillToolCall } from './SkillFeed';
 
 interface PendingTurn {
   agentName: string;
@@ -265,9 +262,7 @@ export class SharedMemoryProvider {
         client.searchAtomic(iso, { query, limit: settings.recallMaxResults }),
         includePersona ? client.readCore(iso) : Promise.resolve(null),
         includeSceneNav ? client.listScenarios(iso) : Promise.resolve(null),
-        includeSkills
-          ? client.listSkills(iso, { query, charBudget: settings.skillCharBudget })
-          : Promise.resolve(null),
+        includeSkills ? client.listSkills(iso, { query, charBudget: settings.skillCharBudget }) : Promise.resolve(null),
       ]);
       if (settings.debug) {
         // Per-arm wall time (all three ran concurrently, so each is the time
@@ -508,6 +503,62 @@ export class SharedMemoryProvider {
       );
     } catch (e) {
       logError('Memory skill flush failed', e);
+    }
+  }
+
+  /**
+   * Capture a compaction summary as memory + skill input.
+   *
+   * Compaction replaces the conversation with a summary, and the per-turn
+   * capture path cannot see it: `beginTurn` deliberately skips slash commands
+   * (`/compact` is one), so `endTurn` -> addConversation never runs for that
+   * turn. The skill buffer was already force-archived by `flushSkillBuffer`,
+   * but the summarized CONTENT itself was lost — the next conversation recalled
+   * the pre-compaction fragments instead of the summary that replaced them.
+   *
+   * Capture it through the same endpoints `endTurn` uses, so the summary becomes
+   * ordinary recallable memory and skill-extraction input. Best-effort: memory
+   * capture must never break the compaction flow.
+   */
+  async captureCompactionSummary(sessionId: string, agentName: string, summaryText: string): Promise<void> {
+    const settings = this.getSettings();
+    if (!isMemoryConfigured(settings) || !settings.captureEnabled) {
+      return;
+    }
+    if (!sessionId || !agentName.trim()) {
+      return;
+    }
+    // Same normalization as endTurn: strip injected context/markup, drop code
+    // blocks (they bloat L0 without adding recall value), then bound the size.
+    let content = sanitizeMemoryText(summaryText || '');
+    content = stripCodeBlocks(content);
+    content = truncateForCapture(content);
+    if (!shouldCaptureL0(content)) {
+      return;
+    }
+    const messages: Array<{ role: 'user' | 'assistant'; content: string; timestamp: string }> = [
+      { role: 'assistant', content, timestamp: new Date().toISOString() },
+    ];
+    try {
+      const memoryAgentId = resolveMemoryAgentId(agentName, settings.agentIdMap);
+      const client = this.getClient(settings);
+      const iso = this.isolation(settings, memoryAgentId, sessionId);
+      const result = await client.addConversation(iso, { sessionId, messages });
+      log(
+        `Memory capture (compaction summary): ${content.length} bytes → total=${result.total_count} ` +
+          `(user=${iso.userId}, team=${iso.teamId}, agent=${memoryAgentId}, session=${sessionId})`,
+      );
+      try {
+        const skillMessages = buildSkillConversationMessages(messages, []);
+        await client.skillConversationAdd(iso, { sessionId, messages: skillMessages });
+        log(`Skill conversation-add (compaction summary): ${skillMessages.length} msg(s) sent (session=${sessionId})`);
+      } catch (skillErr) {
+        log(
+          `Skill conversation-add (compaction summary) failed (non-fatal): ${(skillErr as Error)?.message ?? skillErr}`,
+        );
+      }
+    } catch (e) {
+      logError('Memory capture (compaction summary) failed', e);
     }
   }
 

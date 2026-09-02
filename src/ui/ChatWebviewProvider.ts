@@ -1758,6 +1758,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           if (message.sessionId || this.sessionManager.getActiveSessionId()) {
             this.sessionManager.onContextCompacted(
               (message.sessionId as string) || this.sessionManager.getActiveSessionId()!,
+              typeof message.summaryText === 'string' ? message.summaryText : undefined,
             );
             if (DEBUG) {
               log(
@@ -18257,9 +18258,14 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
     // from the model context. Tell the extension host to reset the memory-
     // inject gates for this session so the next real prompt does a full
     // re-inject instead of being gated to l1-only by stale session state.
+    // Carry the summary text along. The host cannot recover it from the
+    // per-turn capture path (that path skips slash commands, and manual
+    // compaction is /compact), so this is the only place the summarized content
+    // is available for the memory system.
     vscode.postMessage({
       type: 'compactionCompleted',
       sessionId: (sessionState && sessionState.sessionId) || undefined,
+      summaryText: notice || warning || '',
     });
   }
 
