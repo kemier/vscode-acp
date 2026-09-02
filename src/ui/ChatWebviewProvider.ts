@@ -8641,7 +8641,6 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     if (!isProcessing || !statusEl) return;
     // Never fight a labeled pill (compaction / clearing / summarizing).
     if (isCompacting || isClearing) return;
-    if (!statusEl.querySelector('.spinner')) return;
     var now = Date.now();
     var label = formatTurnStatusLabel(
       turnStartedAt ? now - turnStartedAt : 0,
@@ -8651,9 +8650,15 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     if (!el) {
       el = document.createElement('span');
       el.className = 'turn-elapsed';
-      statusEl.appendChild(el);
+      // Insert before the spinner so the label reads "3s · spinner"
+      var spinner = statusEl.querySelector('.spinner');
+      if (spinner) {
+        statusEl.insertBefore(el, spinner);
+      } else {
+        statusEl.appendChild(el);
+      }
     }
-    el.textContent = ' ' + label;
+    el.textContent = label;
   }
 
   /** Any agent frame counts as liveness for the idle figure. */
