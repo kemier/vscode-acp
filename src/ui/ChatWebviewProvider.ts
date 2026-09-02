@@ -5926,6 +5926,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       pointer-events: all;
     }
     .load-overlay.visible { display: flex; }
+    /* Elapsed / idle figure beside the turn spinner. Muted: it is reassurance,
+       not content. */
+    .turn-elapsed {
+      font-size: 11px;
+      opacity: 0.55;
+      vertical-align: middle;
+      font-variant-numeric: tabular-nums;
+    }
     .load-overlay .spinner {
       width: 22px;
       height: 22px;
@@ -8599,12 +8607,69 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
  updateWelcomeButton();
 
    // --- Send/Stop toggle ---
+  // Turn progress feedback. Agent-independent: while a turn runs the status area
+  // used to show a bare spinner, so a slow model call is indistinguishable from a
+  // hang. Measured on one turn: 47s, then 99s, then 120s of complete silence
+  // between frames — over four minutes where the only signal was a spinner.
+  var turnStartedAt = 0;
+  var lastAgentUpdateAt = 0;
+  var turnTicker = null;
+
+  /**
+   * Status label for a running turn: elapsed time, plus how long the agent has
+   * been silent once that becomes the interesting part.
+   *
+   * The idle figure is what distinguishes "working" from "stuck": frames arrive
+   * steadily while tools run, then stop dead during a long model call.
+   */
+  function formatTurnStatusLabel(elapsedMs, idleMs) {
+    function human(ms) {
+      var total = Math.max(0, Math.round(ms / 1000));
+      var m = Math.floor(total / 60);
+      var sec = total % 60;
+      return m > 0 ? m + 'm ' + sec + 's' : sec + 's';
+    }
+    var label = human(elapsedMs);
+    if (idleMs >= 20000) {
+      label += ' \u00b7 waiting on agent ' + human(idleMs);
+    }
+    return label;
+  }
+
+  /** Repaint the spinner label; no-op unless a plain spinner is showing. */
+  function refreshTurnStatusLabel() {
+    if (!isProcessing || !statusEl) return;
+    // Never fight a labeled pill (compaction / clearing / summarizing).
+    if (isCompacting || isClearing) return;
+    if (!statusEl.querySelector('.spinner')) return;
+    var now = Date.now();
+    var label = formatTurnStatusLabel(
+      turnStartedAt ? now - turnStartedAt : 0,
+      lastAgentUpdateAt ? now - lastAgentUpdateAt : 0
+    );
+    var el = statusEl.querySelector('.turn-elapsed');
+    if (!el) {
+      el = document.createElement('span');
+      el.className = 'turn-elapsed';
+      statusEl.appendChild(el);
+    }
+    el.textContent = ' ' + label;
+  }
+
+  /** Any agent frame counts as liveness for the idle figure. */
+  function noteAgentActivity() {
+    lastAgentUpdateAt = Date.now();
+  }
+
   function setProcessing(processing, caller) {
     if (isProcessing !== processing) {
       vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] setProcessing: ' + isProcessing + ' → ' + processing + ' caller=' + (caller || 'anon') + ' messageQueue.length=' + messageQueue.length + ' hasSteeredThisTurn=' + hasSteeredThisTurn });
     }
     isProcessing = processing;
     if (!processing) {
+      if (turnTicker) { clearInterval(turnTicker); turnTicker = null; }
+      turnStartedAt = 0;
+      lastAgentUpdateAt = 0;
       hasSteeredThisTurn = false;
       // A turn ended (promptEnd / error) — the transition-tick guard is no
       // longer needed. This is the same point promptEnd clears it, kept here
@@ -8620,6 +8685,13 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         // The Send button is replaced by Stop, so sending is blocked via isProcessing.
         promptInput.disabled = false;
         statusEl.innerHTML = '<span class="spinner"></span>';
+        // Start (or keep) the elapsed/idle ticker so a silent model call still
+        // shows movement. Re-entry through setProcessing(true) must not restart
+        // the clock — the turn is the same one.
+        if (!turnStartedAt) turnStartedAt = Date.now();
+        if (!lastAgentUpdateAt) lastAgentUpdateAt = turnStartedAt;
+        if (!turnTicker) turnTicker = setInterval(refreshTurnStatusLabel, 1000);
+        refreshTurnStatusLabel();
         // Manual-operation hints: /compact and /clear start with a labeled
         // status pill ("Compacting conversation..." / "Clearing
         // conversation..."), but a later re-entry through setProcessing(true)
@@ -16713,6 +16785,13 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         }
       }
       vscode.postMessage({ type: 'debugLog', message: '[WV-MSG] type=' + _wvMsgType + _wvMsgBrief + ' | isProcessing=' + isProcessing + ' isSendingPrompt=' + isSendingPrompt + ' isLoadingSession=' + isLoadingSession });
+      // Liveness for the turn indicator: any agent-originated frame resets the
+      // idle figure. Client-side chatter (debug logs, state echoes) must not, or
+      // a silent model call would look busy.
+      if (typeof noteAgentActivity === 'function' &&
+          _wvMsgType !== 'debugLog' && _wvMsgType !== 'state' && _wvMsgType !== 'debugResume') {
+        noteAgentActivity();
+      }
       switch (msg.type) {
        case 'debugResume':
          DEBUG_RESUME = !!msg.enabled;
