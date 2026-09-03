@@ -1327,10 +1327,24 @@ export function activate(context: vscode.ExtensionContext): void {
 
     try {
       // 1. Export the conversation from the webview
-      const exported = await chatWebviewProvider.requestConversationExport(10000);
+      const exported = await chatWebviewProvider.requestConversationExport(10000, sessionId);
       const conversationText = exported.text;
       if (!conversationText.trim()) {
-        vscode.window.showWarningMessage('No conversation to fork — the session is empty.');
+        // Distinguish "empty" from "not available here". A session picked in the
+        // tree that this window never loaded — or one whose session/load was
+        // refused because another process owns it — has no history to export, and
+        // for some agents there is no local fallback: kiro keeps no transcript on
+        // disk (its session files carry metadata only; the conversation lives in
+        // the kiro process and its backend), so a locked session cannot be read
+        // at all. Saying "the session is empty" sent people looking for the wrong
+        // problem.
+        const isActive = sessionManager.getActiveSession()?.sessionId === sessionId;
+        vscode.window.showWarningMessage(
+          isActive
+            ? 'No conversation to fork — this session has no messages yet.'
+            : 'No conversation to fork — this window has no history for that session. ' +
+                'Open it here first (a session held by another process cannot be read), then fork.',
+        );
         return;
       }
 

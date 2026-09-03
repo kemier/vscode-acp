@@ -165,7 +165,17 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * length, so one concatenated blob would be reduced to its tail) and falls
    * back to the transcript only when the user opts in.
    */
-  async requestConversationExport(timeoutMs = 5000): Promise<ConversationExportResult> {
+  /**
+   * @param sessionId When given and different from the session currently
+   *   rendered, the webview exports its ARCHIVE of that session instead of the
+   *   visible chat. Forking a session picked from the tree — or one whose
+   *   session/load was refused because another process owns it — otherwise
+   *   exports whatever happens to be on screen, or nothing at all.
+   */
+  async requestConversationExport(
+    timeoutMs = 5000,
+    sessionId?: string,
+  ): Promise<ConversationExportResult> {
     // Ensure the webview is loaded and ready before posting the export
     // request. If it isn't ready, postMessage silently drops the request and
     // the resolver would never fire → timeout. Reveal the panel and wait.
@@ -179,7 +189,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         clearTimeout(timer);
         resolve(result);
       };
-      this.postMessage({ type: 'requestConversationExport' });
+      this.postMessage({ type: 'requestConversationExport', sessionId });
     });
   }
 
@@ -17892,6 +17902,22 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         break;
 
       case 'requestConversationExport': {
+        // Fork of a session that is NOT the one on screen (clicked in the tree,
+        // or refused by its owning process) has no rendered history to export.
+        // Fall back to this window's archive of that session, which holds the
+        // items from when it was last loaded here.
+        //
+        // There is no other local source for some agents: kiro keeps no
+        // transcript on disk — its CLI session JSON and IDE session.json carry
+        // only metadata, and the conversation itself lives in the kiro process
+        // and its backend — so once session/load is refused ("active in another
+        // process"), the archive is all we have.
+        var _exportItems = chatHistory;
+        var _wantSessionId = msg.sessionId || null;
+        if (_wantSessionId && _wantSessionId !== chatHistoryOriginSessionId) {
+          var _archived = sessionHistoryArchive[_wantSessionId];
+          _exportItems = _archived && _archived.length ? _archived : [];
+        }
         // Extension host wants the conversation text for fork-to-agent.
         // Collect user + assistant messages, tool calls, and reasoning
         // blocks from chatHistory so the target agent gets structured
@@ -17909,8 +17935,8 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         // a system notice, or the future compaction_update RFD), so we accept
         // all of them. Mirrors findCompactionBoundary in core/conversationExport.ts.
         var _exportStart = 0;
-        for (var _cei = 0; _cei < chatHistory.length; _cei++) {
-          var _ceItem = chatHistory[_cei];
+        for (var _cei = 0; _cei < _exportItems.length; _cei++) {
+          var _ceItem = _exportItems[_cei];
           if (!_ceItem) continue;
           var _ceMeta = _ceItem._meta;
           var _isBoundary = false;
@@ -17952,8 +17978,8 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         // summary, and the summarizer caps per-message length — so it needs
         // discrete messages, not one giant blob).
         var _exportMsgs = [];
-        for (var _ei = _exportStart; _ei < chatHistory.length; _ei++) {
-          var _item = chatHistory[_ei];
+        for (var _ei = _exportStart; _ei < _exportItems.length; _ei++) {
+          var _item = _exportItems[_ei];
           if (!_item) continue;
           // Never carry a compaction boundary marker itself (a "Context
           // compacting" tool call, a "*Context compacted*" line, a system
