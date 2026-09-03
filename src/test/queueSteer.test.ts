@@ -104,9 +104,8 @@ suite('automatic steering of a mid-turn message', () => {
     // Both echo the steered text back as a user_message_chunk.
     assert.strictEqual(auto('EricCLI'), true);
     assert.strictEqual(auto('Claude Code'), true);
-    // codex-acp's turn/steer RPC is reliable but emits no echo, so an auto-steer
-    // could neither be confirmed nor safely retried — manual Steer only.
-    assert.strictEqual(auto('Codex CLI'), false);
+    // codex-acp joined once it echoed an accepted steer (codex-acp 881decb).
+    assert.strictEqual(auto('Codex CLI'), true);
     assert.strictEqual(auto('Kiro CLI'), false);
     assert.strictEqual(auto('pi-acp'), false);
     assert.strictEqual(auto(''), false);

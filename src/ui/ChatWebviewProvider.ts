@@ -6619,15 +6619,21 @@ let isCompacting = false;  // true while /compact is running
  * can stay queued until that echo arrives and drain normally if it never does —
  * at-least-once with no duplicate.
  *
- * codex-acp is excluded even though its turn/steer RPC is reliable: nothing in its
- * steer() emits an echo, so an auto-steer could neither be confirmed nor safely
- * retried. Steering it stays a manual choice, where the user sees what happened.
+ * codex-acp joined once it started echoing an accepted steer (881decb): its
+ * turn/steer RPC was already reliable, but silence was indistinguishable from
+ * refusal, so an auto-steer could be neither confirmed nor safely retried.
+ *
+ * pi-acp implements no steer at all — it queues whole prompts internally — and
+ * kiro-cli / cursor are external binaries with no adapter of ours, so for those
+ * three a mid-turn message still waits for the turn to end. That is not a policy
+ * choice; there is nowhere to deliver it.
  */
 function agentAutoSteersQueuedMessages(agentLabel) {
   var label = String(agentLabel || '');
   if (!label) return false;
   if (/^pi([ _-]?acp)?$/i.test(label.trim())) return false;
   if (/claude/i.test(label)) return true;
+  if (/codex/i.test(label)) return true;
   return /eric[ _-]?cli|ericli|eric[ _-]?ai/i.test(label);
 }
 
