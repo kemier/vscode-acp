@@ -5926,6 +5926,19 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       pointer-events: all;
     }
     .load-overlay.visible { display: flex; }
+    /* Short-lived UI notice (e.g. a mid-turn model switch). Not a chat message:
+       it is feedback about the UI's own state, so it must never reach
+       chatHistory or be replayed on session load. */
+    .transient-hint {
+      font-size: 11px;
+      opacity: 0;
+      margin-left: 8px;
+      color: var(--vscode-descriptionForeground);
+      transition: opacity 0.15s ease-in-out;
+      pointer-events: none;
+    }
+    .transient-hint.visible { opacity: 0.85; }
+
     /* Elapsed / idle figure beside the turn spinner. Muted: it is reassurance,
        not content. */
     .turn-elapsed {
@@ -5960,6 +5973,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   </button>
   <span class="status" id="status"></span>
   <span class="turn-elapsed" id="turn-elapsed-label" style="display:none"></span>
+ <span class="transient-hint" id="transientHint"></span>
  <div class="goal-chip" id="goalChip">
    <span class="goal-icon">🎯</span>
    <span class="goal-text" id="goalText"></span>
@@ -10662,6 +10676,15 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
 
         dropdown.classList.remove('open');
        vscode.postMessage({ type: 'setConfigOption', configId, value });
+       // A model switch made DURING a turn cannot affect the request already in
+       // flight — its model is fixed in the POST body — so it applies from the
+       // next step. The picker label flips immediately, which on its own reads as
+       // if the switch were already live and the agent were ignoring it; measured
+       // on one turn, the first call on the new model went out 6s later, but with
+       // a long reasoning call in flight that gap can be minutes. Say so once.
+       if (isProcessing && (configId === 'model' || (opt && opt.category === 'model'))) {
+         showTransientHint('Model switch applies from the next step — the reply in flight finishes on the previous model.');
+       }
        // If this is a model change, update attach button visibility immediately.
        if (configId === 'model' || opt.category === 'model') {
          var agent = sessionState && sessionState.agentName ? sessionState.agentName : '';
@@ -19704,6 +19727,29 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
    * Show compact/clear progress in the session-banner status only
    * (title spinner). Do not add a second banner in the chat panel.
    */
+  var transientHintTimer = null;
+
+  /**
+   * Show a brief notice that disappears on its own.
+   *
+   * Kept out of statusEl on purpose: that element carries the spinner and the
+   * turn's elapsed figure, and overwriting it would trade one piece of feedback
+   * for another. Also deliberately not a chat message — this is commentary on the
+   * UI's own state, not conversation content.
+   */
+  function showTransientHint(text, ms) {
+    var el = document.getElementById('transientHint');
+    if (!el) return;
+    el.textContent = String(text || '');
+    el.classList.add('visible');
+    if (transientHintTimer) clearTimeout(transientHintTimer);
+    transientHintTimer = setTimeout(function () {
+      transientHintTimer = null;
+      el.classList.remove('visible');
+      el.textContent = '';
+    }, typeof ms === 'number' ? ms : 6000);
+  }
+
   function showStatusBanner(kind, message, percent) {
     var isClear = kind === 'clear';
     var fallback = isClear ? 'Clearing conversation...' : 'Compacting conversation...';
