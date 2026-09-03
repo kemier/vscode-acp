@@ -13402,6 +13402,12 @@ function orderCompactFoldContents(body) {
          var toolsWrap = document.createElement('div');
          toolsWrap.className = 'turn-tools';
          toolsWrap.appendChild(list);
+         // Append to the END of the fold body so the tool group sorts after
+         // the last committed assistant (data-history-index ordering). When
+         // ensureTurnFoldStructure just moved the summary assistant outside
+         // the body (appendChild to turn), the body's last child is the prior
+         // interim content — appending to the body end keeps the tool group
+         // chronologically after the assistant text.
          if (body) body.appendChild(toolsWrap);
          currentToolsCountEl = getTurnSummaryEl(currentTurnEl);
        } else {
