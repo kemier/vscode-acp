@@ -49,12 +49,13 @@ suite('mid-turn steering of a queued message', () => {
     // codex-acp now calls Codex's native turn/steer with a currentTurnId guard,
     // so the text is delivered or refused — never silently dropped as in c397673.
     assert.strictEqual(supports('Codex CLI'), true);
+    // Kiro CLI is adapted in this repo (vscode-acp) and receives session/steer.
+    assert.strictEqual(supports('Kiro CLI'), true);
   });
 
   test('withheld from agents with no steer path, and when no agent is known', () => {
     const supports = loadGate();
-    // kiro-cli and cursor are external binaries with no adapter in this repo.
-    assert.strictEqual(supports('Kiro CLI'), false);
+    // cursor is an external binary with no adapter in this repo.
     assert.strictEqual(supports('Cursor'), false);
     // pi-acp queues whole prompts internally and implements no session/steer.
     assert.strictEqual(supports('pi-acp'), false);
@@ -107,7 +108,8 @@ suite('automatic steering of a mid-turn message', () => {
     assert.strictEqual(auto('Claude Code'), true);
     // codex-acp joined once it echoed an accepted steer (codex-acp 881decb).
     assert.strictEqual(auto('Codex CLI'), true);
-    assert.strictEqual(auto('Kiro CLI'), false);
+    // Kiro CLI is adapted in this repo and receives session/steer.
+    assert.strictEqual(auto('Kiro CLI'), true);
     assert.strictEqual(auto('pi-acp'), false);
     assert.strictEqual(auto(''), false);
   });

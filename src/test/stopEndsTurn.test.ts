@@ -86,7 +86,7 @@ suite('/stop ends the turn (Interrupting… stuck after a stop)', () => {
       ['stopProcesses:sess-1', 'handleCancelTurn'],
       'the processes must die first, then the turn must be ended so promptEnd drains the queue',
     );
-    assert.deepStrictEqual(s.posted.map((m) => m.type), ['processesStopped']);
+    assert.deepStrictEqual(s.posted.map((m) => m.type), ['processesStopped', 'setSuppressInterruptNotice']);
   });
 
   test('does not cancel when no prompt is in flight', async () => {

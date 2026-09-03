@@ -219,4 +219,63 @@ suite('compact fold ordering', () => {
       'live path does not stamp the tool history index',
     );
   });
+
+  test('a tool arriving after the final assistant text sorts by its stamped row', () => {
+    // The case 74b63f7 targets: during streaming the assistant text is committed,
+    // then one more tool call arrives. Its .turn-tools wrapper is created after the
+    // stamp pass, so the wrapper itself carries no data-history-index — only the tool
+    // row inside it does. Without resolving the key from that row the group scores
+    // MAX_SAFE_INTEGER and sinks below the assistant, which is what showed up as the
+    // last tool rendering together with the final message.
+    const result = order([
+      ['thought-block', 200],
+      ['turn-tools', undefined, 201],
+      ['message assistant assistant-interim', 202],
+      ['turn-tools', undefined, 203],
+    ]);
+    assert.strictEqual(
+      result,
+      'thought-block | turn-tools | message | turn-tools',
+      'the trailing tool group must stay after the assistant segment it followed',
+    );
+  });
+
+  test('an unstamped trailing group keeps its append position, it does not jump the assistant', () => {
+    // Same shape but with nothing stamped inside the trailing group at all: the
+    // preceding-key + 0.5 rule must keep it where it was appended rather than
+    // hoisting it above the assistant text that preceded it.
+    const result = order([
+      ['thought-block', 200],
+      ['message assistant assistant-interim', 202],
+      ['turn-tools', undefined],
+    ]);
+    assert.strictEqual(result, 'thought-block | message | turn-tools');
+  });
+
+  test('promptEnd re-sorts AFTER ensureTurnFoldStructure, which reorders after its own sort', () => {
+    // ensureTurnFoldStructure sorts the fold body and only THEN lifts the summary
+    // assistant out of it (turn.insertBefore / turn.appendChild), so its own sort
+    // does not see the final layout. promptEnd therefore has to sort once more,
+    // otherwise the last tool group's position is whatever the restructure left.
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const fnAt = src.indexOf('function ensureTurnFoldStructure');
+    const internalSort = src.indexOf('orderCompactFoldContents(body);', fnAt);
+    const liftOut = src.indexOf('summaryAssistants.forEach(function(a) {', internalSort);
+    assert.ok(internalSort > 0 && liftOut > internalSort, 'the lift-out must follow the internal sort');
+
+    // The promptEnd call site specifically — ensureTurnFoldStructure is called from
+    // several places, and only this one re-fetches _endBody afterwards.
+    // lastIndexOf: the first hit is the initial `var _endBody` declaration made
+    // before the restructure; the re-fetch after it is the one that matters.
+    const reFetch = src.lastIndexOf('_endBody = getTurnFoldBody(currentTurnEl);');
+    assert.ok(reFetch > 0, 'promptEnd re-fetches the fold body after restructuring');
+    const after = src.slice(reFetch - 400, reFetch + 400);
+    assert.ok(after.includes('ensureTurnFoldStructure(currentTurnEl, true);'), after.slice(0, 200));
+    assert.ok(
+      after.includes('if (_endBody && !suppressFoldOrdering) orderCompactFoldContents(_endBody);'),
+      'promptEnd must re-sort the fold body after the restructure',
+    );
+    // Guarded the same way every other ordering call is, so renderChatHistory is unaffected.
+    assert.ok(after.indexOf('suppressFoldOrdering') < after.indexOf('orderCompactFoldContents(_endBody)'));
+  });
 });

@@ -102,8 +102,8 @@ suite('Send Now ordering (queued message vs the turn it interrupts)', () => {
 
     assert.deepStrictEqual(
       h.posted.map((m) => m.type),
-      ['cancelTurn'],
-      'must request the cancel and must not send the prompt yet',
+      ['stopProcesses', 'cancelTurn'],
+      'must kill processes first, then request the cancel, and must not send the prompt yet',
     );
     assert.ok(
       !h.calls.some((c) => c.startsWith('addUserBubble')),
