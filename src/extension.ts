@@ -27,6 +27,8 @@ import { AgentManager } from './core/AgentManager';
 import { ConnectionManager } from './core/ConnectionManager';
 import { getAgentConfigs } from './config/AgentConfig';
 import { SessionManager, SessionLoadCancelledError } from './core/SessionManager';
+import { exportConversation } from './core/conversationExport';
+import { readKiroTranscript } from './core/KiroTranscriptReader';
 import { NESManager } from './core/NESManager';
 import { NESInlineCompletionProvider } from './core/NESInlineCompletionProvider';
 import { SessionHistoryStore } from './core/SessionHistoryStore';
@@ -1328,7 +1330,20 @@ export function activate(context: vscode.ExtensionContext): void {
     try {
       // 1. Export the conversation from the webview
       const exported = await chatWebviewProvider.requestConversationExport(10000, sessionId);
-      const conversationText = exported.text;
+      let conversationText = exported.text;
+      if (!conversationText.trim() && /kiro/i.test(sourceAgentName)) {
+        // The session is owned by another process (a terminal `kiro-cli chat`), so
+        // session/load is refused and the panel has nothing to export. Forking only
+        // reads, so read the transcript off disk instead: kiro writes it beside the
+        // session metadata as sessions/cli/<id>.jsonl (or sess_<id>/messages.jsonl
+        // for IDE sessions). The metadata .json next to it holds no messages, which
+        // is why this looked impossible at first.
+        const diskItems = readKiroTranscript(sessionId);
+        if (diskItems.length > 0) {
+          conversationText = exportConversation(diskItems);
+          log(`forkToAgent: recovered ${diskItems.length} message(s) from the kiro transcript on disk`);
+        }
+      }
       if (!conversationText.trim()) {
         // Distinguish "empty" from "not available here". A session picked in the
         // tree that this window never loaded — or one whose session/load was
