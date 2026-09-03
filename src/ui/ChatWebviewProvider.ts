@@ -6554,16 +6554,26 @@ let isCompacting = false;  // true while /compact is running
  * fix made every mid-turn message queue and drain one-per-turn, which is why a
  * queued message waits for promptEnd instead of landing between tool calls.
  *
- * Since then the two agents that do implement it became dependable: ericli drains
- * at every iteration boundary AND re-loops once if the model answers without
- * acting on the interjection, and claude-code queues with an explicit in-flight
- * check. So steering is offered for those two only, as an explicit action — the
- * default stays queue-and-drain.
+ * Since then all three became dependable, verified in their sources:
+ *   - ericli drains at every tool-iteration boundary and re-loops once if the
+ *     model replies without acting on the interjection;
+ *   - claude-code queues it with the same in-flight test handleSteer uses;
+ *   - codex-acp no longer sends a notification that can be dropped — it calls
+ *     Codex's native turn/steer RPC and rejects outright when there is no
+ *     currentTurnId, so the text is either delivered or refused, never lost.
+ *
+ * pi-acp has no steer path at all (it queues whole prompts internally instead),
+ * and kiro-cli / cursor are external binaries with no adapter here, so none of
+ * them are offered it. The default for every agent stays queue-and-drain.
  */
 function agentSupportsMidTurnSteer(agentLabel) {
   var label = String(agentLabel || '');
   if (!label) return false;
+  // pi must be excluded before the generic checks — "pi-acp" contains no other
+  // marker, but keep the guard explicit so a rename cannot silently enable it.
+  if (/^pi([ _-]?acp)?$/i.test(label.trim())) return false;
   if (/claude/i.test(label)) return true;
+  if (/codex/i.test(label)) return true;
   return /eric[ _-]?cli|ericli|eric[ _-]?ai/i.test(label);
 }
 

@@ -46,14 +46,19 @@ suite('mid-turn steering of a queued message', () => {
     assert.strictEqual(supports('ericli'), true);
     assert.strictEqual(supports('Claude Code'), true);
     assert.strictEqual(supports('claude-agent-acp'), true);
+    // codex-acp now calls Codex's native turn/steer with a currentTurnId guard,
+    // so the text is delivered or refused — never silently dropped as in c397673.
+    assert.strictEqual(supports('Codex CLI'), true);
   });
 
-  test('withheld where steer was unreliable, and when no agent is known', () => {
+  test('withheld from agents with no steer path, and when no agent is known', () => {
     const supports = loadGate();
-    // codex-acp dropped the notification at the turn tail (c397673).
-    assert.strictEqual(supports('Codex CLI'), false);
+    // kiro-cli and cursor are external binaries with no adapter in this repo.
     assert.strictEqual(supports('Kiro CLI'), false);
+    assert.strictEqual(supports('Cursor'), false);
+    // pi-acp queues whole prompts internally and implements no session/steer.
     assert.strictEqual(supports('pi-acp'), false);
+    assert.strictEqual(supports('pi'), false);
     assert.strictEqual(supports(''), false);
     assert.strictEqual(supports(undefined as any), false);
   });
