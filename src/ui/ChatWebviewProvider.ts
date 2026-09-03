@@ -2840,6 +2840,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // this is a no-op when nothing is in flight.
     if (this.sessionManager.isPromptInFlight(activeId)) {
       log(`Stop processes: turn still in flight for ${activeId}, requesting cancel so the turn ends`);
+      // /stop is a process kill, not an interruption — suppress the
+      // "Conversation interrupted" notice in the webview.
+      this.postMessage({ type: 'setSuppressInterruptNotice' });
       await this.handleCancelTurn();
     }
   }
@@ -6558,6 +6561,10 @@ let isCompacting = false;  // true while /compact is running
    // then sends the message. After the cancel completes and promptEnd
    // fires, the message is sent via a one-shot flag.
    var pendingSendAfterCancel = null;
+   // Set when /stop triggers the cancel path. Like pendingSendAfterCancel,
+   // this suppresses the "Conversation interrupted" notice — /stop is a
+   // process kill, not an interruption — and lets queued messages drain.
+   var suppressInterruptNotice = false;
  function sendQueuedMessageNow(index) {
    if (index < 0 || index >= messageQueue.length) return;
    const entry = messageQueue[index];
@@ -6589,6 +6596,12 @@ let isCompacting = false;  // true while /compact is running
    if (statusEl) {
      statusEl.textContent = 'Interrupting — your message sends next…';
    }
+   // Kill long-running commands from the current turn BEFORE cancelling,
+   // so they don't keep running in the background after the new prompt
+   // starts. Without this, the cancel ends the ACP turn but spawned
+   // processes (builds, test suites, etc.) keep running and their output
+   // leaks into the next turn.
+   vscode.postMessage({ type: 'stopProcesses' });
    vscode.postMessage({ type: 'cancelTurn' });
   } else {
      // Not processing — send directly now and show the bubble.
@@ -6677,6 +6690,7 @@ function agentAutoSteersQueuedMessages(agentLabel) {
   if (/^pi([ _-]?acp)?$/i.test(label.trim())) return false;
   if (/claude/i.test(label)) return true;
   if (/codex/i.test(label)) return true;
+  if (/kiro/i.test(label)) return true;
   return /eric[ _-]?cli|ericli|eric[ _-]?ai/i.test(label);
 }
 
@@ -6754,6 +6768,7 @@ function agentSupportsMidTurnSteer(agentLabel) {
   if (/^pi([ _-]?acp)?$/i.test(label.trim())) return false;
   if (/claude/i.test(label)) return true;
   if (/codex/i.test(label)) return true;
+  if (/kiro/i.test(label)) return true;
   return /eric[ _-]?cli|ericli|eric[ _-]?ai/i.test(label);
 }
 
@@ -17225,6 +17240,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        isSendingPrompt = false;
        setProcessing(true, 'promptStart');
        isForceCancelled = false;
+       suppressInterruptNotice = false;
        // New turn — remove any lingering "— Conversation interrupted —"
        // notice from the previous cancelled turn (DOM + chatHistory) so it
        // doesn't persist once the user sends a follow-up.
@@ -17493,7 +17509,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
      if (!isLoadingSession) {
        isForceCancelled = true; // drop further chunks from the unresponsive agent
      }
-     if (!isLoadingSession && !pendingSendAfterCancel) {
+     if (!isLoadingSession && !pendingSendAfterCancel && !suppressInterruptNotice) {
        // Show "Conversation interrupted" in the main chat (outside the
        // collapsed turn fold), not just in the status bar. In compact /
        // collapsed mode the partial reply is folded away, so the only
@@ -17505,7 +17521,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        interruptedNoticeEl = _noticeEl;
        interruptedNoticeHistoryIdx = chatHistory.length - 1;
      }
-     if (!isLoadingSession && !pendingSendAfterCancel && statusEl) {
+     if (!isLoadingSession && !pendingSendAfterCancel && !suppressInterruptNotice && statusEl) {
          statusEl.textContent = '— Conversation interrupted —';
          setTimeout(() => { if (statusEl.textContent === '— Conversation interrupted —') { statusEl.textContent = ''; } }, 5000);
      }
@@ -17673,6 +17689,10 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        hasActiveSession = false;
        updateResumeBar();
        break;
+
+       case 'setSuppressInterruptNotice':
+         suppressInterruptNotice = true;
+         break;
 
        case 'processesStopped': {
          // /stop completed on the agent side. The agent clears its internal
