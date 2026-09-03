@@ -6387,24 +6387,29 @@ let isCompacting = false;  // true while /compact is running
      const entry = { text, images: images || [] };
      messageQueue.push(entry);
      renderQueue();
-     // Deliver into the RUNNING turn when the agent can confirm receipt, instead
-     // of making the message wait for promptEnd. The entry stays in the queue
-     // until the agent echoes it back, so a steer that never lands still drains
-     // as a normal prompt — at-least-once, and no duplicate for agents that echo.
-     if (
-       isProcessing &&
-       !isCompacting &&
-       !isClearing &&
-       !(entry.images && entry.images.length) &&
-       !String(text || '').trim().startsWith('/') &&
-       agentAutoSteersQueuedMessages(currentAgentLabel())
-     ) {
-       entry.steered = true;
-       hasSteeredThisTurn = true;
-       vscode.postMessage({ type: 'steerPrompt', text: entry.text || ' ' });
-       renderQueue();
-       showTransientHint('Sent into the running turn — the agent picks it up at its next step.');
-     }
+     maybeAutoSteerNext();
+   }
+
+   /**
+    * Deliver the next eligible queued message into the RUNNING turn.
+    *
+    * One at a time: the entry stays in the queue until the agent echoes it, and
+    * only then does the next one go. A steer that never lands still drains as a
+    * normal prompt at promptEnd, so this is at-least-once with no duplicate on the
+    * agents that echo.
+    */
+   function maybeAutoSteerNext() {
+     if (!isProcessing || isCompacting || isClearing) return false;
+     if (!agentAutoSteersQueuedMessages(currentAgentLabel())) return false;
+     var idx = nextAutoSteerIndex(messageQueue);
+     if (idx < 0) return false;
+     var entry = messageQueue[idx];
+     entry.steered = true;
+     hasSteeredThisTurn = true;
+     vscode.postMessage({ type: 'steerPrompt', text: entry.text || ' ' });
+     renderQueue();
+     showTransientHint('Sent into the running turn — the agent picks it up at its next step.');
+     return true;
    }
 
    /**
@@ -6428,6 +6433,8 @@ let isCompacting = false;  // true while /compact is running
            type: 'debugLog',
            message: '[STEER] agent confirmed a steered message; promoted it into the chat',
          });
+         // The channel is free again — release the next queued message.
+         maybeAutoSteerNext();
          return true;
        }
      }
@@ -6690,6 +6697,33 @@ function collapseWhitespaceChars(text) {
     out += str.charAt(i);
   }
   return out;
+}
+
+/**
+ * Index of the next queued message eligible for automatic steering, or -1.
+ *
+ * At most ONE steer is in flight at a time. Steering the whole queue at once
+ * delivered every message as a separate interjection at the agent's next
+ * iteration boundary, which buries the earlier ones — and there is no way to tell
+ * which of several unacked steers a given echo belongs to, since matching is by
+ * text. Waiting for the ack keeps the order intact and the accounting honest.
+ *
+ * Skips what cannot ride session/steer: images (text-only channel) and slash
+ * commands (they must start their own turn).
+ */
+function nextAutoSteerIndex(queue) {
+  if (!Array.isArray(queue)) return -1;
+  for (var i = 0; i < queue.length; i++) {
+    if (queue[i] && queue[i].steered) return -1; // one already awaiting its ack
+  }
+  for (var j = 0; j < queue.length; j++) {
+    var e = queue[j];
+    if (!e) continue;
+    if (e.images && e.images.length) continue;
+    if (String(e.text || '').trim().indexOf('/') === 0) continue;
+    return j;
+  }
+  return -1;
 }
 
 /** Normalized compare for matching an agent echo back to a queued entry. */
@@ -8886,6 +8920,13 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
     isProcessing = processing;
     if (!processing) {
+      // An unacked steer did not land: clear the flag so it cannot block auto-steer
+      // for every later turn. The entry itself stays queued and drainQueue sends it.
+      for (var _qi = 0; _qi < messageQueue.length; _qi++) {
+        if (messageQueue[_qi] && messageQueue[_qi].steered) {
+          delete messageQueue[_qi].steered;
+        }
+      }
       if (turnTicker) { clearInterval(turnTicker); turnTicker = null; }
       turnStartedAt = 0;
       lastAgentUpdateAt = 0;

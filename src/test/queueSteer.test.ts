@@ -130,16 +130,47 @@ suite('automatic steering of a mid-turn message', () => {
   });
 
   test('images and slash commands are never auto-steered', () => {
-    const src = fs.readFileSync(SOURCE, 'utf8');
-    const fn = extractFn('queueMessage');
+    const pick = new Function(`${extractFn('nextAutoSteerIndex')}; return nextAutoSteerIndex;`)() as (
+      q: any[],
+    ) => number;
     // An image cannot ride session/steer (text only), and a slash command must
     // start its own turn rather than being folded into the running one.
-    assert.ok(fn.includes('!(entry.images && entry.images.length)'), fn);
-    assert.ok(fn.includes("!String(text || '').trim().startsWith('/')"), fn);
+    assert.strictEqual(pick([{ text: 'look', images: [{}] }]), -1);
+    assert.strictEqual(pick([{ text: '/compact' }]), -1);
+    // The first eligible entry wins, skipping the ineligible ones before it.
+    assert.strictEqual(pick([{ text: '/ps' }, { text: 'do it' }]), 1);
+    const fn = extractFn('maybeAutoSteerNext');
     // Never during compaction / clearing, which own the turn.
-    assert.ok(fn.includes('!isCompacting'), fn);
-    assert.ok(fn.includes('!isClearing'), fn);
-    assert.ok(src.includes("entry.steered = true;"));
+    assert.ok(fn.includes('!isProcessing || isCompacting || isClearing'), fn);
+    assert.ok(fn.includes('entry.steered = true;'), fn);
+  });
+
+  test('only one steer is in flight; the next waits for the ack', () => {
+    const pick = new Function(`${extractFn('nextAutoSteerIndex')}; return nextAutoSteerIndex;`)() as (
+      q: any[],
+    ) => number;
+    // Steering the whole queue at once buried the earlier messages, and an echo
+    // cannot be attributed when several unacked steers share the channel.
+    assert.strictEqual(pick([{ text: 'a', steered: true }, { text: 'b' }]), -1);
+    assert.strictEqual(pick([{ text: 'a' }, { text: 'b' }]), 0);
+    assert.strictEqual(pick([]), -1);
+    assert.strictEqual(pick(null as any), -1);
+  });
+
+  test('an ack releases the next queued message', () => {
+    const ack = extractFn('ackSteeredQueueEntry');
+    assert.ok(ack.includes('maybeAutoSteerNext()'), ack);
+    const bubble = ack.indexOf('addUserBubbleForQueuedEntry(e)');
+    const next = ack.indexOf('maybeAutoSteerNext()');
+    assert.ok(bubble > 0 && next > bubble, 'promote the confirmed one before releasing the next');
+  });
+
+  test('a turn ending clears an unacked steer flag so later turns are not blocked', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    assert.ok(src.includes('delete messageQueue[_qi].steered;'));
+    // The entry itself must survive — drainQueue still has to send it.
+    const idx = src.indexOf('delete messageQueue[_qi].steered;');
+    assert.ok(!src.slice(idx - 300, idx).includes('messageQueue.splice'));
   });
 
   test('a steered entry stays queued until acked, so nothing is lost', () => {
@@ -147,7 +178,7 @@ suite('automatic steering of a mid-turn message', () => {
     // The entry is pushed BEFORE the steer and never removed there — drainQueue
     // still sends it at promptEnd if the echo never arrives.
     const push = fn.indexOf('messageQueue.push(entry)');
-    const steer = fn.indexOf("type: 'steerPrompt'");
+    const steer = fn.indexOf('maybeAutoSteerNext()');
     assert.ok(push > 0 && steer > push, 'the entry must be queued before steering');
     assert.ok(!fn.includes('messageQueue.splice'), 'queueMessage must not remove the entry');
     // Removal happens only on the agent's echo.
