@@ -6362,8 +6362,50 @@ let isCompacting = false;  // true while /compact is running
    }
 
    function queueMessage(text, images) {
-     messageQueue.push({ text, images: images || [] });
+     const entry = { text, images: images || [] };
+     messageQueue.push(entry);
      renderQueue();
+     // Deliver into the RUNNING turn when the agent can confirm receipt, instead
+     // of making the message wait for promptEnd. The entry stays in the queue
+     // until the agent echoes it back, so a steer that never lands still drains
+     // as a normal prompt — at-least-once, and no duplicate for agents that echo.
+     if (
+       isProcessing &&
+       !isCompacting &&
+       !isClearing &&
+       !(entry.images && entry.images.length) &&
+       !String(text || '').trim().startsWith('/') &&
+       agentAutoSteersQueuedMessages(currentAgentLabel())
+     ) {
+       entry.steered = true;
+       hasSteeredThisTurn = true;
+       vscode.postMessage({ type: 'steerPrompt', text: entry.text || ' ' });
+       renderQueue();
+       showTransientHint('Sent into the running turn — the agent picks it up at its next step.');
+     }
+   }
+
+   /**
+    * Drop a steered entry once the agent echoes it back.
+    *
+    * The echo is the only delivery signal available (session/steer is a
+    * notification), and it also renders the bubble, so keeping the entry would
+    * show the message twice and re-send it at promptEnd.
+    */
+   function ackSteeredQueueEntry(echoText) {
+     for (var i = 0; i < messageQueue.length; i++) {
+       var e = messageQueue[i];
+       if (e && e.steered && steerEchoMatchesEntry(e.text, echoText)) {
+         messageQueue.splice(i, 1);
+         renderQueue();
+         vscode.postMessage({
+           type: 'debugLog',
+           message: '[STEER] agent echoed a steered message; dropped it from the queue',
+         });
+         return true;
+       }
+     }
+     return false;
    }
 
    // Add a user bubble for a queue entry at the moment it is actually being
@@ -6566,6 +6608,68 @@ let isCompacting = false;  // true while /compact is running
  * and kiro-cli / cursor are external binaries with no adapter here, so none of
  * them are offered it. The default for every agent stays queue-and-drain.
  */
+/**
+ * Whether a message typed mid-turn should be steered AUTOMATICALLY, rather than
+ * waiting for the queue to drain at promptEnd.
+ *
+ * Narrower than agentSupportsMidTurnSteer on purpose. Auto-steering is only safe
+ * when delivery can be CONFIRMED, because session/steer is a notification: the
+ * client never learns whether the agent took it. ericli and claude-code both echo
+ * the steered text back as a user_message_chunk when they accept it, so the entry
+ * can stay queued until that echo arrives and drain normally if it never does —
+ * at-least-once with no duplicate.
+ *
+ * codex-acp is excluded even though its turn/steer RPC is reliable: nothing in its
+ * steer() emits an echo, so an auto-steer could neither be confirmed nor safely
+ * retried. Steering it stays a manual choice, where the user sees what happened.
+ */
+function agentAutoSteersQueuedMessages(agentLabel) {
+  var label = String(agentLabel || '');
+  if (!label) return false;
+  if (/^pi([ _-]?acp)?$/i.test(label.trim())) return false;
+  if (/claude/i.test(label)) return true;
+  return /eric[ _-]?cli|ericli|eric[ _-]?ai/i.test(label);
+}
+
+/**
+ * Collapse whitespace runs WITHOUT a regex.
+ *
+ * Regex escapes are hazardous in this file: it is one big template literal, so a
+ * whitespace-class escape collapses to the bare letter s (silently matching that
+ * letter instead of whitespace), and spelling the class out with tab/newline
+ * escapes collapses to a real newline, which cannot appear inside a regex literal
+ * at all — that one broke the emitted script outright. Character codes sidestep
+ * the question entirely; see the escape rule in AGENTS.md.
+ */
+function collapseWhitespaceChars(text) {
+  var str = String(text || '');
+  var out = '';
+  var pendingSpace = false;
+  for (var i = 0; i < str.length; i++) {
+    var code = str.charCodeAt(i);
+    if (code === 32 || code === 9 || code === 10 || code === 13) {
+      pendingSpace = out.length > 0;
+      continue;
+    }
+    if (pendingSpace) {
+      out += ' ';
+      pendingSpace = false;
+    }
+    out += str.charAt(i);
+  }
+  return out;
+}
+
+/** Normalized compare for matching an agent echo back to a queued entry. */
+function steerEchoMatchesEntry(entryText, echoText) {
+  var a = collapseWhitespaceChars(entryText);
+  var b = collapseWhitespaceChars(echoText);
+  if (!a || !b) return false;
+  if (a === b) return true;
+  // Agents may append context (memory blocks) after the text they echo.
+  return b.indexOf(a) === 0;
+}
+
 function agentSupportsMidTurnSteer(agentLabel) {
   var label = String(agentLabel || '');
   if (!label) return false;
@@ -19193,6 +19297,12 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         // locally, and task-notifications would mash all assistants into one fold.
         const content = update.content;
         if (content && content.type === 'text' && typeof content.text === 'string') {
+          // A steered message coming back from the agent is its only delivery
+          // receipt: drop the queued copy so it is neither shown twice nor
+          // re-sent at promptEnd.
+          if (!isLoadingSession && typeof ackSteeredQueueEntry === 'function') {
+            ackSteeredQueueEntry(content.text);
+          }
           var _dbgChunk = content.text.length > 150 ? content.text.substring(0, 150) + '...' : content.text;
           resumeDiag('UMC chunk: len=' + content.text.length + ' isLoading=' + isLoadingSession + ' text="' + _dbgChunk + '"');
         }

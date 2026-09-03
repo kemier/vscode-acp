@@ -92,3 +92,72 @@ suite('mid-turn steering of a queued message', () => {
     assert.ok(sm.includes("connInfo.connection.notify('session/steer', { sessionId, text })"));
   });
 });
+
+suite('automatic steering of a mid-turn message', () => {
+  function loadFn(name: string) {
+    const body = extractFn(name);
+    return new Function(`${body}; return ${name};`)();
+  }
+
+  test('auto-steers only where the agent confirms receipt by echoing', () => {
+    const auto = loadFn('agentAutoSteersQueuedMessages') as (l: string) => boolean;
+    // Both echo the steered text back as a user_message_chunk.
+    assert.strictEqual(auto('EricCLI'), true);
+    assert.strictEqual(auto('Claude Code'), true);
+    // codex-acp's turn/steer RPC is reliable but emits no echo, so an auto-steer
+    // could neither be confirmed nor safely retried — manual Steer only.
+    assert.strictEqual(auto('Codex CLI'), false);
+    assert.strictEqual(auto('Kiro CLI'), false);
+    assert.strictEqual(auto('pi-acp'), false);
+    assert.strictEqual(auto(''), false);
+  });
+
+  test('the echo matcher tolerates context appended after the text', () => {
+    // The matcher delegates whitespace collapsing, so both helpers must be loaded.
+    const body = extractFn('collapseWhitespaceChars') + '\n' + extractFn('steerEchoMatchesEntry');
+    const matches = new Function(`${body}; return steerEchoMatchesEntry;`)() as (
+      a: string,
+      b: string,
+    ) => boolean;
+    assert.strictEqual(matches('check the logs', 'check the logs'), true);
+    // Agents append memory blocks after the user text.
+    assert.strictEqual(matches('check the logs', 'check the logs\nvscode-acp:///memory/ericli'), true);
+    // Whitespace differences must not defeat it.
+    assert.strictEqual(matches(' check   the logs ', 'check the logs'), true);
+    // A different message must never be treated as the receipt.
+    assert.strictEqual(matches('check the logs', 'deploy the build'), false);
+    assert.strictEqual(matches('', 'anything'), false);
+  });
+
+  test('images and slash commands are never auto-steered', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const fn = extractFn('queueMessage');
+    // An image cannot ride session/steer (text only), and a slash command must
+    // start its own turn rather than being folded into the running one.
+    assert.ok(fn.includes('!(entry.images && entry.images.length)'), fn);
+    assert.ok(fn.includes("!String(text || '').trim().startsWith('/')"), fn);
+    // Never during compaction / clearing, which own the turn.
+    assert.ok(fn.includes('!isCompacting'), fn);
+    assert.ok(fn.includes('!isClearing'), fn);
+    assert.ok(src.includes("entry.steered = true;"));
+  });
+
+  test('a steered entry stays queued until acked, so nothing is lost', () => {
+    const fn = extractFn('queueMessage');
+    // The entry is pushed BEFORE the steer and never removed there — drainQueue
+    // still sends it at promptEnd if the echo never arrives.
+    const push = fn.indexOf('messageQueue.push(entry)');
+    const steer = fn.indexOf("type: 'steerPrompt'");
+    assert.ok(push > 0 && steer > push, 'the entry must be queued before steering');
+    assert.ok(!fn.includes('messageQueue.splice'), 'queueMessage must not remove the entry');
+    // Removal happens only on the agent's echo.
+    const ack = extractFn('ackSteeredQueueEntry');
+    assert.ok(ack.includes('e.steered && steerEchoMatchesEntry(e.text, echoText)'), ack);
+    assert.ok(ack.includes('messageQueue.splice(i, 1)'), ack);
+  });
+
+  test('the ack runs on live chunks only, not during replay', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    assert.ok(src.includes("if (!isLoadingSession && typeof ackSteeredQueueEntry === 'function')"));
+  });
+});
