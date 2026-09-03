@@ -78,7 +78,8 @@ suite('mid-turn steering of a queued message', () => {
 
   test('the button only appears while a turn is running', () => {
     const src = fs.readFileSync(SOURCE, 'utf8');
-    assert.ok(src.includes('if (isProcessing && agentSupportsMidTurnSteer(currentAgentLabel()))'));
+    // Also skipped for an already-steered entry, which would otherwise send twice.
+    assert.ok(src.includes('if (isProcessing && !entry.steered && agentSupportsMidTurnSteer(currentAgentLabel()))'));
     assert.ok(src.includes("steerBtn.textContent = 'Steer'"));
     // Queue-and-drain stays the default: Send Now (interrupt) and drain (wait) both remain.
     assert.ok(src.includes('sendQueuedMessageNow(index)'));
@@ -153,6 +154,26 @@ suite('automatic steering of a mid-turn message', () => {
     const ack = extractFn('ackSteeredQueueEntry');
     assert.ok(ack.includes('e.steered && steerEchoMatchesEntry(e.text, echoText)'), ack);
     assert.ok(ack.includes('messageQueue.splice(i, 1)'), ack);
+  });
+
+  test('the confirmed message becomes a chat bubble, not a silent disappearance', () => {
+    // The live user_message_chunk path returns early (the webview adds user bubbles
+    // locally), so the echo renders nothing by itself. Acking by deletion alone
+    // left the message nowhere: chip gone, nothing in the transcript.
+    const ack = extractFn('ackSteeredQueueEntry');
+    assert.ok(ack.includes('addUserBubbleForQueuedEntry(e)'), ack);
+    const splice = ack.indexOf('messageQueue.splice(i, 1)');
+    const bubble = ack.indexOf('addUserBubbleForQueuedEntry(e)');
+    assert.ok(splice > 0 && bubble > splice, 'remove the chip, then render the bubble');
+  });
+
+  test('a steered entry is visibly marked and loses its now-pointless Steer button', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    assert.ok(src.includes("chip.classList.add('queue-steered')"));
+    assert.ok(src.includes("sentTag.textContent = 'in turn'"));
+    assert.ok(src.includes('.msg-queue-item .queue-sent-tag {'), 'the tag needs a style');
+    // Steering an already-steered entry would send it twice.
+    assert.ok(src.includes("if (isProcessing && !entry.steered && agentSupportsMidTurnSteer(currentAgentLabel()))"));
   });
 
   test('the ack runs on live chunks only, not during replay', () => {

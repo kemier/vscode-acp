@@ -5822,6 +5822,18 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     .msg-queue-item .queue-action:hover {
       opacity: 1;
     }
+    .msg-queue-item .queue-sent-tag {
+      font-size: 0.8em;
+      opacity: 0.7;
+      margin-left: 4px;
+      padding: 0 4px;
+      border-radius: 3px;
+      background: var(--vscode-badge-background, rgba(128,128,128,0.25));
+      color: var(--vscode-badge-foreground, inherit);
+    }
+    .msg-queue-item.queue-steered {
+      border-style: dashed;
+    }
     .msg-queue-item .queue-send-now {
       cursor: pointer;
       opacity: 0.8;
@@ -6343,11 +6355,21 @@ let isCompacting = false;  // true while /compact is running
        sendNowBtn.addEventListener('click', () => {
          sendQueuedMessageNow(index);
        });
+       // Steered entries are already on their way; say so instead of leaving them
+       // looking like they are still waiting for the turn to end.
+       if (entry.steered) {
+         chip.classList.add('queue-steered');
+         const sentTag = document.createElement('span');
+         sentTag.className = 'queue-sent-tag';
+         sentTag.textContent = 'in turn';
+         sentTag.title = 'Delivered into the running turn — waiting for the agent to confirm it';
+         chip.appendChild(sentTag);
+       }
        chip.appendChild(sendNowBtn);
        // Steer button — injects into the RUNNING turn instead of waiting for it
        // to end. Only for agents whose steer path is dependable (see
        // agentSupportsMidTurnSteer); everyone else keeps queue-and-drain.
-       if (isProcessing && agentSupportsMidTurnSteer(currentAgentLabel())) {
+       if (isProcessing && !entry.steered && agentSupportsMidTurnSteer(currentAgentLabel())) {
          const steerBtn = document.createElement('span');
          steerBtn.className = 'queue-send-now queue-steer';
          steerBtn.textContent = 'Steer';
@@ -6386,11 +6408,14 @@ let isCompacting = false;  // true while /compact is running
    }
 
    /**
-    * Drop a steered entry once the agent echoes it back.
+    * Promote a steered entry into the chat once the agent confirms it.
     *
-    * The echo is the only delivery signal available (session/steer is a
-    * notification), and it also renders the bubble, so keeping the entry would
-    * show the message twice and re-send it at promptEnd.
+    * The echo is the only delivery signal available, since session/steer is a
+    * notification. It does NOT render anything by itself: the live
+    * user_message_chunk path returns early (the webview normally adds user bubbles
+    * locally), so acking by deletion alone made the message disappear — chip gone,
+    * nothing in the transcript. The bubble is therefore added here, at the moment
+    * delivery is confirmed, and only then is the chip removed.
     */
    function ackSteeredQueueEntry(echoText) {
      for (var i = 0; i < messageQueue.length; i++) {
@@ -6398,9 +6423,10 @@ let isCompacting = false;  // true while /compact is running
        if (e && e.steered && steerEchoMatchesEntry(e.text, echoText)) {
          messageQueue.splice(i, 1);
          renderQueue();
+         addUserBubbleForQueuedEntry(e);
          vscode.postMessage({
            type: 'debugLog',
-           message: '[STEER] agent echoed a steered message; dropped it from the queue',
+           message: '[STEER] agent confirmed a steered message; promoted it into the chat',
          });
          return true;
        }
