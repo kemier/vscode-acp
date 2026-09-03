@@ -214,3 +214,48 @@ suite('automatic steering of a mid-turn message', () => {
     assert.ok(src.includes("if (!isLoadingSession && typeof ackSteeredQueueEntry === 'function')"));
   });
 });
+
+suite('auto-steer is opt-in', () => {
+  /**
+   * Two messages typed during one ericli turn were both pushed in as interjections
+   * (steers at 07:11:45 and 07:12:07, each echoed and each dropped from the queue on
+   * its echo) and the agent answered only the second. The first was gone — acked, so
+   * no longer queued, and never addressed.
+   *
+   * Queue-and-drain has neither failure: strict order, one message per turn, and a
+   * real answer for each. Steering stays available as an explicit action.
+   */
+  test('the setting exists and defaults to off', () => {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8'),
+    );
+    const prop = pkg.contributes.configuration.properties['acp.autoSteerQueuedMessages'];
+    assert.ok(prop, 'acp.autoSteerQueuedMessages must be contributed');
+    assert.strictEqual(prop.default, false);
+    assert.match(prop.description, /only the most recent interjection|unanswered/);
+  });
+
+  test('nothing is auto-steered unless the setting is on', () => {
+    const fn = extractFn('maybeAutoSteerNext');
+    assert.ok(fn.includes('if (!autoSteerQueuedEnabled) return false;'), fn);
+    // The flag must be checked BEFORE the in-flight and agent checks, so the default
+    // path costs nothing and cannot steer by accident.
+    const gate = fn.indexOf('autoSteerQueuedEnabled');
+    const processing = fn.indexOf('!isProcessing');
+    assert.ok(gate > 0 && gate < processing);
+  });
+
+  test('the host sends the setting and the webview stores it', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    assert.ok(src.includes("get<boolean>('autoSteerQueuedMessages') === true"));
+    assert.ok(src.includes('if (typeof msg.autoSteerQueued === \'boolean\') autoSteerQueuedEnabled = msg.autoSteerQueued;'));
+    // Default in the webview must be off even if the host never sends it.
+    assert.ok(src.includes('let autoSteerQueuedEnabled = false;'));
+  });
+
+  test('the manual Steer button is untouched by the setting', () => {
+    const fn = extractFn('steerQueuedMessage');
+    assert.ok(!fn.includes('autoSteerQueuedEnabled'), 'an explicit Steer must always work');
+    assert.ok(fn.includes("type: 'steerPrompt'"), fn);
+  });
+});

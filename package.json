@@ -410,6 +410,11 @@
           "default": true,
           "description": "Watch ~/.cursor/acp-debug/compaction-events.jsonl (from the preCompact hook) and reset memory-inject gates when Cursor auto-compacts. Install the hook with scripts/install-precompact-hook.ps1 or .sh."
         },
+        "acp.autoSteerQueuedMessages": {
+          "type": "boolean",
+          "default": false,
+          "description": "Push a message typed mid-turn into the RUNNING turn (session/steer) instead of queueing it for the next one. Off by default: the agent may answer only the most recent interjection, so an earlier one can go unanswered. With it off, queued messages drain strictly in order, one per turn, and the Steer button on a queued message still delivers it immediately when you want that."
+        },
         "acp.logTraffic": {
           "type": "boolean",
           "default": true,

@@ -4148,6 +4148,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     const lastSessionId = this.workspaceState.get<string>('acp.lastConnectedSessionId');
     this.postMessage({
       type: 'state',
+      // Off by default. Pushing a mid-turn message into the running turn means the
+      // agent may answer only the most recent interjection: observed on ericli —
+      // two messages steered at 07:11:45 and 07:12:07, both echoed and both
+      // removed from the queue, and only the second was answered. Queue-and-drain
+      // keeps order and gives every message its own turn.
+      autoSteerQueued: vscode.workspace.getConfiguration('acp').get<boolean>('autoSteerQueuedMessages') === true,
       activeSessionId: activeId,
       session: session
         ? {
@@ -6412,6 +6418,10 @@ let isCompacting = false;  // true while /compact is running
     * agents that echo.
     */
    function maybeAutoSteerNext() {
+     // Opt-in (acp.autoSteerQueuedMessages). With two interjections in one turn the
+     // agent answered only the last, and both had already been dropped from the
+     // queue on their echoes, so the first was silently lost.
+     if (!autoSteerQueuedEnabled) return false;
      if (!isProcessing || isCompacting || isClearing) return false;
      if (!agentAutoSteersQueuedMessages(currentAgentLabel())) return false;
      var idx = nextAutoSteerIndex(messageQueue);
@@ -7861,6 +7871,9 @@ var end = displayText.length;
     // boundary makes a repeated id unambiguous, while keeping late updates from
     // the finished turn pointed at their original row.
     let retiredToolCalls = {};
+    // Mirrors acp.autoSteerQueuedMessages. Default OFF: a queued message waits for
+    // the next turn instead of being pushed into the running one.
+    let autoSteerQueuedEnabled = false;
     let toolIdRetireGen = 0;
     let toolCallDiffs = {};
 
@@ -17099,6 +17112,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
          DEBUG_RESUME = !!msg.enabled;
          break;
        case 'state':
+         if (typeof msg.autoSteerQueued === 'boolean') autoSteerQueuedEnabled = msg.autoSteerQueued;
          // Update last-connected agent from extension host (workspaceState
          // persists across restarts, unlike webview getState).
         if (msg.lastAgent) {
