@@ -17540,7 +17540,12 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         // forceCollapseTurnFolds (session switch, reload) if needed.
         var _userOpened = _endBody && _endBody._userExpanded && !isLoadingSession;
         ensureTurnFoldStructure(currentTurnEl, true);
+        // Re-sort fold contents by data-history-index so the last tool group
+        // (which was appended after the summary assistant was lifted outside
+        // by placeSummaryAssistant) ends up in the correct chronological
+        // position relative to the interim assistant segments.
         _endBody = getTurnFoldBody(currentTurnEl);
+        if (_endBody && !suppressFoldOrdering) orderCompactFoldContents(_endBody);
         if (_endBody) {
           if (_userOpened) {
             // Keep expanded — preserve _userExpanded so sticky logic in
