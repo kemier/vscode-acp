@@ -98,6 +98,34 @@ export function formatSkillBridgePostCommand(
     `-d '${bodyJson}'`
   );
 }
+/**
+ * One-line POST /update recipe for the active shell.
+ *
+ * Updates a stale skill's content in place via the bridge /update endpoint
+ * (which proxies to the gateway's POST /v3/skill/update, carrying the API key
+ * server-side). `content` is a FULL SKILL.md overwrite — send the complete
+ * document, not a diff. skill_id (skl-…) is required.
+ */
+export function formatSkillBridgeUpdateCommand(
+  bridgeBaseUrl: string,
+  agentId: string,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const base = bridgeBaseUrl.replace(/\/+$/, '');
+  const id = agentId.replace(/'/g, '').replace(/"/g, '\\"');
+  if (resolveSkillBridgeShell(platform) === 'win32') {
+    return (
+      `Invoke-RestMethod -Method Post -Uri '${base}/update' ` +
+      `-ContentType 'application/json' ` +
+      `-Body '{"skill_id":"<skl-…>","content":"<full SKILL.md>","agent_id":"${id}"}'`
+    );
+  }
+  return (
+    `curl -sf -X POST ${base}/update ` +
+    `-H 'Content-Type: application/json' ` +
+    `-d '{"skill_id":"<skl-…>","content":"<full SKILL.md>","agent_id":"${id}"}'`
+  );
+}
 
 export function formatMemorySkillTools(opts: MemorySkillToolsOptions): string {
   const platform = opts.platform ?? process.platform;
@@ -116,6 +144,7 @@ export function formatMemorySkillTools(opts: MemorySkillToolsOptions): string {
     `{"query":"<keywords>","agent_id":"${id}"}`,
     platform,
   );
+  const updateCmd = formatSkillBridgeUpdateCommand(opts.bridgeBaseUrl, opts.agentId, platform);
   const shellHint =
     resolveSkillBridgeShell(platform) === 'win32'
       ? 'Shell Invoke-RestMethod (PowerShell — do not use the `curl` alias)'
@@ -153,7 +182,16 @@ export function formatMemorySkillTools(opts: MemorySkillToolsOptions): string {
     '         drill-down. Use when you need to recall something from past work.',
     '  </tool>',
     '',
-    'Err on the side of loading — prerequisite skills are often NOT listed in <available_skills>.',
+    '  <tool name="memory_skill_update">',
+    `    ${updateCmd}`,
+    '    use: Replace a stale skill\'s content in place via the bridge /update endpoint',
+    '         (proxies to gateway POST /v3/skill/update, API key held server-side).',
+    '         `content` is a FULL SKILL.md overwrite — send the complete document.',
+    '         Resolve skill_id (skl-…) via memory_skill_view/search first. Returns',
+    '         { skill_id, name, version } with an incremented version on success.',
+    '  </tool>',
+    '',
+    'Err on the side of loading — prerequisite skills are often NOT listed in <available_skills>.',,
     '</memory_skill_tools>',
   ].join('\n');
 }

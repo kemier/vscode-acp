@@ -12,7 +12,9 @@ suite('MemorySkillTools', () => {
     assert.ok(text.includes('<memory_skill_tools>'));
     assert.ok(text.includes('memory_skill_view'));
     assert.ok(text.includes('memory_skill_search'));
+    assert.ok(text.includes('memory_skill_update'));
     assert.ok(text.includes('http://127.0.0.1:8126/view'));
+    assert.ok(text.includes('http://127.0.0.1:8126/update'));
     assert.ok(text.includes('"agent_id":"cursor"'));
     assert.ok(text.includes('prerequisite'));
     assert.ok(text.includes('curl -sf -X POST'));
@@ -27,6 +29,7 @@ suite('MemorySkillTools', () => {
     });
     assert.ok(text.includes('Invoke-RestMethod -Method Post -Uri \'http://127.0.0.1:8126/view\''));
     assert.ok(text.includes('Invoke-RestMethod -Method Post -Uri \'http://127.0.0.1:8126/search\''));
+    assert.ok(text.includes('Invoke-RestMethod -Method Post -Uri \'http://127.0.0.1:8126/update\''));
     assert.ok(text.includes('"agent_id":"cursor"'));
     assert.ok(text.includes('do not use the `curl` alias'));
     assert.ok(!text.includes('curl -sf'));

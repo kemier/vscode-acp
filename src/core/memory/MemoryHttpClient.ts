@@ -364,6 +364,43 @@ export class MemoryHttpClient {
     });
   }
 
+  /**
+   * Skill update: replace a stale skill's content in place via the gateway's
+   * POST /v3/skill/update. `content` is a FULL overwrite of the SKILL.md — the
+   * caller must send the complete document, not a diff. `skill_id` (prefix
+   * `skl-`) is the primary address; use getSkillByName first to resolve it.
+   *
+   * Unlike the read/search endpoints, this MUTATES a skill, so it is only
+   * exposed to the LLM via the MemorySkillBridge `/update` endpoint (which
+   * carries the gateway API key server-side) — never embedded in a prompt.
+   */
+  skillUpdate(
+    iso: MemoryIsolation,
+    params: {
+      skillId: string;
+      content: string;
+      name?: string;
+      description?: string;
+      removeScriptPaths?: string[];
+    },
+  ): Promise<{ skill_id: string; name: string; version: number }> {
+    const { sessionId: _sessionId, ...rest } = iso;
+    if (!params.skillId) {
+      throw new Error('skillUpdate requires skillId');
+    }
+    if (!params.content) {
+      throw new Error('skillUpdate requires content (full SKILL.md overwrite)');
+    }
+    return this.post('/v3/skill/update', {
+      ...this.isolationBody(rest),
+      skill_id: params.skillId,
+      content: params.content,
+      ...(params.name ? { name: params.name } : {}),
+      ...(params.description ? { description: params.description } : {}),
+      ...(params.removeScriptPaths ? { remove_script_paths: params.removeScriptPaths } : {}),
+    });
+  }
+
   addConversation(
     iso: MemoryIsolation,
     params: { sessionId: string; messages: ConversationMessage[] },

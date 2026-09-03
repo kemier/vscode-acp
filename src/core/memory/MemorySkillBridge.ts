@@ -5,6 +5,7 @@
  * Endpoints:
  *   POST /view   { name, agent_id? } → full skill (get-by-name)
  *   POST /search { query, agent_id?, top_k? } → search hits
+ *   POST /update { skill_id, content, name?, description? } → update a stale skill
  *   GET  /health → 200 ok
  */
 
@@ -147,6 +148,35 @@ export class MemorySkillBridge {
         }
         const topK = typeof body.top_k === 'number' ? body.top_k : 5;
         const result = await client.searchAtomic(iso, { query, limit: topK });
+        this.json(res, 200, result);
+        return;
+      }
+      if (url === '/update' || url === '/update/') {
+        // Update a stale skill's content in place. Mirrors the gateway's
+        // POST /v3/skill/update: `content` is a FULL SKILL.md overwrite.
+        // skill_id (skl-…) is required; name/description are optional.
+        const skillId = typeof body.skill_id === 'string' ? body.skill_id.trim() : '';
+        const content = typeof body.content === 'string' ? body.content : '';
+        if (!skillId) {
+          this.json(res, 400, { error: 'skill_id is required' });
+          return;
+        }
+        if (!content) {
+          this.json(res, 400, { error: 'content is required (full SKILL.md overwrite)' });
+          return;
+        }
+        const name = typeof body.name === 'string' ? body.name.trim() : undefined;
+        const description = typeof body.description === 'string' ? body.description.trim() : undefined;
+        const removeScriptPaths = Array.isArray(body.remove_script_paths)
+          ? (body.remove_script_paths as string[]).filter((x) => typeof x === 'string')
+          : undefined;
+        const result = await client.skillUpdate(iso, {
+          skillId,
+          content,
+          ...(name ? { name } : {}),
+          ...(description ? { description } : {}),
+          ...(removeScriptPaths ? { removeScriptPaths } : {}),
+        });
         this.json(res, 200, result);
         return;
       }

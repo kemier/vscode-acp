@@ -4,6 +4,7 @@
 
 import {
   formatSkillBridgeSearchCommand,
+  formatSkillBridgeUpdateCommand,
   formatSkillBridgeViewCommand,
 } from './MemorySkillTools';
 
@@ -129,6 +130,8 @@ export function formatSkills(
       lines.push(`  ${formatSkillBridgeViewCommand(base, agentId, platform)}`);
       lines.push('Search for a skill not listed above:');
       lines.push(`  ${formatSkillBridgeSearchCommand(base, agentId, platform)}`);
+      lines.push('Update a stale skill\'s content (full SKILL.md overwrite; resolve skill_id via view/search):');
+      lines.push(`  ${formatSkillBridgeUpdateCommand(base, agentId, platform)}`);
     } else {
       lines.push(
         'Load full instructions with memory_skill_view (Shell; recipe on first profile turn — see session history).',
