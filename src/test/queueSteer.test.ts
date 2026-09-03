@@ -49,12 +49,16 @@ suite('mid-turn steering of a queued message', () => {
     // codex-acp now calls Codex's native turn/steer with a currentTurnId guard,
     // so the text is delivered or refused — never silently dropped as in c397673.
     assert.strictEqual(supports('Codex CLI'), true);
-    // Kiro CLI is adapted in this repo (vscode-acp) and receives session/steer.
-    assert.strictEqual(supports('Kiro CLI'), true);
+
   });
 
   test('withheld from agents with no steer path, and when no agent is known', () => {
     const supports = loadGate();
+    // kiro-cli documents its whole core protocol at https://kiro.dev/docs/cli/acp/ —
+    // initialize, session/new, session/load, session/prompt, session/cancel,
+    // session/set_mode, session/set_model — with no steering, and says unknown
+    // _kiro.dev/ extensions may be "safely ignored". A steer would vanish.
+    assert.strictEqual(supports('Kiro CLI'), false);
     // cursor is an external binary with no adapter in this repo.
     assert.strictEqual(supports('Cursor'), false);
     // pi-acp queues whole prompts internally and implements no session/steer.
@@ -64,12 +68,15 @@ suite('mid-turn steering of a queued message', () => {
     assert.strictEqual(supports(undefined as any), false);
   });
 
-  test('the action removes from the queue, shows the bubble, and notifies the host', () => {
+  test('the action keeps the entry queued until the agent confirms it', () => {
     const fn = extractFn('steerQueuedMessage');
-    // The bubble appears now because the message really is on its way — that is
-    // the difference from queueing, where it waits for drain time.
-    assert.ok(fn.includes('messageQueue.splice(index, 1)'), fn);
-    assert.ok(fn.includes('addUserBubbleForQueuedEntry(entry)'), fn);
+    // session/steer is a notification: an agent that ignores it drops the message in
+    // silence. Removing the entry here lost it while the UI showed it as delivered,
+    // so the manual path now waits for the echo like the automatic one, and an
+    // unacked steer still drains as a normal prompt at promptEnd.
+    assert.ok(!fn.includes('messageQueue.splice(index, 1)'), fn);
+    assert.ok(!fn.includes('addUserBubbleForQueuedEntry(entry)'), fn);
+    assert.ok(fn.includes('entry.steered = true;'), fn);
     assert.ok(fn.includes("type: 'steerPrompt'"), fn);
     // Never steer into a turn that is not running, nor to an agent without it.
     assert.ok(fn.includes('if (!isProcessing || !agentSupportsMidTurnSteer(currentAgentLabel())) return;'), fn);
@@ -108,8 +115,9 @@ suite('automatic steering of a mid-turn message', () => {
     assert.strictEqual(auto('Claude Code'), true);
     // codex-acp joined once it echoed an accepted steer (codex-acp 881decb).
     assert.strictEqual(auto('Codex CLI'), true);
-    // Kiro CLI is adapted in this repo and receives session/steer.
-    assert.strictEqual(auto('Kiro CLI'), true);
+    // No steering method at all — see agentSupportsMidTurnSteer's note.
+    assert.strictEqual(auto('Kiro CLI'), false);
+
     assert.strictEqual(auto('pi-acp'), false);
     assert.strictEqual(auto(''), false);
   });
