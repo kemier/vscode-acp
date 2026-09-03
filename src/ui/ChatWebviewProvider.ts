@@ -6344,6 +6344,19 @@ let isCompacting = false;  // true while /compact is running
          sendQueuedMessageNow(index);
        });
        chip.appendChild(sendNowBtn);
+       // Steer button — injects into the RUNNING turn instead of waiting for it
+       // to end. Only for agents whose steer path is dependable (see
+       // agentSupportsMidTurnSteer); everyone else keeps queue-and-drain.
+       if (isProcessing && agentSupportsMidTurnSteer(currentAgentLabel())) {
+         const steerBtn = document.createElement('span');
+         steerBtn.className = 'queue-send-now queue-steer';
+         steerBtn.textContent = 'Steer';
+         steerBtn.title = 'Send into the running turn — the agent picks it up at its next step, without interrupting';
+         steerBtn.addEventListener('click', () => {
+           steerQueuedMessage(index);
+         });
+         chip.appendChild(steerBtn);
+       }
        msgQueueEl.appendChild(chip);
      });
    }
@@ -6376,6 +6389,28 @@ let isCompacting = false;  // true while /compact is running
    function removeQueuedMessage(index) {
      messageQueue.splice(index, 1);
      renderQueue();
+   }
+
+   /**
+    * Deliver a queued message into the turn that is already running.
+    *
+    * Unlike Send Now this does NOT cancel: the agent receives session/steer and
+    * folds the text in at its next tool-iteration boundary, so it lands between
+    * tool calls rather than after promptEnd. The bubble is added immediately
+    * because the message really is on its way — that is the difference from
+    * queueing, where the bubble waits for drain time.
+    */
+   function steerQueuedMessage(index) {
+     if (index < 0 || index >= messageQueue.length) return;
+     const entry = messageQueue[index];
+     if (!entry) return;
+     if (!isProcessing || !agentSupportsMidTurnSteer(currentAgentLabel())) return;
+     messageQueue.splice(index, 1);
+     renderQueue();
+     addUserBubbleForQueuedEntry(entry);
+     hasSteeredThisTurn = true;
+     vscode.postMessage({ type: 'steerPrompt', text: entry.text || ' ' });
+     showTransientHint('Steered into the running turn — the agent picks it up at its next step.');
    }
 
    // Edit a queued message — moves text back to the prompt input and
@@ -6509,6 +6544,29 @@ let isCompacting = false;  // true while /compact is running
  * Matches SessionManager's lookup (o.category === 'model') and falls back to
  * an id of 'model' for agents that set only the id.
  */
+/**
+ * Whether a queued message can be injected into the RUNNING turn.
+ *
+ * Mid-turn steering was removed wholesale in c397673 because it behaved
+ * differently per agent: ericli drains only at tool-iteration boundaries,
+ * codex-acp dropped notifications at the turn tail, and claude-code deferred to
+ * sequential --resume turns, so steered text could vanish with no response. That
+ * fix made every mid-turn message queue and drain one-per-turn, which is why a
+ * queued message waits for promptEnd instead of landing between tool calls.
+ *
+ * Since then the two agents that do implement it became dependable: ericli drains
+ * at every iteration boundary AND re-loops once if the model answers without
+ * acting on the interjection, and claude-code queues with an explicit in-flight
+ * check. So steering is offered for those two only, as an explicit action — the
+ * default stays queue-and-drain.
+ */
+function agentSupportsMidTurnSteer(agentLabel) {
+  var label = String(agentLabel || '');
+  if (!label) return false;
+  if (/claude/i.test(label)) return true;
+  return /eric[ _-]?cli|ericli|eric[ _-]?ai/i.test(label);
+}
+
 function modelIdFromConfigOptions(configOptions) {
   if (!Array.isArray(configOptions)) return '';
   for (var i = 0; i < configOptions.length; i++) {
