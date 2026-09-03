@@ -4153,7 +4153,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // two messages steered at 07:11:45 and 07:12:07, both echoed and both
       // removed from the queue, and only the second was answered. Queue-and-drain
       // keeps order and gives every message its own turn.
-      autoSteerQueued: vscode.workspace.getConfiguration('acp').get<boolean>('autoSteerQueuedMessages') === true,
+      autoSteerQueued: vscode.workspace.getConfiguration('acp').get<boolean>('autoSteerQueuedMessages') !== false,
       activeSessionId: activeId,
       session: session
         ? {
@@ -6418,9 +6418,10 @@ let isCompacting = false;  // true while /compact is running
     * agents that echo.
     */
    function maybeAutoSteerNext() {
-     // Opt-in (acp.autoSteerQueuedMessages). With two interjections in one turn the
-     // agent answered only the last, and both had already been dropped from the
-     // queue on their echoes, so the first was silently lost.
+     // Gated by acp.autoSteerQueuedMessages (default on). Ordering depends on the
+     // agent echoing a steered message when it DELIVERS it to the model, not when it
+     // receives it — ericli echoing on receipt let two interjections pile up and the
+     // model answered only the last (ericli now echoes at drain time).
      if (!autoSteerQueuedEnabled) return false;
      if (!isProcessing || isCompacting || isClearing) return false;
      if (!agentAutoSteersQueuedMessages(currentAgentLabel())) return false;
@@ -7871,9 +7872,9 @@ var end = displayText.length;
     // boundary makes a repeated id unambiguous, while keeping late updates from
     // the finished turn pointed at their original row.
     let retiredToolCalls = {};
-    // Mirrors acp.autoSteerQueuedMessages. Default OFF: a queued message waits for
-    // the next turn instead of being pushed into the running one.
-    let autoSteerQueuedEnabled = false;
+    // Mirrors acp.autoSteerQueuedMessages (default on). The host sends the real
+    // value with the state message; until then assume on, matching the setting.
+    let autoSteerQueuedEnabled = true;
     let toolIdRetireGen = 0;
     let toolCallDiffs = {};
 

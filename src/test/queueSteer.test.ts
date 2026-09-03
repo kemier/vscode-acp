@@ -215,7 +215,7 @@ suite('automatic steering of a mid-turn message', () => {
   });
 });
 
-suite('auto-steer is opt-in', () => {
+suite('auto-steer is settable, and ordered by delivery', () => {
   /**
    * Two messages typed during one ericli turn were both pushed in as interjections
    * (steers at 07:11:45 and 07:12:07, each echoed and each dropped from the queue on
@@ -225,14 +225,17 @@ suite('auto-steer is opt-in', () => {
    * Queue-and-drain has neither failure: strict order, one message per turn, and a
    * real answer for each. Steering stays available as an explicit action.
    */
-  test('the setting exists and defaults to off', () => {
+  test('the setting exists and defaults to on, with the ordering contract stated', () => {
     const pkg = JSON.parse(
       fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8'),
     );
     const prop = pkg.contributes.configuration.properties['acp.autoSteerQueuedMessages'];
     assert.ok(prop, 'acp.autoSteerQueuedMessages must be contributed');
-    assert.strictEqual(prop.default, false);
-    assert.match(prop.description, /only the most recent interjection|unanswered/);
+    assert.strictEqual(prop.default, true);
+    // The description must state both the one-at-a-time rule and that this is an
+    // extension, since ACP has no steering method at all.
+    assert.match(prop.description, /One message is in flight at a time/);
+    assert.match(prop.description, /Not part of ACP/);
   });
 
   test('nothing is auto-steered unless the setting is on', () => {
@@ -247,10 +250,12 @@ suite('auto-steer is opt-in', () => {
 
   test('the host sends the setting and the webview stores it', () => {
     const src = fs.readFileSync(SOURCE, 'utf8');
-    assert.ok(src.includes("get<boolean>('autoSteerQueuedMessages') === true"));
+    assert.ok(src.includes("get<boolean>('autoSteerQueuedMessages') !== false"));
     assert.ok(src.includes('if (typeof msg.autoSteerQueued === \'boolean\') autoSteerQueuedEnabled = msg.autoSteerQueued;'));
-    // Default in the webview must be off even if the host never sends it.
-    assert.ok(src.includes('let autoSteerQueuedEnabled = false;'));
+    // Webview default matches the setting default, so behaviour is the same before
+    // the first state message arrives.
+    assert.ok(src.includes('let autoSteerQueuedEnabled = true;'));
+    assert.ok(src.includes("get<boolean>('autoSteerQueuedMessages') !== false"));
   });
 
   test('the manual Steer button is untouched by the setting', () => {
