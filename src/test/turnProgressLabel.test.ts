@@ -74,10 +74,17 @@ suite('turn progress label', () => {
   test('a labeled pill is never overwritten, and only agent frames count as liveness', () => {
     const src = fs.readFileSync(SOURCE, 'utf8');
     const fn = extractFn('refreshTurnStatusLabel');
+    // A compaction / clearing pill owns the status area while it is up.
     assert.ok(fn.includes('if (isCompacting || isClearing) return;'), fn);
-    assert.ok(fn.includes("statusEl.querySelector('.spinner')"), fn);
+    // The label lives in its own element (7dae53e) rather than being appended into
+    // statusEl, so it cannot clobber the spinner or a pill; it hides itself when no
+    // turn is running.
+    assert.ok(fn.includes("getElementById('turn-elapsed-label')"), fn);
+    assert.ok(fn.includes('if (!isProcessing)'), fn);
+    assert.ok(!fn.includes('statusEl.innerHTML'), 'must never rewrite the status area');
     // Client-side chatter must not reset the idle figure.
     assert.ok(src.includes("_wvMsgType !== 'debugLog' && _wvMsgType !== 'state'"));
     assert.ok(src.includes('.turn-elapsed {'), 'the label needs its muted style');
+    assert.ok(src.includes('id="turn-elapsed-label"'), 'and its dedicated element');
   });
 });
