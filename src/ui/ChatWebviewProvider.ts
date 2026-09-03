@@ -6380,8 +6380,13 @@ let isCompacting = false;  // true while /compact is running
          chip.classList.add('queue-steered');
          const sentTag = document.createElement('span');
          sentTag.className = 'queue-sent-tag';
-         sentTag.textContent = 'in turn';
-         sentTag.title = 'Delivered into the running turn — waiting for the agent to confirm it';
+         // Two different states, and the difference matters: still waiting for this
+         // turn's confirmation, versus sent but unconfirmed once the turn has ended
+         // (which means it will be sent as a normal prompt instead).
+         sentTag.textContent = entry.steerPending ? 'in turn' : 'sent';
+         sentTag.title = entry.steerPending
+           ? 'Delivered into the running turn — waiting for the agent to confirm it'
+           : 'Sent into the previous turn but never confirmed — it will go as a normal prompt';
          chip.appendChild(sentTag);
        }
        chip.appendChild(sendNowBtn);
@@ -6429,6 +6434,7 @@ let isCompacting = false;  // true while /compact is running
      if (idx < 0) return false;
      var entry = messageQueue[idx];
      entry.steered = true;
+     entry.steerPending = true;
      hasSteeredThisTurn = true;
      vscode.postMessage({ type: 'steerPrompt', text: entry.text || ' ' });
      renderQueue();
@@ -6511,6 +6517,7 @@ let isCompacting = false;  // true while /compact is running
      // the UI claimed it was delivered. Queued-until-confirmed means an unacked steer
      // still drains as a normal prompt at promptEnd.
      entry.steered = true;
+     entry.steerPending = true;
      hasSteeredThisTurn = true;
      renderQueue();
      vscode.postMessage({ type: 'steerPrompt', text: entry.text || ' ' });
@@ -6760,11 +6767,19 @@ function collapseWhitespaceChars(text) {
 function nextAutoSteerIndex(queue) {
   if (!Array.isArray(queue)) return -1;
   for (var i = 0; i < queue.length; i++) {
-    if (queue[i] && queue[i].steered) return -1; // one already awaiting its ack
+    // steerPending means "sent in THIS turn, still waiting for the agent to confirm".
+    // Deliberately not the sent-ever flag, which stays set for the life of the entry so
+    // echo can still be matched: ericli's steer queue survives a turn boundary, so an
+    // echo can arrive during the NEXT turn (measured: steer 08:50:48, echo 08:52:42,
+    // with a new prompt at 08:52:32 in between).
+    if (queue[i] && queue[i].steerPending) return -1;
+    // Already delivered once — never steer the same entry twice.
+    if (queue[i] && queue[i].steered && !queue[i].steerPending) continue;
   }
   for (var j = 0; j < queue.length; j++) {
     var e = queue[j];
     if (!e) continue;
+    if (e.steered) continue; // already sent once; waiting for its echo or for drain
     if (e.images && e.images.length) continue;
     if (String(e.text || '').trim().indexOf('/') === 0) continue;
     return j;
@@ -8973,11 +8988,13 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
     isProcessing = processing;
     if (!processing) {
-      // An unacked steer did not land: clear the flag so it cannot block auto-steer
-      // for every later turn. The entry itself stays queued and drainQueue sends it.
+      // Clear only the per-turn pending flag, never the sent-ever flag. Clearing it
+      // made a late echo unmatchable, so the entry stayed queued and drainQueue sent
+      // it AGAIN as a prompt — the same message delivered twice (steer 08:50:48,
+      // echo 08:52:42, duplicate prompt 08:54:25).
       for (var _qi = 0; _qi < messageQueue.length; _qi++) {
-        if (messageQueue[_qi] && messageQueue[_qi].steered) {
-          delete messageQueue[_qi].steered;
+        if (messageQueue[_qi] && messageQueue[_qi].steerPending) {
+          delete messageQueue[_qi].steerPending;
         }
       }
       if (turnTicker) { clearInterval(turnTicker); turnTicker = null; }

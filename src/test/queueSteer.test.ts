@@ -161,7 +161,8 @@ suite('automatic steering of a mid-turn message', () => {
     ) => number;
     // Steering the whole queue at once buried the earlier messages, and an echo
     // cannot be attributed when several unacked steers share the channel.
-    assert.strictEqual(pick([{ text: 'a', steered: true }, { text: 'b' }]), -1);
+    // steerPending is the in-flight marker now; see the duplicate-delivery suite.
+    assert.strictEqual(pick([{ text: 'a', steered: true, steerPending: true }, { text: 'b' }]), -1);
     assert.strictEqual(pick([{ text: 'a' }, { text: 'b' }]), 0);
     assert.strictEqual(pick([]), -1);
     assert.strictEqual(pick(null as any), -1);
@@ -175,11 +176,11 @@ suite('automatic steering of a mid-turn message', () => {
     assert.ok(bubble > 0 && next > bubble, 'promote the confirmed one before releasing the next');
   });
 
-  test('a turn ending clears an unacked steer flag so later turns are not blocked', () => {
+  test('a turn ending clears the pending flag so later turns are not blocked', () => {
     const src = fs.readFileSync(SOURCE, 'utf8');
-    assert.ok(src.includes('delete messageQueue[_qi].steered;'));
+    assert.ok(src.includes('delete messageQueue[_qi].steerPending;'));
     // The entry itself must survive — drainQueue still has to send it.
-    const idx = src.indexOf('delete messageQueue[_qi].steered;');
+    const idx = src.indexOf('delete messageQueue[_qi].steerPending;');
     assert.ok(!src.slice(idx - 300, idx).includes('messageQueue.splice'));
   });
 
@@ -211,7 +212,7 @@ suite('automatic steering of a mid-turn message', () => {
   test('a steered entry is visibly marked and loses its now-pointless Steer button', () => {
     const src = fs.readFileSync(SOURCE, 'utf8');
     assert.ok(src.includes("chip.classList.add('queue-steered')"));
-    assert.ok(src.includes("sentTag.textContent = 'in turn'"));
+    assert.ok(src.includes("entry.steerPending ? 'in turn' : 'sent'"));
     assert.ok(src.includes('.msg-queue-item .queue-sent-tag {'), 'the tag needs a style');
     // Steering an already-steered entry would send it twice.
     assert.ok(src.includes("if (isProcessing && !entry.steered && agentSupportsMidTurnSteer(currentAgentLabel()))"));
@@ -270,5 +271,50 @@ suite('auto-steer is settable, and ordered by delivery', () => {
     const fn = extractFn('steerQueuedMessage');
     assert.ok(!fn.includes('autoSteerQueuedEnabled'), 'an explicit Steer must always work');
     assert.ok(fn.includes("type: 'steerPrompt'"), fn);
+  });
+});
+
+suite('a steered message is never delivered twice', () => {
+  /**
+   * Measured duplicate: steer at 08:50:48, a new prompt at 08:52:32, ericli's echo at
+   * 08:52:42 (its steer queue survives a turn boundary), then the SAME text sent again
+   * as a prompt at 08:54:25. The turn-end handler had cleared the entry's steered flag,
+   * so the late echo matched nothing and the entry stayed queued for drain.
+   *
+   * Two flags now: sent-ever (never cleared, so a late echo still acks) and
+   * pending-this-turn (cleared at turn end, so it cannot block later auto-steers).
+   */
+  function pick(queue: any[]): number {
+    const body = extractFn('nextAutoSteerIndex');
+    return new Function(`${body}; return nextAutoSteerIndex;`)()(queue);
+  }
+
+  test('an entry awaiting this turn blocks the next, an already-sent one does not', () => {
+    assert.strictEqual(pick([{ text: 'a', steered: true, steerPending: true }, { text: 'b' }]), -1);
+    // After the turn ended the pending flag is gone; the sent entry is skipped, not re-sent.
+    assert.strictEqual(pick([{ text: 'a', steered: true }, { text: 'b' }]), 1);
+    // And it is never picked again itself.
+    assert.strictEqual(pick([{ text: 'a', steered: true }]), -1);
+  });
+
+  test('turn end clears only the pending flag', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    assert.ok(src.includes('delete messageQueue[_qi].steerPending;'));
+    assert.ok(!src.includes('delete messageQueue[_qi].steered;'), 'clearing sent-ever caused the duplicate');
+  });
+
+  test('both steer paths set both flags', () => {
+    const auto = extractFn('maybeAutoSteerNext');
+    const manual = extractFn('steerQueuedMessage');
+    for (const fn of [auto, manual]) {
+      assert.ok(fn.includes('entry.steered = true;'), fn);
+      assert.ok(fn.includes('entry.steerPending = true;'), fn);
+    }
+  });
+
+  test('the chip distinguishes waiting from sent-but-unconfirmed', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    assert.ok(src.includes("entry.steerPending ? 'in turn' : 'sent'"));
+    assert.ok(src.includes('it will go as a normal prompt'));
   });
 });
