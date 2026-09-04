@@ -318,3 +318,32 @@ suite('a steered message is never delivered twice', () => {
     assert.ok(src.includes('it will go as a normal prompt'));
   });
 });
+
+suite('Send Now cannot re-send a message already taken', () => {
+  /**
+   * Measured duplicate: Send Now on a chip that had already been steered.
+   *   02:14:26 steer   "and another issue, why i click send now…"
+   *   02:14:28 echo    (agent took it)
+   *   02:17:20 cancel  (Send Now pressed on the same chip)
+   *   02:17:29 turn 8 cancelled
+   *   02:17:30 prompt id=10 — the same text again
+   * The Steer button was hidden for a steered entry but Send Now was not, so the entry
+   * could still be cancelled-and-resent after delivery.
+   */
+  test('the button is withheld while a steer awaits confirmation', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    assert.ok(src.includes('if (!entry.steerPending) chip.appendChild(sendNowBtn);'));
+    // Still offered once the turn ended without a confirmation — then it did not land.
+    assert.ok(src.includes('truly did not land'));
+  });
+
+  test('the action refuses a stale click', () => {
+    const fn = extractFn('sendQueuedMessageNow');
+    assert.ok(fn.includes('messageQueue[index].steerPending'), fn);
+    assert.ok(fn.includes('Already sent into the running turn'), fn);
+    // The guard must come before anything that mutates the queue or cancels.
+    const guard = fn.indexOf('steerPending');
+    const cancel = fn.indexOf('cancelTurn');
+    assert.ok(guard > 0 && (cancel < 0 || guard < cancel));
+  });
+});

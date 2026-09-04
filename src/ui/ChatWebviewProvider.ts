@@ -6394,7 +6394,11 @@ let isCompacting = false;  // true while /compact is running
            : 'Sent into the previous turn but never confirmed — it will go as a normal prompt';
          chip.appendChild(sentTag);
        }
-       chip.appendChild(sendNowBtn);
+       // Withheld while a steer for this entry awaits confirmation: pressing it cancelled
+       // the turn and re-sent a message the agent had already taken (steer 02:14:26, echo
+       // 02:14:28, Send Now 02:17:20, duplicate prompt id=10 at 02:17:30). Once a turn
+       // ends without a confirmation it is offered again, since then it truly did not land.
+       if (!entry.steerPending) chip.appendChild(sendNowBtn);
        // Steer button — injects into the RUNNING turn instead of waiting for it
        // to end. Only for agents whose steer path is dependable (see
        // agentSupportsMidTurnSteer); everyone else keeps queue-and-drain.
@@ -6595,6 +6599,12 @@ let isCompacting = false;  // true while /compact is running
    var suppressInterruptNotice = false;
  function sendQueuedMessageNow(index) {
    if (index < 0 || index >= messageQueue.length) return;
+   // A steer for this entry is still awaiting confirmation: re-sending would deliver it
+   // twice. The button is hidden in that state; this guards a stale click.
+   if (messageQueue[index] && messageQueue[index].steerPending) {
+     showTransientHint('Already sent into the running turn — waiting for the agent to pick it up.');
+     return;
+   }
    const entry = messageQueue[index];
    // Remove from queue immediately
    messageQueue.splice(index, 1);
