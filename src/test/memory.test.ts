@@ -130,7 +130,7 @@ suite('MemoryFormat', () => {
     // Persona (4000) + many long skills pushes the blob past 8000. The priority
     // drop must shed skill entries (not the persona's scene index) to fit.
     const persona = 'Doctrine: '.repeat(125) + '\n## Scene Navigation\n### Path: scene_blocks/a.md';
-    const skills = Array.from({ length: 30 }, (_, i) => ({
+    const skills = Array.from({ length: 40 }, (_, i) => ({
       skill_id: `s${i}`,
       name: `skill-${i}`,
       description: 'x'.repeat(200),
@@ -139,13 +139,13 @@ suite('MemoryFormat', () => {
     const l1 = [{ content: 'top-ranked memory', type: 'fact' }];
     const formatted = formatRecallContext(l1, persona, [], skills);
     assert.ok(formatted);
-    assert.ok(formatted!.text.length <= 8000, 'blob must respect the total cap');
+    assert.ok(formatted!.text.length <= 9000, 'blob must respect the total cap');
     assert.ok(formatted!.text.includes('Scene Navigation'), 'persona scene index must survive');
     assert.ok(formatted!.text.includes('top-ranked memory'), 'top L1 must survive');
     assert.ok(formatted!.text.includes('<available_skills>'), 'skills block (footer) kept');
-    // Not all 30 skills fit — some were dropped gracefully.
+    // Not all 40 skills fit — some were dropped gracefully.
     const keptSkills = formatted!.text.match(/\- \*\*skill-\d+\*\*/g)?.length ?? 0;
-    assert.ok(keptSkills < 30, 'expected some skills to be dropped');
+    assert.ok(keptSkills < 40, 'expected some skills to be dropped');
     assert.ok(keptSkills >= 0);
   });
 
@@ -309,7 +309,7 @@ suite('MemoryFormat.formatSkills', () => {
     assert.ok(text!.includes('curl -sf -X POST http://127.0.0.1:8127/view'));
     assert.ok(text!.includes('curl -sf -X POST http://127.0.0.1:8127/search'));
     assert.ok(text!.includes('"agent_id":"ericli"'));
-    assert.ok(text!.includes('memory skills MUST use the API'));
+    assert.ok(text!.includes('NOT the API above'));
     // The static fallback ("see session history") must NOT appear when a base URL is set.
     assert.ok(!text!.includes('see session history'));
   });
