@@ -495,7 +495,7 @@ export function findCursorSessionStorePath(
 const MAX_FALLBACK_STORE_BYTES = 120 * 1024 * 1024;
 
 /** Live per-tool enrich skips full-table blob scans above this size. */
-const MAX_LIVE_ENRICH_FULL_SCAN_BYTES = MAX_FALLBACK_STORE_BYTES;
+export const MAX_LIVE_ENRICH_FULL_SCAN_BYTES = MAX_FALLBACK_STORE_BYTES;
 
 /** JSON tool-call blobs in store.db are small; skip multi-MB conversation dumps. */
 const MAX_TOOL_BLOB_BYTES = 512 * 1024;
