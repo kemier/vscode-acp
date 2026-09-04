@@ -132,12 +132,16 @@ export function formatSkills(
       lines.push(`  ${formatSkillBridgeSearchCommand(base, agentId, platform)}`);
       lines.push('Update a stale skill\'s content (full SKILL.md overwrite; resolve skill_id via view/search):');
       lines.push(`  ${formatSkillBridgeUpdateCommand(base, agentId, platform)}`);
+      lines.push('');
+      lines.push('If /view returns SKILL_NOT_FOUND (HTTP 502), the skill is FILESYSTEM-only, not in memory.');
+      lines.push('Read it directly: `cat ~/.cli-4-ericai/skills/<name>/SKILL.md` (or the Read tool).');
+      lines.push('Do NOT retry the API for a skill that returned SKILL_NOT_FOUND.');
     } else {
       lines.push(
         'Load full instructions with memory_skill_view (Shell; recipe on first profile turn — see session history).',
       );
     }
-    lines.push('Filesystem skills (e.g. ~/.cursor/skills-cursor/) are loaded via the Read tool — but memory skills MUST use the API above.');
+    lines.push('Filesystem skills (e.g. ~/.cursor/skills-cursor/) are loaded via the Read tool — NOT the API above. If /view returns SKILL_NOT_FOUND, the skill is filesystem-only: read `~/.cli-4-ericai/skills/<name>/SKILL.md` directly.');
   }
   lines.push('</available_skills>');
   return lines.join('\n');
@@ -174,7 +178,7 @@ export function formatSceneNav(scenes: SceneNavEntry[]): string | undefined {
  * maxTotalRecallChars — those only run in the OpenClaw recall hook path),
  * the blob injected into the prompt is bounded. ~8000 chars ≈ 2000 tokens.
  */
-const MAX_TOTAL_BLOB_CHARS = 8000;
+const MAX_TOTAL_BLOB_CHARS = 9000;
 
 /**
  * Assemble the <agent-memory> blob from already-formatted section parts, then
