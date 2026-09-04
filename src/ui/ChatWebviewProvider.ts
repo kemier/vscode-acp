@@ -1664,7 +1664,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           await this.handleSteerPrompt(message.text);
           break;
         case 'stopProcesses':
-          await this.handleStopProcesses();
+          await this.handleStopProcesses(message.suppressNotice);
           break;
         case 'setMode':
           await this.handleSetMode(message.modeId);
@@ -2813,7 +2813,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     }
   }
 
-  private async handleStopProcesses(): Promise<void> {
+  private async handleStopProcesses(suppressNotice?: boolean): Promise<void> {
     const activeId = this.sessionManager.getActiveSessionId();
     if (!activeId) {
       return;
@@ -2828,7 +2828,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // panel keeps showing stale "running" processes because codex-acp's
     // stopProcesses() clears its internal backgroundProcesses map but never
     // emits tool_call_update notifications for the killed processes.
-    this.postMessage({ type: 'processesStopped' });
+    //
+    // suppressNotice: when true, the webview skips the transient "Killed N
+    // running process." notice. This is set by the "Send Now" path, which
+    // kills processes as a side effect of interrupting the turn — the user
+    // did not run /stop, so the "Killed" feedback is noise, not intent.
+    this.postMessage({ type: 'processesStopped', suppressNotice: !!suppressNotice });
     // An explicit /stop means the user is done with this turn. Killing the
     // processes does NOT end the ACP turn: the agent's prompt promise stays
     // pending, so no promptEnd arrives, a queued "Send Now" message never
@@ -6624,7 +6629,12 @@ let isCompacting = false;  // true while /compact is running
    // starts. Without this, the cancel ends the ACP turn but spawned
    // processes (builds, test suites, etc.) keep running and their output
    // leaks into the next turn.
-   vscode.postMessage({ type: 'stopProcesses' });
+   //
+   // suppressNotice: this is NOT a /stop — the user clicked "Send Now" and
+   // the kill is a side effect of interrupting the turn. The host will skip
+   // the transient "Killed N running process." notice so it doesn't look
+   // like the user explicitly stopped the processes.
+   vscode.postMessage({ type: 'stopProcesses', suppressNotice: true });
    vscode.postMessage({ type: 'cancelTurn' });
   } else {
      // Not processing — send directly now and show the bubble.
@@ -17789,7 +17799,13 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
          // "Killed" feedback doesn't persist in the chat history. (The agent's
          // own "🛑 Killed N..." bubble is suppressed via isStopNoticeChunk so
          // this is the ONLY "Killed" text the user sees.)
-         showTransientNotice('Killed ' + _killed + ' running process' + (_killed === 1 ? '' : 'es') + '.');
+         //
+         // Suppressed when the kill was a side effect of "Send Now" (which
+         // interrupts the turn and kills processes to stop background work) —
+         // the user did not run /stop, so the "Killed" notice is noise.
+         if (!msg.suppressNotice && _killed > 0) {
+           showTransientNotice('Killed ' + _killed + ' running process' + (_killed === 1 ? '' : 'es') + '.');
+         }
          break;
        }
 

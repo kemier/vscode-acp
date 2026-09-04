@@ -26,9 +26,9 @@ const SOURCE = path.resolve(__dirname, '../../src/ui/ChatWebviewProvider.ts');
 
 const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
 
-function loadHandleStopProcesses(): (self: any) => Promise<void> {
+function loadHandleStopProcesses(): (self: any, suppressNotice?: boolean) => Promise<void> {
   const src = fs.readFileSync(SOURCE, 'utf8');
-  const start = src.indexOf('  private async handleStopProcesses(): Promise<void> {');
+  const start = src.indexOf('  private async handleStopProcesses(suppressNotice?: boolean): Promise<void> {');
   assert.ok(start >= 0, 'handleStopProcesses not found');
   const end = src.indexOf('\n  }\n', start);
   assert.ok(end > start, 'end of handleStopProcesses not found');
@@ -37,13 +37,15 @@ function loadHandleStopProcesses(): (self: any) => Promise<void> {
   // so the extracted body runs standalone.
   const run = new AsyncFunction(
     'self',
+    'suppressNotice',
     'log',
     'logError',
     `await (async function(){${body}}).call(self);`,
   );
-  return (self: any) =>
+  return (self: any, suppressNotice?: boolean) =>
     run(
       self,
+      suppressNotice,
       () => {},
       () => {},
     );
@@ -119,5 +121,11 @@ suite('/stop ends the turn (Interrupting… stuck after a stop)', () => {
       ['processesStopped'],
       'the /ps panel must still be refreshed even if the kill failed',
     );
+  });
+
+  test('forwards suppressNotice to the webview so Send Now suppresses the Killed notice', async () => {
+    const s = stub({ activeId: 'sess-1', inFlight: true });
+    await handleStopProcesses(s.self, true);
+    assert.deepStrictEqual(s.posted[0], { type: 'processesStopped', suppressNotice: true });
   });
 });
