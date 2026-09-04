@@ -11,7 +11,7 @@ import * as path from 'path';
  *
  * Cause is a tool-call id collision across turns. Traffic log 06:25:51-52 shows
  * the cancelled turn reaching tc-8 and the replacement turn opening at tc-1 —
- * ericli declared its counter inside the per-turn prompt handler, so numbering
+ * codex declared its counter inside the per-turn prompt handler, so numbering
  * restarted. On the client, `toolCalls` was never cleared between turns and DOM
  * ids are 'tc-' + wireId, so the new turn's tc-1 resolved to the PREVIOUS turn's
  * element (getElementById returns the older of two duplicate ids).

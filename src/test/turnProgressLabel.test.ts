@@ -4,7 +4,7 @@ import * as path from 'path';
 
 /**
  * A running turn showed a bare spinner and nothing else, so a slow agent was
- * indistinguishable from a hung one. Measured on one ericli turn after
+ * indistinguishable from a hung one. Measured on one codex turn after
  * auto-compaction: 47s, then 99s, then 120s with no frames at all — over four
  * minutes where the only signal was a spinner, reported as "it lasted several
  * minutes to finally make the send button inactivated".

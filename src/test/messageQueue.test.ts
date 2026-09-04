@@ -154,11 +154,9 @@ suite('messageQueue.agentSupportsSteering', () => {
   const agentSupportsSteering = extractFunction('agentSupportsSteering');
 
   test('Option B: every agent is deferred-queue (steering disabled)', () => {
-    // Option B disables mid-turn steering for ALL agents — including EricLI
-    // and Codex. Every mid-turn message is queued FIFO and drained after the
-    // current turn's promptEnd, so the user bubble appears only at drain time.
-    assert.strictEqual(agentSupportsSteering('EricCLI'), false);
-    assert.strictEqual(agentSupportsSteering('ericli-acp'), false);
+    // Option B disables mid-turn steering for ALL agents via agentSupportsSteering.
+    // Mid-turn messages are queued FIFO and drained after the current turn's
+    // promptEnd (auto-steer uses a separate gate).
     assert.strictEqual(agentSupportsSteering('Codex CLI'), false);
     assert.strictEqual(agentSupportsSteering('codex-acp'), false);
     assert.strictEqual(agentSupportsSteering('claude-code'), false);

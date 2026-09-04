@@ -1,7 +1,7 @@
 /**
  * Helpers for resolving code links clicked in the chat panel.
  *
- * Both exist because of one concrete failure: an ericli session working in
+ * Both exist because of one concrete failure: an codex session working in
  * /workspace/git/ezennin/llama.cpp emitted `src/llama-memory-recurrent.cpp:898`,
  * the extension joined that onto THIS workspace root, found nothing, and then
  * fell back to a workspace symbol search for the first identifier in the link

@@ -508,7 +508,7 @@ suite('cleanUserMessage', () => {
     });
 
     test('strips multiple bare memory URIs and keeps the prompt text', () => {
-      const input = 'vscode-acp:///memory/codex\nvscode-acp:///memory/ericli\ncheck the log';
+      const input = 'vscode-acp:///memory/codex\nvscode-acp:///memory/claude\ncheck the log';
       assert.strictEqual(cleanUserMessage(input), 'check the log');
     });
 

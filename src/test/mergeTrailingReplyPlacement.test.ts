@@ -5,7 +5,7 @@ import * as path from 'path';
 /**
  * Regression test for "the second resume loses the summary again".
  *
- * Measured chain (ericli / vllm session e100b277):
+ * Measured chain (codex / vllm session e100b277):
  *  1. session/load does not replay the turn's final reply.
  *  2. The snapshot merge re-injects it — but insertSnapshotItem's generic
  *     backward walk asked findMergedToolAnchorOrdinal for the ordinal of the
@@ -66,7 +66,7 @@ suite('merge trailing reply placement (second-resume regression)', () => {
   test('a trailing reply the replay dropped is appended, not spliced into an earlier turn', () => {
     const merge = loadMerge();
 
-    // ericli numbers replay tool ids per load (tc-1, tc-2, …), so the
+    // codex numbers replay tool ids per load (tc-1, tc-2, …), so the
     // snapshot's last-turn tool id collides with a DIFFERENT tool in the new
     // replay. findMergedHistoryAnchor then anchored the last turn's tool onto
     // that earlier occurrence and the generic walk dropped the reply there.

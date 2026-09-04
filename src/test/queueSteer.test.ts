@@ -6,7 +6,7 @@ import * as path from 'path';
  * Why a queued message waits for promptEnd instead of landing between tool calls.
  *
  * c397673 ("queue every mid-turn message — one per turn, no concurrent sends")
- * removed mid-turn steering outright: ericli drained only at tool-iteration
+ * removed mid-turn steering outright: codex drained only at tool-iteration
  * boundaries, codex-acp dropped the notification at the turn tail, and claude-code
  * deferred to sequential --resume turns, so steered text could disappear with no
  * response. Queue-and-drain replaced it, which is correct but means a message
@@ -42,14 +42,12 @@ function loadGate(): (label: string) => boolean {
 suite('mid-turn steering of a queued message', () => {
   test('offered for the agents that implement it dependably', () => {
     const supports = loadGate();
-    assert.strictEqual(supports('EricCLI'), true);
-    assert.strictEqual(supports('ericli'), true);
     assert.strictEqual(supports('Claude Code'), true);
     assert.strictEqual(supports('claude-agent-acp'), true);
     // codex-acp now calls Codex's native turn/steer with a currentTurnId guard,
     // so the text is delivered or refused — never silently dropped as in c397673.
     assert.strictEqual(supports('Codex CLI'), true);
-
+    assert.strictEqual(supports('codex-acp'), true);
   });
 
   test('withheld from agents with no steer path, and when no agent is known', () => {
@@ -110,8 +108,6 @@ suite('automatic steering of a mid-turn message', () => {
 
   test('auto-steers only where the agent confirms receipt by echoing', () => {
     const auto = loadFn('agentAutoSteersQueuedMessages') as (l: string) => boolean;
-    // Both echo the steered text back as a user_message_chunk.
-    assert.strictEqual(auto('EricCLI'), true);
     assert.strictEqual(auto('Claude Code'), true);
     // codex-acp joined once it echoed an accepted steer (codex-acp 881decb).
     assert.strictEqual(auto('Codex CLI'), true);
@@ -131,7 +127,7 @@ suite('automatic steering of a mid-turn message', () => {
     ) => boolean;
     assert.strictEqual(matches('check the logs', 'check the logs'), true);
     // Agents append memory blocks after the user text.
-    assert.strictEqual(matches('check the logs', 'check the logs\nvscode-acp:///memory/ericli'), true);
+    assert.strictEqual(matches('check the logs', 'check the logs\nvscode-acp:///memory/codex'), true);
     // Whitespace differences must not defeat it.
     assert.strictEqual(matches(' check   the logs ', 'check the logs'), true);
     // A different message must never be treated as the receipt.
@@ -226,7 +222,7 @@ suite('automatic steering of a mid-turn message', () => {
 
 suite('auto-steer is settable, and ordered by delivery', () => {
   /**
-   * Two messages typed during one ericli turn were both pushed in as interjections
+   * Two messages typed during one codex turn were both pushed in as interjections
    * (steers at 07:11:45 and 07:12:07, each echoed and each dropped from the queue on
    * its echo) and the agent answered only the second. The first was gone — acked, so
    * no longer queued, and never addressed.
@@ -276,7 +272,7 @@ suite('auto-steer is settable, and ordered by delivery', () => {
 
 suite('a steered message is never delivered twice', () => {
   /**
-   * Measured duplicate: steer at 08:50:48, a new prompt at 08:52:32, ericli's echo at
+   * Measured duplicate: steer at 08:50:48, a new prompt at 08:52:32, codex's echo at
    * 08:52:42 (its steer queue survives a turn boundary), then the SAME text sent again
    * as a prompt at 08:54:25. The turn-end handler had cleared the entry's steered flag,
    * so the late echo matched nothing and the entry stayed queued for drain.

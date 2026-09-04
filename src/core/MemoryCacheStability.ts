@@ -43,7 +43,7 @@ export function resolveMemoryInjectMode(
   void opts.sessionAlreadyPrompted;
   // A slash command is not an LLM turn — the agent intercepts it — so memory is
   // both useless and harmful there. Appending 5.8 KB after "/compact" made
-  // ericli's `userText.trim() === '/compact'` guard miss, the command fell
+  // codex's `userText.trim() === '/compact'` guard miss, the command fell
   // through to the LLM, and the panel showed "Compacting conversation..." while
   // a fresh chat round started. Agents whose interception is token-based are
   // unaffected either way, so skipping is strictly safer.

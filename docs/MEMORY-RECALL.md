@@ -23,7 +23,7 @@ intended for the **agent's context window**, not for human reading:
   `resource` block and the webview must render it as a compact **memory pill**
   (`[Memory context]`), never as the raw blob text.
 - When the agent flattens the resource back into the user message text
-  (e.g. ericli's `extractUserTextFromContentBlocks` emits
+  (e.g. codex's `extractUserTextFromContentBlocks` emits
   `<context ref="vscode-acp:///memory/<id>">…</context>`), the panel must
   strip that wrapper on replay via `cleanUserMessage` / `stripTag('context')`,
   and a message that is _only_ machine context must not render at all
@@ -47,7 +47,7 @@ recall does not re-enter the store and reinforce itself turn after turn.
 
 Observed failure (session `9ad39a1e`, 2026-08-09, DeepSeek-V4-Flash):
 
-1. The model returned empty post-tool replies 3× in a row; ericli's
+1. The model returned empty post-tool replies 3× in a row; codex's
    empty-reply guard exhausted its retries and asked the LLM to synthesize a
    closing summary (`handleTimeoutCompletion`).
 2. The synthesizer echoed its own instruction as "content":
@@ -60,7 +60,7 @@ Observed failure (session `9ad39a1e`, 2026-08-09, DeepSeek-V4-Flash):
 
 Requirements that prevent this class of bug:
 
-- **ericli side** (`sanitizeSynthesizedSummary` in `tool-executor.ts`): a
+- **codex side** (`sanitizeSynthesizedSummary` in `tool-executor.ts`): a
   synthesized closing summary that is a short instruction-echo ("Note:",
   "Do not fabricate", "must be based strictly", ...) must be rejected and
   replaced with the honest fallback text — never emitted to the IDE.
@@ -82,5 +82,5 @@ must be handled client-side so the gateway never stores them verbatim.
 ---
 
 **Tests:** `src/test/memory.test.ts` covers the sanitize/`shouldCaptureL0`
-contracts; `ericli`'s `test/tool-executor-empty-reply.test.ts` covers
+contracts; `codex`'s `test/tool-executor-empty-reply.test.ts` covers
 `isPromptEcho` / `sanitizeSynthesizedSummary`.

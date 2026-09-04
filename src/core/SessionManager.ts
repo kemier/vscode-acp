@@ -1193,7 +1193,7 @@ export class SessionManager extends EventEmitter {
 
   /**
    * Send a steering message to the agent mid-turn without cancelling.
-   * Uses a custom `session/steer` notification that EricCLI's
+   * Uses a custom `session/steer` notification that Codex's
    * ACP server handles by queuing the message and injecting it at the
    * next tool-execution iteration boundary. Codex-acp translates it to
    * a native turn/steer RPC call. Claude-code-acp queues it and drains
@@ -1219,7 +1219,7 @@ export class SessionManager extends EventEmitter {
 
   /**
    * Kill all running background processes spawned in this session.
-   * Sends a custom `session/stop` notification that EricCLI and Codex-ACP
+   * Sends a custom `session/stop` notification that Codex and Codex-ACP
    * handle to terminate spawned processes without interrupting the active
    * turn. For agents that don't support this notification, it's silently
    * ignored.
@@ -2541,7 +2541,7 @@ export class SessionManager extends EventEmitter {
       // placeholder.models was still null — and notifyModelsUpdate is only
       // wired to 'model-changed', so nothing told it afterwards. The webview's
       // currentModelId therefore stayed null for the whole resumed session, and
-      // the Kiro/EricCLI attach-button rule (which reads currentModelId, not
+      // the Kiro/Codex attach-button rule (which reads currentModelId, not
       // promptCapabilities) hid the image button even on a vision model:
       // observed as `[WV-DIAG] attachBtn: agent="Kiro CLI" model="null"
       // image=true` on a claude-opus-5 session.

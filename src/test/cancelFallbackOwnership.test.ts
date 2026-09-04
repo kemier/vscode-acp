@@ -5,7 +5,7 @@ import * as path from 'path';
 /**
  * "Send Now" stopped working after the first interrupt.
  *
- * Measured in an ericli session:
+ * Measured in an codex session:
  *
  *   06:36:10  Cancelling turn for session c5015617…
  *   06:36:15  Cancel fallback: agent did not acknowledge within 5s, forcing promptEnd

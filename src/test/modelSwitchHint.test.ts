@@ -5,7 +5,7 @@ import * as path from 'path';
 /**
  * Switching model mid-turn looked ignored.
  *
- * It is not: ericli re-reads the live model at the top of each tool-loop
+ * It is not: codex re-reads the live model at the top of each tool-loop
  * iteration, and the proxy log proves the switch lands on the next call — request
  * 12419e83 ran Qwen at 03:51:59, the switch arrived 03:52:23, and 03:52:29 went to
  * DeepSeek. What cannot change is the call already streaming, because its model is
@@ -98,13 +98,5 @@ suite('mid-turn model switch hint', () => {
     const src = fs.readFileSync(SOURCE, 'utf8');
     assert.ok(src.includes('id="transientHint"'), 'the anchor element must exist');
     assert.ok(src.includes('.transient-hint.visible'), 'and needs its style');
-  });
-
-  test('the agent logs the switch unconditionally so the log can prove it landed', () => {
-    const exec = path.resolve(__dirname, '../../../ericli/src/core/tool-executor.ts');
-    if (!fs.existsSync(exec)) return; // sibling repo not present
-    const src = fs.readFileSync(exec, 'utf8');
-    assert.ok(src.includes('[model] switched mid-turn at iteration'));
-    assert.ok(!/verboseMode\s*\)\s*\{\s*\n\s*console\.log\(chalk\.cyan\(`\n🔄 Model switched/.test(src));
   });
 });

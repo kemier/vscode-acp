@@ -12,7 +12,6 @@ const BUILTIN_AGENT_ID_RULES: Array<{ test: RegExp; id: string }> = [
   { test: /kiro/i, id: 'kiro' },
   { test: /cursor/i, id: 'cursor' },
   { test: /hermes/i, id: 'hermes' },
-  { test: /eric/i, id: 'ericli' },
   { test: /gemini/i, id: 'gemini' },
   { test: /qwen/i, id: 'qwen' },
   { test: /opencode/i, id: 'opencode' },

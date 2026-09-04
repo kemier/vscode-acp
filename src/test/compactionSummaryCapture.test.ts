@@ -63,7 +63,7 @@ suite('compaction summary capture', () => {
 
   test('the slash-command exemption is still in place (no memory injected into /compact)', () => {
     // The reported bug: 5.8 KB of memory appended after "/compact" defeated
-    // ericli's command match. Capturing the summary must not reintroduce it.
+    // codex's command match. Capturing the summary must not reintroduce it.
     const stability = fs.readFileSync(path.resolve(__dirname, '../../src/core/MemoryCacheStability.ts'), 'utf8');
     assert.ok(stability.indexOf('if (opts.isSlashCommand) {') > 0, 'slash exemption lost');
     assert.ok(manager.indexOf('isSlashCommand,') > 0, 'slash flag no longer passed');

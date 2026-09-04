@@ -5,7 +5,7 @@ import * as path from 'path';
 /**
  * Image-attach button missing after a resume.
  *
- * For Kiro CLI / EricCLI the attach button is decided from the MODEL NAME
+ * For Kiro CLI / Codex the attach button is decided from the MODEL NAME
  * (`kiroBase && /claude/i.test(kiroBase)`) because those agents publish no
  * per-model modalities. So `currentModelId` must be known — and after a resume
  * it was not:

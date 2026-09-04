@@ -15,7 +15,7 @@ export function sanitizeMemoryText(text: string): string {
   cleaned = cleaned.replace(/<memory-tools-guide>[\s\S]*?<\/memory-tools-guide>/g, '');
   cleaned = cleaned.replace(/<agent-memory>[\s\S]*?<\/agent-memory>/g, '');
   // Strip the flattened memory recall that the agent echoes back into the
-  // user message: ericli's ACP server renders an embeddedContext resource as
+  // user message: codex's ACP server renders an embeddedContext resource as
   //   [@memory](vscode-acp:///memory/<id>)
   //   <context ref="vscode-acp:///memory/<id>">…blob…</context>
   // Capturing that verbatim would re-write the recall blob as L0 → feedback
@@ -109,7 +109,7 @@ export function buildRecallQuery(text: string): string {
     return false;
   }
   // Drop summarizer instruction-echo fragments before they pollute memory.
-  // Observed on DeepSeek-V4-Flash: the ericli empty-reply summarizer once
+  // Observed on DeepSeek-V4-Flash: the codex empty-reply summarizer once
   // echoed its own instruction as the assistant message ("Note: The summary
   // must be based strictly on the actual tool results shown above…"), and
   // capture wrote it into L0, whose recall then re-injected it into every

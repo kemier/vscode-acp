@@ -44,8 +44,8 @@ correction. Only VS Code corrects wrong line numbers.
 ### 1. `file:///absolute/path?symbol=name#L123` — Primary (both editors)
 
 ```markdown
-[responses_to_chat_completions](file:///workspace/git/ezennin/ericai-proxy/src/translate_request.rs?symbol=responses_to_chat_completions#L5)
-[handle_content](file:///workspace/git/ezennin/ericai-proxy/src/translate_response.rs?symbol=handle_content#L316)
+[main](file:///workspace/git/ezennin/codex-acp/src/main.ts?symbol=main#L10)
+[CodexAcpServer](file:///workspace/git/ezennin/codex-acp/src/CodexAcpServer.ts?symbol=CodexAcpServer#L1)
 ```
 
 - **Zed**: Parses as `MentionUri::Symbol` → `open_abs_path_at_point()` at exact `#L` line
@@ -57,7 +57,7 @@ correction. Only VS Code corrects wrong line numbers.
 ### 2. `file:///absolute/path#L123` — File at line (both editors)
 
 ```markdown
-[translate_response.rs](file:///workspace/git/ezennin/ericai-proxy/src/translate_response.rs#L100)
+[CodexAcpClient.ts](file:///workspace/git/ezennin/codex-acp/src/CodexAcpClient.ts#L100)
 ```
 
 - Use for file references (not specific symbols) or when symbol name is unknown
@@ -182,7 +182,7 @@ Skipped:    /proj/epg-sdk/, /sdk/, /install/, .cache/
 ## LLM Instructions (`base_instructions`)
 
 The link format instructions sent to the LLM are defined in
-`ericai-proxy/scripts/update_catalog.sh` as `BASE_INSTRUCTIONS`, and injected
+agent/catalog update scripts as `BASE_INSTRUCTIONS`, and injected
 into each model's `base_instructions` field in `~/.codex/model_catalog.json`.
 
 The instructions tell the LLM to:

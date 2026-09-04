@@ -27,7 +27,6 @@ AGENTS = (
     "cursor",
     "claude",
     "codex",
-    "ericli",
     "kiro",
     "gemini",
     "hermes",

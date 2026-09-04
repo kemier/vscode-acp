@@ -75,7 +75,7 @@ const RESUME_DIAG_MARKERS = [
   '[WV-CREW]',
   '[STAGE-DBG]',
   // A replay tail chunk that arrives after loadSessionEnd is dropped as an
-  // "idle" chunk — that is how an ericli resume lost its last summary. Keep the
+  // "idle" chunk — that is how an codex resume lost its last summary. Keep the
   // drop visible so the next occurrence is one grep away.
   '[WV-CHUNK-DROP]',
   '[WV-LOAD-TAIL]',
@@ -897,8 +897,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         'CMake',
         'ESLint',
         // Product/tool names that look like PascalCase but aren't code symbols
-        'EricAi',
-        'EricAI',
         'ChatGPT',
         'ClaudeCode',
         'GeminiCLI',
@@ -1931,7 +1929,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       typeof updateData.content.text === 'string' &&
       updateData.content.text.length > 0
     ) {
-      // Suppress the agent's own "/stop" kill notice (ericli emits
+      // Suppress the agent's own "/stop" kill notice (codex emits
       // "🛑 Killed N running process(es)." as an agent_message_chunk). It
       // would render as a PERSISTENT assistant bubble and stick in the chat
       // forever. The webview shows its own transient (auto-vanishing)
@@ -1939,7 +1937,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // drop the agent's copy here to avoid a permanent "Killed" line.
       if (
         updateKind === 'agent_message_chunk' &&
-        // ericli emits "🛑 Killed N running process(es)." — the "Killed" word
+        // codex emits "🛑 Killed N running process(es)." — the "Killed" word
         // sits between the emoji and the count, so match it optionally.
         /^\s*🛑\s*(?:Killed\s+)?\d+\s+running process(?:es)?\.?/.test(
           updateData.content.text,
@@ -2644,7 +2642,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // When "Send Now" fires the cancel fallback, forceAbortPrompt removes the
       // session from the in-flight set so a NEW sendPrompt can start (bumping
       // _cancelGeneration). The OLD promise is still alive — when the agent
-      // finally processes the cancel (13s in one measured ericli session, and
+      // finally processes the cancel (13s in one measured codex session, and
       // 60-90s for long-running commands) it resolves here.
       //
       // This must not touch _cancelFallbackTimer / _pendingPromptSessionId,
@@ -2797,7 +2795,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
   /**
    * Steer the active turn by sending a user message mid-turn without
-   * cancelling. Uses session/steer notification (EricCLI, Codex, Claude Code).
+   * cancelling. Uses session/steer notification (Codex, Codex, Claude Code).
    * For agents that don't support it, the notification is silently ignored
    * and the message is only queued for the next turn (via handleQueue).
    */
@@ -2991,11 +2989,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * list the model with `input_modalities` including `"image"`. Unknown
    * models and text-only entries return false (hide upload).
    * For Kiro CLI: Claude models support images; others are text-only.
-   * For EricCLI: vision support is derived from the model id because ericli
-   * does not publish per-model modality info (its picker sends a flat string
-   * list). Mirror the capability table in ericli's
-   * `src/ericai/model-capabilities.ts` (patterns with `vision: 'full'`):
-   * kimi, qwen3.5/3.6/3.8, gemma-4 (and claude for safety).
    */
   private modelSupportsImage(modelId: string, agentName?: string): boolean {
     // Strip effort suffix: "glm-5.2[high]" → "glm-5.2"
@@ -3003,13 +2996,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // For Kiro CLI, determine from model name — no catalog file.
     if (agentName && /kiro/i.test(agentName)) {
       return /claude/i.test(base);
-    }
-    // For EricCLI, determine from model name — ericli does not emit
-    // per-model input_modalities; derive image support from the model id so
-    // the attach button shows for ericli vision models (e.g. kimi-k2.6)
-    // without a ~/.codex catalog entry.
-    if (agentName && /(ericli|eric-cli|ericcli)/i.test(agentName)) {
-      return /(^|[^a-z])(kimi|qwen3\.5|qwen3\.6|qwen3\.8|gemma-4|claude)/i.test(base);
     }
     this.loadModelImageSupport();
     if (!this.modelImageSupport || this.modelImageSupport.size === 0) {
@@ -3161,7 +3147,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       const tryPaths: vscode.Uri[] = [uri];
 
       // A relative path from the agent is relative to the AGENT's cwd, which is
-      // not necessarily the workspace root: an ericli session working in
+      // not necessarily the workspace root: an codex session working in
       // /workspace/git/ezennin/llama.cpp emits `src/llama-memory-recurrent.cpp`,
       // and joining that onto this workspace root resolves to nothing. Try every
       // known session cwd, then every workspace folder.
@@ -4070,7 +4056,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // session/load below disconnects the active agent and connects the target
     // agent; without an unconditional restore the user is left on the target
     // agent (e.g. a /session lookup that matched a Kiro CLI session would morph
-    // an EricLI session's picker to Kiro/Claude models and never switch back).
+    // an Codex session's picker to Kiro/Claude models and never switch back).
     const restoreTarget = { agent: activeAgent, sessionId: originalSessionId };
 
     try {
@@ -4154,7 +4140,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     this.postMessage({
       type: 'state',
       // Off by default. Pushing a mid-turn message into the running turn means the
-      // agent may answer only the most recent interjection: observed on ericli —
+      // agent may answer only the most recent interjection: observed on codex —
       // two messages steered at 07:11:45 and 07:12:07, both echoed and both
       // removed from the queue, and only the second was answered. Queue-and-drain
       // keeps order and gives every message its own turn.
@@ -4301,7 +4287,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    *
    * Same suppression guard as notifyModesUpdate: without it a cross-agent
    * /session lookup would briefly morph the model picker to the captured-from
-   * agent's models (e.g. an EricLI session picker flashing to Kiro/Claude
+   * agent's models (e.g. an Codex session picker flashing to Kiro/Claude
    * models and back) even though the active connection is restored afterward.
    */
   notifyModelsUpdate(models: any): void {
@@ -4441,7 +4427,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // the coalescer runs AFTER the response promise resolves — i.e. after the
     // flush above. The chunk then reached the webview behind loadSessionEnd,
     // where isLoadingSession was already false and the idle-chunk guard dropped
-    // it: an ericli resume lost the whole final summary of its last turn that
+    // it: an codex resume lost the whole final summary of its last turn that
     // way, and the interim reply was promoted in its place.
     //
     // Give the notification queue one macrotask to drain (longer than the
@@ -6228,7 +6214,7 @@ let isForceCancelled = false; // true after cancel fallback forces promptEnd
 // the notice from lingering in the chat panel after the user sends a follow-up.
 let interruptedNoticeEl = null;
 let interruptedNoticeHistoryIdx = -1;
-// Turn-tail grace window: agents (Codex, EricCLI, Claude Code, Kiro) can emit
+// Turn-tail grace window: agents (Codex, Codex, Claude Code, Kiro) can emit
 // the FINAL agent_message_chunk a few ms AFTER the session/prompt response
 // that carries end_turn — the response resolves first, promptEnd is posted,
 // and the late chunk hit the "After promptEnd the turn is closed" guard and
@@ -6238,7 +6224,7 @@ let interruptedNoticeHistoryIdx = -1;
 let turnTailGraceUntil = 0; // timestamp until which late chunks are accepted
 // Same problem at the OTHER turn boundary: session/load. An agent can put its
 // final agent_message_chunk on the wire microseconds before the session/load
-// response (ericli: 1-2 ms), and its notification handler can run after the
+// response (codex: 1-2 ms), and its notification handler can run after the
 // response resolves — so the chunk reaches the webview behind loadSessionEnd,
 // where isLoadingSession is already false and the guard above dropped it. That
 // lost the entire final summary of a resumed turn, and the INTERIM reply was
@@ -6275,7 +6261,7 @@ let hasSteeredThisTurn = false;
 // that window must NOT be sent as a prompt — the previous sendPrompt is still
 // in flight host-side and a second concurrent session/prompt would race the
 // in-flight turn (claude-code-acp serializes via sessionPromptLocks, but
-// codex/ericli would drop/duplicate). Instead it is queued and waits for the
+// codex/codex would drop/duplicate). Instead it is queued and waits for the
 // next drain. Cleared by promptStart (turn actually started) and by the
 // promptEnd/error path (turn fully finished).
 let isSendingPrompt = false;
@@ -6434,8 +6420,8 @@ let isCompacting = false;  // true while /compact is running
    function maybeAutoSteerNext() {
      // Gated by acp.autoSteerQueuedMessages (default on). Ordering depends on the
      // agent echoing a steered message when it DELIVERS it to the model, not when it
-     // receives it — ericli echoing on receipt let two interjections pile up and the
-     // model answered only the last (ericli now echoes at drain time).
+     // receives it — codex echoing on receipt let two interjections pile up and the
+     // model answered only the last (codex now echoes at drain time).
      if (!autoSteerQueuedEnabled) return false;
      if (!isProcessing || isCompacting || isClearing) return false;
      if (!agentAutoSteersQueuedMessages(currentAgentLabel())) return false;
@@ -6679,7 +6665,7 @@ let isCompacting = false;  // true while /compact is running
  *
  * Agents that use configOptions exclusively (Kiro CLI) express the active model
  * as the option with category 'model'; the legacy models field may be missing
- * entirely. The attach-button rule for Kiro / EricCLI reads currentModelId, so
+ * entirely. The attach-button rule for Kiro / Codex reads currentModelId, so
  * without this the image button stays hidden on a vision model.
  *
  * Matches SessionManager's lookup (o.category === 'model') and falls back to
@@ -6689,14 +6675,14 @@ let isCompacting = false;  // true while /compact is running
  * Whether a queued message can be injected into the RUNNING turn.
  *
  * Mid-turn steering was removed wholesale in c397673 because it behaved
- * differently per agent: ericli drains only at tool-iteration boundaries,
+ * differently per agent: codex drains only at tool-iteration boundaries,
  * codex-acp dropped notifications at the turn tail, and claude-code deferred to
  * sequential --resume turns, so steered text could vanish with no response. That
  * fix made every mid-turn message queue and drain one-per-turn, which is why a
  * queued message waits for promptEnd instead of landing between tool calls.
  *
  * Since then all three became dependable, verified in their sources:
- *   - ericli drains at every tool-iteration boundary and re-loops once if the
+ *   - codex drains at every tool-iteration boundary and re-loops once if the
  *     model replies without acting on the interjection;
  *   - claude-code queues it with the same in-flight test handleSteer uses;
  *   - codex-acp no longer sends a notification that can be dropped — it calls
@@ -6713,7 +6699,7 @@ let isCompacting = false;  // true while /compact is running
  *
  * Narrower than agentSupportsMidTurnSteer on purpose. Auto-steering is only safe
  * when delivery can be CONFIRMED, because session/steer is a notification: the
- * client never learns whether the agent took it. ericli and claude-code both echo
+ * client never learns whether the agent took it. codex and claude-code both echo
  * the steered text back as a user_message_chunk when they accept it, so the entry
  * can stay queued until that echo arrives and drain normally if it never does —
  * at-least-once with no duplicate.
@@ -6740,7 +6726,7 @@ function agentAutoSteersQueuedMessages(agentLabel) {
   // may "safely ignore". A session/steer notification to kiro is therefore dropped
   // in silence, and steerQueuedMessage would have removed the message from the
   // queue and shown its bubble before sending it: lost, while looking delivered.
-  return /eric[ _-]?cli|ericli|eric[ _-]?ai/i.test(label);
+  return false;
 }
 
 /**
@@ -6789,7 +6775,7 @@ function nextAutoSteerIndex(queue) {
   for (var i = 0; i < queue.length; i++) {
     // steerPending means "sent in THIS turn, still waiting for the agent to confirm".
     // Deliberately not the sent-ever flag, which stays set for the life of the entry so
-    // echo can still be matched: ericli's steer queue survives a turn boundary, so an
+    // echo can still be matched: codex's steer queue survives a turn boundary, so an
     // echo can arrive during the NEXT turn (measured: steer 08:50:48, echo 08:52:42,
     // with a new prompt at 08:52:32 in between).
     if (queue[i] && queue[i].steerPending) return -1;
@@ -6829,7 +6815,7 @@ function agentSupportsMidTurnSteer(agentLabel) {
   if (/^pi([ _-]?acp)?$/i.test(label.trim())) return false;
   if (/claude/i.test(label)) return true;
   if (/codex/i.test(label)) return true;
-  return /eric[ _-]?cli|ericli|eric[ _-]?ai/i.test(label);
+  return false;
 }
 
 function modelIdFromConfigOptions(configOptions) {
@@ -6929,7 +6915,7 @@ function queueDrainStartedTurn(handledLocal, startedTurn, isProcessingNow) {
 }
 
 // Whether an agent supports REAL mid-turn steering from this client.
-// Option B is active: EVERY agent (EricLI, Codex included) takes the
+// Option B is active: EVERY agent (Codex, Codex included) takes the
 // deferred-queue path — a message typed mid-turn is held as a queue chip (no
 // chat bubble yet) and drained via drainQueue() one-per-turn FIFO after the
 // current turn's promptEnd. Steers (session/steer → live turn injection)
@@ -7879,7 +7865,7 @@ var end = displayText.length;
     let lastCommittedMessageId = null;    // its messageId
     let lastCommittedText = '';           // its text (to resume appending)
     // Synthetic per-turn messageId for agents that never emit one (legacy
-    // Kiro CLI, older ericli builds). kiro-cli streams agent_message_chunk
+    // Kiro CLI, older codex builds). kiro-cli streams agent_message_chunk
     // without messageId, so every sentence lands as its OWN bubble
     // (hasCurrentAssistantEl=false on every chunk). Assigning a stable
     // per-turn id lets vscode-acp group the whole turn into one bubble and
@@ -7912,7 +7898,7 @@ var end = displayText.length;
     let toolCalls = {};
     // Tool rows from turns that have already ended, keyed by wire id.
     //
-    // Agents may restart their tool-call numbering each turn — ericli minted
+    // Agents may restart their tool-call numbering each turn — codex minted
     // tc-1..tc-8 for a turn and opened the NEXT turn at tc-1 again (traffic log
     // 06:25:51). toolCalls was never cleared between turns, and DOM ids are
     // 'tc-' + wireId, so the new turn's tc-1 resolved to the PREVIOUS turn's
@@ -9492,7 +9478,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           //      verbatim over the replay's.
           // Either way the result is persisted by saveState, so a wrong order
           // became the next snapshot and was re-imposed on every later resume.
-          // Symptom: an ericli turn replayed as tool→text→tool→text rendered as
+          // Symptom: an codex turn replayed as tool→text→tool→text rendered as
           // one leading tool block followed by every reply ("grouped per
           // section instead of interleaved").
           //
@@ -10058,10 +10044,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     isCompacting = false;
     manualCompacting = false;
     isClearing = false;
-    // A session switch (e.g. kiro → ericli) must not inherit the previous
+    // A session switch (e.g. kiro → codex) must not inherit the previous
     // agent's image-support state. Clear it so updateAttachButtonVisibility
     // defaults to hidden until the new session's state arrives — otherwise a
-    // switch from a vision-capable kiro session (opus 5) to a text-only ericli
+    // switch from a vision-capable kiro session (opus 5) to a text-only codex
     // model (deepseek-v4-flash) kept the image attach button visible.
     if (sessionState) {
       sessionState.currentModelImageSupport = undefined;
@@ -10816,7 +10802,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
 
    function updateModelPicker(models) {
      // Track the model identity FIRST, before any early return. The attach-button
-     // rule for Kiro / EricCLI reads currentModelId (those agents publish no
+     // rule for Kiro / Codex reads currentModelId (those agents publish no
      // per-model modalities, so the model name is the only signal). Returning
      // early left currentModelId null, so the image button stayed hidden even on
      // a vision model such as claude-opus-5.
@@ -10920,7 +10906,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         // Spec: ignore unknown types and empty option lists
         if (!opt || opt.type !== 'select') continue;
         if (!Array.isArray(opt.options) || opt.options.length === 0) continue;
-        // Hide OpenAI-specific fast-mode toggle (1.5x speed) — not supported by EricAI/vLLM
+        // Hide OpenAI-specific fast-mode toggle (1.5x speed) — not supported by local/vLLM backends
         if (opt.id === 'fast-mode' || opt.category === 'fast-mode') continue;
 
         const wrap = document.createElement('div');
@@ -11026,8 +11012,6 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          var modelBase2 = value.replace(/\\[(?:low|medium|high|xhigh|max|none)\\]$/, '');
          if (agent && /kiro/i.test(agent)) {
            if (attachBtn) attachBtn.style.display = /claude/i.test(modelBase2) ? '' : 'none';
-         } else if (agent && /(ericli|eric-cli|ericcli)/i.test(agent)) {
-           if (attachBtn) attachBtn.style.display = ericliModelSupportsImage(modelBase2) ? '' : 'none';
          } else if (sessionState && sessionState.modelImageMap) {
            var mapped = Object.prototype.hasOwnProperty.call(sessionState.modelImageMap, modelBase2)
              ? !!sessionState.modelImageMap[modelBase2]
@@ -11055,9 +11039,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     });
 
     // Plan mode: agents that expose a 'collaboration_mode' config option
-    // (ericli, codex-acp, claude-code-acp) refuse to execute while it is 'plan'
+    // (codex, codex-acp, claude-code-acp) refuse to execute while it is 'plan'
     // — an "implement it" request is answered as a plan, so the code lands in
-    // the chat instead of on disk. Only ericli and claude-code-acp can leave the
+    // the chat instead of on disk. Only codex and claude-code-acp can leave the
     // mode themselves; codex's design leaves it to the user. Offer the switch
     // here so the handoff works for every agent.
     let collabModeIsPlan = false;
@@ -11116,7 +11100,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         renderConfigPickers(configOptions);
         // Adopt the model from the config option. For agents that publish
         // configOptions INSTEAD of the legacy models field, this is the only
-        // place the active model becomes known — and the Kiro / EricCLI
+        // place the active model becomes known — and the Kiro / Codex
         // attach-button rule reads currentModelId, so without this the image
         // button stays hidden on a vision model after a resume.
         var _cfgModel = modelIdFromConfigOptions(configOptions);
@@ -11249,7 +11233,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      // (Claude ACP often streams between turns after promptEnd).
      if (role === 'user') {
        // Retire the finished turn's tool rows BEFORE the new turn opens: agents
-       // that restart their tool numbering each turn (ericli minted tc-1..tc-8
+       // that restart their tool numbering each turn (codex minted tc-1..tc-8
        // then opened the next turn at tc-1) would otherwise have the new turn
        // resolve to the previous turn's elements.
        if (typeof retireToolCallRegistry === 'function') retireToolCallRegistry();
@@ -13093,7 +13077,7 @@ function orderCompactFoldContents(body) {
      if (lastAssistant && lastAssistant.interrupted) return false;
      // A turn is finished when the agent either replied with text
      // (lastAssistant) OR completed all tool calls without any in-flight
-     // ones. EricCLI's session/load replay may omit the final
+     // ones. Codex's session/load replay may omit the final
      // agent_message_chunk when the assistant content was empty (the
      // model only called tools and produced no summary text). In that
      // case, a completed spawn_parallel tool_call IS the turn's result —
@@ -13571,7 +13555,7 @@ function orderCompactFoldContents(body) {
     return parts.join(', ');
   }
  
-  // Web-search tool names across agents (ericli, Codex, Claude, Kiro, MCP).
+  // Web-search tool names across agents (codex, Codex, Claude, Kiro, MCP).
   // These are detected before the generic kind/title heuristics so that
   // collapsed summaries show "N web search(es)" instead of "N other".
   var webSearchToolNames = new Set([
@@ -13589,7 +13573,7 @@ function orderCompactFoldContents(body) {
   ]);
 
   // Detect web-search tool calls by title or rawInput.toolName.
-  // ericli sends 'web_search' as the tool title (mapToolKind returns undefined,
+  // codex sends 'web_search' as the tool title (mapToolKind returns undefined,
   // so no ACP kind is set). Other agents / MCP servers use variants like
   // 'brave_web_search', 'tavily_search', etc. Matching the raw tool name is
   // more reliable than title heuristics because titles can be human-readable.
@@ -13607,13 +13591,13 @@ function orderCompactFoldContents(body) {
 
   // Skill-loading detection for collapsed-mode summary.
   // Detects tool calls that load skill content (read SKILL.md, read references
-  // within skill directories, ericli manage_skills read action) and returns the
+  // within skill directories, codex manage_skills read action) and returns the
   // skill name so the summary can show "loaded N skill(s)" instead of counting
   // each file read separately.
   //
   // Supports all three agents:
-  //  - EricCLI: manage_skills tool with action=read, name=<skill-name>
-  //    + read_file of ~/.cli-4-ericai/skills/<name>/references/*.md
+  //  - Codex: manage_skills tool with action=read, name=<skill-name>
+  //    + read_file of skill dirs under the agent's skills root (references/*.md)
   //  - Codex: read_file of ~/.codex/skills/<name>/SKILL.md and references/*.md
   //    (rawInput.locations[].path or rawInput.path)
   //  - Claude Code: Read tool with file_path=~/.claude/skills/<name>/SKILL.md
@@ -13630,7 +13614,7 @@ function orderCompactFoldContents(body) {
     }
     if (!ri || typeof ri !== 'object') ri = {};
 
-    // --- EricCLI: manage_skills tool ---
+    // --- Codex: manage_skills tool ---
     // Title: "Read skill: jira-skill"  OR  rawInput: { action: "read", name: "jira-skill" }
     var _toolName = String(ri._toolName || ri.toolName || '').trim().toLowerCase();
     if (_toolName === 'manage_skills' || t === 'manage_skills' ||
@@ -13663,8 +13647,8 @@ function orderCompactFoldContents(body) {
     if (typeof ri.file_path === 'string') paths.push(ri.file_path);
 
     // Check each path against skill directory patterns.
-    // Skill dirs: ~/.codex/skills/, ~/.cli-4-ericai/skills/, ~/.kiro/skills/,
-    // ~/.claude/skills/, .agents/skills/
+    // Skill dirs: ~/.codex/skills/, ~/.kiro/skills/, ~/.claude/skills/,
+    // ~/.cursor/skills-cursor/, .agents/skills/
     for (var pi = 0; pi < paths.length; pi++) {
       var p = String(paths[pi] || '');
       // Match /skills/<skill-name>/SKILL.md or /skills/<skill-name>/references/...
@@ -13742,7 +13726,7 @@ function orderCompactFoldContents(body) {
      if (firstWord === 'search' || firstWord === 'grep' || firstWord === 'find' || firstWord === 'glob' || firstWord === 'rg' || kw.indexOf(' search ') >= 0 || kw.indexOf(' grep ') >= 0 || kw.indexOf(' find ') >= 0) return 'search';
      if (firstWord === 'ls' || firstWord === 'command' || firstWord === 'exec' || firstWord === 'shell' || firstWord === 'run' || firstWord === 'cd' || kw.indexOf(' command ') >= 0 || kw.indexOf(' exec ') >= 0 || kw.indexOf(' run ') >= 0) return 'command';
      if (firstWord === 'plan' || firstWord === 'todo' || kw.indexOf(' plan ') >= 0 || kw.indexOf(' todo ') >= 0) return 'plan';
-     // Task tracking tools (ericli task_create/task_update/task_list)
+     // Task tracking tools (codex task_create/task_update/task_list)
      // Only task_create counts as a 'todo' in the collapsed summary —
      // task_update and task_list are operations on existing todos, not
      // new todos. Showing "8 todos" when 3 were created and 5 were updated
@@ -14211,7 +14195,7 @@ function commitCurrentTextSegment(opts) {
       // from addToolCallInline) — AFTER the tool call is already pushed to
       // chatHistory, giving the thought a higher index than the tools it
       // precedes. This was the root cause of thinking blocks appearing at
-      // the bottom of collapsed turns in ericli.
+      // the bottom of collapsed turns in codex.
       if (currentThoughtEl || currentThoughtText || thoughtDomBase) {
         commitOrDiscardCurrentThought();
       }
@@ -14778,7 +14762,7 @@ function commitCurrentTextSegment(opts) {
       result = rawInput.operation.type || rawInput.operation.name ||
         rawInput.operation.kind || 'operation';
     }
-    // ericli spawn_parallel: rawInput = { tasks: [{ type, task, skills }] }
+    // codex spawn_parallel: rawInput = { tasks: [{ type, task, skills }] }
     // Show each sub-agent's type and prompt (mirrors the stages format above).
     else if (Array.isArray(rawInput.tasks) && rawInput.tasks.length > 0) {
       var taskLines = [];
@@ -15635,7 +15619,7 @@ function commitCurrentTextSegment(opts) {
     */
    function addOrExtendSubagentCrew(toolCallId, title, status, rawInput, toolKind, locations) {
      hideEmpty();
-     // ericli spawn_parallel: rawInput = { tasks: [{ type, task, skills }] }.
+     // codex spawn_parallel: rawInput = { tasks: [{ type, task, skills }] }.
      // Expand each task into its own stage upfront so tooltips show the correct
      // per-subagent prompt from the start, before any tool_call_update arrives.
      // Without this, all stages inherit the parent's title ("Spawn N subagents")
@@ -15702,7 +15686,7 @@ function commitCurrentTextSegment(opts) {
        return;
      }
 
-    // ericli spawn_parallel: expand tasks[] into individual stages so each
+    // codex spawn_parallel: expand tasks[] into individual stages so each
     // subagent gets its own name, role, and prompt from the start.
     var stagesArray;
     if (spawnParallelTasks && spawnParallelTasks.length > 0) {
@@ -15739,7 +15723,7 @@ function commitCurrentTextSegment(opts) {
      var synthRaw = Object.assign({}, (rawInput && typeof rawInput === 'object') ? rawInput : {}, {
        stages: stagesArray,
      });
-     // Mark crew as ericli spawn_parallel so completion overrides don't apply.
+     // Mark crew as codex spawn_parallel so completion overrides don't apply.
      if (spawnParallelTasks) synthRaw._isSpawnParallel = true;
      var spawnTitle = 'Task';
      // Keep Codex/Kiro protocol spawn titles; Claude description titles → Task.
@@ -15785,7 +15769,7 @@ function commitCurrentTextSegment(opts) {
        '<span class="tc-title">spawned ' + (spawnParallelTasks ? spawnParallelTasks.length : 1) + ' subagent' + ((spawnParallelTasks ? spawnParallelTasks.length : 1) > 1 ? 's' : '') + '</span>' +
        '<div class="tc-stages"></div>';
      var stagesEl = el.querySelector('.tc-stages');
-     // ericli spawn_parallel: append all expanded stages.
+     // codex spawn_parallel: append all expanded stages.
      if (spawnParallelTasks && stagesArray.length > 0) {
        for (var si = 0; si < stagesArray.length; si++) {
          var s = stagesArray[si];
@@ -15971,7 +15955,7 @@ function commitCurrentTextSegment(opts) {
            // Resume/history: missing status means the stage never finished.
            else rowStageStatus = 'failed';
          }
-         // ericli spawn_parallel crews: the agent replays the parent spawn tool
+         // codex spawn_parallel crews: the agent replays the parent spawn tool
          // with status=completed (the spawn itself succeeded) but NO per-stage
          // status — the subagents' results arrive as separate messages, not as
          // tool_call_update stage patches. So on a completed, non-live parent
@@ -16016,7 +16000,7 @@ function commitCurrentTextSegment(opts) {
        el.classList.add('tc-subagent');
        el.setAttribute('data-subagent-crew', '1');
        el.setAttribute('data-claude-crew', '1');
-      // Mark ericli spawn_parallel crews so per-subagent completion updates
+      // Mark codex spawn_parallel crews so per-subagent completion updates
       // (tool_call_update with aggregate stages[]) are not treated as a
       // single-stage prompt overwrite on stage 0.
       if (rawInput && typeof rawInput === 'object' &&
@@ -16540,7 +16524,7 @@ forceCollapseTurnFolds();
 
     // Crew stage: update spinner + fill tooltip from late rawInput (Claude/Codex
     // often send empty rawInput first, then prompt/description on update).
-    // ericli spawn_parallel: the per-subagent progress update carries the
+    // codex spawn_parallel: the per-subagent progress update carries the
     // AGGREGATE rawInput.stages[] (with per-stage .status). It must NOT be
     // handled by the single-stage stageForId path below (which would
     // overwrite stage 0's prompt with the parent's "Spawn N subagents" task
@@ -16562,24 +16546,24 @@ forceCollapseTurnFolds();
       // original name (e.g. "explore-1") isn't overwritten with the parent's
       // task description (e.g. "Spawn 2 subagents").
       //
-      // For ericli spawn_parallel: the parent crew's rawInput contains
+      // For codex spawn_parallel: the parent crew's rawInput contains
       // { tasks: [...] } — the aggregate spawn request. We must NOT let it
       // overwrite the per-subagent prompt that was already set from the
       // individual task at render time. Only apply the update if the
       // rawInput looks like a per-subagent update (has a single task/prompt,
       // not a tasks[] array).
       var crewElForUpdate = stageForId.closest('.tool-call-inline.tc-subagent');
-      var isEricliParallelForUpdate = crewElForUpdate && crewElForUpdate._rawInput && crewElForUpdate._rawInput._isSpawnParallel;
+      var isSpawnParallelForUpdate = crewElForUpdate && crewElForUpdate._rawInput && crewElForUpdate._rawInput._isSpawnParallel;
       // buildToolRawInput transforms tasks[] → stages[], so check stages[]
       // (length > 1 = aggregate, not per-subagent) instead of tasks[].
       var isAggregateSpawnInput2 = rawInput && Array.isArray(rawInput.stages) && rawInput.stages.length > 1;
-      if (rawInput && !(isEricliParallelForUpdate && isAggregateSpawnInput2)) {
+      if (rawInput && !(isSpawnParallelForUpdate && isAggregateSpawnInput2)) {
         updateStageFromRawInput(stageForId, rawInput, title, { keepName: true });
       }
      // Claude Agent Task / Codex spawn often flip tool_call to "completed"
      // when the subagent is only *started* (nested child tools still run).
      // Keep the stage spinning until promptEnd (or a real failure).
-     // BUT: ericli spawn_parallel sends per-subagent completion as a REAL
+     // BUT: codex spawn_parallel sends per-subagent completion as a REAL
      // signal — that subagent is done. Don't override to 'running'.
     // ALSO: codex subAgentActivity item/completed is a REAL completion
     // signal (the subagent finished), not a "started" signal. The
@@ -16595,16 +16579,16 @@ forceCollapseTurnFolds();
       !!(crewElForUpdate && crewElForUpdate._rawInput &&
       crewElForUpdate._rawInput.receiverThreadIds);
      var crewEl = stageForId.closest('.tool-call-inline.tc-subagent');
-     var isEricliParallel = crewEl && crewEl._rawInput && crewEl._rawInput._isSpawnParallel;
+     var isSpawnParallelCrew = crewEl && crewEl._rawInput && crewEl._rawInput._isSpawnParallel;
      var stageStatus = status || 'running';
-     if (stageStatus === 'completed' && isProcessing && !isLoadingSession && !isEricliParallel && !_isCodexSubagentCompletion) {
+     if (stageStatus === 'completed' && isProcessing && !isLoadingSession && !isSpawnParallelCrew && !_isCodexSubagentCompletion) {
        stageStatus = 'running';
      }
-      // ericli spawn_parallel: a subagent that completed with "No output"
+      // spawn_parallel: a subagent that completed with "No output"
       // (empty summary) still sent a real completion signal. Mark it as
       // a terminal state so the spinner stops — don't keep it spinning
       // just because the summary is empty.
-      if (isEricliParallel && stageStatus === 'completed') {
+      if (isSpawnParallelCrew && stageStatus === 'completed') {
         // Check if the stage already has a 'completed' or 'failed' icon —
         // if so, it was already finalized by a per-subagent completion
         // event and we don't need to re-set it.
@@ -16626,7 +16610,7 @@ forceCollapseTurnFolds();
     if (rawInput) {
       if (el.getAttribute('data-subagent-crew') || el.getAttribute('data-claude-crew') ||
           el.querySelector(':scope > .tc-stages')) {
-        // ericli spawn_parallel: the tool_call_update carries updated
+        // codex spawn_parallel: the tool_call_update carries updated
         // rawInput.stages[] with per-stage status fields. Iterate through
         // all stages and update their icons individually so the UI shows
         // ✓/✗ per subagent as they complete, instead of spinning until
@@ -17065,20 +17049,7 @@ sessionState = {
    *    - explicitly includes "image" → show
    *    - text-only / missing / unknown model → hide
    * 3. Kiro CLI: Claude model names only
-   * 4. EricCLI: vision model names (kimi/qwen3.5/3.6/3.8/gemma-4/claude).
    */
-
-/**
- * Whether an EricCLI model id supports inline images. Ericli's ACP picker
- * sends a flat model-id list without per-model modality info, and its vision
- * models (kimi-k2.6, Qwen3.8-27B, ...) are not in ~/.codex/model_catalog.json,
- * so the attach button would stay hidden. Mirror ericli's
- * MODEL_CAPABILITIES entries that carry vision: 'full'
- * (src/ericai/model-capabilities.ts) — keep this list in sync with that table.
- */
-function ericliModelSupportsImage(baseModelId) {
-  return /(^|[^a-z])(kimi|qwen3\\.5|qwen3\\.6|qwen3\\.8|gemma-4|claude)/i.test(baseModelId);
-}
 
 function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
    if (!attachBtn) { return; }
@@ -17108,18 +17079,6 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
      // visible on a text-only model).
      var kiroBase = (currentModelId || '').replace(/\\[(?:low|medium|high|xhigh|max|none)\\]$/, '');
      attachBtn.style.display = kiroBase && /claude/i.test(kiroBase) ? '' : 'none';
-     return;
-   }
-   // For EricCLI, determine image support from model name — same rationale as
-   // Kiro: ericli does not publish per-model modalities, and its vision models
-   // (kimi-k2.6, qwen3.8-27B, ...) are not in ~/.codex/model_catalog.json.
-   if (agentName && /(ericli|eric-cli|ericcli)/i.test(agentName)) {
-     // Same guard as Kiro: with no model id yet (session switch in progress),
-     // default to hidden instead of inheriting the previous agent's
-     // currentModelImageSupport (e.g. kiro opus 5 → ericli deepseek-v4-flash
-     // left the image button visible on a text-only model).
-     var ericBase = (currentModelId || '').replace(/\\[(?:low|medium|high|xhigh|max|none)\\]$/, '');
-     attachBtn.style.display = ericBase && ericliModelSupportsImage(ericBase) ? '' : 'none';
      return;
    }
    // Codex / catalog-backed: only show when the catalog explicitly allows image.
@@ -17466,7 +17425,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        // ── Premature end_turn detection ──────────────────────────────────
        // When an agent sends end_turn but there are still in-flight (running/
        // pending/in_progress) tool calls, the turn likely ended prematurely
-       // (observed with GLM/EricAI backends — subagent results lost, empty
+       // (observed with GLM/local backends — subagent results lost, empty
        // post-tool replies). Log a warning so the user knows work may be
        // incomplete, and keep the tool spinners visible (not auto-completed)
        // so the user can see which tools never finished.
@@ -17558,7 +17517,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       // processes until the next turn. No-op if the panel is hidden.
       refreshPsPanelIfVisible();
       // Arm the turn-tail grace window BEFORE dropping isProcessing. Agents
-      // (Codex, EricCLI, Claude Code, Kiro) can emit the final text chunk a
+      // (Codex, Codex, Claude Code, Kiro) can emit the final text chunk a
       // few ms after the session/prompt response carrying end_turn resolves —
       // if this turn just ended normally and the tail chunk is still in
       // transit, keep accepting it for a short window and append to the last
@@ -19228,7 +19187,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       // After promptEnd the turn is closed. Claude ACP may keep streaming
       // between turns — ignore so assistants stay per-user-turn.
       // BUT: within the turn-tail grace window (end_turn response landed but
-      // the agent's FINAL text chunk is still in transit — Codex, EricCLI,
+      // the agent's FINAL text chunk is still in transit — Codex, Codex,
       // Claude Code and Kiro all do this), accept the chunk and append it to
       // the last committed assistant bubble. Without this the final answer is
       // silently dropped → premature end_turn / "nothing happened".
@@ -19249,7 +19208,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       if (_inLoadTailGrace && content && content.type === 'text' && String(content.text || '').trim()) {
         adoptLoadTailChunk(String(content.text).length);
       }
-      // A proposed_plan block is the other way a plan arrives (ericli and codex
+      // A proposed_plan block is the other way a plan arrives (codex and codex
       // ask the model to wrap the finished plan in one), so it also arms the
       // implement-plan handoff offered at promptEnd.
       if (content && content.type === 'text' && String(content.text || '').indexOf('<proposed_plan') >= 0) {
@@ -19404,7 +19363,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
             sawRealMessageIdThisTurn = true;
          } else if (!sawRealMessageIdThisTurn) {
            // The agent never sent a real messageId yet in this turn (legacy
-           // kiro-cli / old ericli / pi-acp). Use a stable synthetic id for
+           // kiro-cli / old codex / pi-acp). Use a stable synthetic id for
            // bubble grouping within a single text segment. Do NOT increment
            // here — ++ on every chunk made each token a new messageId, so
            // the mid-stream "id changed" branch committed one word per bubble
@@ -19655,7 +19614,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
            }
            if (!currentThoughtEl) {
               // If there is accumulated assistant text from a previous turn
-              // (e.g. ericli replay: agent_message_chunk from turn 1 is
+              // (e.g. codex replay: agent_message_chunk from turn 1 is
               // coalesced and flushed together with turn 2's
               // agent_thought_chunk), commit it to chatHistory NOW so it
               // gets the correct history index -- before the new thought
@@ -19664,7 +19623,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
               // the very end of session/load, giving it a much higher index
               // than the thoughts and tools that actually came after it.
               // This was the root cause of thinking block always showing at
-              // the bottom in ericli collapsed mode.
+              // the bottom in codex collapsed mode.
               // Gate on isLoadingSession to avoid disrupting live streaming
               // where a second thought phase in the same turn should NOT
               // reset the turn or commit mid-stream text prematurely.
@@ -20777,7 +20736,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       return String(n);
     }
 
-    // Estimate context window from model name (mirrors ericli model-capabilities.ts).
+    // Estimate context window from model name (mirrors codex model-capabilities.ts).
     // Used by Kiro CLI which only sends a percentage, not raw token counts.
     function estimateContextWindow(modelId) {
       if (!modelId) return 200000;
@@ -20796,7 +20755,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       if (m.includes('gemma-3')) return 90000;
       if (m.includes('mixtral-8x22b')) return 65536;
       if (m.includes('deepseek')) return 262144;
-      // Claude (Kiro CLI uses Bedrock, not ericai-proxy). claude-opus-5 has a
+      // Claude (Kiro CLI uses Bedrock). claude-opus-5 has a
       // 1M-token window (verified from kiro session metadata:
       // rts_model_state.model_info.context_window_tokens = 1000000) — must be
       // matched BEFORE the generic claude/opus 200K fallback below, otherwise

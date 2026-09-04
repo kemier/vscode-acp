@@ -8,7 +8,7 @@ import * as path from 'path';
  * of written to disk, because the injected plan-mode preamble treats an execution
  * request as a request to PLAN the execution.
  *
- * Only some agents can leave the mode by themselves — ericli via save_plan,
+ * Only some agents can leave the mode by themselves — codex via save_plan,
  * claude-code-acp via Claude's ExitPlanMode — and codex's design leaves it to the
  * user entirely. So the client offers the handoff for every agent.
  */

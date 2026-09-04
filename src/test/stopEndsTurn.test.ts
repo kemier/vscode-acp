@@ -5,7 +5,7 @@ import * as path from 'path';
 /**
  * /stop killed the processes but left the turn hanging.
  *
- * Measured (exthost13, ericli session c5015617):
+ * Measured (exthost13, codex session c5015617):
  *
  *   06:36:23  handleSendPrompt: stale response (gen 6 → 7), suppressing promptEnd
  *   06:38:22  Cancelling turn for session c5015617…      <- fallback stranded, never fired

@@ -243,13 +243,13 @@ suite('MemoryCacheStability', () => {
 
   test('a slash command gets no memory at all', () => {
     // /compact and friends are intercepted by the agent, not answered by the
-    // model. Appending 5.8 KB of memory after "/compact" made ericli's
+    // model. Appending 5.8 KB of memory after "/compact" made codex's
     // `userText.trim() === '/compact'` guard miss, so the command fell through to
     // the LLM: the panel showed "Compacting conversation..." while a new chat
     // round started. Adapters that parse the command token (codex-acp, pi-acp,
     // claude-code-acp) were unaffected, so skipping is safe for every agent.
     assert.strictEqual(
-      resolveMemoryInjectMode('EricCLI', {
+      resolveMemoryInjectMode('Codex', {
         sessionAlreadyPrompted: true,
         profileAlreadyInjected: false,
         isSlashCommand: true,
@@ -257,7 +257,7 @@ suite('MemoryCacheStability', () => {
       'none',
     );
     assert.strictEqual(
-      resolveMemoryInjectMode('EricCLI', {
+      resolveMemoryInjectMode('Codex', {
         sessionAlreadyPrompted: true,
         profileAlreadyInjected: true,
         isSlashCommand: true,
@@ -266,7 +266,7 @@ suite('MemoryCacheStability', () => {
     );
     // A normal prompt is unchanged.
     assert.strictEqual(
-      resolveMemoryInjectMode('EricCLI', {
+      resolveMemoryInjectMode('Codex', {
         sessionAlreadyPrompted: true,
         profileAlreadyInjected: true,
         isSlashCommand: false,

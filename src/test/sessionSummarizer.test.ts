@@ -69,12 +69,12 @@ suite('SessionSummarizer', () => {
       { role: 'user', content: 'User: do a thing' },
       { role: 'assistant', content: 'Assistant: done' },
     ];
-    const out = await summarizeSession('Forked from ericli', messages, baseSettings, impl);
+    const out = await summarizeSession('Forked from codex', messages, baseSettings, impl);
     assert.strictEqual(out.summary, 'a summary');
     assert.strictEqual(out.model, 'qwen38-27b');
     assert.strictEqual(calls.length, 1);
     assert.strictEqual(calls[0].url, 'http://127.0.0.1:8317/v1/summarize-session');
-    assert.strictEqual(calls[0].body.title, 'Forked from ericli');
+    assert.strictEqual(calls[0].body.title, 'Forked from codex');
     assert.deepStrictEqual(calls[0].body.messages, messages);
     assert.strictEqual(calls[0].body.model, 'qwen38-27b');
   });

@@ -89,7 +89,7 @@ suite('crewStageLabel (subagent stage title)', () => {
     assert.strictEqual(label({ prompt: 'do x', subagent_type: 'file-analyzer' }, 'Task', 1), 'file-analyzer');
   });
 
-  test('ericli spawn_agent with {name, role} shows the subagent name', () => {
+  test('codex spawn_agent with {name, role} shows the subagent name', () => {
     assert.strictEqual(label({ name: 'explore', role: 'agent', prompt: 'do x' }, 'spawn_agent', 3), 'explore');
     // role is a lower-precedence fallback for spawn titles.
     assert.strictEqual(label({ role: 'web-researcher', prompt: 'find docs' }, 'spawn_agent', 1), 'web-researcher');

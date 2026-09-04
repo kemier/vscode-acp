@@ -18,15 +18,15 @@ Typing or pasting a message (or attaching an image) while a turn is in
 progress must **not**:
 
 - be sent as a second concurrent `session/prompt` (races the in-flight turn —
-  claude-code-acp serializes via `sessionPromptLocks`, but codex/ericli would
+  claude-code-acp serializes via `sessionPromptLocks`, but codex/codex would
   drop or duplicate output);
 - be dropped silently;
 - be held for the whole turn when the agent can accept it mid-turn.
 
 **Option B — every agent takes the deferred-queue path (default).**
 `agentSupportsSteering(agentName)` currently returns `false` for ALL agents
-(EricLI and Codex included). Option A (real mid-turn steering via
-`session/steer` → live `turn/steer` injection) was enabled for EricLI/Codex in
+(Codex and Codex included). Option A (real mid-turn steering via
+`session/steer` → live `turn/steer` injection) was enabled for Codex/Codex in
 commit `2892a07`, but it rendered the user's prompt as an instant chat bubble
 before the agent consumed it — misleading when the steer was actually only
 drained at the next tool-iteration boundary (or not at all, e.g. when the model

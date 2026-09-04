@@ -5,6 +5,5 @@ out/
 *.map
 .vscode-test/
 .DS_Store
-.ericai_authrecord
 .kiro/*
 .npmrc

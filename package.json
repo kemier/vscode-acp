@@ -342,8 +342,7 @@
               "args": [],
               "env": {
                 "CLAUDE_SLOT_CACHE_ENABLED": "true",
-                "CLAUDE_LLAMA_SERVER_URL": "http://192.168.124.14:8008",
-                "ERICAI_PROXY_URL": "http://192.168.124.14:8317"
+                "CLAUDE_LLAMA_SERVER_URL": "http://192.168.124.14:8008"
               }
             },
             "Codex CLI": {
@@ -420,7 +419,7 @@
         "acp.autoSteerQueuedMessages": {
           "type": "boolean",
           "default": true,
-          "description": "Deliver a message typed mid-turn into the RUNNING turn instead of waiting for it to end, so it is picked up at the agent's next step (after a tool call or a reply segment). One message is in flight at a time: the next is released only once the agent confirms it has put the previous one in front of the model. Turn this off to make every mid-turn message wait for the next turn instead. Not part of ACP — it uses the session/steer extension, so it only applies to agents that implement it (EriCLI, Claude Code, Codex, Kiro)."
+          "description": "Deliver a message typed mid-turn into the RUNNING turn instead of waiting for it to end, so it is picked up at the agent's next step (after a tool call or a reply segment). One message is in flight at a time: the next is released only once the agent confirms it has put the previous one in front of the model. Turn this off to make every mid-turn message wait for the next turn instead. Not part of ACP — it uses the session/steer extension, so it only applies to agents that implement it (Claude Code, Codex)."
         },
         "acp.logTraffic": {
           "type": "boolean",

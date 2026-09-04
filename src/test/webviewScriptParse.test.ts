@@ -43,29 +43,6 @@ suite('webviewScriptParse', () => {
     assert.doesNotThrow(() => new Function(emitted), 'emitted webview script must parse');
   });
 
-  test('EricCLI image support helper gates vision models by name', () => {
-    const source = fs.readFileSync(PROVIDER, 'utf8');
-    const emitted = decodeTemplate(extractWebviewScript(source));
-    // Pull the helper function declaration out of the emitted script and eval
-    // just that fragment (the full script needs browser globals like
-    // acquireVsCodeApi/window that don't exist under node). This still runs
-    // through the template-literal-uneseaped text, so it guards the escape
-    // collapse AND the regex semantics in one assertion.
-    const match = emitted.match(/function ericliModelSupportsImage\([^)]*\)\s*\{[^}]*\}/);
-    assert.ok(match, 'ericliModelSupportsImage function must exist in the emitted webview script');
-    const helper = new Function(`return (${match[0]});`)();
-    assert.strictEqual(typeof helper, 'function', 'ericliModelSupportsImage must be a function');
-    assert.strictEqual(helper('kimi-k2.6'), true, 'kimi-k2.6 is vision-capable');
-    assert.strictEqual(helper('kimi-k2.7-code'), true, 'kimi-k2.7-code is vision-capable');
-    assert.strictEqual(helper('Qwen3.8-27B'), true, 'Qwen3.8-27B is vision-capable');
-    assert.strictEqual(helper('qwen3.6-35b'), true, 'qwen3.6-35b is vision-capable');
-    assert.strictEqual(helper('gemma-4-31B-it'), true, 'gemma-4-31B-it is vision-capable');
-    assert.strictEqual(helper('glm-5.2'), false, 'glm-5.2 is text-only');
-    assert.strictEqual(helper('deepseek-v4-flash'), false, 'deepseek-v4-flash is text-only');
-    assert.strictEqual(helper('Qwen3-Coder-480B'), false, 'Qwen3-Coder-480B is text-only');
-    assert.strictEqual(helper('gpt-oss-42m-v2'), false, 'gpt-oss is text-only');
-  });
-
   test('isSessionInterruptNotice only matches real interrupt notices', () => {
     // Regression: the notice regex was written /^\[Request interrupted by user\]/i
     // with SINGLE backslashes inside the HTML template literal. The template

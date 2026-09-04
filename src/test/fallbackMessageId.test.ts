@@ -4,7 +4,7 @@ import * as path from 'path';
 
 /**
  * Regression test for the webview's synthetic per-turn messageId fallback for
- * agents that never emit a real `messageId` (legacy Kiro CLI, older ericli).
+ * agents that never emit a real `messageId` (legacy Kiro CLI, older codex).
  *
  * Without the fallback, kiro-cli streams `agent_message_chunk` with no
  * messageId, so vscode-acp's bubble-grouping key (messageId) is null on every

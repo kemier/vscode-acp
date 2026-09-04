@@ -21,7 +21,7 @@ suite('MemoryAgentId.resolveMemoryAgentId (Model B)', () => {
     assert.strictEqual(resolveMemoryAgentId('Codex CLI'), 'codex');
     assert.strictEqual(resolveMemoryAgentId('claude-code'), 'claude');
     assert.strictEqual(resolveMemoryAgentId('Kiro'), 'kiro');
-    assert.strictEqual(resolveMemoryAgentId('ericli-acp'), 'ericli');
+    assert.strictEqual(resolveMemoryAgentId('codex-acp'), 'codex');
   });
 
   test('explicit agentIdMap wins over heuristics', () => {
@@ -302,13 +302,13 @@ suite('MemoryFormat.formatSkills', () => {
   test('footer embeds self-contained memory_skill_view curl recipe when bridgeBaseUrl set', () => {
     const text = formatSkills(
       [{ skill_id: 's1', name: 'test', description: 'a test', version: 1 }],
-      { bridgeBaseUrl: 'http://127.0.0.1:8127/', agentId: 'ericli', platform: 'linux' },
+      { bridgeBaseUrl: 'http://127.0.0.1:8127/', agentId: 'codex', platform: 'linux' },
     );
     assert.ok(text);
     assert.ok(text!.includes('memory-injected'));
     assert.ok(text!.includes('curl -sf -X POST http://127.0.0.1:8127/view'));
     assert.ok(text!.includes('curl -sf -X POST http://127.0.0.1:8127/search'));
-    assert.ok(text!.includes('"agent_id":"ericli"'));
+    assert.ok(text!.includes('"agent_id":"codex"'));
     assert.ok(text!.includes('NOT the API above'));
     // The static fallback ("see session history") must NOT appear when a base URL is set.
     assert.ok(!text!.includes('see session history'));
@@ -317,12 +317,12 @@ suite('MemoryFormat.formatSkills', () => {
   test('footer embeds PowerShell Invoke-RestMethod recipe on win32', () => {
     const text = formatSkills(
       [{ skill_id: 's1', name: 'test', description: 'a test', version: 1 }],
-      { bridgeBaseUrl: 'http://127.0.0.1:8127/', agentId: 'ericli', platform: 'win32' },
+      { bridgeBaseUrl: 'http://127.0.0.1:8127/', agentId: 'codex', platform: 'win32' },
     );
     assert.ok(text);
     assert.ok(text!.includes("Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8127/view'"));
     assert.ok(text!.includes("Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8127/search'"));
-    assert.ok(text!.includes('"agent_id":"ericli"'));
+    assert.ok(text!.includes('"agent_id":"codex"'));
     assert.ok(!text!.includes('curl -sf'));
   });
 
@@ -351,7 +351,7 @@ suite('MemorySanitize', () => {
   });
 
   test('strips flattened memory recall echoed back by the agent (feedback loop)', () => {
-    // ericli's ACP server flattens an embeddedContext resource into the user
+    // codex's ACP server flattens an embeddedContext resource into the user
     // message as a context tag + link mention. Capturing that verbatim would
     // re-write the recall blob as L0 → self-reinforcing recall.
     const raw =

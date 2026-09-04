@@ -9,7 +9,7 @@
  * (agent, session) must be restored afterward so the model picker / config
  * options / chat state return to where the user was. Failing to do so is the
  * "cross-agent morph" bug: a `/session` lookup that matched a Kiro CLI session
- * would leave an EricLI session's picker showing Kiro/Claude models.
+ * would leave an Codex session's picker showing Kiro/Claude models.
  */
 
 /**

@@ -161,8 +161,6 @@ const pascalKeywords = new Set([
   'Babel',
   'ESLint',
   'Prettier',
-  'EricAi',
-  'EricAI',
   'Ericsson',
   'ChatGPT',
   'ClaudeCode',

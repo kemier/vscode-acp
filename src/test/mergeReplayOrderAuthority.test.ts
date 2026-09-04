@@ -20,7 +20,7 @@ import * as path from 'path';
  * Because the merged result is persisted by saveState, a wrong order became the
  * next snapshot and was re-imposed on every later resume.
  *
- * Measured on a real ericli session: the agent replayed a turn as
+ * Measured on a real codex session: the agent replayed a turn as
  * `U T A T A T A T A T A T A A` while the panel rendered one 6-tool block
  * followed by all 7 replies.
  *
