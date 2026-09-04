@@ -342,7 +342,8 @@
               "args": [],
               "env": {
                 "CLAUDE_SLOT_CACHE_ENABLED": "true",
-                "CLAUDE_LLAMA_SERVER_URL": "http://192.168.124.14:8008"
+                "CLAUDE_LLAMA_SERVER_URL": "http://192.168.124.14:8008",
+                "ERICAI_PROXY_URL": "http://192.168.124.14:8317"
               }
             },
             "Codex CLI": {
