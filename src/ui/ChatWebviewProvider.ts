@@ -15971,6 +15971,16 @@ function commitCurrentTextSegment(opts) {
            // Resume/history: missing status means the stage never finished.
            else rowStageStatus = 'failed';
          }
+         // ericli spawn_parallel crews: the agent replays the parent spawn tool
+         // with status=completed (the spawn itself succeeded) but NO per-stage
+         // status — the subagents' results arrive as separate messages, not as
+         // tool_call_update stage patches. So on a completed, non-live parent
+         // the stages did finish; default them to completed instead of failed.
+         // (Live mid-turn keeps 'running' via the isProcessing branch above.)
+         if (!stage.status && isSubagentSpawnTitle(title, rawInput) &&
+             !isProcessing && status === 'completed') {
+           rowStageStatus = 'completed';
+         }
          var stageIcon = stageIconStatus(rowStageStatus);
          stagesHtml += '<div class="tc-stage" data-stage-name="' + escapeHtml(stageName) + '"' + stageToolIdAttr + '><span class="tc-stage-icon ' + stageIcon + '">' + getStatusIcon(stageIcon === 'error' ? 'error' : stageIcon) + '</span><span class="tc-stage-name">' + escapeHtml(stageName) + '</span>' +
            (stageRole ? '<span class="tc-stage-role">' + escapeHtml(stageRole) + '</span>' : '') +
