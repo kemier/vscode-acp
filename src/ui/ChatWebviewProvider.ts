@@ -18766,9 +18766,17 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
      if (wasManual) {
        showCompactNotice();
      } else {
-       // Auto-compact: agent often resumes the same turn immediately —
-       // drop any leftover banner and restore the plain processing spinner.
+       // Auto-compact: the agent often resumes the same turn immediately.
+       // Show a brief transient hint ("Context compacted") so the user knows
+       // the history was cleared, but do NOT leave a banner in statusEl —
+       // the agent's next activity (tool call, message chunk) will restore
+       // the plain processing spinner via restoreProcessingStatusSpinner().
+       // The hint auto-vanishes after 3s, so it never sits on top of the
+       // resumed reply.
        clearCompactNotices();
+       if (notice) {
+         showTransientHint('Context compacted', 3000);
+       }
        restoreProcessingStatusSpinner();
      }
     // For auto-compact, also surface a compact notice in the chat so the
