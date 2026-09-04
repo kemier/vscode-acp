@@ -340,12 +340,18 @@
             "Claude Code": {
               "command": "claude-code-acp",
               "args": [],
-              "env": {}
+              "env": {
+                "CLAUDE_SLOT_CACHE_ENABLED": "true",
+                "CLAUDE_LLAMA_SERVER_URL": "http://192.168.124.14:8008"
+              }
             },
             "Codex CLI": {
               "command": "codex-acp",
               "args": [],
-              "env": {}
+              "env": {
+                "CODEX_SLOT_CACHE_ENABLED": "true",
+                "CODEX_LLAMA_SERVER_URL": "http://192.168.124.14:8008"
+              }
             },
             "Cursor": {
               "command": "cursor-agent",
