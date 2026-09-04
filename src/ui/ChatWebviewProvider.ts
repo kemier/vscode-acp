@@ -14117,6 +14117,21 @@ function commitCurrentTextSegment(opts) {
        // arrives; until then, the already-rendered HTML is the best display.
        // Don't remove md-rendered — the handler checks data-render-hash to
        // decide whether to update.
+       //
+       // Exception: the bubble was NEVER rendered (a tool_call landed inside
+       // the pre-first-render window, so this commit's streamingRenderGen++
+       // just invalidated the only in-flight streaming render). There is no
+       // rendered HTML to preserve, so leaving it untouched means an EMPTY
+       // bubble sits above the tool row until the index=committedIndex render
+       // round-trips back — the user sees "empty bubble → tool title → text
+       // pops in". Paint the raw committed text now; the CSS rule
+       // ".message.assistant:not(.md-rendered)" already styles this
+       // loading state (pre-wrap, dimmed). This cannot regress the
+       // "flash of raw markdown at promptEnd" bug, which only affects bubbles
+       // that DO have rendered HTML.
+       if (!currentAssistantEl.classList.contains('md-rendered') && !currentAssistantEl.textContent) {
+         currentAssistantEl.textContent = committedText;
+       }
        var renderIndex = committedIndex;
        vscode.postMessage({ type: 'debugLog', message: 'commitCurrentTextSegment: sending renderMarkdown index=' + renderIndex + ' textLen=' + committedText.length });
       vscode.postMessage({
