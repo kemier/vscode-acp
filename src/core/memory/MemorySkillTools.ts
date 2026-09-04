@@ -189,6 +189,8 @@ export function formatMemorySkillTools(opts: MemorySkillToolsOptions): string {
     '         `content` is a FULL SKILL.md overwrite — send the complete document.',
     '         Resolve skill_id (skl-…) via memory_skill_view/search first. Returns',
     '         { skill_id, name, version } with an incremented version on success.',
+    '         Optional `expected_version` (number) pins optimistic concurrency;',
+    '         when omitted the bridge resolves the current version automatically.',
     '  </tool>',
     '',
     'Err on the side of loading — prerequisite skills are often NOT listed in <available_skills>.',,

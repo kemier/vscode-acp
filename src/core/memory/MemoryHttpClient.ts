@@ -373,12 +373,14 @@ export class MemoryHttpClient {
    * POST /v3/skill/update. `content` is a FULL overwrite of the SKILL.md — the
    * caller must send the complete document, not a diff. `skill_id` (prefix
    * `skl-`) is the primary address; use getSkillByName first to resolve it.
+   * `expected_version` is REQUIRED by the gateway (optimistic concurrency);
+   * when omitted here it is auto-resolved via getSkill.
    *
    * Unlike the read/search endpoints, this MUTATES a skill, so it is only
    * exposed to the LLM via the MemorySkillBridge `/update` endpoint (which
    * carries the gateway API key server-side) — never embedded in a prompt.
    */
-  skillUpdate(
+  async skillUpdate(
     iso: MemoryIsolation,
     params: {
       skillId: string;
@@ -386,6 +388,8 @@ export class MemoryHttpClient {
       name?: string;
       description?: string;
       removeScriptPaths?: string[];
+      /** Optimistic-concurrency version (from /view); auto-resolved when omitted. */
+      expectedVersion?: number;
     },
   ): Promise<{ skill_id: string; name: string; version: number }> {
     const { sessionId: _sessionId, ...rest } = iso;
@@ -395,9 +399,15 @@ export class MemoryHttpClient {
     if (!params.content) {
       throw new Error('skillUpdate requires content (full SKILL.md overwrite)');
     }
+    // The gateway's /v3/skill/update schema REQUIRES expected_version
+    // (optimistic concurrency). Auto-resolve from the live skill when the
+    // caller didn't pin one, so the one-liner recipe keeps working.
+    const expectedVersion =
+      params.expectedVersion ?? (await this.getSkill(iso, params.skillId)).version;
     return this.post('/v3/skill/update', {
       ...this.isolationBody(rest),
       skill_id: params.skillId,
+      expected_version: expectedVersion,
       content: params.content,
       ...(params.name ? { name: params.name } : {}),
       ...(params.description ? { description: params.description } : {}),

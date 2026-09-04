@@ -5,7 +5,7 @@
  * Endpoints:
  *   POST /view   { name, agent_id? } → full skill (get-by-name)
  *   POST /search { query, agent_id?, top_k? } → search hits
- *   POST /update { skill_id, content, name?, description? } → update a stale skill
+ *   POST /update { skill_id, expected_version?, content, name?, description? } → update a stale skill
  *   GET  /health → 200 ok
  */
 
@@ -170,9 +170,12 @@ export class MemorySkillBridge {
         const removeScriptPaths = Array.isArray(body.remove_script_paths)
           ? (body.remove_script_paths as string[]).filter((x) => typeof x === 'string')
           : undefined;
+        const expectedVersion =
+          typeof body.expected_version === 'number' ? body.expected_version : undefined;
         const result = await client.skillUpdate(iso, {
           skillId,
           content,
+          ...(expectedVersion !== undefined ? { expectedVersion } : {}),
           ...(name ? { name } : {}),
           ...(description ? { description } : {}),
           ...(removeScriptPaths ? { removeScriptPaths } : {}),
