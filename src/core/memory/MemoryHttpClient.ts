@@ -253,6 +253,10 @@ export class MemoryHttpClient {
       ...this.isolationBody(rest),
       query: params?.query,
       char_budget: params?.charBudget ?? 8000,
+      // Include skills from all agents in the team (own + team-shared), not just
+      // the current agent's. The gateway strips the owner_agent_id filter when
+      // scope="team" (mirrors /v3/skill/search).
+      scope: 'team',
     }).then((res) => {
       const byName = new Map((res.hits ?? []).map((h) => [h.name, h]));
       const items: Array<{ skill_id: string; name: string; description: string; version: number }> = [];
