@@ -81,7 +81,7 @@ export function formatL1Memories(items: L1MemoryItem[], opts?: { includeWrapper?
 }
 
 /** Maximum character budget for the L3 persona block. The persona is injected
- *  on every turn for non-incremental agents (claude-code-acp, ericli) and
+ *  on every turn for non-incremental agents (claude-code-acp, codex) and
  *  carries the full "Team Operating Doctrine" + scene navigation index (L2).
  *  The scene index sits near the END of the persona, so the cap must be large
  *  enough to keep it: a 2000-char cap truncated the persona before the scene
@@ -133,15 +133,14 @@ export function formatSkills(
       lines.push('Update a stale skill\'s content (full SKILL.md overwrite; resolve skill_id via view/search):');
       lines.push(`  ${formatSkillBridgeUpdateCommand(base, agentId, platform)}`);
       lines.push('');
-      lines.push('If /view returns SKILL_NOT_FOUND (HTTP 502), the skill is FILESYSTEM-only, not in memory.');
-      lines.push('Read it directly: `cat ~/.cli-4-ericai/skills/<name>/SKILL.md` (or the Read tool).');
-      lines.push('Do NOT retry the API for a skill that returned SKILL_NOT_FOUND.');
+      lines.push('If /view returns SKILL_NOT_FOUND (HTTP 502): try /search for the name (team-shared skills), or it may be FILESYSTEM-only.');
+      lines.push('Filesystem-only skills: read `~/.codex/skills/<name>/SKILL.md` or `~/.cursor/skills-cursor/<name>/SKILL.md` (or the Read tool).');
     } else {
       lines.push(
         'Load full instructions with memory_skill_view (Shell; recipe on first profile turn — see session history).',
       );
     }
-    lines.push('Filesystem skills (e.g. ~/.cursor/skills-cursor/) are loaded via the Read tool — NOT the API above. If /view returns SKILL_NOT_FOUND, the skill is filesystem-only: read `~/.cli-4-ericai/skills/<name>/SKILL.md` directly.');
+    lines.push('Filesystem skills (e.g. ~/.cursor/skills-cursor/, ~/.codex/skills/) are loaded via the Read tool — NOT the API above.');
   }
   lines.push('</available_skills>');
   return lines.join('\n');

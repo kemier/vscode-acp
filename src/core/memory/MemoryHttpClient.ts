@@ -343,17 +343,48 @@ export class MemoryHttpClient {
     });
   }
 
-  getSkillByName(
+  /**
+   * Resolve a skill by name. Listing/search use scope=team so Cursor sees
+   * Codex/Claude/etc. shared skills, but older Mac gateways keep
+   * `/v3/skill/get-by-name` agent-scoped (SKILL_NOT_FOUND for other owners).
+   * Fall back: team listing → skill_id → `/v3/skill/get` (id works across agents).
+   */
+  async getSkillByName(
     iso: MemoryIsolation,
     skillName: string,
   ): Promise<{ skill_id: string; name: string; description: string; content: string; version: number }> {
     const { sessionId: _sessionId, ...rest } = iso;
-    return this.post('/v3/skill/get-by-name', {
-      ...this.isolationBody(rest),
-      skill_name: skillName,
-      include_content: true,
-      include_manifest: false,
-    });
+    try {
+      return await this.post('/v3/skill/get-by-name', {
+        ...this.isolationBody(rest),
+        skill_name: skillName,
+        include_content: true,
+        include_manifest: false,
+        // Newer gateways honor team scope here; older ones ignore it.
+        scope: 'team',
+      });
+    } catch (e) {
+      const notFound =
+        e instanceof MemoryHttpError &&
+        (e.code === 40401 || /SKILL_NOT_FOUND/i.test(e.message));
+      if (!notFound) {
+        throw e;
+      }
+      const { items } = await this.listSkills(iso);
+      const hit = items.find(
+        (i) => i.name === skillName && typeof i.skill_id === 'string' && i.skill_id.startsWith('skl-'),
+      );
+      if (!hit) {
+        throw e;
+      }
+      if (this.debug) {
+        log(
+          `Memory getSkillByName("${skillName}") agent-scoped miss; ` +
+            `resolved via team listing → ${hit.skill_id}`,
+        );
+      }
+      return this.getSkill(iso, hit.skill_id);
+    }
   }
 
   searchSkills(
@@ -365,6 +396,8 @@ export class MemoryHttpClient {
       ...this.isolationBody(rest),
       query: params.query,
       top_k: params.topK ?? 5,
+      // Match listSkills: include team-shared skills from other agents.
+      scope: 'team',
     });
   }
 
