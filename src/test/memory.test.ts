@@ -110,6 +110,76 @@ suite('MemoryFormat', () => {
   test('formatRecallContext returns undefined when only empty skills', () => {
     assert.strictEqual(formatRecallContext([], null, [], []), undefined);
   });
+
+  test('persona cap keeps the L2 scene index (raised to 4000)', () => {
+    // Doctrine prefix (~2200 chars) + scene index near the end. The old 2000-char
+    // cap truncated before the scene section; the 4000 cap must keep it.
+    const doctrine = 'Doctrine: '.repeat(200); // ~2200 chars
+    const sceneIndex = '\n## 🗺️ Scene Navigation (Scene Index)\n### Path: scene_blocks/deploy.md\nSummary: deploy guide';
+    const persona = doctrine + sceneIndex;
+    assert.ok(persona.length > 2000, 'precondition: persona exceeds the old 2000 cap');
+    assert.ok(persona.length < 4000, 'precondition: persona fits the new 4000 cap');
+    const formatted = formatRecallContext([], persona, []);
+    assert.ok(formatted);
+    assert.ok(formatted!.text.includes('Scene Navigation'), 'L2 scene index must survive the persona cap');
+    assert.ok(formatted!.text.includes('scene_blocks/deploy.md'));
+    assert.ok(!formatted!.text.includes('persona truncated'));
+  });
+
+  test('over-budget blob drops skills first, keeps persona + top L1 (priority drop)', () => {
+    // Persona (4000) + many long skills pushes the blob past 8000. The priority
+    // drop must shed skill entries (not the persona's scene index) to fit.
+    const persona = 'Doctrine: '.repeat(125) + '\n## Scene Navigation\n### Path: scene_blocks/a.md';
+    const skills = Array.from({ length: 30 }, (_, i) => ({
+      skill_id: `s${i}`,
+      name: `skill-${i}`,
+      description: 'x'.repeat(200),
+      version: 1,
+    }));
+    const l1 = [{ content: 'top-ranked memory', type: 'fact' }];
+    const formatted = formatRecallContext(l1, persona, [], skills);
+    assert.ok(formatted);
+    assert.ok(formatted!.text.length <= 8000, 'blob must respect the total cap');
+    assert.ok(formatted!.text.includes('Scene Navigation'), 'persona scene index must survive');
+    assert.ok(formatted!.text.includes('top-ranked memory'), 'top L1 must survive');
+    assert.ok(formatted!.text.includes('<available_skills>'), 'skills block (footer) kept');
+    // Not all 30 skills fit — some were dropped gracefully.
+    const keptSkills = formatted!.text.match(/\- \*\*skill-\d+\*\*/g)?.length ?? 0;
+    assert.ok(keptSkills < 30, 'expected some skills to be dropped');
+    assert.ok(keptSkills >= 0);
+  });
+
+  test('over-budget blob with no skills drops scene nav, then extra L1', () => {
+    // No skills to shed: drop the dedicated scene block, then L1 beyond the first.
+    const persona = 'Doctrine: '.repeat(125) + '\n## Scene Navigation\n### Path: scene_blocks/a.md';
+    const scenes = Array.from({ length: 8 }, (_, i) => ({ path: `scene_blocks/scene-${i}.md` }));
+    const l1 = Array.from({ length: 5 }, (_, i) => ({ content: `memory ${i} ` + 'y'.repeat(400), type: 'fact' }));
+    const formatted = formatRecallContext(l1, persona, scenes);
+    assert.ok(formatted);
+    assert.ok(formatted!.text.length <= 8000, 'blob must respect the total cap');
+    assert.ok(formatted!.text.includes('Scene Navigation'), 'persona scene index must survive');
+    assert.ok(formatted!.text.includes('memory 0'), 'top L1 must survive');
+  });
+
+  test('under-budget blob keeps all sections untouched', () => {
+    const skills = [
+      { skill_id: 's1', name: 'deploy-flow', description: 'How to deploy', version: 1 },
+      { skill_id: 's2', name: 'test-first', description: 'Write tests first', version: 2 },
+    ];
+    const formatted = formatRecallContext(
+      [{ content: 'uses pnpm', type: 'fact' }],
+      'User is a systems engineer.',
+      [{ path: 'scene_blocks/deploy.md' }],
+      skills,
+    );
+    assert.ok(formatted);
+    assert.ok(formatted!.text.length <= 8000);
+    assert.ok(formatted!.text.includes('<relevant-memories>'));
+    assert.ok(formatted!.text.includes('<user-persona>'));
+    assert.ok(formatted!.text.includes('scene_blocks/deploy.md'));
+    assert.ok(formatted!.text.includes('deploy-flow'));
+    assert.ok(formatted!.text.includes('test-first'));
+  });
 });
 
 suite('MemoryFormat.formatL1Memories dedup', () => {

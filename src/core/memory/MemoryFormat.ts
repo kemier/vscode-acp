@@ -82,12 +82,12 @@ export function formatL1Memories(items: L1MemoryItem[], opts?: { includeWrapper?
 
 /** Maximum character budget for the L3 persona block. The persona is injected
  *  on every turn for non-incremental agents (claude-code-acp, ericli) and
- *  carries the full "Team Operating Doctrine" + scene navigation index.
- *  Without a cap, the persona grows unbounded as scene blocks accumulate,
- *  consuming 5K+ chars (~1.4K tokens) per turn — a significant fraction of
- *  the 196K context window when the conversation is long. Truncate at 3K
- *  chars (~750 tokens) to keep the overhead bounded. */
-const MAX_PERSONA_CHARS = 2000;
+ *  carries the full "Team Operating Doctrine" + scene navigation index (L2).
+ *  The scene index sits near the END of the persona, so the cap must be large
+ *  enough to keep it: a 2000-char cap truncated the persona before the scene
+ *  section, silently dropping L2 scenario memory. 4000 chars (~1000 tokens)
+ *  keeps the doctrine + scene index while still bounding the overhead. */
+const MAX_PERSONA_CHARS = 4000;
 
 export function formatPersona(persona: string | null | undefined): string | undefined {
   if (!persona?.trim()) {
@@ -177,6 +177,92 @@ export function formatSceneNav(scenes: SceneNavEntry[]): string | undefined {
 const MAX_TOTAL_BLOB_CHARS = 8000;
 
 /**
+ * Assemble the <agent-memory> blob from already-formatted section parts, then
+ * enforce MAX_TOTAL_BLOB_CHARS by DROPPING whole sections in priority order
+ * (least valuable first) instead of blind end-truncation.
+ *
+ * Old behavior sliced the blob from the end, which cut the persona's embedded
+ * L2 scene index and the skill list mid-entry. Now, when over budget we shed:
+ *   1. skill entries (re-fetchable via the footer recipe) — down to none
+ *   2. the dedicated L2 scene-nav block (persona keeps its own scene index)
+ *   3. L1 items beyond the first (the top-ranked memory is kept)
+ * and only as a last resort hard-slice the remainder. This guarantees the L3
+ * persona (with its scene index) and at least the top L1 memory survive.
+ */
+function buildBlobWithPriorityDrop(
+  l1: string | undefined,
+  personaBlock: string | undefined,
+  sceneBlock: string | undefined,
+  skills: SkillEntry[],
+  skillToolsBlock: string | undefined,
+  skillOpts: { includeFooter: boolean; bridgeBaseUrl?: string; agentId?: string; platform?: NodeJS.Platform },
+): string | undefined {
+  const assemble = (keptSkills: SkillEntry[], includeScene: boolean, keptL1: string | undefined): string | undefined => {
+    const parts: string[] = [];
+    if (keptL1) {
+      parts.push(keptL1);
+    }
+    if (personaBlock) {
+      parts.push(personaBlock);
+    }
+    if (includeScene && sceneBlock) {
+      parts.push(sceneBlock);
+    }
+    const skillBlock = formatSkills(keptSkills, skillOpts);
+    if (skillBlock) {
+      parts.push(skillBlock);
+    }
+    if (skillToolsBlock?.trim()) {
+      parts.push(skillToolsBlock.trim());
+    }
+    if (parts.length === 0) {
+      return undefined;
+    }
+    return `<agent-memory>\n${parts.join('\n\n')}\n</agent-memory>`;
+  };
+
+  const fits = (blob: string | undefined): boolean => !!blob && blob.length <= MAX_TOTAL_BLOB_CHARS;
+
+  // 1. Full blob. If it fits, done.
+  let blob = assemble(skills, true, l1);
+  if (fits(blob)) {
+    return blob;
+  }
+  // 2. Drop skill entries one at a time (keep the footer so the recipe stays).
+  for (let n = skills.length - 1; n >= 0; n--) {
+    blob = assemble(skills.slice(0, n), true, l1);
+    if (fits(blob)) {
+      return blob;
+    }
+  }
+  // 3. Drop the dedicated scene-nav block (persona keeps its embedded index).
+  blob = assemble([], false, l1);
+  if (fits(blob)) {
+    return blob;
+  }
+  // 4. Drop L1 items beyond the first (top-ranked memory is most relevant).
+  if (l1 && l1.split('\n').filter((ln) => ln.startsWith('- ')).length > 1) {
+    const firstItem = l1.split('\n').find((ln) => ln.startsWith('- '));
+    const keptL1 = l1.includes('<relevant-memories>')
+      ? `<relevant-memories>\n${firstItem}\n</relevant-memories>`
+      : (firstItem ?? l1);
+    blob = assemble([], false, keptL1);
+    if (fits(blob)) {
+      return blob;
+    }
+  }
+  // 5. Last resort: hard-slice the minimal blob (persona + top L1).
+  const minimal = assemble([], false, l1);
+  if (!minimal) {
+    return undefined;
+  }
+  if (minimal.length <= MAX_TOTAL_BLOB_CHARS) {
+    return minimal;
+  }
+  return minimal.slice(0, MAX_TOTAL_BLOB_CHARS - 20) + '\n…</agent-memory>';
+}
+
+/**
  * Build a single injectable recall blob for ACP ContentBlocks.
  * Combines L1 (dynamic) + L3 persona + L2 scene nav + skills (Model B agent profile).
  */
@@ -193,40 +279,20 @@ export function formatRecallContext(
   const bridgeBaseUrl = formatOpts?.bridgeBaseUrl;
   const agentId = formatOpts?.agentId;
   const platform = formatOpts?.platform;
-  const parts: string[] = [];
+
   const l1 = formatL1Memories(l1Items, { includeWrapper: includeL1Wrapper });
-  if (l1) {
-    parts.push(l1);
-  }
   const personaBlock = formatPersona(persona);
-  if (personaBlock) {
-    parts.push(personaBlock);
-  }
   const sceneBlock = formatSceneNav(scenes);
-  if (sceneBlock && (!persona || !persona.includes('Scene Navigation'))) {
-    parts.push(sceneBlock);
-  }
-  const skillBlock = formatSkills(skills, {
+  const sceneSuppressed = !!persona && persona.includes('Scene Navigation');
+
+  const blob = buildBlobWithPriorityDrop(l1, personaBlock, sceneSuppressed ? undefined : sceneBlock, skills, skillToolsBlock, {
     includeFooter: includeSkillsFooter,
     bridgeBaseUrl,
     agentId,
     platform,
   });
-  if (skillBlock) {
-    parts.push(skillBlock);
-  }
-  if (skillToolsBlock?.trim()) {
-    parts.push(skillToolsBlock.trim());
-  }
-  if (parts.length === 0) {
+  if (!blob) {
     return undefined;
-  }
-  let blob = `<agent-memory>\n${parts.join('\n\n')}\n</agent-memory>`;
-  // Final safety net: cap the total blob size. If per-section caps weren't
-  // enough (e.g. many L1 items, large persona from gateway), truncate from
-  // the end to preserve the prefix (L1 memories are most relevant).
-  if (blob.length > MAX_TOTAL_BLOB_CHARS) {
-    blob = blob.slice(0, MAX_TOTAL_BLOB_CHARS - 20) + '\n…</agent-memory>';
   }
   return {
     text: blob,
