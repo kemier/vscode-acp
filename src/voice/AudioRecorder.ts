@@ -74,21 +74,53 @@ export function resolveRecorderCommand(configured: string | undefined): Recorder
   return cmd;
 }
 
-async function assertBinaryExists(command: string): Promise<void> {
+/**
+ * Standard install dirs probed when PATH lookup fails. GUI-launched editors
+ * (Cursor/VS Code from Finder/Spotlight) inherit a minimal PATH WITHOUT
+ * /opt/homebrew/bin, so `which rec` fails inside the extension host even
+ * though SoX is installed. This is deterministic resolution of well-known
+ * locations — not a fallback chain: if the binary is nowhere, we throw.
+ */
+const STANDARD_BIN_DIRS =
+  process.platform === 'win32'
+    ? []
+    : ['/opt/homebrew/bin', '/usr/local/bin', '/opt/homebrew/sbin', '/usr/local/sbin'];
+
+/**
+ * Resolve a recorder command to an absolute executable path.
+ * Throws (with install hint) if the binary cannot be found anywhere.
+ */
+export async function resolveBinaryPath(command: string): Promise<string> {
   // Absolute/relative path with a separator → check the file directly.
   if (command.includes('/') || command.includes('\\')) {
     if (!fs.existsSync(command)) {
       throw new Error(`Voice input: recorder binary not found at "${command}".`);
     }
-    return;
+    return command;
   }
   const probe = process.platform === 'win32' ? 'where' : 'which';
   try {
-    await execFileAsync(probe, [command]);
+    const { stdout } = await execFileAsync(probe, [command]);
+    const found = stdout.trim().split('\n')[0].trim();
+    if (found) {
+      return found;
+    }
   } catch {
-    const hint = INSTALL_HINTS[command] ?? `Install "${command}" or set acp.voice.recordCommand.`;
-    throw new Error(`Voice input: recorder binary "${command}" not found on PATH. ${hint}`);
+    // PATH lookup failed — probe standard install dirs (see STANDARD_BIN_DIRS).
   }
+  for (const dir of STANDARD_BIN_DIRS) {
+    const candidate = path.join(dir, command);
+    if (fs.existsSync(candidate)) {
+      return candidate;
+    }
+  }
+  const hint = INSTALL_HINTS[command] ?? `Install "${command}" or set acp.voice.recordCommand.`;
+  throw new Error(
+    `Voice input: recorder binary "${command}" not found on PATH` +
+      (STANDARD_BIN_DIRS.length ? ` or in ${STANDARD_BIN_DIRS.join(', ')}` : '') +
+      `. ${hint} (Editors launched from Finder/Spotlight have a minimal PATH — ` +
+      `an absolute path in acp.voice.recordCommand always works.)`,
+  );
 }
 
 export class AudioRecorder {
@@ -109,13 +141,13 @@ export class AudioRecorder {
       throw new Error('Voice input: a recording is already in progress.');
     }
     const cmd = resolveRecorderCommand(configuredCommand);
-    await assertBinaryExists(cmd.command);
+    const binary = await resolveBinaryPath(cmd.command);
 
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
     const args = cmd.args.map((a) => (a === '{file}' ? filePath : a));
 
     await new Promise<void>((resolve, reject) => {
-      const proc = spawn(cmd.command, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+      const proc = spawn(binary, args, { stdio: ['ignore', 'ignore', 'pipe'] });
       let stderr = '';
       proc.stderr?.on('data', (d) => {
         stderr += String(d);
