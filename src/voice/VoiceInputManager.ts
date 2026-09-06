@@ -41,7 +41,7 @@ function readSettings(): VoiceSettings {
     maxDurationSec: cfg.get<number>('maxDurationSec', 120),
     autoSend: cfg.get<boolean>('autoSend', false),
     stt: {
-      endpoint: cfg.get<string>('stt.endpoint', 'http://127.0.0.1:8080/v1/audio/transcriptions'),
+      endpoint: cfg.get<string>('stt.endpoint', 'http://127.0.0.1:8080/inference'),
       model: cfg.get<string>('stt.model', 'whisper-1'),
       apiKey: cfg.get<string>('stt.apiKey', ''),
       language: cfg.get<string>('stt.language', ''),

@@ -439,8 +439,8 @@
         },
         "acp.voice.stt.endpoint": {
           "type": "string",
-          "default": "http://127.0.0.1:8080/v1/audio/transcriptions",
-          "description": "OpenAI-compatible transcription endpoint. Works with whisper.cpp whisper-server (default :8080), FunASR FastAPI wrappers, and vLLM transcription serving Qwen3-ASR."
+          "default": "http://127.0.0.1:8080/inference",
+          "description": "Transcription endpoint. whisper.cpp whisper-server serves POST /inference (default port 8080); OpenAI-compatible servers (FunASR FastAPI wrappers, vLLM/Qwen3-ASR) use /v1/audio/transcriptions. Both return {\"text\": ...}."
         },
         "acp.voice.stt.model": {
           "type": "string",

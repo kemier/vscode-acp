@@ -4,11 +4,12 @@ import * as path from 'path';
 /**
  * OpenAI-compatible speech-to-text client.
  *
- * POSTs a WAV file as multipart/form-data to `{endpoint}` (default
- * whisper.cpp server's /v1/audio/transcriptions). The same API shape is
- * served by whisper.cpp `whisper-server`, FunASR's FastAPI wrapper, and
- * vLLM's transcription endpoint for Qwen3-ASR — so the extension stays
- * provider-agnostic and the model choice lives entirely in local config.
+ * POSTs a WAV file as multipart/form-data to `{endpoint}`. Two endpoint
+ * shapes work, both returning `{"text": "..."}`:
+ *  - whisper.cpp `whisper-server`: POST /inference (default port 8080)
+ *  - OpenAI-compatible: POST /v1/audio/transcriptions (FunASR FastAPI
+ *    wrappers, vLLM serving Qwen3-ASR)
+ * The extension stays provider-agnostic; the model choice lives in config.
  *
  * The `prompt` field is the contextual-biasing lever for tech vocabulary:
  * whisper.cpp forwards it as the decoder initial prompt, which measurably
@@ -16,7 +17,7 @@ import * as path from 'path';
  */
 
 export interface SttConfig {
-  /** Full URL, e.g. http://127.0.0.1:8080/v1/audio/transcriptions */
+  /** Full URL, e.g. http://127.0.0.1:8080/inference (whisper.cpp) or .../v1/audio/transcriptions (OpenAI-compatible) */
   endpoint: string;
   /** Model name sent in the form body (whisper.cpp ignores it; wrappers use it). */
   model: string;
