@@ -2395,6 +2395,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    // Voice Memory feedback: if this send carries a recent voice transcript
+    // (verbatim or hand-edited), record the outcome for the review command.
+    this.voiceInput.captureFeedback(text, activeId);
+
     // Capture whether the session was still loading (resume replay in
     // progress) when this prompt arrived. The webview's handleSend() adds a
     // user bubble for normal prompts, but when a prompt is sent while
@@ -2846,6 +2850,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     if (!activeId) {
       return;
     }
+    // Steer sends composer text too — same Voice Memory feedback path.
+    this.voiceInput.captureFeedback(text, activeId);
     try {
       await this.sessionManager.steerPrompt(activeId, text);
     } catch (e) {

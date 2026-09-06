@@ -4,6 +4,8 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { AudioRecorder } from './AudioRecorder';
 import { transcribeAudio, SttConfig, SttError } from './SttClient';
+import { applyCorrections, VoiceMemoryStore } from './VoiceMemory';
+import { correctTranscript, CorrectorConfig } from './CorrectorClient';
 import { log, logError } from '../utils/Logger';
 
 /**
@@ -32,6 +34,9 @@ interface VoiceSettings {
   silenceAutoStopSec: number;
   autoSend: boolean;
   stt: SttConfig;
+  corrections: Record<string, string>;
+  corrector: CorrectorConfig;
+  memoryFile: string;
 }
 
 function readSettings(): VoiceSettings {
@@ -50,6 +55,15 @@ function readSettings(): VoiceSettings {
       prompt: cfg.get<string>('stt.prompt', ''),
       timeoutMs: cfg.get<number>('stt.timeoutMs', 60000),
     },
+    corrections: cfg.get<Record<string, string>>('corrections', {}),
+    corrector: {
+      enabled: cfg.get<boolean>('corrector.enabled', false),
+      endpoint: cfg.get<string>('corrector.endpoint', 'http://127.0.0.1:8008/v1/chat/completions'),
+      model: cfg.get<string>('corrector.model', 'qwen3.8-4b-distill'),
+      apiKey: cfg.get<string>('corrector.apiKey', ''),
+      timeoutMs: cfg.get<number>('corrector.timeoutMs', 15000),
+    },
+    memoryFile: cfg.get<string>('memoryFile', ''),
   };
 }
 
@@ -60,6 +74,10 @@ export class VoiceInputManager {
   private boundSessionId: string | null = null;
   private maxDurationTimer: ReturnType<typeof setTimeout> | null = null;
   private takeSeq = 0;
+  private store: VoiceMemoryStore | null = null;
+  /** Last inserted transcript awaiting the user's send/edit verdict. */
+  private lastInsert: { stt: string; inserted: string; sessionId: string | null; ts: number } | null =
+    null;
 
   constructor(
     private readonly onEvent: (evt: VoiceEvent) => void,
@@ -181,8 +199,28 @@ export class VoiceInputManager {
     this.setState('transcribing');
     log(`[voice] transcribing ${filePath} via ${settings.stt.endpoint}`);
     try {
-      const text = await transcribeAudio(filePath, settings.stt);
+      const rawText = await transcribeAudio(filePath, settings.stt);
+      // Voice Memory pipeline (arXiv:2607.26410): deterministic dictionary
+      // first, then the restraint-biased LLM corrector reading memory.md.
+      let text = applyCorrections(rawText, settings.corrections);
+      if (text !== rawText) {
+        log(`[voice] dictionary corrections applied: ${rawText.slice(0, 80)} → ${text.slice(0, 80)}`);
+      }
+      if (settings.corrector.enabled && text.trim()) {
+        const memory = await this.getStore(settings.memoryFile).loadMemory();
+        const res = await correctTranscript(text, memory, settings.corrector);
+        if (res.acted) {
+          log(`[voice] corrector acted: ${text.slice(0, 80)} → ${res.text.slice(0, 80)}`);
+        }
+        text = res.text;
+      }
       log(`[voice] transcript (${text.length} chars): ${text.slice(0, 120)}`);
+      this.lastInsert = {
+        stt: rawText,
+        inserted: text,
+        sessionId: this.boundSessionId,
+        ts: Date.now(),
+      };
       this.setState('idle');
       this.onEvent({
         type: 'transcript',
@@ -196,6 +234,49 @@ export class VoiceInputManager {
       this.boundSessionId = null;
       fs.promises.unlink(filePath).catch(() => undefined);
     }
+  }
+
+  private storeMemoryFile = '';
+  private getStore(memoryFile: string): VoiceMemoryStore {
+    if (!this.store || this.storeMemoryFile !== memoryFile) {
+      this.store = new VoiceMemoryStore(memoryFile);
+      this.storeMemoryFile = memoryFile;
+    }
+    return this.store;
+  }
+
+  /**
+   * Called by the webview provider when a prompt is sent. If the send matches
+   * a recent voice insert for the same session, record the outcome: verbatim
+   * send = 'accept' (corrector must not touch such text), edited send =
+   * 'edited' (learning signal for the review command).
+   */
+  captureFeedback(sentText: string, sessionId: string | undefined): void {
+    const li = this.lastInsert;
+    if (!li) {
+      return;
+    }
+    if ((sessionId ?? null) !== li.sessionId) {
+      return; // prompt belongs to a different session — keep waiting
+    }
+    if (Date.now() - li.ts > 10 * 60_000) {
+      this.lastInsert = null; // stale — the user clearly moved on
+      return;
+    }
+    this.lastInsert = null;
+    const kind = sentText.includes(li.inserted) ? 'accept' : 'edited';
+    log(`[voice] feedback: ${kind} (stt=${li.stt.length}ch, inserted=${li.inserted.length}ch)`);
+    // The store was already resolved with the active memoryFile setting when
+    // the transcript was inserted — reuse it as-is.
+    const store = this.store ?? this.getStore('');
+    void store.appendFeedback({
+      ts: Date.now(),
+      sessionId: li.sessionId,
+      stt: li.stt,
+      inserted: li.inserted,
+      final: kind === 'edited' ? sentText : undefined,
+      kind,
+    });
   }
 
   /** Cancel any in-flight recording/transcription (webview dispose, session switch). */
