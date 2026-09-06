@@ -79,13 +79,22 @@ When in doubt, output the input unchanged.
 `;
 
 /**
- * Owns the two on-disk artifacts:
- *  - voice-memory.md      (the auditable rule file the corrector reads)
- *  - voice-feedback.jsonl (dictation outcomes used by the review command)
+ * Owns the on-disk artifacts:
+ *  - voice-memory.md              (the auditable rule file the corrector reads)
+ *  - voice-feedback.<host>.jsonl  (dictation outcomes used by the review command)
+ *
+ * Feedback files are PER-HOST so they can sync via Syncthing: each machine only
+ * appends to its own file, which makes the append-only pattern conflict-free
+ * under bidirectional sync. readFeedback() merges every voice-feedback*.jsonl
+ * in the directory, so a review on any machine sees all machines' feedback;
+ * clearFeedback() deletes them all (deletions propagate through sync).
  */
 export class VoiceMemoryStore {
   readonly memoryPath: string;
+  /** This host's own append target: voice-feedback.<hostId>.jsonl */
   readonly feedbackPath: string;
+  readonly hostId: string;
+  private migrated: Promise<void> | null = null;
 
   constructor(memoryPathSetting?: string) {
     const dir = path.join(os.homedir(), '.vscode-acp');
@@ -93,7 +102,44 @@ export class VoiceMemoryStore {
       memoryPathSetting && memoryPathSetting.trim()
         ? memoryPathSetting.trim()
         : path.join(dir, 'voice-memory.md');
-    this.feedbackPath = path.join(path.dirname(this.memoryPath), 'voice-feedback.jsonl');
+    this.hostId = VoiceMemoryStore.sanitizeHost(os.hostname());
+    this.feedbackPath = path.join(
+      path.dirname(this.memoryPath),
+      `voice-feedback.${this.hostId}.jsonl`,
+    );
+  }
+
+  private static sanitizeHost(hostname: string): string {
+    const h = hostname.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+    return h || 'host';
+  }
+
+  /** Fold a pre-split voice-feedback.jsonl into this host's file, once. */
+  private ensureMigrated(): Promise<void> {
+    if (!this.migrated) {
+      this.migrated = (async () => {
+        const legacy = path.join(path.dirname(this.memoryPath), 'voice-feedback.jsonl');
+        let raw: string;
+        try {
+          raw = await fs.promises.readFile(legacy, 'utf8');
+        } catch {
+          return; // no legacy file
+        }
+        try {
+          if (raw.trim()) {
+            await fs.promises.appendFile(
+              this.feedbackPath,
+              raw.endsWith('\n') ? raw : raw + '\n',
+              'utf8',
+            );
+          }
+          await fs.promises.unlink(legacy);
+        } catch {
+          // leave legacy in place; a later run retries
+        }
+      })();
+    }
+    return this.migrated;
   }
 
   /** Load the memory file, seeding the default on first use. */
@@ -112,37 +158,58 @@ export class VoiceMemoryStore {
   }
 
   async appendFeedback(entry: VoiceFeedbackEntry): Promise<void> {
+    await this.ensureMigrated();
     await fs.promises.mkdir(path.dirname(this.feedbackPath), { recursive: true });
     await fs.promises.appendFile(this.feedbackPath, JSON.stringify(entry) + '\n', 'utf8');
   }
 
-  async readFeedback(): Promise<VoiceFeedbackEntry[]> {
-    let raw: string;
+  /** All voice-feedback*.jsonl files in the directory, merged and time-sorted. */
+  private async feedbackFiles(): Promise<string[]> {
+    const dir = path.dirname(this.memoryPath);
+    let names: string[];
     try {
-      raw = await fs.promises.readFile(this.feedbackPath, 'utf8');
+      names = await fs.promises.readdir(dir);
     } catch {
       return [];
     }
+    return names
+      .filter((n) => /^voice-feedback(\..+)?\.jsonl$/.test(n))
+      .map((n) => path.join(dir, n));
+  }
+
+  async readFeedback(): Promise<VoiceFeedbackEntry[]> {
+    await this.ensureMigrated();
     const out: VoiceFeedbackEntry[] = [];
-    for (const line of raw.split('\n')) {
-      const t = line.trim();
-      if (!t) {
+    for (const file of await this.feedbackFiles()) {
+      let raw: string;
+      try {
+        raw = await fs.promises.readFile(file, 'utf8');
+      } catch {
         continue;
       }
-      try {
-        const e = JSON.parse(t) as VoiceFeedbackEntry;
-        if (typeof e.stt === 'string' && typeof e.inserted === 'string') {
-          out.push(e);
+      for (const line of raw.split('\n')) {
+        const t = line.trim();
+        if (!t) {
+          continue;
         }
-      } catch {
-        // skip corrupt line
+        try {
+          const e = JSON.parse(t) as VoiceFeedbackEntry;
+          if (typeof e.stt === 'string' && typeof e.inserted === 'string') {
+            out.push(e);
+          }
+        } catch {
+          // skip corrupt line
+        }
       }
     }
+    out.sort((a, b) => (a.ts ?? 0) - (b.ts ?? 0));
     return out;
   }
 
-  /** Clear the feedback log after a review has consumed it. */
+  /** Clear ALL hosts' feedback logs after a review has consumed them. */
   async clearFeedback(): Promise<void> {
-    await fs.promises.writeFile(this.feedbackPath, '', 'utf8').catch(() => undefined);
+    await this.ensureMigrated();
+    const files = await this.feedbackFiles();
+    await Promise.all(files.map((f) => fs.promises.unlink(f).catch(() => undefined)));
   }
 }

@@ -42,7 +42,7 @@ suite('VoiceMemoryStore', () => {
     assert.strictEqual(store.memoryPath, path.join(os.homedir(), '.vscode-acp', 'voice-memory.md'));
     assert.strictEqual(
       store.feedbackPath,
-      path.join(os.homedir(), '.vscode-acp', 'voice-feedback.jsonl'),
+      path.join(os.homedir(), '.vscode-acp', `voice-feedback.${store.hostId}.jsonl`),
     );
   });
 
@@ -95,5 +95,45 @@ suite('VoiceMemoryStore', () => {
     const entries = await store.readFeedback();
     assert.strictEqual(entries.length, 1);
     assert.strictEqual(entries[0].stt, 'a');
+  });
+
+  test('readFeedback merges per-host files sorted by ts; clearFeedback removes all', async () => {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'voice-mem-'));
+    const store = new VoiceMemoryStore(path.join(dir, 'memory.md'));
+    // Simulate a synced file from another host (newer entry) plus our own.
+    await fs.promises.writeFile(
+      path.join(dir, 'voice-feedback.win-pc.jsonl'),
+      '{"ts":2,"sessionId":null,"stt":"b","inserted":"b","kind":"accept"}\n',
+      'utf8',
+    );
+    await store.appendFeedback({ ts: 1, sessionId: null, stt: 'a', inserted: 'a', kind: 'accept' });
+    const entries = await store.readFeedback();
+    assert.strictEqual(entries.length, 2);
+    assert.strictEqual(entries[0].stt, 'a');
+    assert.strictEqual(entries[1].stt, 'b');
+    await store.clearFeedback();
+    assert.deepStrictEqual(await store.readFeedback(), []);
+    // Both host files are gone, not just ours.
+    assert.strictEqual(
+      (await fs.promises.readdir(dir)).filter((n) => n.startsWith('voice-feedback')).length,
+      0,
+    );
+  });
+
+  test('legacy voice-feedback.jsonl migrates into the host file', async () => {
+    const dir = await fs.promises.mkdtemp(path.join(os.tmpdir(), 'voice-mem-'));
+    const store = new VoiceMemoryStore(path.join(dir, 'memory.md'));
+    await fs.promises.writeFile(
+      path.join(dir, 'voice-feedback.jsonl'),
+      '{"ts":7,"sessionId":null,"stt":"old","inserted":"old","kind":"accept"}\n',
+      'utf8',
+    );
+    const entries = await store.readFeedback();
+    assert.strictEqual(entries.length, 1);
+    assert.strictEqual(entries[0].stt, 'old');
+    // Legacy file consumed; content now lives in the host file.
+    await assert.rejects(fs.promises.stat(path.join(dir, 'voice-feedback.jsonl')));
+    const hostRaw = await fs.promises.readFile(store.feedbackPath, 'utf8');
+    assert.ok(hostRaw.includes('"old"'));
   });
 });
