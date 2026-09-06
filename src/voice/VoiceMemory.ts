@@ -133,15 +133,28 @@ export class VoiceMemoryStore {
       memoryPathSetting && memoryPathSetting.trim()
         ? memoryPathSetting.trim()
         : path.join(dir, 'voice-memory.md');
-    this.hostId = VoiceMemoryStore.sanitizeHost(os.hostname());
+    this.hostId = VoiceMemoryStore.machineId();
     this.feedbackPath = path.join(
       path.dirname(this.memoryPath),
       `voice-feedback.${this.hostId}.jsonl`,
     );
   }
 
-  private static sanitizeHost(hostname: string): string {
-    const h = hostname.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+  /**
+   * Per-machine shard key for the feedback file. Hostname alone is NOT
+   * enough — the user's Mac and Windows box are BOTH named "workstation",
+   * which would make both append to one synced file (the conflict scenario
+   * per-host files exist to avoid). Platform + username disambiguate.
+   */
+  private static machineId(): string {
+    let username = '';
+    try {
+      username = os.userInfo().username;
+    } catch {
+      // no passwd entry / odd environment — hostname+platform still help
+    }
+    const raw = `${os.hostname()}-${process.platform}-${username}`;
+    const h = raw.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
     return h || 'host';
   }
 
