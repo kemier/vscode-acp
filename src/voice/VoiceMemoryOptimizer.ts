@@ -47,7 +47,10 @@ export async function proposeMemoryUpdate(
   ].join('\n');
 
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), Math.max(5000, cfg.timeoutMs * 4));
+  // The optimizer rewrites the whole memory file (up to ~4 KB of generation),
+  // and on a shared local box the model may be queued behind other jobs —
+  // the interactive corrector timeout is far too short. Floor at 3 minutes.
+  const timer = setTimeout(() => controller.abort(), Math.max(180_000, cfg.timeoutMs * 4));
   let res: Response;
   try {
     res = await fetch(cfg.endpoint, {
@@ -67,6 +70,8 @@ export async function proposeMemoryUpdate(
         ],
         temperature: 0,
         stream: false,
+        // Ollama: skip thinking (it dominates latency here); others ignore it.
+        think: false,
       }),
       signal: controller.signal,
     });
@@ -77,7 +82,10 @@ export async function proposeMemoryUpdate(
     throw new Error(`Voice memory optimizer: HTTP ${res.status} from ${cfg.endpoint}`);
   }
   const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
-  const proposal = data.choices?.[0]?.message?.content?.trim() ?? '';
+  // Strip <think>…</think> defensively in case the server ignored think:false.
+  const proposal = (data.choices?.[0]?.message?.content ?? '')
+    .replace(/<think>[\s\S]*?<\/think>/g, '')
+    .trim();
   if (!proposal) {
     throw new Error('Voice memory optimizer: empty proposal');
   }

@@ -989,7 +989,12 @@ export function activate(context: vscode.ExtensionContext): void {
       );
     } catch (e: any) {
       logError('reviewVoiceMemory: proposal failed', e);
-      vscode.window.showErrorMessage(`ACP voice memory review failed: ${e.message}`);
+      const aborted = e?.name === 'AbortError' || /aborted/i.test(e?.message ?? '');
+      vscode.window.showErrorMessage(
+        aborted
+          ? 'ACP voice memory review timed out — the local model is likely busy (memory service?). Try again when it is idle.'
+          : `ACP voice memory review failed: ${e.message}`,
+      );
       return;
     }
     if (proposal.trim() === current.trim()) {
