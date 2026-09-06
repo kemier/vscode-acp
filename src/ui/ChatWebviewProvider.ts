@@ -1663,6 +1663,15 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       if (e.affectsConfiguration('acp.debugResume')) {
         this.postDebugResumeConfig();
       }
+      if (e.affectsConfiguration('acp.voice.enabled')) {
+        const enabled = vscode.workspace.getConfiguration('acp.voice').get<boolean>('enabled', true);
+        if (!enabled) {
+          // Feature switched off mid-take — kill the recorder so the
+          // process doesn't leak into a webview that no longer shows the mic.
+          this.voiceInput.cancel();
+        }
+        this.postMessage({ type: 'voiceEnabled', enabled });
+      }
     });
     webviewView.onDidDispose(() => {
       debugResumeConfigSub.dispose();
@@ -4526,6 +4535,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       vscode.Uri.joinPath(this.extensionUri, 'resources', 'katex', 'katex.min.css'),
     );
     const buildStamp = Date.now();
+    const voiceEnabled = vscode.workspace.getConfiguration('acp.voice').get<boolean>('enabled', true);
 
     return /*html*/ `<!DOCTYPE html>
 <html lang="en">
@@ -6130,7 +6140,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
      ></textarea>
    </div>
 <div class="input-send-row">
-  <button class="mic-btn" id="micBtn" title="Dictate: click to start recording, click again to transcribe (local STT)">🎙</button>
+  <button class="mic-btn" id="micBtn" title="Dictate: click to start recording, click again to transcribe (local STT)" ${voiceEnabled ? '' : 'style="display:none;"'}>🎙</button>
    <button class="attach-btn" id="attachBtn" title="Attach image (or paste)" style="display:none;">📎</button>
   <button class="send-stop-btn send" id="sendStopBtn" disabled>Send</button>
 </div>
@@ -17327,6 +17337,11 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         case 'voiceError':
           setVoiceState('idle');
           addMessage('system', '⚠️ ' + (typeof msg.message === 'string' ? msg.message : 'Voice input failed'));
+          break;
+
+        case 'voiceEnabled':
+          // acp.voice.enabled toggled in Settings — show/hide the mic live.
+          if (micBtn) micBtn.style.display = msg.enabled === false ? 'none' : '';
           break;
 
       // Host-initiated prompt (fork-to-agent). dispatchPrompt() posts the
