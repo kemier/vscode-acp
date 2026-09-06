@@ -47,10 +47,12 @@ export async function proposeMemoryUpdate(
   ].join('\n');
 
   const controller = new AbortController();
-  // The optimizer rewrites the whole memory file (up to ~4 KB of generation),
-  // and on a shared local box the model may be queued behind other jobs —
-  // the interactive corrector timeout is far too short. Floor at 3 minutes.
-  const timer = setTimeout(() => controller.abort(), Math.max(180_000, cfg.timeoutMs * 4));
+  // The optimizer rewrites the whole memory file (up to ~4 KB of generation)
+  // on a shared local box where the model may be queued behind other jobs.
+  // Measured on the user's Mac under memory-service load: 3-4+ minutes per
+  // call (qwen35 arch ignores OLLAMA_NUM_PARALLEL, so requests serialize).
+  // Floor at 8 minutes — this is a human-triggered batch op, not interactive.
+  const timer = setTimeout(() => controller.abort(), Math.max(480_000, cfg.timeoutMs * 4));
   let res: Response;
   try {
     res = await fetch(cfg.endpoint, {
