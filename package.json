@@ -489,6 +489,13 @@
           "minimum": 0,
           "description": "Auto-stop recording after this many seconds of silence and transcribe immediately (SoX rec only; speech must be detected first, so it never stops before you start talking). 0 = off, manual stop only. Background audio (videos, music) above the mic threshold delays auto-stop."
         },
+        "acp.voice.silenceThresholdPct": {
+          "type": "number",
+          "default": 3,
+          "minimum": 0.1,
+          "maximum": 50,
+          "description": "Silence gate threshold as percent of full scale (SoX rec only). Lower it for quiet mics (e.g. Bluetooth headsets in HFP mode) if speech gets cut off; raise it if background noise delays auto-stop."
+        },
         "acp.voice.autoSend": {
           "type": "boolean",
           "default": false,

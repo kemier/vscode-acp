@@ -7,6 +7,7 @@ import {
   resolveRecorderCommand,
   resolveBinaryPath,
   buildRecorderArgs,
+  repairWavHeader,
 } from '../voice/AudioRecorder';
 
 suite('AudioRecorder command resolution', () => {
@@ -75,7 +76,18 @@ suite('AudioRecorder command resolution', () => {
       '/tmp/take.wav',
       2.5,
     );
-    assert.deepStrictEqual(args, ['-q', '/tmp/take.wav', 'silence', '1', '0.3', '3%', '1', '2.5', '3%']);
+    // Leading gate is 0.1s: a longer gate ate soft speech onsets (BT headset).
+    assert.deepStrictEqual(args, ['-q', '/tmp/take.wav', 'silence', '1', '0.1', '3%', '1', '2.5', '3%']);
+  });
+
+  test('buildRecorderArgs honors a custom silence threshold', () => {
+    const args = buildRecorderArgs(
+      { command: 'rec', args: ['{file}'] },
+      '/tmp/take.wav',
+      3.5,
+      2,
+    );
+    assert.deepStrictEqual(args, ['/tmp/take.wav', 'silence', '1', '0.1', '2%', '1', '3.5', '2%']);
   });
 
   test('buildRecorderArgs omits silence effect for non-SoX recorders', () => {
@@ -94,5 +106,64 @@ suite('AudioRecorder command resolution', () => {
       2,
     );
     assert.ok(args.includes('silence'), 'expected silence effect for absolute-path rec');
+  });
+});
+
+/** Build a WAV buffer with controllable RIFF/data size fields. */
+function makeWav(riffSize: number, dataSize: number, pcmBytes: number): Buffer {
+  const header = Buffer.alloc(44);
+  header.write('RIFF', 0);
+  header.writeUInt32LE(riffSize, 4);
+  header.write('WAVE', 8);
+  header.write('fmt ', 12);
+  header.writeUInt32LE(16, 16); // fmt chunk size
+  header.writeUInt16LE(1, 20); // PCM
+  header.writeUInt16LE(1, 22); // mono
+  header.writeUInt32LE(16000, 24); // sample rate
+  header.writeUInt32LE(32000, 28); // byte rate
+  header.writeUInt16LE(2, 32); // block align
+  header.writeUInt16LE(16, 34); // bits
+  header.write('data', 36);
+  header.writeUInt32LE(dataSize, 40);
+  return Buffer.concat([header, Buffer.alloc(pcmBytes)]);
+}
+
+suite('repairWavHeader (Windows hard-kill recovery)', () => {
+  test('patches placeholder sizes left by a killed recorder', () => {
+    const f = path.join(os.tmpdir(), `wav-repair-${Date.now()}.wav`);
+    // SoX killed mid-write: sizes left at 0, 1000 bytes of PCM present.
+    fs.writeFileSync(f, makeWav(0, 0, 1000));
+    assert.strictEqual(repairWavHeader(f), true);
+    const buf = fs.readFileSync(f);
+    assert.strictEqual(buf.readUInt32LE(4), buf.length - 8);
+    assert.strictEqual(buf.readUInt32LE(40), 1000);
+    fs.unlinkSync(f);
+  });
+
+  test('truncates an odd trailing byte (mid-sample kill) for 16-bit PCM', () => {
+    const f = path.join(os.tmpdir(), `wav-repair-${Date.now()}.wav`);
+    fs.writeFileSync(f, makeWav(0, 0, 1001));
+    assert.strictEqual(repairWavHeader(f), true);
+    const buf = fs.readFileSync(f);
+    assert.strictEqual(buf.readUInt32LE(40), 1000);
+    assert.strictEqual(buf.length, 1044);
+    fs.unlinkSync(f);
+  });
+
+  test('no-op for an already-finalized WAV', () => {
+    const f = path.join(os.tmpdir(), `wav-repair-${Date.now()}.wav`);
+    fs.writeFileSync(f, makeWav(1036, 1000, 1000));
+    assert.strictEqual(repairWavHeader(f), true);
+    const buf = fs.readFileSync(f);
+    assert.strictEqual(buf.readUInt32LE(4), 1036);
+    assert.strictEqual(buf.readUInt32LE(40), 1000);
+    fs.unlinkSync(f);
+  });
+
+  test('rejects non-WAVE garbage', () => {
+    const f = path.join(os.tmpdir(), `wav-repair-${Date.now()}.wav`);
+    fs.writeFileSync(f, Buffer.from('not a wav file at all, just text'));
+    assert.strictEqual(repairWavHeader(f), false);
+    fs.unlinkSync(f);
   });
 });

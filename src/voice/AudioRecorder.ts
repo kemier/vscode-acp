@@ -126,9 +126,11 @@ export async function resolveBinaryPath(command: string): Promise<string> {
 /**
  * Build the final argv: replace {file} with the output path and, when
  * silence auto-stop is enabled and the recorder is SoX `rec`, append the
- * silence effect: after speech is detected (≥0.3s above 3%), stop on
- * `silenceAutoStopSec` seconds below 3%. Requiring speech FIRST means the
- * recorder never stops before the user starts talking. Other recorders
+ * silence effect: after speech is detected (≥0.1s above threshold), stop on
+ * `silenceAutoStopSec` seconds below threshold. Requiring speech FIRST means
+ * the recorder never stops before the user starts talking. The leading gate
+ * is deliberately short (0.1s) — a longer gate eats soft speech onsets
+ * ("GitHub 上面" → "Cup 上面" was traced to this). Other recorders
  * (arecord/ffmpeg) have no equivalent one-liner — their users get manual
  * stop only (or add the effect themselves via acp.voice.recordCommand).
  */
@@ -136,12 +138,67 @@ export function buildRecorderArgs(
   cmd: RecorderCommand,
   filePath: string,
   silenceAutoStopSec: number,
+  silenceThresholdPct = 3,
 ): string[] {
   const args = cmd.args.map((a) => (a === '{file}' ? filePath : a));
   if (silenceAutoStopSec > 0 && path.basename(cmd.command) === 'rec') {
-    args.push('silence', '1', '0.3', '3%', '1', String(silenceAutoStopSec), '3%');
+    const thr = `${silenceThresholdPct}%`;
+    args.push('silence', '1', '0.1', thr, '1', String(silenceAutoStopSec), thr);
   }
   return args;
+}
+
+/**
+ * Repair the RIFF size fields of a WAV whose recorder was hard-killed before
+ * it could finalize the header (on Windows, Node's proc.kill('SIGINT') IS
+ * TerminateProcess — SoX never patches its placeholder sizes, and strict
+ * parsers like SoX/whisper.cpp then reject the file with "RIFF header not
+ * found"-class errors). Walks the chunk table rather than assuming a
+ * canonical 44-byte layout (SoX may insert extra chunks). No-op when the
+ * sizes are already correct. Returns true when the file is usable.
+ */
+export function repairWavHeader(filePath: string): boolean {
+  let buf: Buffer;
+  try {
+    buf = fs.readFileSync(filePath);
+  } catch {
+    return false;
+  }
+  if (buf.length < 12 || buf.toString('ascii', 0, 4) !== 'RIFF' || buf.toString('ascii', 8, 12) !== 'WAVE') {
+    return false;
+  }
+  let off = 12;
+  let dataSizeOff = -1;
+  while (off + 8 <= buf.length) {
+    const id = buf.toString('ascii', off, off + 4);
+    const size = buf.readUInt32LE(off + 4);
+    if (id === 'data') {
+      dataSizeOff = off + 4;
+      break;
+    }
+    // Chunks are word-aligned; a bogus size means the header is beyond repair.
+    if (off + 8 + size > buf.length + 1) {
+      return false;
+    }
+    off += 8 + size + (size % 2);
+  }
+  if (dataSizeOff < 0) {
+    return false;
+  }
+  // A hard kill can truncate mid-sample; 16-bit PCM needs an even byte count.
+  let dataSize = buf.length - (dataSizeOff + 4);
+  if (dataSize % 2 === 1) {
+    dataSize -= 1;
+    buf = buf.subarray(0, dataSizeOff + 4 + dataSize);
+  }
+  buf.writeUInt32LE(buf.length - 8, 4); // RIFF chunk size
+  buf.writeUInt32LE(dataSize, dataSizeOff); // data chunk size
+  try {
+    fs.writeFileSync(filePath, buf);
+  } catch {
+    return false;
+  }
+  return true;
 }
 
 export class AudioRecorder {
@@ -162,13 +219,24 @@ export class AudioRecorder {
   /**
    * Spawn the recorder. Throws if the binary is missing or the process fails to start.
    * opts.silenceAutoStopSec: SoX-only endpointing (see buildRecorderArgs).
+   * opts.silenceThresholdPct: SoX silence gate threshold (percent of full scale).
    * opts.onNaturalExit: fired when the recorder exits on its own (auto-stop) —
    * NOT when stop()/cancel() killed it.
+   * opts.onAudioFlowing: fired once (with ms since spawn) when the output
+   * file starts growing past the WAV header — i.e. the device is ACTUALLY
+   * capturing. On Windows with a Bluetooth headset this lags the click by up
+   * to ~2s (A2DP→HFP profile switch + device open), which is exactly when
+   * prefix words get lost; the UI uses this to tell the user when to speak.
    */
   async start(
     filePath: string,
     configuredCommand?: string,
-    opts?: { silenceAutoStopSec?: number; onNaturalExit?: () => void },
+    opts?: {
+      silenceAutoStopSec?: number;
+      silenceThresholdPct?: number;
+      onNaturalExit?: () => void;
+      onAudioFlowing?: (elapsedMs: number) => void;
+    },
   ): Promise<void> {
     if (this.proc) {
       throw new Error('Voice input: a recording is already in progress.');
@@ -177,7 +245,12 @@ export class AudioRecorder {
     const binary = await resolveBinaryPath(cmd.command);
 
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    const args = buildRecorderArgs(cmd, filePath, opts?.silenceAutoStopSec ?? 0);
+    const args = buildRecorderArgs(
+      cmd,
+      filePath,
+      opts?.silenceAutoStopSec ?? 0,
+      opts?.silenceThresholdPct ?? 3,
+    );
     this.exited = false;
     this.onNaturalExit = opts?.onNaturalExit ?? null;
 
@@ -218,6 +291,33 @@ export class AudioRecorder {
       this.proc = proc;
       this.filePath = filePath;
     });
+
+    // Poll for actual audio flow. Spawn returning (and even the WAV header
+    // appearing) does NOT mean samples are arriving — BT profile switches and
+    // slow USB device opens happen after the file is created.
+    const proc = this.proc;
+    if (opts?.onAudioFlowing && proc) {
+      const t0 = Date.now();
+      const cb = opts.onAudioFlowing;
+      const poll = setInterval(() => {
+        if (this.proc !== proc || this.exited) {
+          clearInterval(poll);
+          return;
+        }
+        let size = 0;
+        try {
+          size = fs.statSync(filePath).size;
+        } catch {
+          return; // file not created yet
+        }
+        if (size > 44) {
+          clearInterval(poll);
+          cb(Date.now() - t0);
+        }
+      }, 100);
+      // Never leak the poller past 30s.
+      setTimeout(() => clearInterval(poll), 30_000).unref();
+    }
   }
 
   /**
@@ -265,6 +365,11 @@ export class AudioRecorder {
     if (!stat || stat.size <= 44) {
       throw new Error(
         'Voice input: recorder produced no audio. On macOS check System Settings → Privacy & Security → Microphone.',
+      );
+    }
+    if (process.platform === 'win32' && !repairWavHeader(filePath)) {
+      throw new Error(
+        'Voice input: recorder was killed before finalizing the WAV and the header is unrepairable.',
       );
     }
     return filePath;

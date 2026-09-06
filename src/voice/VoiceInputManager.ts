@@ -24,6 +24,7 @@ export type VoiceState = 'idle' | 'recording' | 'transcribing';
 
 export type VoiceEvent =
   | { type: 'state'; state: VoiceState }
+  | { type: 'recordingReady'; elapsedMs: number }
   | { type: 'transcript'; text: string; sessionId: string | null; autoSend: boolean }
   | { type: 'error'; message: string };
 
@@ -32,6 +33,7 @@ interface VoiceSettings {
   recordCommand: string;
   maxDurationSec: number;
   silenceAutoStopSec: number;
+  silenceThresholdPct: number;
   autoSend: boolean;
   stt: SttConfig;
   corrections: Record<string, string>;
@@ -46,6 +48,7 @@ function readSettings(): VoiceSettings {
     recordCommand: cfg.get<string>('recordCommand', ''),
     maxDurationSec: cfg.get<number>('maxDurationSec', 120),
     silenceAutoStopSec: cfg.get<number>('silenceAutoStopSec', 2.5),
+    silenceThresholdPct: cfg.get<number>('silenceThresholdPct', 3),
     autoSend: cfg.get<boolean>('autoSend', false),
     stt: {
       endpoint: cfg.get<string>('stt.endpoint', 'http://127.0.0.1:8080/inference'),
@@ -141,6 +144,7 @@ export class VoiceInputManager {
     try {
       await recorder.start(filePath, settings.recordCommand || undefined, {
         silenceAutoStopSec: settings.silenceAutoStopSec,
+        silenceThresholdPct: settings.silenceThresholdPct,
         onNaturalExit: () => {
           // SoX silence endpointing: user stopped talking → transcribe
           // without waiting for a second mic click.
@@ -148,6 +152,13 @@ export class VoiceInputManager {
             log('[voice] recorder exited on silence auto-stop — transcribing');
             void this.stopAndTranscribe();
           }
+        },
+        onAudioFlowing: (elapsedMs) => {
+          // Bluetooth headsets take up to ~2s to switch A2DP→HFP and start
+          // capturing — anything said before this moment is lost. The webview
+          // shows "starting…" until this fires.
+          log(`[voice] audio flowing after ${elapsedMs}ms`);
+          this.onEvent({ type: 'recordingReady', elapsedMs });
         },
       });
     } catch (err) {

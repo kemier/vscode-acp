@@ -508,6 +508,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       case 'state':
         this.postMessage({ type: 'voiceState', state: evt.state });
         break;
+      case 'recordingReady':
+        this.postMessage({ type: 'voiceRecordingReady', elapsedMs: evt.elapsedMs });
+        break;
       case 'transcript':
         this.postMessage({ type: 'voiceTranscript', text: evt.text, autoSend: evt.autoSend });
         break;
@@ -5787,6 +5790,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       color: var(--vscode-inputValidation-errorForeground, #f48771);
       animation: mic-pulse 1.2s ease-in-out infinite;
     }
+    /* Spawned but no samples yet (BT A2DP→HFP switch / device open) — grey,
+       no pulse: "don't speak yet". Turns red+pulsing on voiceRecordingReady. */
+    .mic-btn.recording:not(.ready) {
+      color: var(--vscode-descriptionForeground, #888);
+      animation: none;
+    }
     .mic-btn.transcribing { opacity: 1; cursor: wait; }
     @keyframes mic-pulse {
       0%, 100% { transform: scale(1); }
@@ -8964,9 +8973,13 @@ function handleSend() {
     if (!micBtn) return;
     micBtn.classList.toggle('recording', next === 'recording');
     micBtn.classList.toggle('transcribing', next === 'transcribing');
+    // Entering 'recording' means the process spawned — samples may not be
+    // flowing yet (BT profile switch / device open). 'ready' arrives via the
+    // voiceRecordingReady message; only then is it safe to speak.
+    if (next === 'recording') micBtn.classList.remove('ready');
     micBtn.textContent = next === 'recording' ? '⏺' : next === 'transcribing' ? '⏳' : '🎙';
     micBtn.title = next === 'recording'
-      ? 'Recording… click to stop, or just stop talking (auto-stop on silence)'
+      ? 'Starting recorder… wait for the red pulsing dot before speaking'
       : next === 'transcribing'
         ? 'Transcribing…'
         : 'Dictate: click to start recording, click again to transcribe (local STT)';
@@ -17334,6 +17347,14 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
 
         case 'voiceState':
           setVoiceState(msg.state);
+          break;
+
+        case 'voiceRecordingReady':
+          // Audio is actually flowing now — safe to speak.
+          if (micBtn && voiceState === 'recording') {
+            micBtn.classList.add('ready');
+            micBtn.title = 'Recording — speak now. Click to stop, or just stop talking (auto-stop on silence)';
+          }
           break;
 
         case 'voiceTranscript':
