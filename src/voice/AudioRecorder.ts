@@ -123,20 +123,53 @@ export async function resolveBinaryPath(command: string): Promise<string> {
   );
 }
 
+/**
+ * Build the final argv: replace {file} with the output path and, when
+ * silence auto-stop is enabled and the recorder is SoX `rec`, append the
+ * silence effect: after speech is detected (≥0.3s above 3%), stop on
+ * `silenceAutoStopSec` seconds below 3%. Requiring speech FIRST means the
+ * recorder never stops before the user starts talking. Other recorders
+ * (arecord/ffmpeg) have no equivalent one-liner — their users get manual
+ * stop only (or add the effect themselves via acp.voice.recordCommand).
+ */
+export function buildRecorderArgs(
+  cmd: RecorderCommand,
+  filePath: string,
+  silenceAutoStopSec: number,
+): string[] {
+  const args = cmd.args.map((a) => (a === '{file}' ? filePath : a));
+  if (silenceAutoStopSec > 0 && path.basename(cmd.command) === 'rec') {
+    args.push('silence', '1', '0.3', '3%', '1', String(silenceAutoStopSec), '3%');
+  }
+  return args;
+}
+
 export class AudioRecorder {
   private proc: ChildProcess | null = null;
   private filePath: string | null = null;
+  /** True once the recorder process has exited (SIGINT or natural, e.g. silence auto-stop). */
+  private exited = false;
+  private onNaturalExit: (() => void) | null = null;
 
   get isRecording(): boolean {
-    return this.proc !== null;
+    return this.proc !== null && !this.exited;
   }
 
   get outputPath(): string | null {
     return this.filePath;
   }
 
-  /** Spawn the recorder. Throws if the binary is missing or the process fails to start. */
-  async start(filePath: string, configuredCommand?: string): Promise<void> {
+  /**
+   * Spawn the recorder. Throws if the binary is missing or the process fails to start.
+   * opts.silenceAutoStopSec: SoX-only endpointing (see buildRecorderArgs).
+   * opts.onNaturalExit: fired when the recorder exits on its own (auto-stop) —
+   * NOT when stop()/cancel() killed it.
+   */
+  async start(
+    filePath: string,
+    configuredCommand?: string,
+    opts?: { silenceAutoStopSec?: number; onNaturalExit?: () => void },
+  ): Promise<void> {
     if (this.proc) {
       throw new Error('Voice input: a recording is already in progress.');
     }
@@ -144,7 +177,9 @@ export class AudioRecorder {
     const binary = await resolveBinaryPath(cmd.command);
 
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    const args = cmd.args.map((a) => (a === '{file}' ? filePath : a));
+    const args = buildRecorderArgs(cmd, filePath, opts?.silenceAutoStopSec ?? 0);
+    this.exited = false;
+    this.onNaturalExit = opts?.onNaturalExit ?? null;
 
     await new Promise<void>((resolve, reject) => {
       const proc = spawn(binary, args, { stdio: ['ignore', 'ignore', 'pipe'] });
@@ -156,6 +191,14 @@ export class AudioRecorder {
       const startTimer = setTimeout(() => {
         proc.off('error', onError);
         proc.off('exit', onEarlyExit);
+        // Persistent exit handler: a natural exit (silence auto-stop) must
+        // surface so the manager can transcribe without a second click.
+        proc.on('exit', () => {
+          this.exited = true;
+          if (this.proc === proc && this.onNaturalExit) {
+            this.onNaturalExit();
+          }
+        });
         resolve();
       }, 400);
       const onError = (err: Error) => {
@@ -180,39 +223,43 @@ export class AudioRecorder {
   /**
    * Stop recording and wait for the WAV to be finalized.
    * Resolves with the output path; throws if nothing was captured.
+   * Safe to call after a natural exit (silence auto-stop) — skips the kill.
    */
   async stop(): Promise<string> {
     const proc = this.proc;
     const filePath = this.filePath;
     this.proc = null;
     this.filePath = null;
+    this.onNaturalExit = null;
     if (!proc || !filePath) {
       throw new Error('Voice input: no recording in progress.');
     }
 
-    await new Promise<void>((resolve) => {
-      const done = () => resolve();
-      const killTimer = setTimeout(() => {
-        // Recorder ignored SIGINT — force kill so we never hang the UI.
+    if (!this.exited) {
+      await new Promise<void>((resolve) => {
+        const done = () => resolve();
+        const killTimer = setTimeout(() => {
+          // Recorder ignored SIGINT — force kill so we never hang the UI.
+          try {
+            proc.kill('SIGKILL');
+          } catch {
+            /* already gone */
+          }
+          resolve();
+        }, 3000);
+        proc.once('exit', () => {
+          clearTimeout(killTimer);
+          done();
+        });
+        // SIGINT: rec/arecord/ffmpeg finalize the WAV header on interrupt.
         try {
-          proc.kill('SIGKILL');
+          proc.kill('SIGINT');
         } catch {
-          /* already gone */
+          clearTimeout(killTimer);
+          resolve();
         }
-        resolve();
-      }, 3000);
-      proc.once('exit', () => {
-        clearTimeout(killTimer);
-        done();
       });
-      // SIGINT: rec/arecord/ffmpeg finalize the WAV header on interrupt.
-      try {
-        proc.kill('SIGINT');
-      } catch {
-        clearTimeout(killTimer);
-        resolve();
-      }
-    });
+    }
 
     const stat = fs.existsSync(filePath) ? fs.statSync(filePath) : null;
     if (!stat || stat.size <= 44) {
@@ -229,6 +276,7 @@ export class AudioRecorder {
     const filePath = this.filePath;
     this.proc = null;
     this.filePath = null;
+    this.onNaturalExit = null;
     if (proc) {
       try {
         proc.kill('SIGKILL');

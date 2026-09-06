@@ -8950,7 +8950,7 @@ function handleSend() {
     micBtn.classList.toggle('transcribing', next === 'transcribing');
     micBtn.textContent = next === 'recording' ? '⏺' : next === 'transcribing' ? '⏳' : '🎙';
     micBtn.title = next === 'recording'
-      ? 'Recording… click to stop and transcribe'
+      ? 'Recording… click to stop, or just stop talking (auto-stop on silence)'
       : next === 'transcribing'
         ? 'Transcribing…'
         : 'Dictate: click to start recording, click again to transcribe (local STT)';

@@ -6,6 +6,7 @@ import {
   parseRecordCommand,
   resolveRecorderCommand,
   resolveBinaryPath,
+  buildRecorderArgs,
 } from '../voice/AudioRecorder';
 
 suite('AudioRecorder command resolution', () => {
@@ -57,5 +58,41 @@ suite('AudioRecorder command resolution', () => {
       () => resolveBinaryPath('definitely-not-a-real-binary-xyz'),
       /not found on PATH/,
     );
+  });
+
+  test('buildRecorderArgs replaces {file} with the output path', () => {
+    const args = buildRecorderArgs(
+      { command: 'rec', args: ['-q', '-c', '1', '{file}', 'rate', '16000'] },
+      '/tmp/take.wav',
+      0,
+    );
+    assert.deepStrictEqual(args, ['-q', '-c', '1', '/tmp/take.wav', 'rate', '16000']);
+  });
+
+  test('buildRecorderArgs appends SoX silence effect when auto-stop is on', () => {
+    const args = buildRecorderArgs(
+      { command: 'rec', args: ['-q', '{file}'] },
+      '/tmp/take.wav',
+      2.5,
+    );
+    assert.deepStrictEqual(args, ['-q', '/tmp/take.wav', 'silence', '1', '0.3', '3%', '1', '2.5', '3%']);
+  });
+
+  test('buildRecorderArgs omits silence effect for non-SoX recorders', () => {
+    const args = buildRecorderArgs(
+      { command: 'ffmpeg', args: ['-y', '{file}'] },
+      '/tmp/take.wav',
+      2.5,
+    );
+    assert.deepStrictEqual(args, ['-y', '/tmp/take.wav']);
+  });
+
+  test('buildRecorderArgs resolves rec via an absolute path and still detects SoX', () => {
+    const args = buildRecorderArgs(
+      { command: '/opt/homebrew/bin/rec', args: ['{file}'] },
+      '/tmp/take.wav',
+      2,
+    );
+    assert.ok(args.includes('silence'), 'expected silence effect for absolute-path rec');
   });
 });

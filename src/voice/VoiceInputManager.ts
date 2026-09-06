@@ -29,6 +29,7 @@ interface VoiceSettings {
   enabled: boolean;
   recordCommand: string;
   maxDurationSec: number;
+  silenceAutoStopSec: number;
   autoSend: boolean;
   stt: SttConfig;
 }
@@ -39,6 +40,7 @@ function readSettings(): VoiceSettings {
     enabled: cfg.get<boolean>('enabled', true),
     recordCommand: cfg.get<string>('recordCommand', ''),
     maxDurationSec: cfg.get<number>('maxDurationSec', 120),
+    silenceAutoStopSec: cfg.get<number>('silenceAutoStopSec', 2.5),
     autoSend: cfg.get<boolean>('autoSend', false),
     stt: {
       endpoint: cfg.get<string>('stt.endpoint', 'http://127.0.0.1:8080/inference'),
@@ -119,7 +121,17 @@ export class VoiceInputManager {
     const recorder = new AudioRecorder();
     this.recorder = recorder;
     try {
-      await recorder.start(filePath, settings.recordCommand || undefined);
+      await recorder.start(filePath, settings.recordCommand || undefined, {
+        silenceAutoStopSec: settings.silenceAutoStopSec,
+        onNaturalExit: () => {
+          // SoX silence endpointing: user stopped talking → transcribe
+          // without waiting for a second mic click.
+          if (this.state === 'recording') {
+            log('[voice] recorder exited on silence auto-stop — transcribing');
+            void this.stopAndTranscribe();
+          }
+        },
+      });
     } catch (err) {
       this.fail(err);
       return;
