@@ -432,6 +432,58 @@
           "minimum": 50,
           "description": "Maximum number of entries kept in the ACP Traffic output channel before it is cleared. Prevents unbounded memory growth in long sessions."
         },
+        "acp.voice.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the microphone (dictation) button in the chat composer. Recording runs in the extension host; audio is transcribed by a local OpenAI-compatible STT server."
+        },
+        "acp.voice.stt.endpoint": {
+          "type": "string",
+          "default": "http://127.0.0.1:8080/v1/audio/transcriptions",
+          "description": "OpenAI-compatible transcription endpoint. Works with whisper.cpp whisper-server (default :8080), FunASR FastAPI wrappers, and vLLM transcription serving Qwen3-ASR."
+        },
+        "acp.voice.stt.model": {
+          "type": "string",
+          "default": "whisper-1",
+          "description": "Model name sent in the transcription form body. whisper.cpp ignores it; FunASR/Qwen3-ASR wrappers use it to select the model."
+        },
+        "acp.voice.stt.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Optional Bearer token for the STT endpoint."
+        },
+        "acp.voice.stt.language": {
+          "type": "string",
+          "default": "",
+          "description": "ISO language code sent to the STT server (e.g. en, zh). Empty = auto-detect — required for mixed English+Chinese dictation."
+        },
+        "acp.voice.stt.prompt": {
+          "type": "string",
+          "default": "Coding assistant dictation mixing English and 中文. Terms: VS Code, ACP, Agent Client Protocol, TypeScript, JavaScript, Python, Rust, LLM, vLLM, Transformer, attention, KV cache, API, JSON, Git, Docker, Kubernetes, Whisper, Qwen, CUDA, GPU.",
+          "description": "Contextual-biasing prompt forwarded to the STT server (whisper.cpp initial prompt). Naming tech terms here measurably improves their recognition."
+        },
+        "acp.voice.stt.timeoutMs": {
+          "type": "number",
+          "default": 60000,
+          "minimum": 1000,
+          "description": "STT request timeout in milliseconds."
+        },
+        "acp.voice.recordCommand": {
+          "type": "string",
+          "default": "",
+          "description": "Recorder command template overriding the platform default (macOS/Windows: SoX `rec`; Linux: `arecord`). Must contain {file}, e.g. `ffmpeg -y -f avfoundation -i :0 -ar 16000 -ac 1 {file}`. The process is stopped with SIGINT and must finalize a 16 kHz mono WAV."
+        },
+        "acp.voice.maxDurationSec": {
+          "type": "number",
+          "default": 120,
+          "minimum": 5,
+          "description": "Maximum recording length in seconds before auto-stop and transcription."
+        },
+        "acp.voice.autoSend": {
+          "type": "boolean",
+          "default": false,
+          "description": "Send the message immediately after the voice transcript is inserted into the composer. Off = transcript is inserted for review first."
+        },
         "acp.sessionSummary.endpoint": {
           "type": "string",
           "default": "http://127.0.0.1:8317",

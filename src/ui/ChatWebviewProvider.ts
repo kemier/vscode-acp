@@ -36,6 +36,7 @@ import { cleanAgentToolTitle } from '../utils/toolTitle';
 import { orderedLinkRoots, symbolFallbackFromLinkText } from '../utils/codeLink';
 import { readSessionSummarySettings } from '../core/SessionSummaryConfig';
 import { summarizeSession } from '../core/SessionSummarizer';
+import { VoiceInputManager, VoiceEvent } from '../voice/VoiceInputManager';
 
 const execFileAsync = promisify(execFile);
 
@@ -125,6 +126,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   private webviewReady = false;
   private pendingMessages: any[] = [];
   private updateListener: SessionUpdateListener;
+  private readonly voiceInput: VoiceInputManager;
   /** When true, suppress webview notifications (used during background session capture). */
   /** When true, suppress webview notifications (used during background session capture or reconnect). */
   suppressWebviewUpdates = false;
@@ -490,6 +492,29 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       this.handleSessionUpdate(update);
     };
     this.sessionUpdateHandler.addListener(this.updateListener);
+
+    // Voice input (dictation). Recording happens here in the extension host
+    // — webviews cannot access the microphone (Permissions-Policy). Events
+    // are forwarded to the webview so the mic button mirrors state and the
+    // transcript lands in the composer of the session that started the take.
+    this.voiceInput = new VoiceInputManager(
+      (evt: VoiceEvent) => this.handleVoiceEvent(evt),
+      () => this.sessionManager.getActiveSessionId() ?? undefined,
+    );
+  }
+
+  private handleVoiceEvent(evt: VoiceEvent): void {
+    switch (evt.type) {
+      case 'state':
+        this.postMessage({ type: 'voiceState', state: evt.state });
+        break;
+      case 'transcript':
+        this.postMessage({ type: 'voiceTranscript', text: evt.text, autoSend: evt.autoSend });
+        break;
+      case 'error':
+        this.postMessage({ type: 'voiceError', message: evt.message });
+        break;
+    }
   }
 
   // Language keywords (C/C++/Go/Rust/TS/JS/Python) that should never be linkified as project symbols
@@ -1639,7 +1664,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         this.postDebugResumeConfig();
       }
     });
-    webviewView.onDidDispose(() => debugResumeConfigSub.dispose());
+    webviewView.onDidDispose(() => {
+      debugResumeConfigSub.dispose();
+      // A disposed webview can never receive the transcript — kill any
+      // in-flight recording so the recorder process doesn't leak.
+      this.voiceInput.cancel();
+    });
 
     // Handle messages from the webview
     webviewView.webview.onDidReceiveMessage(async (message) => {
@@ -1657,6 +1687,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           break;
         case 'cancelTurn':
           await this.handleCancelTurn();
+          break;
+        case 'voiceToggle':
+          await this.voiceInput.toggle();
           break;
         case 'steerPrompt':
           await this.handleSteerPrompt(message.text);
@@ -5720,6 +5753,30 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     }
     .attach-btn:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
 
+    /* Voice input mic button — sits left of attach/send in the send row.
+       Recording state pulses red; transcribing shows a waiting spinner. */
+    .mic-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 16px;
+      padding: 4px 6px;
+      border-radius: 4px;
+      opacity: 0.7;
+      line-height: 1;
+    }
+    .mic-btn:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
+    .mic-btn.recording {
+      opacity: 1;
+      color: var(--vscode-inputValidation-errorForeground, #f48771);
+      animation: mic-pulse 1.2s ease-in-out infinite;
+    }
+    .mic-btn.transcribing { opacity: 1; cursor: wait; }
+    @keyframes mic-pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.25); }
+    }
+
     .image-preview-strip {
       display: flex;
       gap: 4px;
@@ -6073,6 +6130,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
      ></textarea>
    </div>
 <div class="input-send-row">
+  <button class="mic-btn" id="micBtn" title="Dictate: click to start recording, click again to transcribe (local STT)">🎙</button>
    <button class="attach-btn" id="attachBtn" title="Attach image (or paste)" style="display:none;">📎</button>
   <button class="send-stop-btn send" id="sendStopBtn" disabled>Send</button>
 </div>
@@ -6126,6 +6184,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     const promptInput = document.getElementById('promptInput');
     const sendStopBtn = document.getElementById('sendStopBtn');
     const attachBtn = document.getElementById('attachBtn');
+    const micBtn = document.getElementById('micBtn');
     const imagePreviewStrip = document.getElementById('imagePreviewStrip');
     const statusEl = document.getElementById('status');
     const sessionBanner = document.getElementById('sessionBanner');
@@ -8877,6 +8936,53 @@ function handleSend() {
 
    function execCmd(command) {
     vscode.postMessage({ type: 'executeCommand', command });
+  }
+
+  // --- Voice input (dictation) ---
+  // Recording runs in the extension host (webviews cannot access the mic).
+  // The button just toggles and mirrors state; the transcript arrives as a
+  // voiceTranscript message and is inserted at the cursor.
+  var voiceState = 'idle';
+  function setVoiceState(next) {
+    voiceState = next;
+    if (!micBtn) return;
+    micBtn.classList.toggle('recording', next === 'recording');
+    micBtn.classList.toggle('transcribing', next === 'transcribing');
+    micBtn.textContent = next === 'recording' ? '⏺' : next === 'transcribing' ? '⏳' : '🎙';
+    micBtn.title = next === 'recording'
+      ? 'Recording… click to stop and transcribe'
+      : next === 'transcribing'
+        ? 'Transcribing…'
+        : 'Dictate: click to start recording, click again to transcribe (local STT)';
+  }
+  if (micBtn) {
+    micBtn.addEventListener('click', () => {
+      vscode.postMessage({ type: 'voiceToggle' });
+    });
+  }
+  function insertVoiceTranscript(text, autoSend) {
+    if (!text) return;
+    // Insert at the cursor (or replace the current selection), then run the
+    // normal input pipeline so auto-resize and the Send button stay in sync.
+    var start = promptInput.selectionStart;
+    var end = promptInput.selectionEnd;
+    if (typeof start !== 'number' || typeof end !== 'number') {
+      start = promptInput.value.length;
+      end = start;
+    }
+    var before = promptInput.value.slice(0, start);
+    var after = promptInput.value.slice(end);
+    var needsSpace = before.length > 0 && !/\\s$/.test(before);
+    var insert = (needsSpace ? ' ' : '') + text;
+    promptInput.value = before + insert + after;
+    var caret = start + insert.length;
+    promptInput.selectionStart = caret;
+    promptInput.selectionEnd = caret;
+    promptInput.dispatchEvent(new Event('input', { bubbles: true }));
+    promptInput.focus();
+    if (autoSend) {
+      handleSend();
+    }
   }
 
   // Compact mode toggle — collapse/expand all turn folds (thought + tools + reply)
@@ -17208,6 +17314,19 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
 
         case 'followStateChanged':
           setFollowingUI(!!msg.isFollowing);
+          break;
+
+        case 'voiceState':
+          setVoiceState(msg.state);
+          break;
+
+        case 'voiceTranscript':
+          insertVoiceTranscript(typeof msg.text === 'string' ? msg.text : '', msg.autoSend === true);
+          break;
+
+        case 'voiceError':
+          setVoiceState('idle');
+          addMessage('system', '⚠️ ' + (typeof msg.message === 'string' ? msg.message : 'Voice input failed'));
           break;
 
       // Host-initiated prompt (fork-to-agent). dispatchPrompt() posts the
