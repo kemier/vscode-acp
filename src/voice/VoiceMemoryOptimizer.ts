@@ -26,6 +26,7 @@ Propose a revised memory file. Constraints:
 - Prefer suppressive rules ("keep X verbatim", "do not normalize Y") — over-correction is the main failure mode.
 - Every new correction rule must be justified by at least one "edited" pair. Quote the pair in an HTML comment after the rule, e.g. <!-- 机翼→记忆 -->.
 - Do NOT encode one-off content (specific sentences, names said once). Only durable vocabulary and conventions.
+- Do NOT propose identity rules (X→X) or rules that merely add filler words — a rule must fix a genuine RECOGNITION error (misheard word/term).
 - Keep the file under 4 KB, Markdown, same section structure as the current file.
 - Output ONLY the full revised memory file. No explanations, no markdown fences.`;
 
@@ -74,6 +75,8 @@ export async function proposeMemoryUpdate(
         stream: false,
         // Ollama: skip thinking (it dominates latency here); others ignore it.
         think: false,
+        // Ollama: pin the dedicated voice model (see CorrectorClient).
+        keep_alive: -1,
       }),
       signal: controller.signal,
     });

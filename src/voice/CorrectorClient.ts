@@ -70,6 +70,10 @@ export async function correctTranscript(
           stream: false,
           // Ollama: keep thinking out of the transcript; other servers ignore it.
           think: false,
+          // Ollama: pin the model loaded — voice gets a DEDICATED model slot so
+          // it never queues behind the memory service (qwen35 ignores
+          // OLLAMA_NUM_PARALLEL; a shared model starved for minutes under load).
+          keep_alive: -1,
         }),
         signal: controller.signal,
       });
@@ -87,8 +91,10 @@ export async function correctTranscript(
     const out = (data.choices?.[0]?.message?.content ?? '')
       .replace(/<think>[\s\S]*?<\/think>/g, '')
       .trim();
-    if (!out) {
-      log('[voice] corrector returned empty — keeping raw transcript');
+    // Literal "ABSTAIN" (model echoing the contract keyword — observed on
+    // qwen2.5:7b) means "no change", not a transcript.
+    if (!out || /^abstain[.。!！]?$/i.test(out)) {
+      log('[voice] corrector returned empty/ABSTAIN — keeping raw transcript');
       return { text: input, acted: false };
     }
     // Over-edit guard: a correction that changes length by more than half

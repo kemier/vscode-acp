@@ -512,7 +512,7 @@
         },
         "acp.voice.corrector.model": {
           "type": "string",
-          "default": "qwen3.8-4b-distill:latest",
+          "default": "qwen2.5:7b",
           "description": "Model name for the corrector/optimizer chat endpoint."
         },
         "acp.voice.corrector.apiKey": {
