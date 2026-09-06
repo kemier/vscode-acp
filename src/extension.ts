@@ -41,6 +41,9 @@ import { describeMemoryConfigSources, isMemoryConfigured, readMemorySettings } f
 import { SessionTreeProvider } from './ui/SessionTreeProvider';
 import { StatusBarManager } from './ui/StatusBarManager';
 import { ChatWebviewProvider } from './ui/ChatWebviewProvider';
+import { VoiceMemoryStore } from './voice/VoiceMemory';
+import { proposeMemoryUpdate } from './voice/VoiceMemoryOptimizer';
+import { CorrectorConfig } from './voice/CorrectorClient';
 import { getAgentNames } from './config/AgentConfig';
 import { fetchRegistry } from './config/RegistryClient';
 import {
@@ -952,6 +955,78 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   });
 
+  // Review Voice Memory (Phase 3 "thinker", arXiv:2607.26410): propose bounded
+  // edits to voice-memory.md from collected dictation feedback, show a diff,
+  // and apply only on explicit user accept — the human is the acceptance gate.
+  const reviewVoiceMemoryCmd = vscode.commands.registerCommand('acp.reviewVoiceMemory', async () => {
+    sendEvent('command/reviewVoiceMemory');
+    const cfg = vscode.workspace.getConfiguration('acp.voice');
+    const correctorCfg: CorrectorConfig = {
+      enabled: cfg.get<boolean>('corrector.enabled', false),
+      endpoint: cfg.get<string>('corrector.endpoint', 'http://127.0.0.1:8008/v1/chat/completions'),
+      model: cfg.get<string>('corrector.model', 'qwen3.8-4b-distill'),
+      apiKey: cfg.get<string>('corrector.apiKey', ''),
+      timeoutMs: cfg.get<number>('corrector.timeoutMs', 15000),
+    };
+    const store = new VoiceMemoryStore(cfg.get<string>('memoryFile', ''));
+    const feedback = await store.readFeedback();
+    if (feedback.length === 0) {
+      vscode.window.showInformationMessage(
+        'ACP: no voice feedback collected yet — dictate, edit the transcript if needed, and send. Then run this again.',
+      );
+      return;
+    }
+    const current = await store.loadMemory();
+    let proposal: string;
+    try {
+      proposal = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: `ACP: reviewing ${feedback.length} voice feedback entries…`,
+          cancellable: false,
+        },
+        () => proposeMemoryUpdate(current, feedback, correctorCfg),
+      );
+    } catch (e: any) {
+      logError('reviewVoiceMemory: proposal failed', e);
+      vscode.window.showErrorMessage(`ACP voice memory review failed: ${e.message}`);
+      return;
+    }
+    if (proposal.trim() === current.trim()) {
+      vscode.window.showInformationMessage('ACP: voice memory is already optimal — no changes proposed.');
+      await store.clearFeedback();
+      return;
+    }
+    // Human gate: diff current ↔ proposed, then ask.
+    const proposedUri = vscode.Uri.parse(
+      `untitled:${store.memoryPath}.proposed`,
+    );
+    const doc = await vscode.workspace.openTextDocument(proposedUri);
+    const edit = new vscode.WorkspaceEdit();
+    edit.insert(proposedUri, new vscode.Position(0, 0), proposal);
+    await vscode.workspace.applyEdit(edit);
+    await vscode.commands.executeCommand(
+      'vscode.diff',
+      vscode.Uri.file(store.memoryPath),
+      doc.uri,
+      'Voice Memory: current ↔ proposed',
+    );
+    const choice = await vscode.window.showInformationMessage(
+      `Apply voice memory update? (${feedback.length} feedback entries reviewed)`,
+      { modal: true },
+      'Apply',
+    );
+    // Close the untitled proposal without saving.
+    await Promise.resolve(
+      vscode.commands.executeCommand('workbench.action.revertAndCloseActiveEditor'),
+    ).catch(() => undefined);
+    if (choice === 'Apply') {
+      await store.saveMemory(proposal.endsWith('\n') ? proposal : proposal + '\n');
+      await store.clearFeedback();
+      vscode.window.showInformationMessage(`ACP: voice memory updated → ${store.memoryPath}`);
+    }
+  });
+
   // Set Mode
   const setModeCmd = vscode.commands.registerCommand('acp.setMode', async (modeId?: string) => {
     const activeId = sessionManager.getActiveSessionId();
@@ -1654,6 +1729,7 @@ export function activate(context: vscode.ExtensionContext): void {
     showLogCmd,
     showTrafficCmd,
     exportTrafficCmd,
+    reviewVoiceMemoryCmd,
     setModeCmd,
     setModelCmd,
     refreshAgentsCmd,

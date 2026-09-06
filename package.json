@@ -122,6 +122,10 @@
         "title": "ACP: Export Protocol Traffic"
       },
       {
+        "command": "acp.reviewVoiceMemory",
+        "title": "ACP: Review Voice Memory Updates"
+      },
+      {
         "command": "acp.showMemoryStatus",
         "title": "ACP: Show Shared Memory Status"
       },
@@ -459,7 +463,7 @@
         },
         "acp.voice.stt.prompt": {
           "type": "string",
-          "default": "Coding assistant dictation mixing English and 中文. Terms: VS Code, ACP, Agent Client Protocol, TypeScript, JavaScript, Python, Rust, LLM, vLLM, Transformer, attention, KV cache, API, JSON, Git, Docker, Kubernetes, Whisper, Qwen, CUDA, GPU.",
+          "default": "以下是编程助手的语音口述，中文部分一律使用简体中文，夹杂英文技术术语。Coding assistant dictation mixing English and Simplified Chinese. Terms: VS Code, ACP, Agent Client Protocol, TypeScript, JavaScript, Python, Rust, LLM, vLLM, Transformer, attention, KV cache, API, JSON, Git, Docker, Kubernetes, Whisper, Qwen, CUDA, GPU.",
           "description": "Contextual-biasing prompt forwarded to the STT server (whisper.cpp initial prompt). Naming tech terms here measurably improves their recognition."
         },
         "acp.voice.stt.timeoutMs": {
@@ -489,6 +493,43 @@
           "type": "boolean",
           "default": false,
           "description": "Send the message immediately after the voice transcript is inserted into the composer. Off = transcript is inserted for review first."
+        },
+        "acp.voice.corrections": {
+          "type": "object",
+          "default": {},
+          "additionalProperties": { "type": "string" },
+          "description": "Deterministic correction dictionary applied to the transcript before insertion (Voice Memory phase 1). Keys are misrecognitions, values the fixes, e.g. {\"机翼\": \"记忆\", \"SAP\": \"ACP\"}. ASCII keys match on word boundaries; CJK keys use plain replace."
+        },
+        "acp.voice.corrector.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Run the transcript through a restraint-biased LLM corrector that reads the voice memory file and decides per take to fix or abstain (Voice Memory phase 2, arXiv:2607.26410). Fails open to the raw transcript."
+        },
+        "acp.voice.corrector.endpoint": {
+          "type": "string",
+          "default": "http://127.0.0.1:8008/v1/chat/completions",
+          "description": "OpenAI-compatible chat completions URL for the corrector/optimizer model (e.g. local vllm-proxy or llama-server)."
+        },
+        "acp.voice.corrector.model": {
+          "type": "string",
+          "default": "qwen3.8-4b-distill",
+          "description": "Model name for the corrector/optimizer chat endpoint."
+        },
+        "acp.voice.corrector.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Optional Bearer token for the corrector endpoint."
+        },
+        "acp.voice.corrector.timeoutMs": {
+          "type": "number",
+          "default": 15000,
+          "minimum": 1000,
+          "description": "Corrector request timeout. On timeout the raw transcript is used."
+        },
+        "acp.voice.memoryFile": {
+          "type": "string",
+          "default": "",
+          "description": "Path to the voice memory rules file read by the corrector and revised by the ACP: Review Voice Memory command. Empty = ~/.vscode-acp/voice-memory.md (feedback log lives alongside it as voice-feedback.jsonl)."
         },
         "acp.sessionSummary.endpoint": {
           "type": "string",
@@ -637,7 +678,7 @@
     "lint": "eslint src --max-warnings 0",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "test": "vscode-test",
-    "test:unit": "npm run compile-tests && mocha --require src/test/vscode-shim.cjs --ui tdd 'out/test/audioRecorder.test.js' 'out/test/markdownMath.test.js' 'out/test/markdownBalance.test.js' 'out/test/linkifier.test.js' 'out/test/titleCleaner.test.js' 'out/test/toolCallTitleCleaner.test.js' 'out/test/toolTitle.test.js' 'out/test/streamCoalescer.test.js' 'out/test/webviewScriptParse.test.js' 'out/test/foldOrdering.test.js' 'out/test/planModeHandoff.test.js' 'out/test/resumeLossyReplay.test.js' 'out/test/codeLink.test.js' 'out/test/unansweredPrompts.test.js' 'out/test/resourceLinkStrip.test.js' 'out/test/cleanUserMessage.test.js' 'out/test/followAgent.test.js' 'out/test/memory.test.js' 'out/test/memorySkillTools.test.js' 'out/test/memoryDedup.test.js' 'out/test/messageQueue.test.js' 'out/test/sendNowOrdering.test.js' 'out/test/toolIdTurnScope.test.js' 'out/test/turnProgressLabel.test.js' 'out/test/idleThoughtDrop.test.js' 'out/test/subagentCrewReason.test.js' 'out/test/modelIdFromConfigOptions.test.js' 'out/test/forkDispatchPrompt.test.js' 'out/test/cancelFallbackOwnership.test.js' 'out/test/stopEndsTurn.test.js' 'out/test/mergeInterruptedOrder.test.js' 'out/test/mergeDuplicateToolInterleave.test.js' 'out/test/mergeTrailingReplyPlacement.test.js' 'out/test/mergeReplayOrderAuthority.test.js' 'out/test/sessionCaptureRestore.test.js' 'out/test/sessionSummaryFallback.test.js' 'out/test/memoryCacheStability.test.js' 'out/test/compactionSummaryCapture.test.js' 'out/test/crewStageLabel.test.js' 'out/test/rawInputDirectoryTooltip.test.js' 'out/test/fallbackMessageId.test.js' 'out/test/retryBoundaryNotice.test.js' 'out/test/diffPathsTooltip.test.js' 'out/test/agentDisplayName.test.js' 'out/test/conversationExport.test.js' 'out/test/formatAcpErrorMessage.test.js' 'out/test/cursorToolEnricher.test.js' 'out/test/compactionHookWatcher.test.js' 'out/test/permissionQueueAutoApprove.test.js' 'out/test/sessionSummarizer.test.js' 'out/test/modelSwitchHint.test.js' 'out/test/queueSteer.test.js' 'out/test/forkFromArchive.test.js' 'out/test/kiroTranscriptReader.test.js'",
+    "test:unit": "npm run compile-tests && mocha --require src/test/vscode-shim.cjs --ui tdd 'out/test/audioRecorder.test.js' 'out/test/voiceMemory.test.js' 'out/test/markdownMath.test.js' 'out/test/markdownBalance.test.js' 'out/test/linkifier.test.js' 'out/test/titleCleaner.test.js' 'out/test/toolCallTitleCleaner.test.js' 'out/test/toolTitle.test.js' 'out/test/streamCoalescer.test.js' 'out/test/webviewScriptParse.test.js' 'out/test/foldOrdering.test.js' 'out/test/planModeHandoff.test.js' 'out/test/resumeLossyReplay.test.js' 'out/test/codeLink.test.js' 'out/test/unansweredPrompts.test.js' 'out/test/resourceLinkStrip.test.js' 'out/test/cleanUserMessage.test.js' 'out/test/followAgent.test.js' 'out/test/memory.test.js' 'out/test/memorySkillTools.test.js' 'out/test/memoryDedup.test.js' 'out/test/messageQueue.test.js' 'out/test/sendNowOrdering.test.js' 'out/test/toolIdTurnScope.test.js' 'out/test/turnProgressLabel.test.js' 'out/test/idleThoughtDrop.test.js' 'out/test/subagentCrewReason.test.js' 'out/test/modelIdFromConfigOptions.test.js' 'out/test/forkDispatchPrompt.test.js' 'out/test/cancelFallbackOwnership.test.js' 'out/test/stopEndsTurn.test.js' 'out/test/mergeInterruptedOrder.test.js' 'out/test/mergeDuplicateToolInterleave.test.js' 'out/test/mergeTrailingReplyPlacement.test.js' 'out/test/mergeReplayOrderAuthority.test.js' 'out/test/sessionCaptureRestore.test.js' 'out/test/sessionSummaryFallback.test.js' 'out/test/memoryCacheStability.test.js' 'out/test/compactionSummaryCapture.test.js' 'out/test/crewStageLabel.test.js' 'out/test/rawInputDirectoryTooltip.test.js' 'out/test/fallbackMessageId.test.js' 'out/test/retryBoundaryNotice.test.js' 'out/test/diffPathsTooltip.test.js' 'out/test/agentDisplayName.test.js' 'out/test/conversationExport.test.js' 'out/test/formatAcpErrorMessage.test.js' 'out/test/cursorToolEnricher.test.js' 'out/test/compactionHookWatcher.test.js' 'out/test/permissionQueueAutoApprove.test.js' 'out/test/sessionSummarizer.test.js' 'out/test/modelSwitchHint.test.js' 'out/test/queueSteer.test.js' 'out/test/forkFromArchive.test.js' 'out/test/kiroTranscriptReader.test.js'",
     "deploy": "node scripts/deploy-all.js",
     "deploy:fast": "node scripts/deploy-all.js",
     "install:local": "node scripts/install-local.js",
