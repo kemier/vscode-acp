@@ -27,6 +27,8 @@ Propose a revised memory file. Constraints:
 - Every new correction rule must be justified by at least one "edited" pair. Quote the pair in an HTML comment after the rule, e.g. <!-- 机翼→记忆 -->.
 - Do NOT encode one-off content (specific sentences, names said once). Only durable vocabulary and conventions.
 - Do NOT propose identity rules (X→X) or rules that merely add filler words — a rule must fix a genuine RECOGNITION error (misheard word/term).
+- Ignore "edited" pairs where FINAL is a wholesale rewrite of STT (different meaning or different language) — that is the user re-dictating, not a recognition fix. Never turn such pairs into rules.
+- Do NOT include the feedback section in your output — feedback is input only, never part of the memory file.
 - Keep the file under 4 KB, Markdown, same section structure as the current file.
 - Output ONLY the full revised memory file. No explanations, no markdown fences.`;
 

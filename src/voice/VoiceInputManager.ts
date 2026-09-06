@@ -4,7 +4,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { AudioRecorder } from './AudioRecorder';
 import { transcribeAudio, SttConfig, SttError } from './SttClient';
-import { applyCorrections, VoiceMemoryStore } from './VoiceMemory';
+import { applyCorrections, textSimilarity, VoiceMemoryStore } from './VoiceMemory';
 import { correctTranscript, CorrectorConfig } from './CorrectorClient';
 import { log, logError } from '../utils/Logger';
 
@@ -264,7 +264,16 @@ export class VoiceInputManager {
       return;
     }
     this.lastInsert = null;
-    const kind = sentText.includes(li.inserted) ? 'accept' : 'edited';
+    // 'accept' = verbatim; 'edited' = corrected a few tokens (learning
+    // signal); 'replaced' = wholesale rewrite — the user re-dictated or typed
+    // a different message, which is NOT a correction signal. Mining rules
+    // from replacements produced poison rules (为什么→why) in the first
+    // real optimizer run.
+    const kind = sentText.includes(li.inserted)
+      ? 'accept'
+      : textSimilarity(sentText, li.inserted) >= 0.35
+        ? 'edited'
+        : 'replaced';
     log(`[voice] feedback: ${kind} (stt=${li.stt.length}ch, inserted=${li.inserted.length}ch)`);
     // The store was already resolved with the active memoryFile setting when
     // the transcript was inserted — reuse it as-is.

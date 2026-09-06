@@ -29,8 +29,39 @@ export interface VoiceFeedbackEntry {
   inserted: string;
   /** What the user actually sent (only when kind === 'edited'). */
   final?: string;
-  /** 'accept' = sent verbatim (rule: don't touch); 'edited' = user fixed it (learning signal). */
-  kind: 'accept' | 'edited';
+  /**
+   * 'accept' = sent verbatim (rule: don't touch); 'edited' = user fixed it
+   * (learning signal); 'replaced' = user wholesale rewrote the transcript —
+   * NOT a correction signal, recorded only as a usefulness metric. Mining
+   * rules from replacements produced poison rules like 为什么→why.
+   */
+  kind: 'accept' | 'edited' | 'replaced';
+}
+
+/**
+ * Normalized character-level similarity in [0,1] (1 - levenshtein/maxLen).
+ * Used to tell "user corrected a few tokens" (learning signal) apart from
+ * "user deleted the dictation and typed a different message" (noise).
+ */
+export function textSimilarity(a: string, b: string): number {
+  const x = Array.from(a);
+  const y = Array.from(b);
+  if (x.length === 0 || y.length === 0) {
+    return x.length === y.length ? 1 : 0;
+  }
+  // Levenshtein DP, one row.
+  let prev = new Array<number>(y.length + 1);
+  for (let j = 0; j <= y.length; j++) {
+    prev[j] = j;
+  }
+  for (let i = 1; i <= x.length; i++) {
+    let cur = [i];
+    for (let j = 1; j <= y.length; j++) {
+      cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x[i - 1] === y[j - 1] ? 0 : 1));
+    }
+    prev = cur;
+  }
+  return 1 - prev[y.length] / Math.max(x.length, y.length);
 }
 
 function escapeRe(s: string): string {

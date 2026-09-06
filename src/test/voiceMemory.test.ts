@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { applyCorrections, VoiceMemoryStore, DEFAULT_MEMORY } from '../voice/VoiceMemory';
+import { applyCorrections, textSimilarity, VoiceMemoryStore, DEFAULT_MEMORY } from '../voice/VoiceMemory';
 
 suite('VoiceMemory applyCorrections', () => {
   test('returns input unchanged for empty dictionary', () => {
@@ -33,6 +33,35 @@ suite('VoiceMemory applyCorrections', () => {
   test('multiple corrections apply in one pass', () => {
     const out = applyCorrections('机翼记忆和转动出来', { 机翼: '记忆', 转动: '转写' });
     assert.strictEqual(out, '记忆记忆和转写出来');
+  });
+});
+
+suite('textSimilarity (edited vs replaced classification)', () => {
+  test('identical text scores 1', () => {
+    assert.strictEqual(textSimilarity('hello 世界', 'hello 世界'), 1);
+  });
+
+  test('small token fix scores high (edited)', () => {
+    // Real pair: user fixed 无邦图→ubuntu at the end of a long sentence.
+    const stt = '无邦图是在同一个机器上,如果是windows在用的话,那无邦图就用不了了。';
+    const fin = '无邦图是在同一个机器上,如果是windows在用的话,那ubuntu就用不了了。';
+    assert.ok(textSimilarity(fin, stt) >= 0.35, `expected >= 0.35, got ${textSimilarity(fin, stt)}`);
+  });
+
+  test('wholesale rewrite scores low (replaced)', () => {
+    // Real poison pair: user replaced the dictation with a different message.
+    assert.ok(textSimilarity('why no auto send', '现在能听到吗') < 0.35);
+    assert.ok(textSimilarity('i have to click twice', '谢谢大家') < 0.35);
+  });
+
+  test('CJK code points handled correctly', () => {
+    // 这也要更新一下。→配置也要更新一下。: substitute 这→配 + insert 置 = dist 2, len 9.
+    assert.strictEqual(textSimilarity('这也要更新一下。', '配置也要更新一下。'), 1 - 2 / 9);
+  });
+
+  test('empty strings', () => {
+    assert.strictEqual(textSimilarity('', ''), 1);
+    assert.strictEqual(textSimilarity('a', ''), 0);
   });
 });
 
