@@ -507,12 +507,12 @@
         },
         "acp.voice.corrector.endpoint": {
           "type": "string",
-          "default": "http://127.0.0.1:8008/v1/chat/completions",
-          "description": "OpenAI-compatible chat completions URL for the corrector/optimizer model (e.g. local vllm-proxy or llama-server)."
+          "default": "http://127.0.0.1:11434/v1/chat/completions",
+          "description": "OpenAI-compatible chat completions URL for the corrector/optimizer model (Ollama by default; vllm-proxy/llama-server also work)."
         },
         "acp.voice.corrector.model": {
           "type": "string",
-          "default": "qwen3.8-4b-distill",
+          "default": "qwen3.8-4b-distill:latest",
           "description": "Model name for the corrector/optimizer chat endpoint."
         },
         "acp.voice.corrector.apiKey": {

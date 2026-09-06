@@ -58,8 +58,8 @@ function readSettings(): VoiceSettings {
     corrections: cfg.get<Record<string, string>>('corrections', {}),
     corrector: {
       enabled: cfg.get<boolean>('corrector.enabled', false),
-      endpoint: cfg.get<string>('corrector.endpoint', 'http://127.0.0.1:8008/v1/chat/completions'),
-      model: cfg.get<string>('corrector.model', 'qwen3.8-4b-distill'),
+      endpoint: cfg.get<string>('corrector.endpoint', 'http://127.0.0.1:11434/v1/chat/completions'),
+      model: cfg.get<string>('corrector.model', 'qwen3.8-4b-distill:latest'),
       apiKey: cfg.get<string>('corrector.apiKey', ''),
       timeoutMs: cfg.get<number>('corrector.timeoutMs', 15000),
     },

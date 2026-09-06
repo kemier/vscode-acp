@@ -68,6 +68,8 @@ export async function correctTranscript(
           ],
           temperature: 0,
           stream: false,
+          // Ollama: keep thinking out of the transcript; other servers ignore it.
+          think: false,
         }),
         signal: controller.signal,
       });
@@ -81,7 +83,10 @@ export async function correctTranscript(
     const data = (await res.json()) as {
       choices?: Array<{ message?: { content?: string } }>;
     };
-    const out = data.choices?.[0]?.message?.content?.trim() ?? '';
+    // Strip <think>…</think> defensively in case the server ignored think:false.
+    const out = (data.choices?.[0]?.message?.content ?? '')
+      .replace(/<think>[\s\S]*?<\/think>/g, '')
+      .trim();
     if (!out) {
       log('[voice] corrector returned empty — keeping raw transcript');
       return { text: input, acted: false };
