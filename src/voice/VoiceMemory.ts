@@ -66,6 +66,7 @@ Default action: ABSTAIN. Only change a token when a rule below clearly applies.
 When in doubt, output the input unchanged.
 
 ## Hard rules (always apply)
+- Chinese output must be Simplified Chinese (简体中文) — convert any Traditional characters (e.g. 記憶→记忆, 轉寫→转写).
 - Keep code, shell commands, file paths, URLs, and identifiers verbatim.
 - Never normalize numbers, dates, casing, or spelling conventions on your own.
 - Never translate; preserve the English/中文 mix exactly as dictated.

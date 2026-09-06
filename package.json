@@ -463,7 +463,7 @@
         },
         "acp.voice.stt.prompt": {
           "type": "string",
-          "default": "Coding assistant dictation mixing English and 中文. Terms: VS Code, ACP, Agent Client Protocol, TypeScript, JavaScript, Python, Rust, LLM, vLLM, Transformer, attention, KV cache, API, JSON, Git, Docker, Kubernetes, Whisper, Qwen, CUDA, GPU.",
+          "default": "以下是编程助手的语音口述，中文部分一律使用简体中文，夹杂英文技术术语。Coding assistant dictation mixing English and Simplified Chinese. Terms: VS Code, ACP, Agent Client Protocol, TypeScript, JavaScript, Python, Rust, LLM, vLLM, Transformer, attention, KV cache, API, JSON, Git, Docker, Kubernetes, Whisper, Qwen, CUDA, GPU.",
           "description": "Contextual-biasing prompt forwarded to the STT server (whisper.cpp initial prompt). Naming tech terms here measurably improves their recognition."
         },
         "acp.voice.stt.timeoutMs": {
