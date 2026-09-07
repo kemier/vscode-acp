@@ -59,7 +59,12 @@ function platformDefault(): RecorderCommand {
 
 /** Parse a configured command template like `rec -q -r 16000 {file}` into command + args. */
 export function parseRecordCommand(template: string): RecorderCommand {
-  const tokens = template.trim().split(/\s+/).filter(Boolean);
+  const tokens: string[] = [];
+  const re = /"([^"]*)"|(\S+)/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(template.trim())) !== null) {
+    tokens.push(m[1] !== undefined ? m[1] : m[2]);
+  }
   if (tokens.length === 0) {
     throw new Error('Voice input: acp.voice.recordCommand is empty.');
   }
