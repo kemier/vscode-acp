@@ -92,6 +92,15 @@ function registerExtension(extRoot) {
       entries = [];
     }
   }
+  // VS Code rejects the entire manifest if any location lacks scheme
+  // (isUriComponents requires path + scheme). A single bad sidecar
+  // entry (e.g. companion install) then unloads every user extension.
+  for (const e of entries) {
+    const loc = e && e.location;
+    if (loc && typeof loc === 'object' && typeof loc.path === 'string' && !loc.scheme) {
+      loc.scheme = 'file';
+    }
+  }
   entries = entries.filter((e) => e?.identifier?.id !== extId);
   const absPath = path.join(extRoot, rel);
   const fileUrl = pathToFileUrl(absPath);
