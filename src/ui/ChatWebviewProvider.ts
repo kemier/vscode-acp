@@ -11639,8 +11639,33 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    * HTML id attributes and getElementById — sanitize for DOM, keep the
    * original id as the toolCalls{} map key.
    */
+  /**
+   * Cursor wire toolCallIds embed a real newline ("call-…\\nfc_…"). Raw
+   * newlines in CSS attribute selectors make querySelector throw, which
+   * aborted updateToolCall after chatHistory was patched — DOM + fold
+   * summaries stayed on stub titles ("Read File" / "grep") even when the
+   * agent later sent a path-bearing tool_call_update.
+   */
+  function toolCallIdDomKey(toolCallId) {
+    var s = String(toolCallId || '');
+    s = s.replace(/[\\n\\r]/g, '__');
+    // Literal \\n / \\r (store.db / some adapters) → same DOM key as wire.
+    s = s.replace(/\\\\n/g, '__').replace(/\\\\r/g, '__');
+    return s;
+  }
+
   function toolCallElementId(toolCallId) {
-    return 'tc-' + String(toolCallId || '').replace(/[\\n\\r]/g, '__');
+    return 'tc-' + toolCallIdDomKey(toolCallId);
+  }
+
+  function queryStageByToolCallId(root, toolCallId) {
+    var key = toolCallIdDomKey(toolCallId).replace(/"/g, '');
+    if (!key) return null;
+    try {
+      return (root || document).querySelector('.tc-stage[data-tool-call-id="' + key + '"]');
+    } catch (e) {
+      return null;
+    }
   }
 
   /**
@@ -15316,7 +15341,7 @@ function commitCurrentTextSegment(opts) {
      var stage = document.createElement('div');
      stage.className = 'tc-stage';
      stage.setAttribute('data-stage-name', stageName);
-     if (toolCallId) stage.setAttribute('data-tool-call-id', String(toolCallId));
+     if (toolCallId) stage.setAttribute('data-tool-call-id', toolCallIdDomKey(toolCallId));
      var desc = (!compactMode && stagePrompt)
        ? (stagePrompt.length > 100 ? stagePrompt.substring(0, 97) + '...' : stagePrompt)
        : '';
@@ -15726,7 +15751,7 @@ function commitCurrentTextSegment(opts) {
 
    function setSubagentStageStatus(toolCallId, status) {
      if (!toolCallId) return;
-     var stage = document.querySelector('.tc-stage[data-tool-call-id="' + String(toolCallId).replace(/"/g, '') + '"]');
+     var stage = queryStageByToolCallId(document, toolCallId);
      if (!stage) return;
      applyStageIcon(stage, status);
      var crew = stage.closest('.tool-call-inline.tc-subagent');
@@ -16078,7 +16103,7 @@ function commitCurrentTextSegment(opts) {
          var stageRole = stage.role || '';
          var depends = stage.depends_on && stage.depends_on.length > 0 ? ' (depends: ' + stage.depends_on.join(', ') + ')' : '';
          var stageToolIdAttr = (isSubagentSpawnTitle(title, rawInput) && si === 0)
-           ? ' data-tool-call-id="' + escapeHtml(String(toolCallId)) + '"'
+           ? ' data-tool-call-id="' + escapeHtml(toolCallIdDomKey(toolCallId)) + '"'
            : '';
          // Prefer persisted stage.status. Live mid-turn keeps spinning even when
          // the parent spawn tool already flipped to completed.
@@ -16674,7 +16699,7 @@ forceCollapseTurnFolds();
       // Fall through to the crew-level el handler below — it iterates all
       // stages and applies per-stage icons. Skip the single-stage block.
     } else {
-    var stageForId = document.querySelector('.tc-stage[data-tool-call-id="' + String(toolCallId).replace(/"/g, '') + '"]');
+    var stageForId = queryStageByToolCallId(document, toolCallId);
     if (stageForId) {
       // When the tool_call_update is for the parent crew's toolCallId (assigned
       // to the first stage at render time), pass keepName=true so the stage's
@@ -16781,7 +16806,7 @@ forceCollapseTurnFolds();
           }
         } else {
           // No per-stage status: merge late rawInput into the matching stage.
-          var stageOnCrew = el.querySelector('.tc-stage[data-tool-call-id="' + String(toolCallId).replace(/"/g, '') + '"]') ||
+          var stageOnCrew = queryStageByToolCallId(el, toolCallId) ||
             el.querySelector(':scope > .tc-stages > .tc-stage');
           if (stageOnCrew) updateStageFromRawInput(stageOnCrew, rawInput, title, { keepName: true });
           else {
@@ -20690,7 +20715,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       model: params.model || '',
       durationMs: params.durationMs,
     };
-    var idAttr = String(id).replace(/"/g, '');
+    var idAttr = toolCallIdDomKey(id).replace(/"/g, '');
 
     function bindStage(stage, keepName) {
       if (!stage) return;
@@ -20702,7 +20727,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       setSubagentStageStatus(id, status);
     }
 
-    var stageByTc = document.querySelector('.tc-stage[data-tool-call-id="' + idAttr + '"]');
+    var stageByTc = queryStageByToolCallId(document, id);
     if (stageByTc) {
       bindStage(stageByTc, false);
       return;
@@ -20724,7 +20749,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       }
     }
     addToolCall(id, 'Task', status, null, raw, 'other');
-    var stage = document.querySelector('.tc-stage[data-tool-call-id="' + idAttr + '"]');
+    var stage = queryStageByToolCallId(document, id);
     if (stage && params.agentId) stage.setAttribute('data-agent-id', String(params.agentId));
     var el = toolCalls[id];
     if (el && params.agentId) el.setAttribute('data-session-id', String(params.agentId));
