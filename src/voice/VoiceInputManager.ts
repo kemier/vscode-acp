@@ -3,6 +3,8 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import { AudioRecorder } from './AudioRecorder';
+import { MciRecorder } from './MciRecorder';
+import { chooseRecorderBackend } from './chooseRecorderBackend';
 import { VoiceRecorder } from './VoiceRecorder';
 import { COMPANION_INSTALL_HINT, CompanionRecorder, companionAvailable } from './CompanionRecorder';
 import { transcribeAudio, warmupStt, SttConfig, SttError } from './SttClient';
@@ -46,6 +48,7 @@ interface VoiceSettings {
   enabled: boolean;
   recordCommand: string;
   captureMode: CaptureMode;
+  windowsRecorder: 'auto' | 'mci' | 'binary';
   maxDurationSec: number;
   silenceAutoStopSec: number;
   silenceThresholdPct: number;
@@ -66,6 +69,7 @@ function readSettings(): VoiceSettings {
     enabled: cfg.get<boolean>('enabled', true),
     recordCommand: cfg.get<string>('recordCommand', ''),
     captureMode: cfg.get<CaptureMode>('captureMode', 'auto'),
+    windowsRecorder: cfg.get<'auto' | 'mci' | 'binary'>('windowsRecorder', 'auto'),
     maxDurationSec: cfg.get<number>('maxDurationSec', 120),
     silenceAutoStopSec: cfg.get<number>('silenceAutoStopSec', 2.5),
     silenceThresholdPct: cfg.get<number>('silenceThresholdPct', 3),
@@ -98,6 +102,8 @@ export class VoiceInputManager {
   private recorder: VoiceRecorder | null = null;
   /** True while the backend is opening the device (no take exists yet). */
   private starting = false;
+  /** Capture backend for the active take ('mci' disables silence auto-stop UI). */
+  private hostBackend: 'mci' | 'binary' | null = null;
   /** True when the current/last take was captured by the client-side companion. */
   private usingCompanion = false;
   /** Session that was active when recording started. */
@@ -178,12 +184,13 @@ export class VoiceInputManager {
 
     if (mode === 'extensionHost') {
       this.usingCompanion = false;
-      return new AudioRecorder();
+      return this.createHostRecorder(settings);
     }
 
     const wantCompanion = mode === 'localCompanion' || (mode === 'auto' && remote);
     if (wantCompanion && (await companionAvailable())) {
       this.usingCompanion = true;
+      this.hostBackend = null;
       return new CompanionRecorder();
     }
     if (mode === 'localCompanion') {
@@ -200,7 +207,18 @@ export class VoiceInputManager {
           'recording on the remote host',
       );
     }
-    return new AudioRecorder();
+    return this.createHostRecorder(settings);
+  }
+
+  /** Local / remote extension-host capture (SoX or Windows MCI). */
+  private async createHostRecorder(settings: VoiceSettings): Promise<VoiceRecorder> {
+    const chosen = await chooseRecorderBackend({
+      recordCommand: settings.recordCommand,
+      recorderBackend: settings.windowsRecorder,
+    });
+    this.hostBackend = chosen.backend;
+    log(`[voice] host recorder backend=${chosen.backend} (${chosen.reason})`);
+    return chosen.backend === 'mci' ? new MciRecorder() : new AudioRecorder();
   }
 
   /** Remote windows without the companion get an actionable suffix on failures. */
@@ -257,7 +275,10 @@ export class VoiceInputManager {
           log(`[voice] audio flowing after ${elapsedMs}ms`);
           // Silence endpointing is a SoX effect; the built-in Windows MCI
           // backend has no level metering, so don't advertise auto-stop there.
-          const backend = recorder instanceof CompanionRecorder ? recorder.backend : 'binary';
+          const backend =
+            recorder instanceof CompanionRecorder
+              ? recorder.backend
+              : this.hostBackend ?? 'binary';
           this.onEvent({
             type: 'recordingReady',
             elapsedMs,

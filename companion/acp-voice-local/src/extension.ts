@@ -5,6 +5,10 @@ import * as path from 'path';
 import { AudioRecorder, resolveRecorderCommand, resolveBinaryPath } from '../../../src/voice/AudioRecorder';
 import { VoiceRecorder } from '../../../src/voice/VoiceRecorder';
 import { MciRecorder } from '../../../src/voice/MciRecorder';
+import {
+  chooseRecorderBackend,
+  type RecorderBackendPref,
+} from '../../../src/voice/chooseRecorderBackend';
 
 /**
  * ACP Voice (Local Mic) — companion extension.
@@ -29,7 +33,7 @@ import { MciRecorder } from '../../../src/voice/MciRecorder';
 const PROTOCOL = 1;
 
 /** Which client-side capture backend to use. */
-export type RecorderBackend = 'auto' | 'mci' | 'binary';
+export type RecorderBackend = RecorderBackendPref;
 
 interface StartArgs {
   recordCommand?: string;
@@ -71,37 +75,12 @@ function discard(take: Take): void {
   fs.promises.unlink(take.filePath).catch(() => undefined);
 }
 
-/**
- * Decide how to capture on this machine.
- *
- * Windows ships MCI (`winmm.dll`), so a locked-down laptop that cannot install
- * SoX still gets dictation — that is the default there whenever no recorder
- * binary is reachable. An explicit `acp.voice.recordCommand` always wins: the
- * user asked for a specific binary. SoX, when present, is still preferred on
- * Windows because only it supports silence auto-stop.
- */
+/** Thin re-export — shared implementation lives in src/voice/chooseRecorderBackend. */
 export async function chooseBackend(args: StartArgs): Promise<{ backend: 'mci' | 'binary'; reason: string }> {
-  const requested = args.recorderBackend ?? 'auto';
-  if (requested === 'mci') {
-    return { backend: 'mci', reason: 'acp.voice.windowsRecorder=mci' };
-  }
-  if (requested === 'binary' || (args.recordCommand ?? '').trim()) {
-    return {
-      backend: 'binary',
-      reason: requested === 'binary' ? 'acp.voice.windowsRecorder=binary' : 'acp.voice.recordCommand is set',
-    };
-  }
-  if (process.platform !== 'win32') {
-    return { backend: 'binary', reason: `${process.platform}: recorder binary` };
-  }
-  try {
-    const cmd = resolveRecorderCommand(undefined);
-    const bin = await resolveBinaryPath(cmd.command);
-    return { backend: 'binary', reason: `found ${bin}` };
-  } catch {
-    // No SoX on PATH — use the recorder Windows already has.
-    return { backend: 'mci', reason: 'no recorder binary on PATH; using built-in Windows MCI' };
-  }
+  return chooseRecorderBackend({
+    recordCommand: args.recordCommand,
+    recorderBackend: args.recorderBackend,
+  });
 }
 
 export function activate(context: vscode.ExtensionContext): void {

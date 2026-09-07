@@ -370,9 +370,13 @@ export class AudioRecorder {
 
     const stat = fs.existsSync(filePath) ? fs.statSync(filePath) : null;
     if (!stat || stat.size <= 44) {
-      throw new Error(
-        'Voice input: recorder produced no audio. On macOS check System Settings → Privacy & Security → Microphone.',
-      );
+      const micHint =
+        process.platform === 'win32'
+          ? 'Check Settings → Privacy & security → Microphone, that the default input device works, and that acp.voice.recordCommand uses `-t waveaudio default` (not `-d`). Or set acp.voice.windowsRecorder to "mci".'
+          : process.platform === 'darwin'
+            ? 'On macOS check System Settings → Privacy & Security → Microphone.'
+            : 'Check microphone permissions and that the default capture device works.';
+      throw new Error(`Voice input: recorder produced no audio. ${micHint}`);
     }
     if (process.platform === 'win32' && !repairWavHeader(filePath)) {
       throw new Error('Voice input: recorder was killed before finalizing the WAV and the header is unrepairable.');
