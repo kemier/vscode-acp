@@ -74,7 +74,7 @@ run('npm', ['run', 'package']);
 console.log('✅ Build succeeded');
 
 step('2/3  Packaging VSIX');
-run('npx', ['vsce', 'package', '--no-git-tag-version']);
+run('npx', ['vsce', 'package', '--no-git-tag-version', '--no-dependencies']);
 console.log('✅ VSIX packaged');
 
 step('3/3  Installing locally');
