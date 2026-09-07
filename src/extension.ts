@@ -44,6 +44,8 @@ import { ChatWebviewProvider } from './ui/ChatWebviewProvider';
 import { VoiceMemoryStore } from './voice/VoiceMemory';
 import { proposeMemoryUpdate } from './voice/VoiceMemoryOptimizer';
 import { CorrectorConfig } from './voice/CorrectorClient';
+import { buildVoiceDiagnosticsReport } from './voice/VoiceDiagnostics';
+import { companionAvailable } from './voice/CompanionRecorder';
 import { getAgentNames } from './config/AgentConfig';
 import { fetchRegistry } from './config/RegistryClient';
 import {
@@ -955,6 +957,53 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   });
 
+  // Voice Input Diagnostics: one-page report (capture routing, companion, STT probe).
+  const voiceDiagnosticsCmd = vscode.commands.registerCommand('acp.voiceDiagnostics', async () => {
+    sendEvent('command/voiceDiagnostics');
+    let report: string;
+    try {
+      report = await vscode.window.withProgress(
+        {
+          location: vscode.ProgressLocation.Notification,
+          title: 'ACP: probing voice input…',
+          cancellable: false,
+        },
+        () => buildVoiceDiagnosticsReport(),
+      );
+    } catch (e: any) {
+      logError('voiceDiagnostics failed', e);
+      vscode.window.showErrorMessage(`ACP voice diagnostics failed: ${e?.message ?? e}`);
+      return;
+    }
+    log(`[voice] diagnostics\n${report}`);
+    const doc = await vscode.workspace.openTextDocument({
+      content: report + '\n',
+      language: 'plaintext',
+    });
+    await vscode.window.showTextDocument(doc, { preview: true, preserveFocus: false });
+
+    const buttons: string[] = [];
+    if (await companionAvailable()) {
+      buttons.push('Test Local Microphone');
+    }
+    buttons.push('Copy');
+    const choice = await vscode.window.showInformationMessage(
+      'ACP Voice Input Diagnostics — see the opened report.',
+      ...buttons,
+    );
+    if (choice === 'Copy') {
+      await vscode.env.clipboard.writeText(report + '\n');
+    } else if (choice === 'Test Local Microphone') {
+      try {
+        await vscode.commands.executeCommand('acpVoiceLocal.testMicrophone');
+      } catch (e: any) {
+        vscode.window.showErrorMessage(
+          `ACP Voice: Test Local Microphone failed — ${e?.message ?? e}`,
+        );
+      }
+    }
+  });
+
   // Review Voice Memory (Phase 3 "thinker", arXiv:2607.26410): propose bounded
   // edits to voice-memory.md from collected dictation feedback, show a diff,
   // and apply only on explicit user accept — the human is the acceptance gate.
@@ -1735,6 +1784,7 @@ export function activate(context: vscode.ExtensionContext): void {
     showTrafficCmd,
     exportTrafficCmd,
     reviewVoiceMemoryCmd,
+    voiceDiagnosticsCmd,
     setModeCmd,
     setModelCmd,
     refreshAgentsCmd,

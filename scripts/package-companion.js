@@ -70,6 +70,30 @@ if (fs.existsSync(nestedSrc)) {
 rmrf(path.join(companionDir, 'dist', 'companion'));
 rmrf(path.join(companionDir, 'dist', 'src'));
 
+// tsc emitted requires relative to companion/acp-voice-local/src/extension.ts:
+//   require("../../../src/voice/AudioRecorder")
+// After flattening to dist/extension.js + dist/voice/*.js those paths no longer
+// exist inside the VSIX — rewrite them or activate() fails with MODULE_NOT_FOUND
+// and "ACP Voice: Test Local Microphone" appears to do nothing.
+{
+  let src = fs.readFileSync(flatExt, 'utf8');
+  const before = src;
+  src = src.replace(
+    /require\(["'](?:\.\.\/)+src\/voice\/([^"']+)["']\)/g,
+    (_m, mod) => `require("./voice/${mod}")`,
+  );
+  if (src === before) {
+    console.error('❌ expected ../../../src/voice/* requires in companion entry — rewrite skipped');
+    process.exit(1);
+  }
+  fs.writeFileSync(flatExt, src);
+  if (/require\(["'](?:\.\.\/)+src\/voice\//.test(src)) {
+    console.error('❌ companion entry still has broken src/voice requires after rewrite');
+    process.exit(1);
+  }
+  console.log('✅ rewrote companion requires → ./voice/*');
+}
+
 const bundle = flatExt;
 console.log(`✅ companion bundle: ${(fs.statSync(bundle).size / 1024).toFixed(1)} KB`);
 
@@ -94,5 +118,5 @@ console.log(`
   Install it from THIS (remote) window:
     Extensions view → ... → "Install from VSIX..." → pick the file above
   VS Code installs extensionKind "ui" extensions on your local machine.
-  Then: Reload Window, and run "ACP: Voice Input Diagnostics" to verify.
+  Then: Reload Window, and run "ACP Voice: Test Local Microphone" to verify.
 `);

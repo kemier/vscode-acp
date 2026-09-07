@@ -49,6 +49,7 @@ Module._load = function (request, parent, isMain) {
         createDiagnosticCollection: () => ({ set: () => {}, dispose: () => {} }),
       },
       commands,
+      env: { remoteName: undefined, clipboard: { writeText: async () => {} } },
       EventEmitter: class { event(){}; fire(){}; dispose(){} },
       Uri: { file: (p) => ({ fsPath: p, scheme: 'file' }), parse: (s) => ({ toString: () => s }) },
       Disposable: class { dispose(){} },
