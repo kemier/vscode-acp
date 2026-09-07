@@ -90,9 +90,7 @@ export async function proposeMemoryUpdate(
   }
   const data = (await res.json()) as { choices?: Array<{ message?: { content?: string } }> };
   // Strip <think>…</think> defensively in case the server ignored think:false.
-  const proposal = (data.choices?.[0]?.message?.content ?? '')
-    .replace(/<think>[\s\S]*?<\/think>/g, '')
-    .trim();
+  const proposal = (data.choices?.[0]?.message?.content ?? '').replace(/<think>[\s\S]*?<\/think>/g, '').trim();
   if (!proposal) {
     throw new Error('Voice memory optimizer: empty proposal');
   }

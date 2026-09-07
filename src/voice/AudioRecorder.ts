@@ -51,13 +51,19 @@ function platformDefault(): RecorderCommand {
       return { command: 'arecord', args: ['-q', '-r', '16000', '-c', '1', '-f', 'S16_LE', '-t', 'wav', '{file}'] };
     case 'win32':
       // SoX is the least painful Windows option (ffmpeg dshow needs a device name).
-      return { command: 'rec', args: ['-q', '-c', '1', '-b', '16', '{file}', 'rate', '16000'] };
+      // NB: Windows SoX ships `sox.exe` (no `rec` alias); `-d` fails with
+      // "no default audio device configured", so use the waveaudio driver
+      // explicitly: `-t waveaudio default`.
+      return { command: 'sox', args: ['-q', '-t', 'waveaudio', 'default', '-c', '1', '-b', '16', '{file}', 'rate', '16000'] };
     default:
       throw new Error(`Voice input: unsupported platform "${process.platform}". Set acp.voice.recordCommand.`);
   }
 }
 
-/** Parse a configured command template like `rec -q -r 16000 {file}` into command + args. */
+/** Parse a configured command template like `rec -q -r 16000 {file}` into command + args.
+ * Supports double-quoted paths with spaces, e.g.
+ * `"C:\Program Files\sox\rec.exe" -q -c 1 -b 16 {file} rate 16000`.
+ * A bare command (no quotes) is split on whitespace as before. */
 export function parseRecordCommand(template: string): RecorderCommand {
   const tokens: string[] = [];
   const re = /"([^"]*)"|(\S+)/g;
@@ -87,9 +93,7 @@ export function resolveRecorderCommand(configured: string | undefined): Recorder
  * locations — not a fallback chain: if the binary is nowhere, we throw.
  */
 const STANDARD_BIN_DIRS =
-  process.platform === 'win32'
-    ? []
-    : ['/opt/homebrew/bin', '/usr/local/bin', '/opt/homebrew/sbin', '/usr/local/sbin'];
+  process.platform === 'win32' ? [] : ['/opt/homebrew/bin', '/usr/local/bin', '/opt/homebrew/sbin', '/usr/local/sbin'];
 
 /**
  * Resolve a recorder command to an absolute executable path.
@@ -146,7 +150,10 @@ export function buildRecorderArgs(
   silenceThresholdPct = 3,
 ): string[] {
   const args = cmd.args.map((a) => (a === '{file}' ? filePath : a));
-  if (silenceAutoStopSec > 0 && path.basename(cmd.command) === 'rec') {
+  // SoX ships as `rec` on Unix and as `sox` (with `-d` for the default input
+  // device) on Windows — both accept the same `silence` effect.
+  const base = path.basename(cmd.command).toLowerCase();
+  if (silenceAutoStopSec > 0 && (base === 'rec' || base === 'sox' || base === 'sox.exe')) {
     const thr = `${silenceThresholdPct}%`;
     args.push('silence', '1', '0.1', thr, '1', String(silenceAutoStopSec), thr);
   }
@@ -250,12 +257,7 @@ export class AudioRecorder {
     const binary = await resolveBinaryPath(cmd.command);
 
     fs.mkdirSync(path.dirname(filePath), { recursive: true });
-    const args = buildRecorderArgs(
-      cmd,
-      filePath,
-      opts?.silenceAutoStopSec ?? 0,
-      opts?.silenceThresholdPct ?? 3,
-    );
+    const args = buildRecorderArgs(cmd, filePath, opts?.silenceAutoStopSec ?? 0, opts?.silenceThresholdPct ?? 3);
     this.exited = false;
     this.onNaturalExit = opts?.onNaturalExit ?? null;
 
@@ -373,9 +375,7 @@ export class AudioRecorder {
       );
     }
     if (process.platform === 'win32' && !repairWavHeader(filePath)) {
-      throw new Error(
-        'Voice input: recorder was killed before finalizing the WAV and the header is unrepairable.',
-      );
+      throw new Error('Voice input: recorder was killed before finalizing the WAV and the header is unrepairable.');
     }
     return filePath;
   }

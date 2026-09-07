@@ -1,0 +1,46 @@
+{
+  "name": "acp-voice-local",
+  "displayName": "ACP Voice (Local Mic)",
+  "description": "Local microphone capture for the ACP Client extension. Runs on the client machine so dictation works in Remote SSH, WSL and Dev Container windows.",
+  "version": "0.1.2",
+  "publisher": "formulahendry",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/formulahendry/vscode-acp.git"
+  },
+  "categories": [
+    "Other"
+  ],
+  "keywords": [
+    "acp",
+    "voice",
+    "dictation",
+    "remote"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./dist/extension.js",
+  "extensionKind": [
+    "ui"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": true
+  },
+  "contributes": {
+    "commands": [
+      {
+        "command": "acpVoiceLocal.testMicrophone",
+        "title": "Test Local Microphone",
+        "category": "ACP Voice"
+      }
+    ]
+  }
+}

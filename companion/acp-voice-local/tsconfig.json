@@ -1,0 +1,10 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "rootDir": "../..",
+    "outDir": "dist",
+    "declaration": false,
+    "types": ["node"]
+  },
+  "include": ["src/**/*", "../../src/voice/AudioRecorder.ts"]
+}

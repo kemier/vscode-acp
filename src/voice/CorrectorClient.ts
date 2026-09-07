@@ -88,9 +88,7 @@ export async function correctTranscript(
       choices?: Array<{ message?: { content?: string } }>;
     };
     // Strip <think>…</think> defensively in case the server ignored think:false.
-    const out = (data.choices?.[0]?.message?.content ?? '')
-      .replace(/<think>[\s\S]*?<\/think>/g, '')
-      .trim();
+    const out = (data.choices?.[0]?.message?.content ?? '').replace(/<think>[\s\S]*?<\/think>/g, '').trim();
     // Literal "ABSTAIN" (model echoing the contract keyword — observed on
     // qwen2.5:7b) means "no change", not a transcript.
     if (!out || /^abstain[.。!！]?$/i.test(out)) {

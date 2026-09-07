@@ -16,7 +16,7 @@ import * as fs from 'fs';
  *    mostly suppressive, and abstains by default.
  *  - Phase 3 learns from the user's own edits of inserted transcripts
  *    (feedback JSONL) through a human-gated review command — no automatic
-    * weight or prompt mutation.
+ * weight or prompt mutation.
  */
 
 /** One recorded dictation outcome, appended to voice-feedback.jsonl. */
@@ -55,7 +55,7 @@ export function textSimilarity(a: string, b: string): number {
     prev[j] = j;
   }
   for (let i = 1; i <= x.length; i++) {
-    let cur = [i];
+    const cur = [i];
     for (let j = 1; j <= y.length; j++) {
       cur[j] = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + (x[i - 1] === y[j - 1] ? 0 : 1));
     }
@@ -130,14 +130,9 @@ export class VoiceMemoryStore {
   constructor(memoryPathSetting?: string) {
     const dir = path.join(os.homedir(), '.vscode-acp');
     this.memoryPath =
-      memoryPathSetting && memoryPathSetting.trim()
-        ? memoryPathSetting.trim()
-        : path.join(dir, 'voice-memory.md');
+      memoryPathSetting && memoryPathSetting.trim() ? memoryPathSetting.trim() : path.join(dir, 'voice-memory.md');
     this.hostId = VoiceMemoryStore.machineId();
-    this.feedbackPath = path.join(
-      path.dirname(this.memoryPath),
-      `voice-feedback.${this.hostId}.jsonl`,
-    );
+    this.feedbackPath = path.join(path.dirname(this.memoryPath), `voice-feedback.${this.hostId}.jsonl`);
   }
 
   /**
@@ -154,7 +149,10 @@ export class VoiceMemoryStore {
       // no passwd entry / odd environment — hostname+platform still help
     }
     const raw = `${os.hostname()}-${process.platform}-${username}`;
-    const h = raw.toLowerCase().replace(/[^a-z0-9-]+/g, '-').replace(/^-+|-+$/g, '');
+    const h = raw
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, '-')
+      .replace(/^-+|-+$/g, '');
     return h || 'host';
   }
 
@@ -171,11 +169,7 @@ export class VoiceMemoryStore {
         }
         try {
           if (raw.trim()) {
-            await fs.promises.appendFile(
-              this.feedbackPath,
-              raw.endsWith('\n') ? raw : raw + '\n',
-              'utf8',
-            );
+            await fs.promises.appendFile(this.feedbackPath, raw.endsWith('\n') ? raw : raw + '\n', 'utf8');
           }
           await fs.promises.unlink(legacy);
         } catch {
@@ -216,9 +210,7 @@ export class VoiceMemoryStore {
     } catch {
       return [];
     }
-    return names
-      .filter((n) => /^voice-feedback(\..+)?\.jsonl$/.test(n))
-      .map((n) => path.join(dir, n));
+    return names.filter((n) => /^voice-feedback(\..+)?\.jsonl$/.test(n)).map((n) => path.join(dir, n));
   }
 
   async readFeedback(): Promise<VoiceFeedbackEntry[]> {

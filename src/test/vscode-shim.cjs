@@ -15,9 +15,31 @@ Module._load = function (request, parent, isMain) {
       dispose: () => {},
       name: 'test-output-channel',
     });
+    // Fake command registry shared with CompanionRecorder tests. The companion
+    // bridge drives the local recorder purely by command id, so the shim must
+    // let tests register and execute those commands.
+    const reg = (globalThis.__acpTestCommands ||= new Map());
+    const commands = {
+      registerCommand: (id, fn) => {
+        reg.set(id, fn);
+        return { dispose: () => reg.delete(id) };
+      },
+      executeCommand: (id, ...args) => {
+        const fn = reg.get(id);
+        if (!fn) {
+          return Promise.reject(new Error(`Command not found: ${id}`));
+        }
+        return Promise.resolve(fn(...args));
+      },
+      getCommands: async () => [...reg.keys()],
+    };
     return {
       workspace: {
-        getConfiguration: () => ({ get: () => undefined }),
+        getConfiguration: (section) => ({
+          get: (key, def) => ({
+            'acp.voice': { windowsRecorder: 'auto' },
+          })[section]?.[key] ?? def,
+        }),
         openTextDocument: async () => ({ getText: () => '' }),
       },
       window: {
@@ -26,6 +48,7 @@ Module._load = function (request, parent, isMain) {
         createOutputChannel: outputChannel,
         createDiagnosticCollection: () => ({ set: () => {}, dispose: () => {} }),
       },
+      commands,
       EventEmitter: class { event(){}; fire(){}; dispose(){} },
       Uri: { file: (p) => ({ fsPath: p, scheme: 'file' }), parse: (s) => ({ toString: () => s }) },
       Disposable: class { dispose(){} },
