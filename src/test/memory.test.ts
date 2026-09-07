@@ -493,3 +493,31 @@ suite('MemorySanitize.buildRecallQuery', () => {
     assert.strictEqual(buildRecallQuery('deployed a2a?'), 'deployed a2a?');
   });
 });
+
+suite('MemoryHttpClient.pickExactSkillId', () => {
+  const { pickExactSkillId } = require('../core/memory/MemoryHttpClient') as typeof import('../core/memory/MemoryHttpClient');
+
+  test('requires exact name and skl- id', () => {
+    assert.strictEqual(
+      pickExactSkillId('deploy-vscode-extension', [
+        { name: 'deploy-acp-client', skill_id: 'skl-aaa' },
+        { name: 'deploy-vscode-extension', skill_id: 'skl-snmZhvTsFbh3' },
+      ]),
+      'skl-snmZhvTsFbh3',
+    );
+    assert.strictEqual(
+      pickExactSkillId('deploy-vscode-extension', [
+        { name: 'deploy-vscode-extension', skill_id: 'deploy-vscode-extension' },
+      ]),
+      null,
+      'name-as-id placeholders are not usable',
+    );
+    assert.strictEqual(
+      pickExactSkillId('deploy-vscode-extension', [
+        { name: 'vscode-acp-deploy', skill_id: 'skl-xkzL7YCo4U8B' },
+      ]),
+      null,
+      'near-miss names must not match',
+    );
+  });
+});

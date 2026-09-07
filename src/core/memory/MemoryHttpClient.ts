@@ -78,6 +78,20 @@ export class MemoryHttpError extends Error {
   }
 }
 
+/** Exact name → skl- id from listing/search rows (team-shared fallback). */
+export function pickExactSkillId(
+  skillName: string,
+  items: Array<{ name: string; skill_id: string }>,
+): string | null {
+  const hit = items.find(
+    (i) =>
+      i.name === skillName &&
+      typeof i.skill_id === 'string' &&
+      i.skill_id.startsWith('skl-'),
+  );
+  return hit?.skill_id ?? null;
+}
+
 export class MemoryHttpClient {
   private readonly endpoint: string;
   private readonly serviceId: string;
@@ -260,6 +274,7 @@ export class MemoryHttpClient {
     }).then((res) => {
       const byName = new Map((res.hits ?? []).map((h) => [h.name, h]));
       const items: Array<{ skill_id: string; name: string; description: string; version: number }> = [];
+      const seen = new Set<string>();
       for (const line of (res.listing ?? '').split('\n')) {
         const m = /^-\s+([^:]+):\s*(.*)$/.exec(line.trim());
         if (!m) {
@@ -273,6 +288,19 @@ export class MemoryHttpClient {
           description: m[2].trim(),
           version: hit?.version ?? 0,
         });
+        seen.add(name);
+      }
+      // Prefer structured hits when markdown parse misses a row (or budget
+      // truncates listing text before hits).
+      for (const h of res.hits ?? []) {
+        if (!h?.name || seen.has(h.name)) continue;
+        items.push({
+          skill_id: h.skill_id,
+          name: h.name,
+          description: '',
+          version: h.version ?? 0,
+        });
+        seen.add(h.name);
       }
       return { items };
     });
@@ -347,7 +375,10 @@ export class MemoryHttpClient {
    * Resolve a skill by name. Listing/search use scope=team so Cursor sees
    * Codex/Claude/etc. shared skills, but older Mac gateways keep
    * `/v3/skill/get-by-name` agent-scoped (SKILL_NOT_FOUND for other owners).
-   * Fall back: team listing → skill_id → `/v3/skill/get` (id works across agents).
+   * Fall back: team listing (default → name query) → team search → `/v3/skill/get`
+   * by skill_id (id works across agents). Unqueried listing is char-budget
+   * truncated (~20 skills), so name query / search are required for shared
+   * skills that appear in prompt injection but sit outside the default top-N.
    */
   async getSkillByName(
     iso: MemoryIsolation,
@@ -370,21 +401,39 @@ export class MemoryHttpClient {
       if (!notFound) {
         throw e;
       }
-      const { items } = await this.listSkills(iso);
-      const hit = items.find(
-        (i) => i.name === skillName && typeof i.skill_id === 'string' && i.skill_id.startsWith('skl-'),
-      );
-      if (!hit) {
+      const skillId = await this.resolveTeamSharedSkillId(iso, skillName);
+      if (!skillId) {
         throw e;
       }
       if (this.debug) {
         log(
           `Memory getSkillByName("${skillName}") agent-scoped miss; ` +
-            `resolved via team listing → ${hit.skill_id}`,
+            `resolved via team listing/search → ${skillId}`,
         );
       }
-      return this.getSkill(iso, hit.skill_id);
+      return this.getSkill(iso, skillId);
     }
+  }
+
+  /** Find skl- id for an exact skill name across team-shared catalog. */
+  private async resolveTeamSharedSkillId(
+    iso: MemoryIsolation,
+    skillName: string,
+  ): Promise<string | null> {
+    // 1) Default team listing (same set as unqueried recall top-N).
+    const fromDefault = pickExactSkillId(skillName, (await this.listSkills(iso)).items);
+    if (fromDefault) return fromDefault;
+
+    // 2) Name-ranked listing — pulls the skill into the char_budget window.
+    const fromQuery = pickExactSkillId(
+      skillName,
+      (await this.listSkills(iso, { query: skillName })).items,
+    );
+    if (fromQuery) return fromQuery;
+
+    // 3) Semantic search; require exact name match (avoid near-miss siblings).
+    const searched = await this.searchSkills(iso, { query: skillName, topK: 10 });
+    return pickExactSkillId(skillName, searched.items);
   }
 
   searchSkills(
