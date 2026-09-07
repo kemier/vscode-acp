@@ -500,6 +500,14 @@ export const MAX_LIVE_ENRICH_FULL_SCAN_BYTES = MAX_FALLBACK_STORE_BYTES;
 /** JSON tool-call blobs in store.db are small; skip multi-MB conversation dumps. */
 const MAX_TOOL_BLOB_BYTES = 512 * 1024;
 
+/**
+ * First byte is `{` (0x7B) or `[` (0x5B).
+ * Must compare as BLOB (`X'7B'`): SQLite `substr(blob,1,1)` returns BLOB, and
+ * `substr(...) = '{'` (TEXT) never matches — large-store scans indexed 0 tools.
+ */
+export const SQL_JSON_BLOB_PREFIX =
+  "(substr(data, 1, 1) = X'7B' OR substr(data, 1, 1) = X'5B')";
+
 export function isLargeCursorStore(dbPath: string | null | undefined): boolean {
   if (!dbPath) return false;
   try {
@@ -554,7 +562,7 @@ async function readBlobTextsViaNodeSqlite(dbPath: string, smallJsonOnly: boolean
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
     const sql = smallJsonOnly
-      ? `SELECT data FROM blobs WHERE length(data) < ${MAX_TOOL_BLOB_BYTES} AND (substr(data, 1, 1) = '{' OR substr(data, 1, 1) = '[') ORDER BY rowid`
+      ? `SELECT data FROM blobs WHERE length(data) < ${MAX_TOOL_BLOB_BYTES} AND ${SQL_JSON_BLOB_PREFIX} ORDER BY rowid`
       : 'SELECT data FROM blobs ORDER BY rowid';
     const rows = db.prepare(sql).all();
     return rows.map((r) => blobDataToText(r.data)).filter((t) => t.length > 0 && (t[0] === '{' || t[0] === '['));
@@ -565,7 +573,7 @@ async function readBlobTextsViaNodeSqlite(dbPath: string, smallJsonOnly: boolean
 
 async function readBlobTextsViaSqliteCli(dbPath: string, smallJsonOnly: boolean): Promise<string[]> {
   const rowFilter = smallJsonOnly
-    ? `AND length(data) < ${MAX_TOOL_BLOB_BYTES} AND (substr(data,1,1)='{' OR substr(data,1,1)='[')`
+    ? `AND length(data) < ${MAX_TOOL_BLOB_BYTES} AND ${SQL_JSON_BLOB_PREFIX}`
     : '';
   const script = [
     'import sqlite3,json,sys',
@@ -606,7 +614,7 @@ async function readBlobTextsViaSqliteCli(dbPath: string, smallJsonOnly: boolean)
       [
         '-json',
         dbPath,
-        `SELECT CAST(data AS TEXT) AS data FROM blobs WHERE length(data) < 200000 AND (substr(data,1,1)='{' OR substr(data,1,1)='[')`,
+        `SELECT CAST(data AS TEXT) AS data FROM blobs WHERE length(data) < 200000 AND ${SQL_JSON_BLOB_PREFIX}`,
       ],
       { maxBuffer: 64 * 1024 * 1024, encoding: 'utf8' },
     );

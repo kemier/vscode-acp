@@ -20,6 +20,7 @@ import {
   cursorFileMutateKindFallback,
   confirmedFileMutationKind,
   indexToolCallsFromBlobTextsOrdered,
+  SQL_JSON_BLOB_PREFIX,
 } from '../core/CursorToolEnricher';
 
 suite('CursorToolEnricher', () => {
@@ -118,6 +119,57 @@ suite('CursorToolEnricher', () => {
       fs.truncateSync(tmp, 1024);
       assert.strictEqual(isLargeCursorStore(tmp), false);
     } finally {
+      try {
+        fs.unlinkSync(tmp);
+      } catch {
+        // ignore
+      }
+    }
+  });
+
+  test('SQL_JSON_BLOB_PREFIX matches BLOB rows (TEXT { compare does not)', () => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { DatabaseSync } = require('node:sqlite') as {
+      DatabaseSync: new (path: string) => {
+        exec: (sql: string) => void;
+        prepare: (sql: string) => {
+          run: (...params: unknown[]) => void;
+          get: (...params: unknown[]) => { c?: number } | undefined;
+        };
+        close: () => void;
+      };
+    };
+    const tmp = path.join(os.tmpdir(), `acp-json-blob-prefix-${Date.now()}.db`);
+    const db = new DatabaseSync(tmp);
+    try {
+      db.exec('CREATE TABLE blobs (id TEXT, data BLOB)');
+      const payload = Buffer.from(
+        JSON.stringify({
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'call-1\\nfc_x',
+              toolName: 'Read',
+              args: { path: '/tmp/a.ts' },
+            },
+          ],
+        }),
+        'utf8',
+      );
+      db.prepare('INSERT INTO blobs (id, data) VALUES (?, ?)').run('h1', payload);
+      const broken = db
+        .prepare(`SELECT COUNT(*) AS c FROM blobs WHERE substr(data, 1, 1) = '{'`)
+        .get()?.c;
+      const fixed = db.prepare(`SELECT COUNT(*) AS c FROM blobs WHERE ${SQL_JSON_BLOB_PREFIX}`).get()
+        ?.c;
+      assert.strictEqual(broken, 0, 'TEXT compare against BLOB substr must not match');
+      assert.strictEqual(fixed, 1, 'X\'7B\'/X\'5B\' BLOB compare must match JSON blobs');
+    } finally {
+      try {
+        db.close();
+      } catch {
+        // ignore
+      }
       try {
         fs.unlinkSync(tmp);
       } catch {
