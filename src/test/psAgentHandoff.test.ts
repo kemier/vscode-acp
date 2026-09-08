@@ -135,21 +135,19 @@ suite('/ps defers to the agent when the agent implements it', () => {
     );
   });
 
-  test('/ps is still turn-safe, so the handoff works mid-turn too', () => {
+  test('/ps is still turn-safe when the agent declares it, so the handoff works mid-turn', () => {
     const slashCommandRunsDuringTurn = extractFunction('slashCommandRunsDuringTurn', [
       'turnSafeDeclaration',
     ]);
-    assert.strictEqual(
-      slashCommandRunsDuringTurn('/ps', []),
-      true,
-      '/ps must stay turn-safe: deferring it to the agent is only an improvement ' +
-        'if it is still answered immediately while a turn streams',
-    );
-    // And when the agent declares it explicitly.
+    // Deferring /ps to the agent is only an improvement if the agent's answer
+    // still arrives immediately while a turn streams. ericli declares it.
     assert.strictEqual(
       slashCommandRunsDuringTurn('/ps', [{ name: 'ps', _meta: { turnSafe: true } }]),
       true,
     );
+    // An agent that advertises /ps but declares nothing gets it queued — the
+    // safe failure, since we cannot know whether its /ps interrupts the turn.
+    assert.strictEqual(slashCommandRunsDuringTurn('/ps', [{ name: 'ps' }]), false);
   });
 
   test('the local panel is retained as a fallback', () => {

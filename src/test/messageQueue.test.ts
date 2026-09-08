@@ -176,55 +176,72 @@ suite('messageQueue.agentSupportsSteering', () => {
 /**
  * Which slash commands may be sent while a turn is streaming.
  *
- * handleSend used to exempt EVERY slash command from the queue:
+ * handleSend used to exempt EVERY slash command from the send queue:
  *
  *   if (isProcessing && !text.startsWith('/')) { handleQueue(); return; }
  *
- * That exemption was added for read-only commands, but it also let mutating
- * ones straight into a live turn — including /compact and /clear, which return
- * false from handleLocalSlashCommand while isProcessing precisely so the caller
- * WOULD queue them. Their own comment says "the queued /compact is drained after
- * the current turn ends", and drainQueue/queueDrainStartedTurn are already built
- * for it; only the gate was wrong.
+ * That exemption was added for read-only commands, but it also let mutating ones
+ * straight into a live turn — including /compact and /clear, which return false
+ * from handleLocalSlashCommand while isProcessing precisely so the caller WOULD
+ * queue them.
  *
- * The helper mirrors classifySlashCommandTurnSafety() in ericli's acp-server.ts.
- * Polarity matters: it enumerates the SAFE commands, so an unknown or newly
- * added command is queued rather than fired into a live turn.
+ * The decision comes ONLY from the agent's own _meta.turnSafe declaration. A
+ * hardcoded name-keyed table used to back this up and was removed as unsound:
+ * command names are not portable between agents. /tools exists only on ericli;
+ * /skills is a read-only listing on ericli and codex-acp, but codex-acp's
+ * isReadOnlyCommand covers only ps/status so anything else interrupts the turn;
+ * and /goal resume flips a flag on ericli while codex-acp's resumeGoal() STARTS a
+ * turn. Guessing from the name destroys the user's streaming answer.
  */
 suite('messageQueue.slashCommandRunsDuringTurn', () => {
   const slashCommandRunsDuringTurn = extractFunction('slashCommandRunsDuringTurn', [
     'turnSafeDeclaration',
   ]);
 
-  test('read-only whole commands run during a turn', () => {
+  // ericli's advertised shapes, from turnSafeMetaFor() in acp-server.ts.
+  const ERICLI = [
+    { name: 'tools', _meta: { turnSafe: true } },
+    { name: 'stats', _meta: { turnSafe: true } },
+    { name: 'usage', _meta: { turnSafe: true } },
+    { name: 'diagnose', _meta: { turnSafe: true } },
+    { name: 'ps', _meta: { turnSafe: true } },
+    { name: 'a2a', _meta: { turnSafe: ['', 'list', 'help', 'inspect', 'status', 'register', 'cancel'] } },
+    { name: 'skills', _meta: { turnSafe: ['', 'list', 'info', 'search', 'paths', 'help'] } },
+    { name: 'index', _meta: { turnSafe: ['', 'status', 'search', 'query'] } },
+    { name: 'goal', _meta: { turnSafe: { exactArgs: ['', 'clear', 'stop', 'off', 'reset', 'none', 'cancel', 'pause', 'resume'] } } },
+    { name: 'clear' },
+    { name: 'compact' },
+  ];
+
+  test('declared read-only whole commands run during a turn', () => {
     for (const cmd of ['/tools', '/stats', '/usage', '/diagnose', '/ps']) {
-      assert.strictEqual(slashCommandRunsDuringTurn(cmd), true, cmd);
+      assert.strictEqual(slashCommandRunsDuringTurn(cmd, ERICLI), true, cmd);
     }
   });
 
-  test('read-only subcommands run during a turn', () => {
+  test('declared read-only subcommands run during a turn', () => {
     for (const cmd of [
       '/a2a',
       '/a2a list',
       '/a2a help',
       '/a2a inspect http://host:41241',
       '/a2a status task-7',
+      '/a2a register http://host:41241',
+      '/a2a register local test1',
+      '/a2a cancel task-7',
       '/skills',
       '/skills list',
       '/skills info commit-message',
-      '/skills search "code review"',
-      '/skills paths',
       '/index status',
       '/index search authenticate',
-      '/index query authenticate',
     ]) {
-      assert.strictEqual(slashCommandRunsDuringTurn(cmd), true, cmd);
+      assert.strictEqual(slashCommandRunsDuringTurn(cmd, ERICLI), true, cmd);
     }
   });
 
   test('history-mutating commands are queued', () => {
     for (const cmd of ['/compact', '/summarize', '/compress now', '/clear']) {
-      assert.strictEqual(slashCommandRunsDuringTurn(cmd), false, cmd);
+      assert.strictEqual(slashCommandRunsDuringTurn(cmd, ERICLI), false, cmd);
     }
   });
 
@@ -238,62 +255,22 @@ suite('messageQueue.slashCommandRunsDuringTurn', () => {
       '/index clear',
       '/skills reload',
     ]) {
-      assert.strictEqual(slashCommandRunsDuringTurn(cmd), false, cmd);
-    }
-  });
-
-  test('a2a register and cancel run during a turn — they start no turn', () => {
-    // register is fire-and-forget (registry entry + spawn notification) and
-    // cancel only aborts a task controller. Queueing them just delays the
-    // backend spawn; the new agent reaches the model on the next turn via the
-    // A2A prompt fragment, rebuilt from the registry each turn.
-    for (const cmd of [
-      '/a2a register http://host:41241',
-      '/a2a register local helper',
-      '/a2a register local test1',
-      '/a2a cancel task-7',
-    ]) {
-      assert.strictEqual(slashCommandRunsDuringTurn(cmd), true, cmd);
+      assert.strictEqual(slashCommandRunsDuringTurn(cmd, ERICLI), false, cmd);
     }
   });
 
   test('only a2a call and unregister are queued', () => {
-    for (const cmd of [
-      // streams tool_call + agent_message_chunk into the session
-      '/a2a call reviewer "audit this diff"',
-      // subtractive — may break an in-flight delegation
-      '/a2a unregister helper',
-    ]) {
-      assert.strictEqual(slashCommandRunsDuringTurn(cmd), false, cmd);
+    for (const cmd of ['/a2a call reviewer "audit this diff"', '/a2a unregister helper']) {
+      assert.strictEqual(slashCommandRunsDuringTurn(cmd, ERICLI), false, cmd);
     }
   });
 
-  test('unknown commands are queued — they reach the LLM and need a turn', () => {
-    assert.strictEqual(slashCommandRunsDuringTurn('/notacommand'), false);
-    assert.strictEqual(slashCommandRunsDuringTurn('/a2a frobnicate'), false);
-    assert.strictEqual(slashCommandRunsDuringTurn('/index vacuum'), false);
-    assert.strictEqual(slashCommandRunsDuringTurn('/$imagegen a cat'), false);
-  });
-
   test('/goal control forms run during a turn, objectives are queued', () => {
-    // /goal compares its WHOLE argument, so the classifier must too: "pause"
-    // pauses the goal, "pause the deployment" is an objective that reaches the
-    // LLM. A first-token check would wave the objective through and abort the
-    // running turn. The control forms are already reachable mid-turn via the
-    // goal chip's goal_control RPC, which never goes through prompt().
     for (const cmd of [
-      '/goal',
-      '/goal clear',
-      '/goal stop',
-      '/goal off',
-      '/goal reset',
-      '/goal none',
-      '/goal cancel',
-      '/goal pause',
-      '/goal resume',
-      '/goal PAUSE',
+      '/goal', '/goal clear', '/goal stop', '/goal off', '/goal reset',
+      '/goal none', '/goal cancel', '/goal pause', '/goal resume', '/goal PAUSE',
     ]) {
-      assert.strictEqual(slashCommandRunsDuringTurn(cmd), true, cmd);
+      assert.strictEqual(slashCommandRunsDuringTurn(cmd, ERICLI), true, cmd);
     }
     for (const cmd of [
       '/goal ship the release',
@@ -301,36 +278,46 @@ suite('messageQueue.slashCommandRunsDuringTurn', () => {
       '/goal clear the backlog',
       '/goal resume after lunch',
     ]) {
-      assert.strictEqual(slashCommandRunsDuringTurn(cmd), false, cmd);
+      assert.strictEqual(slashCommandRunsDuringTurn(cmd, ERICLI), false, cmd);
+    }
+  });
+
+  test('unknown and undeclared commands are queued', () => {
+    assert.strictEqual(slashCommandRunsDuringTurn('/notacommand', ERICLI), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/a2a frobnicate', ERICLI), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/index vacuum', ERICLI), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/$imagegen a cat', ERICLI), false);
+  });
+
+  test('an agent that declares NOTHING gets everything queued', () => {
+    // codex-acp / claude-code-acp / pi-acp today. Safe failure: the command
+    // still runs, just after the turn, with a visible queue chip. Guessing from
+    // the name would interrupt their turns — codex-acp's /goal resume starts a
+    // turn, and /tools is not even a command there.
+    const undeclared = [{ name: 'ps' }, { name: 'status' }, { name: 'goal' }, { name: 'skills' }];
+    for (const cmd of ['/ps', '/status', '/goal resume', '/skills', '/tools']) {
+      assert.strictEqual(slashCommandRunsDuringTurn(cmd, undeclared), false, cmd);
     }
   });
 
   test('non-slash input is not a slash command', () => {
-    assert.strictEqual(slashCommandRunsDuringTurn('fix the bug'), false);
-    assert.strictEqual(slashCommandRunsDuringTurn(''), false);
-    assert.strictEqual(slashCommandRunsDuringTurn(undefined), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('fix the bug', ERICLI), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('', ERICLI), false);
+    assert.strictEqual(slashCommandRunsDuringTurn(undefined, ERICLI), false);
   });
 
   test('is case-insensitive on command and subcommand', () => {
-    assert.strictEqual(slashCommandRunsDuringTurn('/TOOLS'), true);
-    assert.strictEqual(slashCommandRunsDuringTurn('/A2A List'), true);
-    assert.strictEqual(slashCommandRunsDuringTurn('/INDEX BUILD'), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/TOOLS', ERICLI), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/A2A List', ERICLI), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/INDEX BUILD', ERICLI), false);
   });
 
   test('classifies on the first line, ignoring the appended memory block', () => {
-    // The host appends its memory block after the command text (deliberately,
-    // so an adapter's startsWith('/') check still matches).
     const memory = '\nvscode-acp:///memory/ericli\n<context ref="vscode-acp:///memory/ericli">';
-    assert.strictEqual(slashCommandRunsDuringTurn('/a2a list' + memory), true);
-    assert.strictEqual(slashCommandRunsDuringTurn('/tools' + memory), true);
-    assert.strictEqual(slashCommandRunsDuringTurn('/index build' + memory), false);
-    assert.strictEqual(slashCommandRunsDuringTurn('/clear' + memory), false);
-  });
-
-  test('inherited Object properties are not mistaken for commands', () => {
-    assert.strictEqual(slashCommandRunsDuringTurn('/constructor'), false);
-    assert.strictEqual(slashCommandRunsDuringTurn('/a2a constructor'), false);
-    assert.strictEqual(slashCommandRunsDuringTurn('/a2a toString'), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/a2a list' + memory, ERICLI), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/tools' + memory, ERICLI), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/index build' + memory, ERICLI), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/clear' + memory, ERICLI), false);
   });
 });
 

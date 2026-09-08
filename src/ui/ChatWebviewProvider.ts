@@ -7074,84 +7074,59 @@ function turnSafeDeclaration(cmdName, commands) {
 }
 
 function slashCommandRunsDuringTurn(text, commands) {
-  // NOTE: this block lives inside the webview HTML template literal, so every
-  // backslash must be DOUBLED (see queueIsMutatingCommand above). The newline
-  // split uses String.fromCharCode(10) rather than an escape for the same
-  // reason.
+  // NOTE: inside the webview HTML template literal — backslashes must be
+  // DOUBLED (see queueIsMutatingCommand above).
   //
-  // Which slash commands may be sent WHILE a turn is streaming.
+  // May this slash command be sent WHILE a turn is streaming?
   //
-  // Resolution order:
-  //   1. the AGENT's declaration (AvailableCommand._meta.turnSafe) — so a new
-  //      ACP agent needs NO change here to be handled correctly;
-  //   2. the built-in table below, a compatibility fallback for agents that do
-  //      not declare it yet (codex-acp, claude-code-acp). It mirrors
-  //      classifySlashCommandTurnSafety() in ericli's src/acp/acp-server.ts,
-  //      which is also the source ericli derives its _meta from;
-  //   3. queued.
+  // ONLY the agent's own declaration counts: AvailableCommand._meta.turnSafe,
+  // which ACP reserves for exactly this kind of metadata. Everything else is
+  // queued and drains after the turn ends.
   //
-  // Polarity is deliberate at every level: SAFE is what gets enumerated and
-  // everything else returns false, so an unknown or newly added command is
-  // QUEUED rather than fired into a live turn. ericli treats unrecognized
-  // commands as ordinary prompts (they reach the LLM), which needs a turn of its
-  // own. /compact and /clear always intended to be queued — they return false
-  // from handleLocalSlashCommand while isProcessing, expecting the caller to
-  // queue them — but the blanket "slash commands pass during streaming"
-  // exemption in handleSend used to send them straight into the live turn.
+  // There used to be a hardcoded name-keyed table here as a fallback. It was
+  // unsound, because slash-command names are NOT portable across agents — the
+  // same name means different things and has different turn semantics:
   //
-  // The tables are declared inline so the function stays self-contained and can
-  // be extracted verbatim by the unit tests (see messageQueue.test.ts).
-  var whole = { '/tools': 1, '/stats': 1, '/usage': 1, '/diagnose': 1, '/ps': 1 };
-  var subs = {
-    // register is fire-and-forget (registry entry + spawn notification) and
-    // cancel only aborts a task controller — neither starts an LLM turn nor
-    // streams into the session, so queueing them just delays backend work. Only
-    // "call" (streams tool_call + agent_message_chunk) and "unregister"
-    // (subtractive, may break an in-flight delegation) need the turn.
-    '/a2a': { '': 1, 'list': 1, 'help': 1, 'inspect': 1, 'status': 1, 'register': 1, 'cancel': 1 },
-    '/skills': { '': 1, 'list': 1, 'info': 1, 'search': 1, 'paths': 1, 'help': 1 },
-    '/index': { '': 1, 'status': 1, 'search': 1, 'query': 1 }
-  };
-  // Matched against the WHOLE argument, not the first token. /goal compares
-  // args.join(' '), so "/goal pause" is a control form but "/goal pause the
-  // deployment" is an objective that reaches the LLM. The control forms only
-  // mutate goal state and publish a snapshot — vscode-acp's own goal chip
-  // already performs them mid-turn via the goal_control RPC.
-  var exactArgs = {
-    '/goal': { '': 1, 'clear': 1, 'stop': 1, 'off': 1, 'reset': 1, 'none': 1, 'cancel': 1, 'pause': 1, 'resume': 1 }
-  };
-  var owns = function(obj, key) { return Object.prototype.hasOwnProperty.call(obj, key); };
+  //   /tools        ericli only; on codex-acp it is not a command at all, so it
+  //                 reaches the LLM and needs a turn of its own
+  //   /skills       read-only listing on ericli AND codex-acp, but codex-acp's
+  //                 isReadOnlyCommand covers only ps/status, so anything else
+  //                 hits interruptSessionTurn() and kills the running turn
+  //   /goal resume  flips a status flag on ericli; on codex-acp it calls
+  //                 resumeGoal() and STARTS A TURN
+  //
+  // A table keyed on the name therefore cannot be right for every agent, and
+  // being wrong here destroys the user's streaming answer. Declarations are the
+  // only sound source, and they also scale: a new agent needs no change here.
+  //
+  // Queuing an undeclared command is the safe failure — the command still runs,
+  // just after the current turn, with a visible queue chip.
+  if (!text) { return false; }
   // First line only: the extension host appends its memory block AFTER the
   // command text, so the raw value can be "/a2a list" + newline +
   // "vscode-acp:///memory/…". Tokenizing the whole blob would read the memory
   // URI as the subcommand.
-  var firstLine = String(text || '').split(String.fromCharCode(10))[0].trim();
+  var firstLine = String(text).split(String.fromCharCode(10))[0].trim();
   if (firstLine.charAt(0) !== '/') { return false; }
   // /$name is a skill invocation passed through to the LLM as a raw prompt.
   if (firstLine.indexOf('/$') === 0) { return false; }
   var tokens = firstLine.split(/\\s+/);
   var cmd = (tokens[0] || '').toLowerCase();
-  var sub = (tokens[1] || '').toLowerCase();
-  var rest = tokens.slice(1).join(' ').toLowerCase();
+  var declared = turnSafeDeclaration(cmd, commands);
+  if (declared === true) { return true; }
   var listHas = function(list, value) {
     for (var k = 0; k < list.length; k++) {
       if (String(list[k]).toLowerCase() === value) { return true; }
     }
     return false;
   };
-  // 1. The agent's own declaration wins — no client-side list needed.
-  var declared = turnSafeDeclaration(cmd, commands);
-  if (declared === true) { return true; }
-  if (declared && declared.subs) { return listHas(declared.subs, sub); }
-  if (declared && declared.exact) { return listHas(declared.exact, rest); }
-  // 2. Fallback for agents that do not declare turn safety yet.
-  if (owns(whole, cmd)) { return true; }
-  // Whole-argument match before the first-token one — /goal compares its ENTIRE
-  // argument, so "/goal pause" pauses while "/goal pause the deployment" is an
-  // objective that reaches the LLM and needs its own turn.
-  if (owns(exactArgs, cmd)) { return owns(exactArgs[cmd], rest); }
-  if (!owns(subs, cmd)) { return false; }
-  return owns(subs[cmd], sub);
+  // Matched against the FIRST argument token ('' = bare command).
+  if (declared && declared.subs) { return listHas(declared.subs, (tokens[1] || '').toLowerCase()); }
+  // Matched against the WHOLE argument — needed where the full string decides,
+  // e.g. ericli's /goal: "pause" pauses, "pause the deployment" is an objective
+  // that reaches the LLM.
+  if (declared && declared.exact) { return listHas(declared.exact, tokens.slice(1).join(' ').toLowerCase()); }
+  return false;
 }
 
 function commandListHasCommand(list, name) {
