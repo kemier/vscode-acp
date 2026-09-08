@@ -44,22 +44,29 @@ function asRenderedWebview(srcText: string): string {
   return srcText.replace(/\\\\/g, '\\');
 }
 
-function extractFunction(name: string): (...args: any[]) => any {
+function extractFunction(name: string, deps: string[] = []): (...args: any[]) => any {
   const src = fs.readFileSync(SOURCE, 'utf8');
-  const startIdx = src.indexOf('function ' + name + '(');
-  assert.ok(startIdx >= 0, name + ' not found in ChatWebviewProvider.ts');
-  const bodyStart = src.indexOf('{', startIdx);
-  let depth = 1;
-  let i = bodyStart + 1;
-  for (; i < src.length && depth > 0; i++) {
-    if (src[i] === '{') {
-      depth++;
-    } else if (src[i] === '}') {
-      depth--;
+  const slice = (fnName: string): string => {
+    const startIdx = src.indexOf('function ' + fnName + '(');
+    assert.ok(startIdx >= 0, fnName + ' not found in ChatWebviewProvider.ts');
+    const bodyStart = src.indexOf('{', startIdx);
+    let depth = 1;
+    let i = bodyStart + 1;
+    for (; i < src.length && depth > 0; i++) {
+      if (src[i] === '{') {
+        depth++;
+      } else if (src[i] === '}') {
+        depth--;
+      }
     }
-  }
-  const fnSrc = src.slice(startIdx, i);
-  return new Function('return (' + asRenderedWebview(fnSrc) + ')')() as (...args: any[]) => any;
+    return src.slice(startIdx, i);
+  };
+  // Helper functions the extracted one calls are declared first, so the
+  // returned function resolves them.
+  const preamble = deps.map((d) => asRenderedWebview(slice(d))).join('\n');
+  return new Function(
+    preamble + '\nreturn (' + asRenderedWebview(slice(name)) + ')',
+  )() as (...args: any[]) => any;
 }
 
 suite('webview template-literal escape parity', () => {
@@ -71,7 +78,7 @@ suite('webview template-literal escape parity', () => {
     // This test proves the fix: after doubling every backslash, the rendered
     // form is parseable and behaves identically.
     const src = fs.readFileSync(SOURCE, 'utf8');
-    for (const name of ['queueIsMutatingCommand', 'queueDrainStartedTurn', 'agentSupportsSteering', 'slashCommandRunsDuringTurn', 'commandListHasCommand']) {
+    for (const name of ['queueIsMutatingCommand', 'queueDrainStartedTurn', 'agentSupportsSteering', 'slashCommandRunsDuringTurn', 'commandListHasCommand', 'turnSafeDeclaration', 'parseSubcommandHints', 'subcommandHintsForCommand']) {
       const startIdx = src.indexOf('function ' + name + '(');
       assert.ok(startIdx >= 0, name + ' not found in ChatWebviewProvider.ts');
       const bodyStart = src.indexOf('{', startIdx);
@@ -185,7 +192,9 @@ suite('messageQueue.agentSupportsSteering', () => {
  * added command is queued rather than fired into a live turn.
  */
 suite('messageQueue.slashCommandRunsDuringTurn', () => {
-  const slashCommandRunsDuringTurn = extractFunction('slashCommandRunsDuringTurn');
+  const slashCommandRunsDuringTurn = extractFunction('slashCommandRunsDuringTurn', [
+    'turnSafeDeclaration',
+  ]);
 
   test('read-only whole commands run during a turn', () => {
     for (const cmd of ['/tools', '/stats', '/usage', '/diagnose', '/ps']) {
@@ -282,14 +291,134 @@ suite('messageQueue.slashCommandRunsDuringTurn', () => {
   });
 });
 
+/**
+ * Agent-declared turn safety (AvailableCommand._meta.turnSafe).
+ *
+ * The built-in table above cannot scale: it names ericli's commands, so every
+ * new ACP agent would need it extended by hand. ACP reserves `_meta` on
+ * AvailableCommand for agent-supplied metadata, so an agent declares its own
+ * read-only commands and the client just reads them — the table drops to a
+ * compatibility fallback for agents that do not declare (codex-acp,
+ * claude-code-acp today).
+ *
+ * ericli derives the declared value from the same tables its dispatch uses (see
+ * turnSafeMetaFor in src/acp/acp-server.ts), so the wire value and the agent's
+ * behaviour cannot drift.
+ */
+suite('messageQueue.turnSafeDeclaration', () => {
+  const turnSafeDeclaration = extractFunction('turnSafeDeclaration');
+
+  test('reads a whole-command declaration', () => {
+    const cmds = [{ name: 'frobnicate', _meta: { turnSafe: true } }];
+    assert.strictEqual(turnSafeDeclaration('frobnicate', cmds), true);
+  });
+
+  test('reads a subcommand-list declaration', () => {
+    const cmds = [{ name: 'widget', _meta: { turnSafe: ['', 'list', 'show'] } }];
+    assert.deepStrictEqual(turnSafeDeclaration('widget', cmds), ['', 'list', 'show']);
+  });
+
+  test('returns null when the agent declares nothing, so the caller falls back', () => {
+    assert.strictEqual(turnSafeDeclaration('ps', [{ name: 'ps' }]), null);
+    assert.strictEqual(turnSafeDeclaration('ps', [{ name: 'ps', _meta: {} }]), null);
+    assert.strictEqual(turnSafeDeclaration('ps', [{ name: 'ps', _meta: null }]), null);
+  });
+
+  test('returns null for an unknown command or empty list', () => {
+    assert.strictEqual(turnSafeDeclaration('nope', [{ name: 'ps', _meta: { turnSafe: true } }]), null);
+    assert.strictEqual(turnSafeDeclaration('ps', []), null);
+    assert.strictEqual(turnSafeDeclaration('ps', null), null);
+    assert.strictEqual(turnSafeDeclaration('', [{ name: 'ps', _meta: { turnSafe: true } }]), null);
+  });
+
+  test('tolerates a leading slash, mixed case and malformed entries', () => {
+    const cmds = [null, {}, { name: null }, { name: '/PS', _meta: { turnSafe: true } }];
+    assert.strictEqual(turnSafeDeclaration('/ps', cmds as any), true);
+  });
+
+  test('a non-boolean, non-array declaration is ignored rather than trusted', () => {
+    // Implementations MUST NOT make assumptions about _meta values (ACP).
+    assert.strictEqual(turnSafeDeclaration('x', [{ name: 'x', _meta: { turnSafe: 'yes' } }]), null);
+    assert.strictEqual(turnSafeDeclaration('x', [{ name: 'x', _meta: { turnSafe: 1 } }]), null);
+    assert.strictEqual(turnSafeDeclaration('x', [{ name: 'x', _meta: { turnSafe: false } }]), null);
+  });
+});
+
+suite('slashCommandRunsDuringTurn honours the agent declaration', () => {
+  const slashCommandRunsDuringTurn = extractFunction('slashCommandRunsDuringTurn', [
+    'turnSafeDeclaration',
+  ]);
+
+  test('an agent-only command works with NO entry in the built-in table', () => {
+    // The whole point: a future agent's command needs no client change.
+    const cmds = [{ name: 'inspect-cluster', _meta: { turnSafe: true } }];
+    assert.strictEqual(slashCommandRunsDuringTurn('/inspect-cluster', cmds), true);
+    // Same command, undeclared → queued, because the table has never heard of it.
+    assert.strictEqual(slashCommandRunsDuringTurn('/inspect-cluster', [{ name: 'inspect-cluster' }]), false);
+  });
+
+  test('a declared subcommand list is applied per subcommand', () => {
+    const cmds = [{ name: 'db', _meta: { turnSafe: ['', 'status', 'show'] } }];
+    assert.strictEqual(slashCommandRunsDuringTurn('/db', cmds), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/db status', cmds), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/db SHOW', cmds), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/db migrate', cmds), false);
+  });
+
+  test('the declaration overrides the built-in table in BOTH directions', () => {
+    // An agent whose /tools is expensive can say so, and we must believe it.
+    assert.strictEqual(
+      slashCommandRunsDuringTurn('/tools', [{ name: 'tools', _meta: { turnSafe: [] } }]),
+      false,
+    );
+    // An agent whose /clear is genuinely read-only likewise.
+    assert.strictEqual(
+      slashCommandRunsDuringTurn('/clear', [{ name: 'clear', _meta: { turnSafe: true } }]),
+      true,
+    );
+  });
+
+  test('ericli-shaped declarations reproduce the table exactly', () => {
+    // Verbatim shapes from ericli's turnSafeMetaFor().
+    const ericli = [
+      { name: 'tools', _meta: { turnSafe: true } },
+      { name: 'ps', _meta: { turnSafe: true } },
+      { name: 'a2a', _meta: { turnSafe: ['', 'list', 'help', 'inspect', 'status'] } },
+      { name: 'index', _meta: { turnSafe: ['', 'status', 'search', 'query'] } },
+      { name: 'clear' },
+      { name: 'compact' },
+    ];
+    assert.strictEqual(slashCommandRunsDuringTurn('/tools', ericli), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/a2a list', ericli), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/a2a register local x', ericli), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/index search foo', ericli), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/index build', ericli), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/clear', ericli), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/compact', ericli), false);
+  });
+
+  test('the memory block appended by the host does not defeat the declaration', () => {
+    const cmds = [{ name: 'a2a', _meta: { turnSafe: ['', 'list'] } }];
+    assert.strictEqual(
+      slashCommandRunsDuringTurn('/a2a list\nvscode-acp:///memory/ericli', cmds),
+      true,
+    );
+    assert.strictEqual(
+      slashCommandRunsDuringTurn('/a2a call bot "go"\nvscode-acp:///memory/ericli', cmds),
+      false,
+    );
+  });
+});
+
 suite('handleSend queues everything except turn-safe slash commands', () => {
   test('the send gate consults slashCommandRunsDuringTurn', () => {
     const src = fs.readFileSync(SOURCE, 'utf8');
     assert.ok(
       src.includes(
-        "if (isProcessing && (!text.startsWith('/') || !slashCommandRunsDuringTurn(text))) {",
+        "if (isProcessing && (!text.startsWith('/') || !slashCommandRunsDuringTurn(text, availableCommands))) {",
       ),
-      'handleSend must queue a mid-turn slash command unless it is turn-safe. The old ' +
+      'handleSend must queue a mid-turn slash command unless it is turn-safe, and must ' +
+        "pass the agent's advertised commands so _meta.turnSafe is honoured. The old " +
         "blanket `!text.startsWith('/')` exemption sent /compact, /clear and /index build " +
         'straight into the streaming turn.',
     );

@@ -33,22 +33,26 @@ function asRenderedWebview(srcText: string): string {
   return srcText.replace(/\\\\/g, '\\');
 }
 
-function extractFunction(name: string): (...args: any[]) => any {
+function extractFunction(name: string, deps: string[] = []): (...args: any[]) => any {
   const src = fs.readFileSync(SOURCE, 'utf8');
-  const startIdx = src.indexOf('function ' + name + '(');
-  assert.ok(startIdx >= 0, name + ' not found in ChatWebviewProvider.ts');
-  const bodyStart = src.indexOf('{', startIdx);
-  let depth = 1;
-  let i = bodyStart + 1;
-  for (; i < src.length && depth > 0; i++) {
-    if (src[i] === '{') {
-      depth++;
-    } else if (src[i] === '}') {
-      depth--;
+  const slice = (fnName: string): string => {
+    const startIdx = src.indexOf('function ' + fnName + '(');
+    assert.ok(startIdx >= 0, fnName + ' not found in ChatWebviewProvider.ts');
+    const bodyStart = src.indexOf('{', startIdx);
+    let depth = 1;
+    let i = bodyStart + 1;
+    for (; i < src.length && depth > 0; i++) {
+      if (src[i] === '{') {
+        depth++;
+      } else if (src[i] === '}') {
+        depth--;
+      }
     }
-  }
+    return src.slice(startIdx, i);
+  };
+  const preamble = deps.map((d) => asRenderedWebview(slice(d))).join('\n');
   return new Function(
-    'return (' + asRenderedWebview(src.slice(startIdx, i)) + ')',
+    preamble + '\nreturn (' + asRenderedWebview(slice(name)) + ')',
   )() as (...args: any[]) => any;
 }
 
@@ -132,12 +136,19 @@ suite('/ps defers to the agent when the agent implements it', () => {
   });
 
   test('/ps is still turn-safe, so the handoff works mid-turn too', () => {
-    const slashCommandRunsDuringTurn = extractFunction('slashCommandRunsDuringTurn');
+    const slashCommandRunsDuringTurn = extractFunction('slashCommandRunsDuringTurn', [
+      'turnSafeDeclaration',
+    ]);
     assert.strictEqual(
-      slashCommandRunsDuringTurn('/ps'),
+      slashCommandRunsDuringTurn('/ps', []),
       true,
       '/ps must stay turn-safe: deferring it to the agent is only an improvement ' +
         'if it is still answered immediately while a turn streams',
+    );
+    // And when the agent declares it explicitly.
+    assert.strictEqual(
+      slashCommandRunsDuringTurn('/ps', [{ name: 'ps', _meta: { turnSafe: true } }]),
+      true,
     );
   });
 

@@ -7036,26 +7036,60 @@ function queueIsMutatingCommand(text) {
     /^\\/index\\s+(build|rebuild|refresh|update|embed|clear|delete)\\b/i.test(text);
 }
 
-function slashCommandRunsDuringTurn(text) {
+function turnSafeDeclaration(cmdName, commands) {
+  // NOTE: inside the webview HTML template literal — backslashes must be
+  // DOUBLED (see queueIsMutatingCommand above).
+  //
+  // Read the agent's own declaration of whether a command is read-only, from
+  // AvailableCommand._meta.turnSafe (ACP reserves _meta for exactly this).
+  // Shapes, as emitted by ericli's turnSafeMetaFor():
+  //   true       the whole command is read-only (/tools, /ps, …)
+  //   string[]   only these subcommands are; '' covers the bare command
+  //   absent     the agent says nothing — caller falls back to its own table
+  //
+  // This is what keeps the client from needing a hardcoded list per agent: the
+  // built-in table below only has to cover agents that do NOT declare, and new
+  // agents work with no client change at all.
+  if (!commands || !commands.length) { return null; }
+  var target = String(cmdName || '').toLowerCase().replace(/^\\//, '');
+  if (!target) { return null; }
+  for (var i = 0; i < commands.length; i++) {
+    var c = commands[i];
+    var n = (c && c.name) ? String(c.name).toLowerCase().replace(/^\\//, '') : '';
+    if (n !== target) { continue; }
+    var declared = (c && c._meta) ? c._meta.turnSafe : undefined;
+    if (declared === true) { return true; }
+    if (Array.isArray(declared)) { return declared; }
+    return null;
+  }
+  return null;
+}
+
+function slashCommandRunsDuringTurn(text, commands) {
   // NOTE: this block lives inside the webview HTML template literal, so every
   // backslash must be DOUBLED (see queueIsMutatingCommand above). The newline
   // split uses String.fromCharCode(10) rather than an escape for the same
   // reason.
   //
-  // Which slash commands may be sent WHILE a turn is streaming. Mirrors
-  // classifySlashCommandTurnSafety() in ericli's src/acp/acp-server.ts: these
-  // are the commands ericli answers from a read-only snapshot, above its
-  // abortInFlightTurn(), so sending one mid-turn does not disturb the streaming
-  // answer. Everything else is queued and drains after the turn ends — which is
-  // what /compact and /clear always intended (they return false from
-  // handleLocalSlashCommand while isProcessing, expecting the caller to queue
-  // them), but the blanket "slash commands pass during streaming" exemption in
-  // handleSend used to send them straight into the live turn instead.
+  // Which slash commands may be sent WHILE a turn is streaming.
   //
-  // Polarity is deliberate: SAFE commands are enumerated and everything else
-  // returns false, so an unknown or newly added command is QUEUED rather than
-  // fired into a live turn. ericli treats unrecognized commands as ordinary
-  // prompts (they reach the LLM), which needs a turn of its own.
+  // Resolution order:
+  //   1. the AGENT's declaration (AvailableCommand._meta.turnSafe) — so a new
+  //      ACP agent needs NO change here to be handled correctly;
+  //   2. the built-in table below, a compatibility fallback for agents that do
+  //      not declare it yet (codex-acp, claude-code-acp). It mirrors
+  //      classifySlashCommandTurnSafety() in ericli's src/acp/acp-server.ts,
+  //      which is also the source ericli derives its _meta from;
+  //   3. queued.
+  //
+  // Polarity is deliberate at every level: SAFE is what gets enumerated and
+  // everything else returns false, so an unknown or newly added command is
+  // QUEUED rather than fired into a live turn. ericli treats unrecognized
+  // commands as ordinary prompts (they reach the LLM), which needs a turn of its
+  // own. /compact and /clear always intended to be queued — they return false
+  // from handleLocalSlashCommand while isProcessing, expecting the caller to
+  // queue them — but the blanket "slash commands pass during streaming"
+  // exemption in handleSend used to send them straight into the live turn.
   //
   // The tables are declared inline so the function stays self-contained and can
   // be extracted verbatim by the unit tests (see messageQueue.test.ts).
@@ -7076,9 +7110,20 @@ function slashCommandRunsDuringTurn(text) {
   if (firstLine.indexOf('/$') === 0) { return false; }
   var tokens = firstLine.split(/\\s+/);
   var cmd = (tokens[0] || '').toLowerCase();
+  var sub = (tokens[1] || '').toLowerCase();
+  // 1. The agent's own declaration wins — no client-side list needed.
+  var declared = turnSafeDeclaration(cmd, commands);
+  if (declared === true) { return true; }
+  if (declared) {
+    for (var d = 0; d < declared.length; d++) {
+      if (String(declared[d]).toLowerCase() === sub) { return true; }
+    }
+    return false;
+  }
+  // 2. Fallback for agents that do not declare turn safety yet.
   if (owns(whole, cmd)) { return true; }
   if (!owns(subs, cmd)) { return false; }
-  return owns(subs[cmd], (tokens[1] || '').toLowerCase());
+  return owns(subs[cmd], sub);
 }
 
 function commandListHasCommand(list, name) {
@@ -9126,7 +9171,7 @@ function handleSend() {
    // concurrently, never dropped) — plain messages and mutating slash commands
    // alike (/compact, /clear, /index build, /goal, /a2a call). They drain one
    // per turn, FIFO, after the current turn's promptEnd.
-   if (isProcessing && (!text.startsWith('/') || !slashCommandRunsDuringTurn(text))) {
+   if (isProcessing && (!text.startsWith('/') || !slashCommandRunsDuringTurn(text, availableCommands))) {
      wvProbe('handleSend GUARD:isProcessing-queued', 'text=' + text.substring(0, 40));
      handleQueue();
      return;
