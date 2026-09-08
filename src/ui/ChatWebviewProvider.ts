@@ -1977,6 +1977,25 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // the webview. Flush synchronously before any other event so ordering
     // is preserved (text-then-tool-call shows up in that order).
     const updateKind = updateData?.sessionUpdate as string | undefined;
+    // Slash-command output must NOT be coalesced. The coalescer carries only
+    // (kind, text, messageId) and re-synthesises the chunk on flush, so
+    // _meta.commandOutput — the marker the webview uses to render it as a
+    // transient snapshot row instead of assistant text — would be dropped en
+    // route. Coalescing buys nothing here anyway: the agent sends the whole
+    // command result as ONE chunk, not a token stream.
+    //
+    // Flush first so ordering is preserved against any text already buffered for
+    // this session, then forward the update untouched.
+    if (updateKind === 'agent_message_chunk' && updateData?._meta?.commandOutput) {
+      this.streamCoalescer.flush(update.sessionId);
+      this.postMessage({
+        type: 'sessionUpdate',
+        update: update.update,
+        sessionId: update.sessionId,
+        isLoading: this.sessionManager.isLoading(update.sessionId),
+      });
+      return;
+    }
     if (
       (updateKind === 'agent_message_chunk' || updateKind === 'agent_thought_chunk') &&
       updateData?.content?.type === 'text' &&
@@ -5168,6 +5187,24 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    .message.ps-output .ps-cmd {
      color: #c586c0;  /* purple, matches codex TUI magenta */
      font-weight: 600;
+   }
+   /* Slash-command output: a transient SNAPSHOT (tool list, /a2a list, /goal
+      clear result), not conversation. Rendered as its own row OUTSIDE any turn
+      fold, and never entered into chatHistory — the agent deliberately does not
+      persist slash output, so this must vanish on reload too.
+      Presentation follows .message.ps-output: left-aligned, pre-wrap, editor
+      font, because the payload is terminal-style text rather than prose. */
+   .message.command-output {
+     align-self: flex-start;
+     color: var(--vscode-descriptionForeground);
+     font-size: 0.9em;
+     padding: 8px 10px;
+     margin: 2px 0;
+     white-space: pre-wrap;
+     font-family: var(--vscode-editor-font-family);
+     border-left: 2px solid var(--vscode-panelTitle-activeBorder, #c586c0);
+     opacity: 0.95;
+     font-style: normal;
    }
    .message.ps-output .ps-header {
      font-weight: 700;
@@ -11818,6 +11855,30 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          if (el.parentNode) { el.parentNode.removeChild(el); }
        }, 4000);
      }
+   }
+
+   /**
+    * Render slash-command output as its own transient row.
+    *
+    * A command answered mid-turn used to be adopted by the running turn: the
+    * chunk carried a new messageId, the webview committed the in-flight bubble,
+    * and in compact mode moveAssistantIntoFold() then demoted it into that
+    * turn's COLLAPSED fold. "/goal clear" and "/a2a register local x" therefore
+    * showed up inside an unrelated turn's collapsed block.
+    *
+    * This is a snapshot, not conversation, so it gets its own row appended
+    * straight to messagesEl — outside every turn container and fold — and is
+    * deliberately NOT pushed to chatHistory: the agent does not persist slash
+    * output, so it must not survive a reload here either. Unlike
+    * showTransientNotice there is no auto-remove, so a tool list is still
+    * readable a minute later.
+    */
+   function addCommandOutputRow(text) {
+     var el = addMessageDOM('system', text);
+     if (el) {
+       el.classList.add('command-output');
+     }
+     return el;
    }
 
    /**
@@ -19769,6 +19830,24 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       if (content && content.type === 'text' &&
           /^Effort set to (none|low|medium|high|xhigh|max)\\.?$/.test(content.text.trim())) {
         vscode.postMessage({ type: 'debugLog', message: '[WV-SLASH-ECHO] suppressed Kiro slash echo: "' + content.text.trim() + '"' });
+        break;
+      }
+      // Slash-command output is a SNAPSHOT, not conversation. The agent marks it
+      // with _meta.commandOutput (ericli: handleSlashCommand's epilogue, plus the
+      // goal-loop cap notice).
+      //
+      // Without this branch the chunk was treated as assistant text: it carried a
+      // new messageId, so the webview committed the in-flight bubble and — in
+      // compact mode — moveAssistantIntoFold() demoted it into the RUNNING turn's
+      // collapsed fold. "/goal clear" and "/a2a register local x" then appeared
+      // inside an unrelated turn's collapsed block instead of next to the command.
+      //
+      // Render it as its own row and stop: never touch currentAssistantEl,
+      // currentTurnEl or chatHistory. The agent does not persist slash output, so
+      // this row is transient by design and will not come back after a reload.
+      if (!isLoadingSession && content && content.type === 'text' &&
+          update._meta && update._meta.commandOutput) {
+        addCommandOutputRow(content.text);
         break;
       }
       // codex-acp internal retry boundary: a "retrying with backoff" notice
