@@ -7081,6 +7081,27 @@ function slashCommandRunsDuringTurn(text) {
   return owns(subs[cmd], (tokens[1] || '').toLowerCase());
 }
 
+function commandListHasCommand(list, name) {
+  // NOTE: inside the webview HTML template literal — backslashes must be
+  // DOUBLED (see queueIsMutatingCommand above).
+  //
+  // Does the connected agent advertise this slash command? Fed from
+  // available_commands_update. Used to decide whether a command the client can
+  // ALSO answer locally should be deferred to the agent instead.
+  //
+  // Agents advertise bare names ("ps"); a leading slash is stripped from both
+  // sides so either form works.
+  if (!list || !list.length) { return false; }
+  var target = String(name || '').toLowerCase().replace(/^\\//, '');
+  if (!target) { return false; }
+  for (var i = 0; i < list.length; i++) {
+    var entry = list[i];
+    var candidate = (entry && entry.name) ? String(entry.name).toLowerCase().replace(/^\\//, '') : '';
+    if (candidate === target) { return true; }
+  }
+  return false;
+}
+
 // Decide whether a drained message counts as "sent to the agent" (a turn will
 // start and the next queued message must wait for its promptEnd) or was
 // handled purely client-side (no turn, chain the next message immediately).
@@ -8836,8 +8857,24 @@ function handleLocalSlashCommand(cmdText) {
    }
    return true;
  }
- // /ps — list background terminal processes (client-side, like codex TUI)
+ // /ps — background processes.
+ //
+ // Prefer the AGENT's view whenever it advertises the command. codex-acp tracks
+ // background terminal processes, ericli tracks A2A tasks plus its own tracked
+ // tool calls, and claude-code-acp has its own dispatch — none of which appear
+ // in chatHistory, so the local panel below can never see them. It only scans
+ // rendered toolCall rows of THIS chat, which on a branch built around local
+ // a2a agents is the strictly poorer answer.
+ //
+ // Returning false lets the command fall through to the agent as a prompt.
+ // /ps is turn-safe (slashCommandRunsDuringTurn), so it is sent immediately
+ // even mid-turn and its output lands as a normal chat message.
+ //
+ // The local panel stays as the fallback for agents with no /ps of their own —
+ // pi-acp advertises compact/autocompact/export/session/name/steering/follow-up
+ // and nothing else.
  if (text === '/ps') {
+    if (commandListHasCommand(availableCommands, 'ps')) { return false; }
     promptInput.value = '';
     updateSendButton();
     pendingImages.splice(0);

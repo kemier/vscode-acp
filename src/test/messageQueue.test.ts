@@ -71,7 +71,7 @@ suite('webview template-literal escape parity', () => {
     // This test proves the fix: after doubling every backslash, the rendered
     // form is parseable and behaves identically.
     const src = fs.readFileSync(SOURCE, 'utf8');
-    for (const name of ['queueIsMutatingCommand', 'queueDrainStartedTurn', 'agentSupportsSteering', 'slashCommandRunsDuringTurn']) {
+    for (const name of ['queueIsMutatingCommand', 'queueDrainStartedTurn', 'agentSupportsSteering', 'slashCommandRunsDuringTurn', 'commandListHasCommand']) {
       const startIdx = src.indexOf('function ' + name + '(');
       assert.ok(startIdx >= 0, name + ' not found in ChatWebviewProvider.ts');
       const bodyStart = src.indexOf('{', startIdx);
