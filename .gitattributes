@@ -1,0 +1,15 @@
+# Force LF line endings for all text files (no CRLF anywhere).
+# This keeps the repo consistent across Windows/macOS/Linux contributors.
+* text=auto eol=lf
+
+# Binary files must never be touched by the line-ending normalization.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.vsix binary
+*.map binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
