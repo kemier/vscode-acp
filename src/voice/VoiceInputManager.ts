@@ -7,7 +7,7 @@ import { MciRecorder } from './MciRecorder';
 import { chooseRecorderBackend } from './chooseRecorderBackend';
 import { VoiceRecorder } from './VoiceRecorder';
 import { COMPANION_INSTALL_HINT, CompanionRecorder, companionAvailable } from './CompanionRecorder';
-import { transcribeAudio, warmupStt, SttConfig, SttError } from './SttClient';
+import { transcribeAudio, warmupStt, SttConfig, SttError, normalizeTranscriptWhitespace } from './SttClient';
 import { applyCorrections, textSimilarity, VoiceMemoryStore } from './VoiceMemory';
 import { correctTranscript, CorrectorConfig } from './CorrectorClient';
 import { analyzeWavFile, describeWav, judgeTake } from './WavInfo';
@@ -415,9 +415,15 @@ export class VoiceInputManager {
    * the retry command so both apply identical corrections.
    */
   private async deliverTranscript(rawText: string, settings: VoiceSettings): Promise<void> {
-    let text = applyCorrections(rawText, settings.corrections);
-    if (text !== rawText) {
-      log(`[voice] dictionary corrections applied: ${rawText.slice(0, 80)} → ${text.slice(0, 80)}`);
+    // Whisper often inserts `\n` / blank lines at pause boundaries; collapse
+    // those before dictionary/corrector so the composer stays one flow.
+    const normalized = normalizeTranscriptWhitespace(rawText);
+    let text = applyCorrections(normalized, settings.corrections);
+    if (normalized !== rawText) {
+      log(`[voice] whitespace normalized: ${rawText.slice(0, 80).replace(/\n/g, '\\n')} → ${normalized.slice(0, 80)}`);
+    }
+    if (text !== normalized) {
+      log(`[voice] dictionary corrections applied: ${normalized.slice(0, 80)} → ${text.slice(0, 80)}`);
     }
     if (settings.corrector.enabled && text.trim()) {
       const memory = await this.getStore(settings.memoryFile).loadMemory();

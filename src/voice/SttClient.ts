@@ -32,6 +32,27 @@ export interface SttConfig {
   timeoutMs: number;
 }
 
+/**
+ * Collapse Whisper pause/segment newlines into readable composer text.
+ *
+ * Long silences make whisper.cpp emit mid-utterance `\n` / blank lines, so the
+ * composer shows short broken lines. Strip empty lines, join with spaces, then
+ * remove spaces between CJK characters (Chinese dictation should not get
+ * "也可以 粘贴").
+ */
+export function normalizeTranscriptWhitespace(text: string): string {
+  const joined = String(text || '')
+    .replace(/\r\n/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .join(' ')
+    .replace(/[ \t]{2,}/g, ' ')
+    .trim();
+  // CJK Unified Ideographs + common punctuation neighbors
+  return joined.replace(/([\u3400-\u9fff\u3000-\u303f\uff00-\uffef])\s+(?=[\u3400-\u9fff\u3000-\u303f\uff00-\uffef])/g, '$1');
+}
+
 export class SttError extends Error {
   constructor(
     message: string,
