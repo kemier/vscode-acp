@@ -7036,6 +7036,51 @@ function queueIsMutatingCommand(text) {
     /^\\/index\\s+(build|rebuild|refresh|update|embed|clear|delete)\\b/i.test(text);
 }
 
+function slashCommandRunsDuringTurn(text) {
+  // NOTE: this block lives inside the webview HTML template literal, so every
+  // backslash must be DOUBLED (see queueIsMutatingCommand above). The newline
+  // split uses String.fromCharCode(10) rather than an escape for the same
+  // reason.
+  //
+  // Which slash commands may be sent WHILE a turn is streaming. Mirrors
+  // classifySlashCommandTurnSafety() in ericli's src/acp/acp-server.ts: these
+  // are the commands ericli answers from a read-only snapshot, above its
+  // abortInFlightTurn(), so sending one mid-turn does not disturb the streaming
+  // answer. Everything else is queued and drains after the turn ends — which is
+  // what /compact and /clear always intended (they return false from
+  // handleLocalSlashCommand while isProcessing, expecting the caller to queue
+  // them), but the blanket "slash commands pass during streaming" exemption in
+  // handleSend used to send them straight into the live turn instead.
+  //
+  // Polarity is deliberate: SAFE commands are enumerated and everything else
+  // returns false, so an unknown or newly added command is QUEUED rather than
+  // fired into a live turn. ericli treats unrecognized commands as ordinary
+  // prompts (they reach the LLM), which needs a turn of its own.
+  //
+  // The tables are declared inline so the function stays self-contained and can
+  // be extracted verbatim by the unit tests (see messageQueue.test.ts).
+  var whole = { '/tools': 1, '/stats': 1, '/usage': 1, '/diagnose': 1, '/ps': 1 };
+  var subs = {
+    '/a2a': { '': 1, 'list': 1, 'help': 1, 'inspect': 1, 'status': 1 },
+    '/skills': { '': 1, 'list': 1, 'info': 1, 'search': 1, 'paths': 1, 'help': 1 },
+    '/index': { '': 1, 'status': 1, 'search': 1, 'query': 1 }
+  };
+  var owns = function(obj, key) { return Object.prototype.hasOwnProperty.call(obj, key); };
+  // First line only: the extension host appends its memory block AFTER the
+  // command text, so the raw value can be "/a2a list" + newline +
+  // "vscode-acp:///memory/…". Tokenizing the whole blob would read the memory
+  // URI as the subcommand.
+  var firstLine = String(text || '').split(String.fromCharCode(10))[0].trim();
+  if (firstLine.charAt(0) !== '/') { return false; }
+  // /$name is a skill invocation passed through to the LLM as a raw prompt.
+  if (firstLine.indexOf('/$') === 0) { return false; }
+  var tokens = firstLine.split(/\\s+/);
+  var cmd = (tokens[0] || '').toLowerCase();
+  if (owns(whole, cmd)) { return true; }
+  if (!owns(subs, cmd)) { return false; }
+  return owns(subs[cmd], (tokens[1] || '').toLowerCase());
+}
+
 // Decide whether a drained message counts as "sent to the agent" (a turn will
 // start and the next queued message must wait for its promptEnd) or was
 // handled purely client-side (no turn, chain the next message immediately).
@@ -8896,12 +8941,14 @@ function handleSend() {
      wvProbe('handleSend GUARD:local-slash', 'text=' + text.substring(0, 40));
      return;
    }
-// Allow slash commands through during streaming — the agent
-   // handles read-only commands (e.g. /ps, /status) without
-   // interrupting the in-progress LLM turn.
-   // Non-slash messages typed while a turn is streaming are QUEUED (never
-   // sent concurrently, never dropped) — they drain one per turn, FIFO.
-   if (isProcessing && !text.startsWith('/')) {
+// Read-only slash commands go through during streaming — ericli answers
+   // them from a snapshot (e.g. /tools, /a2a list, /ps) without interrupting
+   // the in-progress LLM turn, so the result shows immediately.
+   // EVERYTHING else typed while a turn is streaming is QUEUED (never sent
+   // concurrently, never dropped) — plain messages and mutating slash commands
+   // alike (/compact, /clear, /index build, /goal, /a2a call). They drain one
+   // per turn, FIFO, after the current turn's promptEnd.
+   if (isProcessing && (!text.startsWith('/') || !slashCommandRunsDuringTurn(text))) {
      wvProbe('handleSend GUARD:isProcessing-queued', 'text=' + text.substring(0, 40));
      handleQueue();
      return;
