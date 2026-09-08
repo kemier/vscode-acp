@@ -9245,14 +9245,27 @@ function handleSend() {
    updateSendButton();
  hasSentPrompt = true;
  lastPromptWasSlash = !!(text && text.startsWith('/') && !text.startsWith('/rename') && !text.startsWith('/session'));
-  // Optimistically set processing=true so the Stop button shows immediately.
-  // The extension host will send promptStart back, but postMessage round-trips
-  // can be delayed by VS Code webview iframe throttling (observed 16-second
-  // delay in some sessions). Setting isProcessing here ensures the user sees
-  // the Stop button without waiting for the round-trip.
-  // isSendingPrompt guards against concurrent sends; promptStart will clear it.
-  isSendingPrompt = true;
-  setProcessing(true, 'handleSend');
+  // A turn-safe slash command sent WHILE a turn streams is a side-channel
+  // request: the running turn owns the turn state, so this must not claim it.
+  //
+  // The host deliberately sends NO promptStart/promptEnd for such a prompt (see
+  // isSideChannelSlash in handleSendPrompt), and promptStart is what clears
+  // isSendingPrompt. Setting it here therefore left it stuck true forever: the
+  // FIRST mid-turn command went through, then the isSendingPrompt guard
+  // at the top of the Enter handler queued every later one unconditionally.
+  // Observed exactly that — "/a2a register local agent2" sent at 08:23:40, then
+  // "/tools" queued with no send, then "/a2a register local agent1" queued too.
+  var _sideChannelSend = isProcessing && !!text && text.startsWith('/');
+  if (!_sideChannelSend) {
+    // Optimistically set processing=true so the Stop button shows immediately.
+    // The extension host will send promptStart back, but postMessage round-trips
+    // can be delayed by VS Code webview iframe throttling (observed 16-second
+    // delay in some sessions). Setting isProcessing here ensures the user sees
+    // the Stop button without waiting for the round-trip.
+    // isSendingPrompt guards against concurrent sends; promptStart will clear it.
+    isSendingPrompt = true;
+    setProcessing(true, 'handleSend');
+  }
  vscode.postMessage({ type: 'sendPrompt', text: text || ' ', images });
 }
 

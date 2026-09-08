@@ -480,6 +480,29 @@ suite('handleSend queues everything except turn-safe slash commands', () => {
     );
   });
 
+  test('a side-channel send does not claim isSendingPrompt or isProcessing', () => {
+    // The host sends NO promptStart/promptEnd for a side-channel slash command,
+    // and promptStart is what clears isSendingPrompt. So claiming it in
+    // handleSend left it stuck true: the FIRST mid-turn command went through and
+    // every later one hit the `if (isSendingPrompt)` guard at the top of the
+    // Enter handler and queued. Measured — "/a2a register local agent2" sent,
+    // then "/tools" and "/a2a register local agent1" both queued.
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    assert.ok(
+      src.includes("var _sideChannelSend = isProcessing && !!text && text.startsWith('/');"),
+      'handleSend must recognise a mid-turn slash command as a side-channel send',
+    );
+    const at = src.indexOf('var _sideChannelSend =');
+    const after = src.slice(at, src.indexOf("vscode.postMessage({ type: 'sendPrompt'", at));
+    assert.ok(
+      after.includes('if (!_sideChannelSend) {'),
+      'isSendingPrompt / setProcessing must be guarded by the side-channel check',
+    );
+    const claimAt = after.indexOf('isSendingPrompt = true;');
+    const guardAt = after.indexOf('if (!_sideChannelSend) {');
+    assert.ok(claimAt > guardAt, 'the claim must sit INSIDE the guard, not before it');
+  });
+
   test('the Enter key path does not duplicate the decision', () => {
     // There were TWO send paths. The Enter handler had its own isProcessing
     // branch that called handleQueue() for every agent slash command and never
