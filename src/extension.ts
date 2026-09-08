@@ -1004,6 +1004,14 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   });
 
+  // Retry the last take the STT backend refused. The Whisper deployment goes
+  // away intermittently (Ray Serve answers 200 with DeploymentUnavailableError);
+  // the audio is kept on disk so a dictation is never lost to that.
+  const retryVoiceTakeCmd = vscode.commands.registerCommand('acp.retryLastVoiceTake', async () => {
+    sendEvent('command/retryLastVoiceTake');
+    await chatWebviewProvider.retryLastVoiceTake();
+  });
+
   // Review Voice Memory (Phase 3 "thinker", arXiv:2607.26410): propose bounded
   // edits to voice-memory.md from collected dictation feedback, show a diff,
   // and apply only on explicit user accept — the human is the acceptance gate.
@@ -1785,6 +1793,7 @@ export function activate(context: vscode.ExtensionContext): void {
     exportTrafficCmd,
     reviewVoiceMemoryCmd,
     voiceDiagnosticsCmd,
+    retryVoiceTakeCmd,
     setModeCmd,
     setModelCmd,
     refreshAgentsCmd,

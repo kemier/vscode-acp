@@ -503,13 +503,22 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     );
   }
 
+  /** Command entry point: re-transcribe the newest take the STT server refused. */
+  async retryLastVoiceTake(): Promise<void> {
+    await this.voiceInput.retryLastTake();
+  }
+
   private handleVoiceEvent(evt: VoiceEvent): void {
     switch (evt.type) {
       case 'state':
         this.postMessage({ type: 'voiceState', state: evt.state });
         break;
       case 'recordingReady':
-        this.postMessage({ type: 'voiceRecordingReady', elapsedMs: evt.elapsedMs });
+        this.postMessage({
+          type: 'voiceRecordingReady',
+          elapsedMs: evt.elapsedMs,
+          autoStop: evt.autoStop,
+        });
         break;
       case 'transcript':
         this.postMessage({ type: 'voiceTranscript', text: evt.text, autoSend: evt.autoSend });
@@ -8968,6 +8977,21 @@ function handleSend() {
   // The button just toggles and mirrors state; the transcript arrives as a
   // voiceTranscript message and is inserted at the cursor.
   var voiceState = 'idle';
+  var voiceTranscribeTimer = null;
+  // A cold STT backend can take ~45-60s to load its model. Ticking the tooltip
+  // is what tells the user the request is alive rather than hung.
+  function startTranscribeTicker() {
+    stopTranscribeTicker();
+    var t0 = Date.now();
+    voiceTranscribeTimer = setInterval(function () {
+      if (!micBtn || voiceState !== 'transcribing') { stopTranscribeTicker(); return; }
+      var secs = Math.round((Date.now() - t0) / 1000);
+      micBtn.title = 'Transcribing… ' + secs + 's (the first take after a pause waits for the model to load)';
+    }, 1000);
+  }
+  function stopTranscribeTicker() {
+    if (voiceTranscribeTimer) { clearInterval(voiceTranscribeTimer); voiceTranscribeTimer = null; }
+  }
   function setVoiceState(next) {
     voiceState = next;
     if (!micBtn) return;
@@ -8983,6 +9007,7 @@ function handleSend() {
       : next === 'transcribing'
         ? 'Transcribing…'
         : 'Dictate: click to start recording, click again to transcribe (local STT)';
+    if (next === 'transcribing') { startTranscribeTicker(); } else { stopTranscribeTicker(); }
   }
   if (micBtn) {
     micBtn.addEventListener('click', () => {
@@ -17378,7 +17403,9 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           // Audio is actually flowing now — safe to speak.
           if (micBtn && voiceState === 'recording') {
             micBtn.classList.add('ready');
-            micBtn.title = 'Recording — speak now. Click to stop, or just stop talking (auto-stop on silence)';
+            micBtn.title = msg.autoStop
+              ? 'Recording — speak now. Click to stop, or just stop talking (auto-stop on silence)'
+              : 'Recording — speak now. Click the mic again to stop and transcribe';
           }
           break;
 

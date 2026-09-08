@@ -23,6 +23,8 @@ The same ACP agents are also consumed by Zed (via `codex-acp`). Link formats emi
 | `src/handlers/PermissionHandler.ts` | ACP permission requests (file edits, command execution). Auto-approve rules, "Always allow" persistence. |
 | `src/handlers/TerminalContextProvider.ts` | Captures terminal output for `@terminal` context injection. |
 | `src/handlers/ElicitationHandler.ts` | ACP elicitation forms (auth, user input). |
+| `src/voice/*` | Dictation: `AudioRecorder` (spawns `rec`/`arecord` in the extension host), `CompanionRecorder` (drives the client-side companion in remote windows), `SttClient`, `VoiceMemory*`, `VoiceInputManager` (state machine + backend selection). |
+| `companion/acp-voice-local/` | Separate `extensionKind: ["ui"]` extension packaged as its own VSIX. Records the **client** microphone so dictation works over Remote SSH/WSL/containers; driven by the remote host through the shared command registry (`acpVoiceLocal.*` → client, `acp.voice.localRecorderEvent` → remote). Build with `npm run package:companion`; see `docs/voice-remote-ssh.md`. |
 
 
 
