@@ -7823,6 +7823,29 @@ const builtinCommands = [
    }
    gitIdx = displayText.indexOf(gitProto, gitIdx + gitProto.length);
  }
+ // Strip leading "[User interjection]: " markers that ericli prepends to a
+ // mid-turn user message (acp-server buildSteerDrainMessages / cli.ts
+ // onIterationStart). On session/load replay the marker survives into the
+ // rendered bubble alongside the (already-stripped) memory recall block. It
+ // is machine context, never text the user typed. Only strip it when it is a
+ // LEADING marker (possibly repeated for nested interjections) — a
+ // mid-sentence occurrence (e.g. the user typing "strip the
+ // [User interjection]: marker") is real text and must be left alone.
+ var interjMarker = '[User interjection]:';
+ var interjLen = interjMarker.length;
+ while (true) {
+   // Skip leading whitespace before checking for the marker.
+   var ijStart = 0;
+   while (ijStart < displayText.length) {
+     var ijc = displayText.charCodeAt(ijStart);
+     if (ijc === 32 || ijc === 10 || ijc === 13 || ijc === 9) { ijStart++; } else break;
+   }
+   if (displayText.slice(ijStart, ijStart + interjLen) !== interjMarker) break;
+   // Marker found — consume it plus one optional following space.
+   var ijEnd = ijStart + interjLen;
+   if (displayText.charAt(ijEnd) === ' ') ijEnd++;
+   displayText = displayText.slice(0, ijStart) + displayText.slice(ijEnd);
+ }
  // Strip any remaining leading whitespace after stripping
  var leadEnd = 0;
  while (leadEnd < displayText.length) {
@@ -7856,6 +7879,7 @@ var end = displayText.length;
           || rawText.indexOf('<user-persona') >= 0
           || rawText.indexOf('zed:///') >= 0
           || rawText.indexOf('git:/') >= 0
+          || rawText.indexOf('[User interjection]') >= 0
           || rawText.indexOf('"type":"resource_link"') >= 0
           || rawText.indexOf('Additional ACP context:') >= 0
           || rawText.indexOf('[ACP resource_link]') >= 0;

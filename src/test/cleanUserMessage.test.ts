@@ -216,6 +216,31 @@ function cleanUserMessage(rawText: string): string {
     gitIdx = displayText.indexOf(gitProto, gitIdx + gitProto.length);
   }
 
+  // Strip leading "[User interjection]: " markers that ericli prepends to a
+  // mid-turn user message. Mirror of the production code in
+  // ChatWebviewProvider's cleanUserMessage.
+  const interjMarker = '[User interjection]:';
+  const interjLen = interjMarker.length;
+  for (;;) {
+    let ijStart = 0;
+    while (ijStart < displayText.length) {
+      const ijc = displayText.charCodeAt(ijStart);
+      if (ijc === 32 || ijc === 10 || ijc === 13 || ijc === 9) {
+        ijStart++;
+      } else {
+        break;
+      }
+    }
+    if (displayText.slice(ijStart, ijStart + interjLen) !== interjMarker) {
+      break;
+    }
+    let ijEnd = ijStart + interjLen;
+    if (displayText.charAt(ijEnd) === ' ') {
+      ijEnd++;
+    }
+    displayText = displayText.slice(0, ijStart) + displayText.slice(ijEnd);
+  }
+
   let leadEnd = 0;
   while (leadEnd < displayText.length) {
     const lc = displayText.charCodeAt(leadEnd);
@@ -255,6 +280,7 @@ function cleanUserMessage(rawText: string): string {
       rawText.indexOf('<user-persona') >= 0 ||
       rawText.indexOf('zed:///') >= 0 ||
       rawText.indexOf('git:/') >= 0 ||
+      rawText.indexOf('[User interjection]') >= 0 ||
       rawText.indexOf('Additional ACP context:') >= 0 ||
       rawText.indexOf('[ACP resource_link]') >= 0;
     if (hadContext) {
@@ -581,6 +607,32 @@ suite('cleanUserMessage', () => {
       assert.strictEqual(
         cleanUserMessage(input),
         'clone it from git://github.com/foo/bar.git please',
+      );
+    });
+
+    test('strips the leading [User interjection]: marker flattened on resume', () => {
+      const input =
+        '[User interjection]: commit local/dev // and also strip\n' +
+        'vscode-acp:///memory/ericli\n' +
+        '<context ref="vscode-acp:///memory/ericli">\n<agent-memory>\n- [episodic] x\n' +
+        '</agent-memory>\n</context>';
+      assert.strictEqual(cleanUserMessage(input), 'commit local/dev // and also strip');
+    });
+
+    test('strips doubled leading [User interjection]: markers', () => {
+      const input =
+        '[User interjection]: [User interjection]: commit local/dev\n' +
+        'vscode-acp:///memory/ericli\n' +
+        '<context ref="vscode-acp:///memory/ericli">\n<agent-memory>\n- [episodic] x\n' +
+        '</agent-memory>\n</context>';
+      assert.strictEqual(cleanUserMessage(input), 'commit local/dev');
+    });
+
+    test('keeps a mid-sentence [User interjection] reference (real user text)', () => {
+      const input = 'should strip the [User interjection]: marker please';
+      assert.strictEqual(
+        cleanUserMessage(input),
+        'should strip the [User interjection]: marker please',
       );
     });
   });
