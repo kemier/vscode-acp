@@ -242,13 +242,27 @@ suite('messageQueue.slashCommandRunsDuringTurn', () => {
     }
   });
 
-  test('a2a commands that start work or mutate the registry are queued', () => {
+  test('a2a register and cancel run during a turn — they start no turn', () => {
+    // register is fire-and-forget (registry entry + spawn notification) and
+    // cancel only aborts a task controller. Queueing them just delays the
+    // backend spawn; the new agent reaches the model on the next turn via the
+    // A2A prompt fragment, rebuilt from the registry each turn.
     for (const cmd of [
-      '/a2a call reviewer "audit this diff"',
       '/a2a register http://host:41241',
       '/a2a register local helper',
-      '/a2a unregister helper',
+      '/a2a register local test1',
       '/a2a cancel task-7',
+    ]) {
+      assert.strictEqual(slashCommandRunsDuringTurn(cmd), true, cmd);
+    }
+  });
+
+  test('only a2a call and unregister are queued', () => {
+    for (const cmd of [
+      // streams tool_call + agent_message_chunk into the session
+      '/a2a call reviewer "audit this diff"',
+      // subtractive — may break an in-flight delegation
+      '/a2a unregister helper',
     ]) {
       assert.strictEqual(slashCommandRunsDuringTurn(cmd), false, cmd);
     }
@@ -383,14 +397,15 @@ suite('slashCommandRunsDuringTurn honours the agent declaration', () => {
     const ericli = [
       { name: 'tools', _meta: { turnSafe: true } },
       { name: 'ps', _meta: { turnSafe: true } },
-      { name: 'a2a', _meta: { turnSafe: ['', 'list', 'help', 'inspect', 'status'] } },
+      { name: 'a2a', _meta: { turnSafe: ['', 'list', 'help', 'inspect', 'status', 'register', 'cancel'] } },
       { name: 'index', _meta: { turnSafe: ['', 'status', 'search', 'query'] } },
       { name: 'clear' },
       { name: 'compact' },
     ];
     assert.strictEqual(slashCommandRunsDuringTurn('/tools', ericli), true);
     assert.strictEqual(slashCommandRunsDuringTurn('/a2a list', ericli), true);
-    assert.strictEqual(slashCommandRunsDuringTurn('/a2a register local x', ericli), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/a2a register local x', ericli), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/a2a call bot "go"', ericli), false);
     assert.strictEqual(slashCommandRunsDuringTurn('/index search foo', ericli), true);
     assert.strictEqual(slashCommandRunsDuringTurn('/index build', ericli), false);
     assert.strictEqual(slashCommandRunsDuringTurn('/clear', ericli), false);

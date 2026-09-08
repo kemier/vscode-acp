@@ -7095,7 +7095,12 @@ function slashCommandRunsDuringTurn(text, commands) {
   // be extracted verbatim by the unit tests (see messageQueue.test.ts).
   var whole = { '/tools': 1, '/stats': 1, '/usage': 1, '/diagnose': 1, '/ps': 1 };
   var subs = {
-    '/a2a': { '': 1, 'list': 1, 'help': 1, 'inspect': 1, 'status': 1 },
+    // register is fire-and-forget (registry entry + spawn notification) and
+    // cancel only aborts a task controller — neither starts an LLM turn nor
+    // streams into the session, so queueing them just delays backend work. Only
+    // "call" (streams tool_call + agent_message_chunk) and "unregister"
+    // (subtractive, may break an in-flight delegation) need the turn.
+    '/a2a': { '': 1, 'list': 1, 'help': 1, 'inspect': 1, 'status': 1, 'register': 1, 'cancel': 1 },
     '/skills': { '': 1, 'list': 1, 'info': 1, 'search': 1, 'paths': 1, 'help': 1 },
     '/index': { '': 1, 'status': 1, 'search': 1, 'query': 1 }
   };
