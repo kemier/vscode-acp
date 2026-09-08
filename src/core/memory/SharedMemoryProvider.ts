@@ -295,6 +295,7 @@ export class SharedMemoryProvider {
               session_id: i.session_id,
               created_at: i.created_at,
               score: i.score,
+              source_message_ids: i.source_message_ids,
             }))
           : [];
       if (searchResult.status === 'rejected') {

@@ -13,6 +13,8 @@ suite('MemorySkillTools', () => {
     assert.ok(text.includes('memory_skill_view'));
     assert.ok(text.includes('memory_skill_search'));
     assert.ok(text.includes('memory_skill_update'));
+    assert.ok(text.includes('memory_conversation_lookup'));
+    assert.ok(text.includes('Prefer IDs from injected L1 bullets'));
     assert.ok(text.includes('http://127.0.0.1:8126/view'));
     assert.ok(text.includes('http://127.0.0.1:8126/update'));
     assert.ok(text.includes('"agent_id":"cursor"'));

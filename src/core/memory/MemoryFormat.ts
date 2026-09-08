@@ -13,6 +13,8 @@ export interface L1MemoryItem {
   content: string;
   type?: string;
   score?: number;
+  /** L0 conversation record IDs for conversation-lookup drill-down. */
+  source_message_ids?: string[];
 }
 
 export interface SceneNavEntry {
@@ -38,6 +40,23 @@ export interface FormattedRecall {
 /** Maximum character length per individual L1 memory item. Some memories
  *  are long paragraphs; truncate to keep the total recall block bounded. */
 const MAX_L1_ITEM_CHARS = 500;
+
+/** Cap how many L0 IDs are inlined per bullet (full list still available via memory-search). */
+const MAX_SOURCE_MESSAGE_IDS = 8;
+
+/** Compact suffix for conversation-lookup; empty when no usable IDs. */
+export function formatSourceMessageIdsSuffix(ids: string[] | undefined): string {
+  if (!ids?.length) {
+    return '';
+  }
+  const usable = ids.filter((id) => typeof id === 'string' && id.trim().length > 0);
+  if (usable.length === 0) {
+    return '';
+  }
+  const capped = usable.slice(0, MAX_SOURCE_MESSAGE_IDS);
+  const more = usable.length > capped.length ? ` +${usable.length - capped.length}` : '';
+  return ` (source_message_ids: ${capped.join(', ')}${more})`;
+}
 
 export interface FormatRecallOptions {
   /** Wrap L1 bullets in `<relevant-memories>` (first full profile turn only). */
@@ -68,11 +87,15 @@ export function formatL1Memories(items: L1MemoryItem[], opts?: { includeWrapper?
   }
   for (const item of items) {
     const typeTag = item.type ? `[${item.type}] ` : '';
+    const idSuffix = formatSourceMessageIdsSuffix(item.source_message_ids);
     let text = item.content;
-    if (text.length > MAX_L1_ITEM_CHARS) {
-      text = text.slice(0, MAX_L1_ITEM_CHARS) + '…';
+    // Truncate content only; keep source_message_ids so the model can call
+    // conversation-lookup without a prior memory-search.
+    const contentBudget = Math.max(80, MAX_L1_ITEM_CHARS - idSuffix.length);
+    if (text.length > contentBudget) {
+      text = text.slice(0, contentBudget) + '…';
     }
-    lines.push(`- ${typeTag}${text}`);
+    lines.push(`- ${typeTag}${text}${idSuffix}`);
   }
   if (includeWrapper) {
     lines.push('', '</relevant-memories>');

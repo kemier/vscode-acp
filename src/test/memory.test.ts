@@ -45,6 +45,31 @@ suite('MemoryFormat', () => {
     assert.ok(text?.includes('[preference] prefers tabs'));
   });
 
+  test('formatL1Memories appends source_message_ids for conversation-lookup', () => {
+    const text = formatL1Memories([
+      {
+        content: 'deployed memory bridge',
+        type: 'episodic',
+        source_message_ids: ['msg-aaa', 'msg-bbb'],
+      },
+      { content: 'no ids', type: 'fact', source_message_ids: [] },
+      { content: 'missing field', type: 'fact' },
+    ]);
+    assert.ok(text?.includes('- [episodic] deployed memory bridge (source_message_ids: msg-aaa, msg-bbb)'));
+    const lines = text!.split('\n');
+    assert.strictEqual(lines.find((l) => l.includes('no ids')), '- [fact] no ids');
+    assert.strictEqual(lines.find((l) => l.includes('missing field')), '- [fact] missing field');
+  });
+
+  test('formatL1Memories caps source_message_ids and preserves them past content truncate', () => {
+    const many = Array.from({ length: 10 }, (_, i) => `msg-${i}`);
+    const long = 'x'.repeat(600);
+    const text = formatL1Memories([{ content: long, type: 'fact', source_message_ids: many }]);
+    assert.ok(text?.includes('source_message_ids: msg-0, msg-1, msg-2, msg-3, msg-4, msg-5, msg-6, msg-7 +2'));
+    assert.ok(text?.includes('…'));
+    assert.ok((text!.match(/msg-\d+/g) ?? []).length >= 8);
+  });
+
   test('formatL1Memories can omit wrapper on incremental turns', () => {
     const text = formatL1Memories([{ content: 'new fact', type: 'fact' }], { includeWrapper: false });
     assert.ok(text);
