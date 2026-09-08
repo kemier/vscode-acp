@@ -3104,18 +3104,67 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Strip trailing bracket suffixes from model ids.
+   * Handles Codex effort (`glm-5.2[high]`), Cursor Auto (`default[]`), and
+   * Cursor params (`composer-2.5[fast=true]`, `grok-4.6[effort=high,fast=true]`).
+   */
+  private normalizeModelIdForImageCaps(modelId: string): string {
+    return String(modelId || '')
+      .replace(/\[[^\]]*\]$/, '')
+      .trim();
+  }
+
+  /**
+   * Cursor Agent per-model vision allowlist.
+   * Agent-level `promptCapabilities.image` is true for Cursor, but many picker
+   * models are text-only in Cursor's serving (Composer 2.5, Kimi K3, GLM-5.2).
+   * Only Auto + known native multimodal families show the attach button.
+   */
+  private cursorModelSupportsImage(baseModelId: string): boolean {
+    const base = String(baseModelId || '').toLowerCase();
+    if (!base || base === 'default' || base === 'auto') {
+      return true;
+    }
+    if (/^grok/.test(base)) {
+      return true;
+    }
+    if (/^claude/.test(base)) {
+      return true;
+    }
+    if (/^gpt-/.test(base) || /^o[0-9]/.test(base)) {
+      return true;
+    }
+    if (/^gemini/.test(base)) {
+      return true;
+    }
+    // Text-only / non-native vision in Cursor's current serving
+    if (/^composer/.test(base) || /^kimi/.test(base) || /^glm/.test(base)) {
+      return false;
+    }
+    // Unknown slug: hide until confirmed vision-capable
+    return false;
+  }
+
+  /**
    * Check if a model supports image input.
    * For Codex / catalog-backed agents: true only when ~/.codex catalogs
    * list the model with `input_modalities` including `"image"`. Unknown
    * models and text-only entries return false (hide upload).
    * For Kiro CLI: Claude models support images; others are text-only.
+   * For Cursor: Auto / Grok / Claude / GPT / Gemini only (not Composer/Kimi/GLM).
    */
   private modelSupportsImage(modelId: string, agentName?: string): boolean {
-    // Strip effort suffix: "glm-5.2[high]" → "glm-5.2"
-    const base = modelId.replace(/\[(?:low|medium|high|xhigh|max|none)\]$/, '');
+    const base = this.normalizeModelIdForImageCaps(modelId);
     // For Kiro CLI, determine from model name — no catalog file.
     if (agentName && /kiro/i.test(agentName)) {
       return /claude/i.test(base);
+    }
+    if (agentName && /cursor/i.test(agentName)) {
+      this.loadModelImageSupport();
+      if (this.modelImageSupport && this.modelImageSupport.has(base)) {
+        return this.modelImageSupport.get(base) === true;
+      }
+      return this.cursorModelSupportsImage(base);
     }
     this.loadModelImageSupport();
     if (!this.modelImageSupport || this.modelImageSupport.size === 0) {
@@ -4279,9 +4328,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             configOptions: session.configOptions,
             availableCommands: session.availableCommands,
             promptCapabilities: activeId ? this.sessionManager.getPromptCapabilities(activeId) : undefined,
-            currentModelImageSupport: session.models?.currentModelId
-              ? this.modelSupportsImage(session.models.currentModelId, session.agentName)
-              : undefined,
+            currentModelImageSupport: (() => {
+              // Cursor (and other configOptions-only agents) put the model in
+              // configOptions, not the legacy `models` field — use either.
+              const fromModels = session.models?.currentModelId;
+              const fromCfg = this.modelIdFromConfigOptions(session.configOptions);
+              const mid = fromModels || fromCfg || '';
+              return mid ? this.modelSupportsImage(mid, session.agentName) : undefined;
+            })(),
             modelImageMap: this.getModelImageMap(),
             goalSnapshot: (session as any)?.goalSnapshot ?? null,
           }
@@ -4436,7 +4490,33 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     if (this.suppressWebviewUpdates) {
       return;
     }
-    this.postMessage({ type: 'configOptionsUpdate', configOptions });
+    const modelId = this.modelIdFromConfigOptions(configOptions);
+    this.postMessage({
+      type: 'configOptionsUpdate',
+      configOptions,
+      currentModelImageSupport: modelId
+        ? this.modelSupportsImage(modelId, this.sessionManager.getActiveAgentName() ?? undefined)
+        : undefined,
+    });
+  }
+
+  /** Active model id from ACP Session Config Options (category/id `model`). */
+  private modelIdFromConfigOptions(configOptions: unknown): string {
+    if (!Array.isArray(configOptions)) {
+      return '';
+    }
+    for (const o of configOptions) {
+      if (!o || typeof o !== 'object') {
+        continue;
+      }
+      const opt = o as { category?: unknown; id?: unknown; currentValue?: unknown };
+      const cat = String(opt.category || '').toLowerCase();
+      const id = String(opt.id || '').toLowerCase();
+      if (cat === 'model' || id === 'model') {
+        return typeof opt.currentValue === 'string' ? opt.currentValue.trim() : '';
+      }
+    }
+    return '';
   }
 
   /** Notify webview of _kiro.dev/metadata (Kiro CLI: contextUsagePercentage, effort). */
@@ -7002,6 +7082,22 @@ function modelIdFromConfigOptions(configOptions) {
     }
   }
   return '';
+}
+
+/**
+ * Cursor Agent vision allowlist (mirrors host cursorModelSupportsImage).
+ * Auto/default + Grok/Claude/GPT/Gemini; Composer/Kimi/GLM are text-only
+ * in Cursor's current serving.
+ */
+function cursorModelSupportsImage(baseModelId) {
+  var base = String(baseModelId || '').toLowerCase();
+  if (!base || base === 'default' || base === 'auto') return true;
+  if (/^grok/.test(base)) return true;
+  if (/^claude/.test(base)) return true;
+  if (/^gpt-/.test(base) || /^o[0-9]/.test(base)) return true;
+  if (/^gemini/.test(base)) return true;
+  if (/^composer/.test(base) || /^kimi/.test(base) || /^glm/.test(base)) return false;
+  return false;
 }
 
 /**
@@ -11606,9 +11702,18 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        // If this is a model change, update attach button visibility immediately.
        if (configId === 'model' || opt.category === 'model') {
          var agent = sessionState && sessionState.agentName ? sessionState.agentName : '';
-         var modelBase2 = value.replace(/\\[(?:low|medium|high|xhigh|max|none)\\]$/, '');
+         // Strip any trailing [...] (Codex effort, Cursor Auto default[], params).
+         var modelBase2 = String(value || '').replace(/\\[[^\\]]*\\]$/, '');
          if (agent && /kiro/i.test(agent)) {
            if (attachBtn) attachBtn.style.display = /claude/i.test(modelBase2) ? '' : 'none';
+         } else if (agent && /cursor/i.test(agent)) {
+           var cursorMapped = cursorModelSupportsImage(modelBase2);
+           if (sessionState && sessionState.modelImageMap &&
+               Object.prototype.hasOwnProperty.call(sessionState.modelImageMap, modelBase2)) {
+             cursorMapped = !!sessionState.modelImageMap[modelBase2];
+           }
+           if (sessionState) sessionState.currentModelImageSupport = cursorMapped;
+           updateAttachButtonVisibility(undefined, cursorMapped);
          } else if (sessionState && sessionState.modelImageMap) {
            var mapped = Object.prototype.hasOwnProperty.call(sessionState.modelImageMap, modelBase2)
              ? !!sessionState.modelImageMap[modelBase2]
@@ -17723,8 +17828,28 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
      // sessionState.currentModelImageSupport from a previous agent (a switch
      // from a Claude/Opus Kiro session would otherwise keep the image button
      // visible on a text-only model).
-     var kiroBase = (currentModelId || '').replace(/\\[(?:low|medium|high|xhigh|max|none)\\]$/, '');
+     var kiroBase = (currentModelId || '').replace(/\\[[^\\]]*\\]$/, '');
      attachBtn.style.display = kiroBase && /claude/i.test(kiroBase) ? '' : 'none';
+     return;
+   }
+   // Cursor: only Auto + known native multimodal families (Grok/Claude/GPT/
+   // Gemini). Composer / Kimi / GLM are text-only in Cursor's serving.
+   // Paste is gated by the same attach button visibility.
+   // Prefer an explicit host/optimistic boolean when provided; otherwise
+   // recompute from currentModelId so a model switch cannot keep a stale
+   // currentModelImageSupport from the previous selection.
+   if (agentName && /cursor/i.test(agentName)) {
+     if (modelImageSupport === true || modelImageSupport === false) {
+       attachBtn.style.display = modelImageSupport ? '' : 'none';
+       return;
+     }
+     var cursorBase = (currentModelId || '').replace(/\\[[^\\]]*\\]$/, '');
+     if (cursorBase && sessionState && sessionState.modelImageMap &&
+         Object.prototype.hasOwnProperty.call(sessionState.modelImageMap, cursorBase)) {
+       attachBtn.style.display = sessionState.modelImageMap[cursorBase] ? '' : 'none';
+       return;
+     }
+     attachBtn.style.display = cursorModelSupportsImage(cursorBase) ? '' : 'none';
      return;
    }
    // Codex / catalog-backed: only show when the catalog explicitly allows image.
@@ -17737,7 +17862,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
      return;
    }
    if (currentModelId && sessionState && sessionState.modelImageMap) {
-    var modelBase = currentModelId.replace(/\\[(?:low|medium|high|xhigh|max|none)\\]$/, '');
+    var modelBase = currentModelId.replace(/\\[[^\\]]*\\]$/, '');
      if (Object.prototype.hasOwnProperty.call(sessionState.modelImageMap, modelBase)) {
        attachBtn.style.display = sessionState.modelImageMap[modelBase] ? '' : 'none';
        return;
@@ -18643,7 +18768,13 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           break;
 
        case 'configOptionsUpdate':
+         if (sessionState && msg.currentModelImageSupport !== undefined) {
+           sessionState.currentModelImageSupport = msg.currentModelImageSupport;
+         }
          setConfigOptionsState(msg.configOptions || []);
+         if (msg.currentModelImageSupport !== undefined) {
+           updateAttachButtonVisibility(undefined, msg.currentModelImageSupport);
+         }
          break;
 
       case 'kiroMetadata':
