@@ -7776,6 +7776,53 @@ const builtinCommands = [
    displayText = displayText.slice(0, memUriStart) + displayText.slice(memUriEnd);
    memUriIdx = displayText.indexOf(memUriProto);
  }
+ // Strip bare git: source-control URIs (VS Code scheme, single slash — NOT
+ // git:// remote URLs). The agent echoes the SCM link it was given back into
+ // the user message during session/load replay, as a plain leading line:
+ //   git:/abs/path/to/File.ts#L123:456
+ //   git:/abs/path/to/File.ts?%7B%22path%22...%7D#L7098:7103
+ // cleanUserMessage strips the <context> wrapper around it, which leaves the
+ // bare URI line behind. Remove it too — it is machine context, never text
+ // the user typed. Only strip git: when NOT followed by // so a real
+ // git://github.com/... remote URL is left alone. String-based to avoid
+ // regex backslash mangling inside the HTML template literal (webpack
+ // double-processing).
+ var gitProto = 'git:';
+ var gitIdx = displayText.indexOf(gitProto);
+ while (gitIdx !== -1) {
+   // Skip git:// remote URLs (git://github.com/...) — those are real user
+   // content, not SCM links. git: followed by '/' (single slash) is the
+   // VS Code source-control form we want to strip.
+   var gitAfter = gitIdx + gitProto.length;
+   if (displayText.charAt(gitAfter) === '/' && displayText.charAt(gitAfter + 1) !== '/') {
+     var gitStart = gitIdx;
+     // Walk back over whitespace so a URI at the start of a paragraph (or
+     // any earlier in the text) is removed with its trailing space/newline.
+     while (gitStart > 0) {
+       var gbc = displayText.charCodeAt(gitStart - 1);
+       if (gbc === 32 || gbc === 10 || gbc === 13 || gbc === 9) {
+         gitStart--;
+       } else {
+         break;
+       }
+     }
+     var gitEnd = gitAfter;
+     while (gitEnd < displayText.length) {
+       var gec = displayText.charCodeAt(gitEnd);
+       // Stop at whitespace / punctuation / closing tag. The URI may carry
+       // a #L<start>:<end> fragment and a ?<urlencoded-json> query, so keep
+       // going through letters, digits, '/', '.', '-', '_', '%', '?', '=',
+       // '&', '#', ':' and '~' but stop at a space/newline or '<' / ')' / ','.
+       if (gec === 32 || gec === 10 || gec === 13 || gec === 9 ||
+           gec === 60 /* '<' */ || gec === 41 /* ')' */ || gec === 44 /* ',' */) {
+         break;
+       }
+       gitEnd++;
+     }
+     displayText = displayText.slice(0, gitStart) + displayText.slice(gitEnd);
+   }
+   gitIdx = displayText.indexOf(gitProto, gitIdx + gitProto.length);
+ }
  // Strip any remaining leading whitespace after stripping
  var leadEnd = 0;
  while (leadEnd < displayText.length) {
@@ -7808,6 +7855,7 @@ var end = displayText.length;
           || rawText.indexOf('<relevant-memories') >= 0
           || rawText.indexOf('<user-persona') >= 0
           || rawText.indexOf('zed:///') >= 0
+          || rawText.indexOf('git:/') >= 0
           || rawText.indexOf('"type":"resource_link"') >= 0
           || rawText.indexOf('Additional ACP context:') >= 0
           || rawText.indexOf('[ACP resource_link]') >= 0;

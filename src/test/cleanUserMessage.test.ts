@@ -178,6 +178,44 @@ function cleanUserMessage(rawText: string): string {
     memUriIdx = displayText.indexOf(memUriProto);
   }
 
+  // Strip bare git: source-control URIs (VS Code scheme, single slash — NOT
+  // git:// remote URLs). Mirror of the production code in ChatWebviewProvider's
+  // cleanUserMessage.
+  const gitProto = 'git:';
+  let gitIdx = displayText.indexOf(gitProto);
+  while (gitIdx !== -1) {
+    const gitAfter = gitIdx + gitProto.length;
+    if (displayText.charAt(gitAfter) === '/' && displayText.charAt(gitAfter + 1) !== '/') {
+      let gitStart = gitIdx;
+      while (gitStart > 0) {
+        const gbc = displayText.charCodeAt(gitStart - 1);
+        if (gbc === 32 || gbc === 10 || gbc === 13 || gbc === 9) {
+          gitStart--;
+        } else {
+          break;
+        }
+      }
+      let gitEnd = gitAfter;
+      while (gitEnd < displayText.length) {
+        const gec = displayText.charCodeAt(gitEnd);
+        if (
+          gec === 32 ||
+          gec === 10 ||
+          gec === 13 ||
+          gec === 9 ||
+          gec === 60 /* '<' */ ||
+          gec === 41 /* ')' */ ||
+          gec === 44 /* ',' */
+        ) {
+          break;
+        }
+        gitEnd++;
+      }
+      displayText = displayText.slice(0, gitStart) + displayText.slice(gitEnd);
+    }
+    gitIdx = displayText.indexOf(gitProto, gitIdx + gitProto.length);
+  }
+
   let leadEnd = 0;
   while (leadEnd < displayText.length) {
     const lc = displayText.charCodeAt(leadEnd);
@@ -216,6 +254,7 @@ function cleanUserMessage(rawText: string): string {
       rawText.indexOf('<relevant-memories') >= 0 ||
       rawText.indexOf('<user-persona') >= 0 ||
       rawText.indexOf('zed:///') >= 0 ||
+      rawText.indexOf('git:/') >= 0 ||
       rawText.indexOf('Additional ACP context:') >= 0 ||
       rawText.indexOf('[ACP resource_link]') >= 0;
     if (hadContext) {
@@ -515,6 +554,34 @@ suite('cleanUserMessage', () => {
     test('strips the bare URI with trailing punctuation-only before text', () => {
       const input = 'vscode-acp:///memory/codex) then do the thing';
       assert.strictEqual(cleanUserMessage(input), ') then do the thing');
+    });
+
+    test('strips the bare git: source-control URI flattened on resume', () => {
+      const input =
+        'git:/workspace/src/ui/ChatWebviewProvider.ts?%7B%22path%22%3A%22%2Fworkspace%2Fsrc%2Fui%2FChatWebviewProvider.ts%22%2C%22ref%22%3A%22abc123%22%7D#L7098:7103\n' +
+        '<context ref="git:/workspace/src/ui/ChatWebviewProvider.ts?%7B%22path%22%3A%22%2Fworkspace%2Fsrc%2Fui%2FChatWebviewProvider.ts%22%2C%22ref%22%3A%22abc123%22%7D#L7098:7103">\nvar whole = { \'/tools\': 1 };\n</context>\njusr check ../ericli code';
+      assert.strictEqual(cleanUserMessage(input), 'jusr check ../ericli code');
+    });
+
+    test('strips a bare git: URI with a simple line fragment', () => {
+      const input =
+        'git:/workspace/src/foo.ts#L123:456\n<context ref="git:/workspace/src/foo.ts#L123:456">x</context>do the thing';
+      assert.strictEqual(cleanUserMessage(input), 'do the thing');
+    });
+
+    test('renders empty when the replayed message is only a git: source-control URI', () => {
+      const input =
+        'git:/workspace/src/ui/ChatWebviewProvider.ts?%7B%22path%22%3A%22%2Fworkspace%2Fsrc%2Fui%2FChatWebviewProvider.ts%22%2C%22ref%22%3A%22abc123%22%7D#L7098:7103\n' +
+        '<context ref="git:/workspace/src/ui/ChatWebviewProvider.ts?%7B%22path%22%3A%22%2Fworkspace%2Fsrc%2Fui%2FChatWebviewProvider.ts%22%2C%22ref%22%3A%22abc123%22%7D#L7098:7103">\nvar whole = { \'/tools\': 1 };\n</context>';
+      assert.strictEqual(cleanUserMessage(input), '');
+    });
+
+    test('leaves a git:// remote URL alone (not source-control)', () => {
+      const input = 'clone it from git://github.com/foo/bar.git please';
+      assert.strictEqual(
+        cleanUserMessage(input),
+        'clone it from git://github.com/foo/bar.git please',
+      );
     });
   });
 
