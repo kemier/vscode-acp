@@ -7102,6 +7102,83 @@ function commandListHasCommand(list, name) {
   return false;
 }
 
+function parseSubcommandHints(description) {
+  // NOTE: inside the webview HTML template literal — backslashes must be
+  // DOUBLED (see queueIsMutatingCommand above).
+  //
+  // ACP's AvailableCommand carries only { name, description, input }, where
+  // input is ONE free-text hint — there is no structured subcommand list. So
+  // agents advertise subcommands inside the DESCRIPTION using a "Sub: a, b, c"
+  // convention (see getAvailableCommands in ericli's src/acp/acp-server.ts):
+  //
+  //   /a2a    "Manage A2A (Agent2Agent) delegation. Sub: list, register <url>
+  //            [as <name>], register local <name>, unregister <name>, call
+  //            <name> "<task>", inspect <url>, status [taskId], cancel <taskId>."
+  //   /index  "... Sub: build, embed, search <query>, status, clear."
+  //   /skills "Manage skills. Sub: list, info <name>, search <query>, reload,
+  //            paths, help."
+  //
+  // Each comma-separated entry yields:
+  //   name        the leading LITERAL words — tokens not starting with <, [ or "
+  //               — which is what gets inserted ("register local" from
+  //               "register local <name>");
+  //   description the entry verbatim, so the argument shape stays visible;
+  //   takesArgs   true when the entry has placeholders, so Enter fills the text
+  //               instead of sending a command that still needs an argument.
+  var out = [];
+  var text = String(description || '');
+  var marker = text.search(/\\bSub:/i);
+  if (marker < 0) { return out; }
+  var body = text.slice(marker).replace(/^[Ss]ub:\\s*/, '');
+  // Strip only a trailing sentence period — placeholders may contain periods.
+  body = body.replace(/\\.\\s*$/, '');
+  var parts = body.split(',');
+  var seen = {};
+  for (var i = 0; i < parts.length; i++) {
+    var entry = parts[i].trim();
+    if (!entry) { continue; }
+    var tokens = entry.split(/\\s+/);
+    var literal = [];
+    for (var t = 0; t < tokens.length; t++) {
+      var tok = tokens[t];
+      var lead = tok.charAt(0);
+      if (!tok || lead === '<' || lead === '[' || lead === '"') { break; }
+      literal.push(tok);
+    }
+    if (!literal.length) { continue; }
+    var value = literal.join(' ');
+    var key = value.toLowerCase();
+    if (Object.prototype.hasOwnProperty.call(seen, key)) { continue; }
+    seen[key] = 1;
+    out.push({ name: value, description: entry, takesArgs: entry !== value });
+  }
+  return out;
+}
+
+function subcommandHintsForCommand(cmdName, mergedCommands) {
+  // NOTE: inside the webview HTML template literal — backslashes must be
+  // DOUBLED (see queueIsMutatingCommand above).
+  //
+  // Resolve the subcommand rows to offer once the user has typed past the
+  // command name. Falls back to the agent's free-text input hint as a single
+  // NON-insertable row (name: '') for commands that carry a hint but no "Sub:"
+  // list — better to show the expected shape than to close the popup, which is
+  // what used to happen for every command except the hardcoded /goal.
+  var target = String(cmdName || '').toLowerCase().replace(/^\\//, '');
+  if (!target || !mergedCommands || !mergedCommands.length) { return []; }
+  for (var i = 0; i < mergedCommands.length; i++) {
+    var c = mergedCommands[i];
+    var n = (c && c.name) ? String(c.name).toLowerCase().replace(/^\\//, '') : '';
+    if (n !== target) { continue; }
+    var subs = parseSubcommandHints(c.description);
+    if (subs.length) { return subs; }
+    var hint = (c.input && c.input.hint) ? String(c.input.hint) : '';
+    if (hint) { return [{ name: '', description: hint, takesArgs: true }]; }
+    return [];
+  }
+  return [];
+}
+
 // Decide whether a drained message counts as "sent to the agent" (a turn will
 // start and the next queued message must wait for its promptEnd) or was
 // handled purely client-side (no turn, chain the next message immediately).
@@ -7212,6 +7289,10 @@ return true;
  let isGoalSubcommandAutocomplete = false;
  let goalSubcommandSelectedIdx = -1;
  let goalSubcommandFiltered = [];
+ // Which command the rows in goalSubcommandFiltered belong to ("goal", "a2a",
+ // "index", "skills", …). The insert paths used to hardcode '/goal ' because
+ // /goal was the only command with subcommand autocomplete.
+ let subcommandParentCmd = 'goal';
 
   /** Built-in client-side slash commands (always available). */
 const builtinCommands = [
@@ -8333,6 +8414,7 @@ var end = displayText.length;
        if (goalPartial === '' || goalSubcommands.some(function(sc) { return sc.name.startsWith(goalPartial); })) {
          isGoalSubcommandAutocomplete = true;
          isSessionAutocomplete = false;
+         subcommandParentCmd = 'goal';
          goalSubcommandFiltered = goalSubcommands.filter(function(sc) {
            return sc.name.startsWith(goalPartial);
          });
@@ -8346,10 +8428,11 @@ var end = displayText.length;
                '<span class="cmd-name">/goal ' + escapeHtml(sc.name) + '</span>' +
                '<span class="cmd-desc">' + escapeHtml(sc.description) + '</span>';
             item.addEventListener('click', function() {
-              promptInput.value = '/goal ' + sc.name;
+              promptInput.value = '/' + subcommandParentCmd + ' ' + sc.name;
               slashPopup.classList.remove('open');
               isGoalSubcommandAutocomplete = false;
               promptInput.focus();
+              updateSendButton();
               handleSend();
             });
              item.addEventListener('mouseenter', function() {
@@ -8400,10 +8483,58 @@ var end = displayText.length;
         isSessionAutocomplete = false;
       }
     } else {
-      // Other slash commands with args — close popup
-      slashPopup.classList.remove('open');
+      // Any OTHER command with args. Offer the subcommands the agent itself
+      // advertises (see subcommandHintsForCommand) instead of closing the
+      // popup. This is what /a2a, /index and /skills were missing: typing
+      // "/a2a register" showed nothing at all, even though ericli publishes the
+      // whole subcommand list — and its argument shapes — in the command
+      // description. /goal keeps its built-in table above.
       isSessionAutocomplete = false;
-      isGoalSubcommandAutocomplete = false;
+      var argCmd = text.slice(1, firstSpace).toLowerCase();
+      var argPartial = text.substring(firstSpace + 1).toLowerCase().trim();
+      var argSubs = subcommandHintsForCommand(argCmd, getMergedCommands());
+      // Match on prefix so "/a2a reg" narrows to register/register local, and
+      // keep the hint-only row (name: '') visible whatever is typed.
+      goalSubcommandFiltered = argSubs.filter(function(sc) {
+        return !sc.name || sc.name.toLowerCase().indexOf(argPartial) === 0;
+      });
+      if (goalSubcommandFiltered.length > 0) {
+        isGoalSubcommandAutocomplete = true;
+        subcommandParentCmd = argCmd;
+        slashPopup.innerHTML = '<div class="slash-popup-header">' +
+          escapeHtml('/' + argCmd) + ' arguments</div>';
+        goalSubcommandFiltered.forEach(function(sc, i) {
+          var item = document.createElement('div');
+          item.className = 'slash-popup-item' + (i === 0 ? ' active' : '');
+          item.dataset.index = String(i);
+          item.innerHTML =
+            '<span class="cmd-name">' + escapeHtml('/' + argCmd + (sc.name ? ' ' + sc.name : '')) + '</span>' +
+            '<span class="cmd-desc">' + escapeHtml(sc.description) + '</span>';
+          if (sc.name) {
+            item.addEventListener('click', function() {
+              promptInput.value = '/' + argCmd + ' ' + sc.name + (sc.takesArgs ? ' ' : '');
+              slashPopup.classList.remove('open');
+              isGoalSubcommandAutocomplete = false;
+              promptInput.focus();
+              updateSendButton();
+              // Only send when nothing further is required — "/a2a register"
+              // still needs a URL.
+              if (!sc.takesArgs) { handleSend(); }
+            });
+          }
+          item.addEventListener('mouseenter', function() {
+            goalSubcommandSelectedIdx = i;
+            var aItems = slashPopup.querySelectorAll('.slash-popup-item');
+            aItems.forEach(function(el, j) { el.classList.toggle('active', j === i); });
+          });
+          slashPopup.appendChild(item);
+        });
+        slashPopup.classList.add('open');
+        goalSubcommandSelectedIdx = 0;
+      } else {
+        slashPopup.classList.remove('open');
+        isGoalSubcommandAutocomplete = false;
+      }
     }
     } else {
       // Neither @mention nor slash — reset autocomplete UI
@@ -8441,13 +8572,23 @@ var end = displayText.length;
        e.preventDefault();
        if (goalSubcommandFiltered.length > 0) {
          var sc = goalSubcommandFiltered[goalSubcommandSelectedIdx];
-         promptInput.value = '/goal ' + sc.name;
+         // A hint-only row (no literal subcommand to insert) is informational —
+         // leave the text alone and just dismiss.
+         if (!sc || !sc.name) {
+           slashPopup.classList.remove('open');
+           isGoalSubcommandAutocomplete = false;
+           return;
+         }
+         promptInput.value = '/' + subcommandParentCmd + ' ' + sc.name + (sc.takesArgs ? ' ' : '');
          slashPopup.classList.remove('open');
          isGoalSubcommandAutocomplete = false;
          promptInput.focus();
-         // For Tab: just fill in the text. For Enter: also send immediately
-         // since clear/pause/resume need no further input.
-         if (e.key === 'Enter') {
+         updateSendButton();
+         // For Tab: just fill in the text. For Enter: also send immediately,
+         // but ONLY when the subcommand needs no further input — /goal
+         // clear|pause|resume and e.g. /a2a list are complete as typed, while
+         // "/a2a register" still needs a URL.
+         if (e.key === 'Enter' && !sc.takesArgs) {
            handleSend();
          }
        }
