@@ -2451,14 +2451,40 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // without starting an LLM turn. Skip context gathering and send
     // the text directly so the agent can intercept it.
     if (text.startsWith('/')) {
+      // A slash command typed while a turn is STREAMING is a side-channel
+      // request, not a new turn. The webview deliberately lets slash commands
+      // past its send queue ("the agent handles read-only commands ... without
+      // interrupting the in-progress LLM turn"), and ericli honours that: it
+      // answers the read-only ones (/tools, /a2a list, /ps, /stats, /skills
+      // list, /index status) from a live snapshot above abortInFlightTurn(), so
+      // the streaming turn survives on the agent side.
+      //
+      // The snapshot still resolves its OWN session/prompt with
+      // `stopReason: 'end_turn'`, in milliseconds. Treating that as the current
+      // turn's terminal response breaks the turn two ways:
+      //   - `_cancelGeneration++` makes the STREAMING turn's eventual response
+      //     gen-stale, so its promptEnd is suppressed;
+      //   - the snapshot's own end_turn then posts promptEnd, hiding Stop and
+      //     draining the queue while the agent is still streaming the answer.
+      // A second promptStart is equally wrong: the webview treats it as a new
+      // turn and clears its messageId grouping state mid-stream.
+      //
+      // `_pendingPromptSessionId === activeId` is the authoritative "a real turn
+      // is pending here" signal — it is set only by the main prompt path below,
+      // and the Send Now cancel fallback clears it before starting a
+      // replacement turn.
+      const isSideChannelSlash = this._pendingPromptSessionId === activeId;
       // Send promptStart so the webview sets isProcessing=true. Without this,
       // agent_message_chunk notifications from slash commands (e.g. /index build,
       // /tools, /stats) are dropped by the "After promptEnd the turn is closed"
-      // guard in the webview's sessionUpdate handler.
+      // guard in the webview's sessionUpdate handler. Not needed for a
+      // side-channel command — the running turn already has the turn open.
       if (DEBUG_LIVE) {
-        log(`HOST-SLASH: posting promptStart for slash text="${text.substring(0, 40)}" activeId=${activeId} isPromptInFlight=${this.sessionManager.isPromptInFlight(activeId)}`);
+        log(`HOST-SLASH: posting promptStart for slash text="${text.substring(0, 40)}" activeId=${activeId} isPromptInFlight=${this.sessionManager.isPromptInFlight(activeId)} sideChannel=${isSideChannelSlash}`);
       }
-      this.postMessage({ type: 'promptStart' });
+      if (!isSideChannelSlash) {
+        this.postMessage({ type: 'promptStart' });
+      }
       let slashStopReason: string = 'end_turn';
       try {
         // Kiro does not intercept `/compact` as a prompt — it requires
@@ -2469,8 +2495,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           await this.handleExecuteKiroCommand('compact');
         } else {
           // Increment cancel generation so stale timers from a previous
-          // cancel don't fire during this new prompt.
-          this._cancelGeneration++;
+          // cancel don't fire during this new prompt. A side-channel command
+          // must NOT bump it — that generation belongs to the running turn.
+          if (!isSideChannelSlash) {
+            this._cancelGeneration++;
+          }
           const slashResponse = await this.sessionManager.sendPrompt(activeId, text);
           if (slashResponse?.stopReason) {
             slashStopReason = slashResponse.stopReason;
@@ -2487,27 +2516,39 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         // at the webview first and queued messages to be drained before
         // the compacted text is rendered.
         this.streamCoalescer.flush(activeId);
-        // Clear the cancel fallback timer — the prompt has resolved
-        // (either completed or cancelled). Without this, a stale timer
-        // from a previous cancel can fire during the NEXT prompt and
-        // force-abort it, causing "Prompt already in progress" errors.
-        if (this._cancelFallbackTimer) {
-          clearTimeout(this._cancelFallbackTimer);
-          this._cancelFallbackTimer = null;
-        }
-        this._pendingPromptSessionId = null;
-        // Only deliver promptEnd to the webview if this session is still the
-        // active one. If the user switched agents mid-turn, the old session's
-        // prompt resolves here after the webview has already moved on to the
-        // new agent's panel — posting promptEnd: cancelled would leak the
-        // "— Conversation interrupted —" notice into the wrong chat.
-        if (this.sessionManager.getActiveSessionId() === activeId) {
-          if (DEBUG_LIVE) {
-            log(`HOST-SLASH: posting promptEnd stopReason=${slashStopReason} for slash text="${text.substring(0, 40)}" activeId=${activeId} isPromptInFlight=${this.sessionManager.isPromptInFlight(activeId)}`);
+        if (isSideChannelSlash) {
+          // The running turn owns the turn state. The command's output already
+          // reached the panel as agent_message_chunk (with its own messageId,
+          // so the webview committed the in-flight bubble and rendered it
+          // separately). Leave _cancelFallbackTimer, _pendingPromptSessionId
+          // and promptEnd to the streaming turn.
+          log(
+            `handleSendPrompt: side-channel slash command "${text.substring(0, 40)}" resolved ` +
+              `(stopReason=${slashStopReason}) — leaving turn state to the streaming turn`,
+          );
+        } else {
+          // Clear the cancel fallback timer — the prompt has resolved
+          // (either completed or cancelled). Without this, a stale timer
+          // from a previous cancel can fire during the NEXT prompt and
+          // force-abort it, causing "Prompt already in progress" errors.
+          if (this._cancelFallbackTimer) {
+            clearTimeout(this._cancelFallbackTimer);
+            this._cancelFallbackTimer = null;
           }
-          this.postMessage({ type: 'promptEnd', sessionId: activeId, stopReason: slashStopReason });
+          this._pendingPromptSessionId = null;
+          // Only deliver promptEnd to the webview if this session is still the
+          // active one. If the user switched agents mid-turn, the old session's
+          // prompt resolves here after the webview has already moved on to the
+          // new agent's panel — posting promptEnd: cancelled would leak the
+          // "— Conversation interrupted —" notice into the wrong chat.
+          if (this.sessionManager.getActiveSessionId() === activeId) {
+            if (DEBUG_LIVE) {
+              log(`HOST-SLASH: posting promptEnd stopReason=${slashStopReason} for slash text="${text.substring(0, 40)}" activeId=${activeId} isPromptInFlight=${this.sessionManager.isPromptInFlight(activeId)}`);
+            }
+            this.postMessage({ type: 'promptEnd', sessionId: activeId, stopReason: slashStopReason });
+          }
+          this.onAgentTurnEnded(activeId);
         }
-        this.onAgentTurnEnded(activeId);
       }
       return;
     }
