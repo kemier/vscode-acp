@@ -479,4 +479,27 @@ suite('handleSend queues everything except turn-safe slash commands', () => {
       'the unconditional slash-command bypass must not come back',
     );
   });
+
+  test('the Enter key path does not duplicate the decision', () => {
+    // There were TWO send paths. The Enter handler had its own isProcessing
+    // branch that called handleQueue() for every agent slash command and never
+    // reached handleSend(), so the _meta.turnSafe gate was dead code for it:
+    // "/a2a register local agent1" sat in the queue even though ericli
+    // advertised a2a -> turnSafe: [… "register" …]. Exactly one place decides.
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const enterAt = src.indexOf("if (e.key === 'Enter' && !e.shiftKey) {");
+    assert.ok(enterAt >= 0, 'Enter handler not found');
+    // The isProcessing branch inside the Enter handler.
+    const branchAt = src.indexOf('if (isProcessing) {', enterAt);
+    assert.ok(branchAt > enterAt, 'Enter handler isProcessing branch not found');
+    const branch = src.slice(branchAt, src.indexOf('\n    }', branchAt));
+    assert.ok(
+      branch.includes('handleSend();'),
+      'the Enter path must delegate to handleSend(), which owns the turn-safe gate',
+    );
+    assert.ok(
+      !branch.includes('handleQueue();'),
+      'the Enter path must NOT queue directly — that bypasses the _meta.turnSafe gate',
+    );
+  });
 });

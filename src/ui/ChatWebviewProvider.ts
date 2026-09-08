@@ -8752,18 +8752,19 @@ var end = displayText.length;
     if (isProcessing) {
       // /rename works even during streaming (like Claude Code's immediate commands)
       if (handleLocalSlashCommand()) { return; }
-      // While a turn is streaming, ANY slash command sent to the agent must be
-      // queued rather than dispatched immediately. claude-code-acp serializes
-      // prompts per session (sessionPromptLocks), so a slash command sent
-      // mid-turn waits for the active turn to finish before running — if we
-      // sent it immediately the user would see nothing until the turn ends
-      // anyway, and historically the concurrent session/prompt raced with the
-      // in-flight turn and could drop the command's output entirely (the
-      // /skills-mid-turn regression: zero agent_message_chunk in the log).
-      // Queuing shows the queue chip so the user knows the command is pending
-      // and will run when the turn finishes. Local-only commands (/rename)
-      // are already handled above by handleLocalSlashCommand().
-      handleQueue();
+      // Everything else goes to handleSend(), which owns the AUTHORITATIVE
+      // decision: it sends a slash command the AGENT declared turn-safe
+      // (_meta.turnSafe) and queues everything else, including plain messages.
+      //
+      // This branch used to call handleQueue() unconditionally, on the reasoning
+      // that claude-code-acp serializes prompts per session so a mid-turn slash
+      // command would wait anyway. That is agent-specific, and it silently
+      // bypassed the gate in handleSend: "/a2a register local agent1" sat in the
+      // queue even though ericli advertised
+      //   a2a -> turnSafe: ["","list","help","inspect","status","register","cancel"]
+      // Duplicating the rule in two send paths is what hid the bug; there is now
+      // exactly one place that decides.
+      handleSend();
       return;
     }
      handleSend();
