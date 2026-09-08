@@ -7043,9 +7043,16 @@ function turnSafeDeclaration(cmdName, commands) {
   // Read the agent's own declaration of whether a command is read-only, from
   // AvailableCommand._meta.turnSafe (ACP reserves _meta for exactly this).
   // Shapes, as emitted by ericli's turnSafeMetaFor():
-  //   true       the whole command is read-only (/tools, /ps, …)
-  //   string[]   only these subcommands are; '' covers the bare command
-  //   absent     the agent says nothing — caller falls back to its own table
+  //   true                    the whole command is read-only (/tools, /ps, …)
+  //   string[]                only these subcommands are, matched against the
+  //                           FIRST argument token; '' covers the bare command
+  //   { exactArgs: string[] } only these WHOLE argument strings are — needed for
+  //                           /goal, where "pause" pauses but "pause the
+  //                           deployment" is an objective that reaches the LLM,
+  //                           so a first-token check would wave it through
+  //   absent                  the agent says nothing — caller falls back
+  //
+  // Returns true, { subs: [...] }, { exact: [...] }, or null.
   //
   // This is what keeps the client from needing a hardcoded list per agent: the
   // built-in table below only has to cover agents that do NOT declare, and new
@@ -7059,7 +7066,8 @@ function turnSafeDeclaration(cmdName, commands) {
     if (n !== target) { continue; }
     var declared = (c && c._meta) ? c._meta.turnSafe : undefined;
     if (declared === true) { return true; }
-    if (Array.isArray(declared)) { return declared; }
+    if (Array.isArray(declared)) { return { subs: declared }; }
+    if (declared && Array.isArray(declared.exactArgs)) { return { exact: declared.exactArgs }; }
     return null;
   }
   return null;
@@ -7104,6 +7112,14 @@ function slashCommandRunsDuringTurn(text, commands) {
     '/skills': { '': 1, 'list': 1, 'info': 1, 'search': 1, 'paths': 1, 'help': 1 },
     '/index': { '': 1, 'status': 1, 'search': 1, 'query': 1 }
   };
+  // Matched against the WHOLE argument, not the first token. /goal compares
+  // args.join(' '), so "/goal pause" is a control form but "/goal pause the
+  // deployment" is an objective that reaches the LLM. The control forms only
+  // mutate goal state and publish a snapshot — vscode-acp's own goal chip
+  // already performs them mid-turn via the goal_control RPC.
+  var exactArgs = {
+    '/goal': { '': 1, 'clear': 1, 'stop': 1, 'off': 1, 'reset': 1, 'none': 1, 'cancel': 1, 'pause': 1, 'resume': 1 }
+  };
   var owns = function(obj, key) { return Object.prototype.hasOwnProperty.call(obj, key); };
   // First line only: the extension host appends its memory block AFTER the
   // command text, so the raw value can be "/a2a list" + newline +
@@ -7116,17 +7132,24 @@ function slashCommandRunsDuringTurn(text, commands) {
   var tokens = firstLine.split(/\\s+/);
   var cmd = (tokens[0] || '').toLowerCase();
   var sub = (tokens[1] || '').toLowerCase();
+  var rest = tokens.slice(1).join(' ').toLowerCase();
+  var listHas = function(list, value) {
+    for (var k = 0; k < list.length; k++) {
+      if (String(list[k]).toLowerCase() === value) { return true; }
+    }
+    return false;
+  };
   // 1. The agent's own declaration wins — no client-side list needed.
   var declared = turnSafeDeclaration(cmd, commands);
   if (declared === true) { return true; }
-  if (declared) {
-    for (var d = 0; d < declared.length; d++) {
-      if (String(declared[d]).toLowerCase() === sub) { return true; }
-    }
-    return false;
-  }
+  if (declared && declared.subs) { return listHas(declared.subs, sub); }
+  if (declared && declared.exact) { return listHas(declared.exact, rest); }
   // 2. Fallback for agents that do not declare turn safety yet.
   if (owns(whole, cmd)) { return true; }
+  // Whole-argument match before the first-token one — /goal compares its ENTIRE
+  // argument, so "/goal pause" pauses while "/goal pause the deployment" is an
+  // objective that reaches the LLM and needs its own turn.
+  if (owns(exactArgs, cmd)) { return owns(exactArgs[cmd], rest); }
   if (!owns(subs, cmd)) { return false; }
   return owns(subs[cmd], sub);
 }

@@ -269,11 +269,40 @@ suite('messageQueue.slashCommandRunsDuringTurn', () => {
   });
 
   test('unknown commands are queued — they reach the LLM and need a turn', () => {
-    assert.strictEqual(slashCommandRunsDuringTurn('/goal ship the release'), false);
     assert.strictEqual(slashCommandRunsDuringTurn('/notacommand'), false);
     assert.strictEqual(slashCommandRunsDuringTurn('/a2a frobnicate'), false);
     assert.strictEqual(slashCommandRunsDuringTurn('/index vacuum'), false);
     assert.strictEqual(slashCommandRunsDuringTurn('/$imagegen a cat'), false);
+  });
+
+  test('/goal control forms run during a turn, objectives are queued', () => {
+    // /goal compares its WHOLE argument, so the classifier must too: "pause"
+    // pauses the goal, "pause the deployment" is an objective that reaches the
+    // LLM. A first-token check would wave the objective through and abort the
+    // running turn. The control forms are already reachable mid-turn via the
+    // goal chip's goal_control RPC, which never goes through prompt().
+    for (const cmd of [
+      '/goal',
+      '/goal clear',
+      '/goal stop',
+      '/goal off',
+      '/goal reset',
+      '/goal none',
+      '/goal cancel',
+      '/goal pause',
+      '/goal resume',
+      '/goal PAUSE',
+    ]) {
+      assert.strictEqual(slashCommandRunsDuringTurn(cmd), true, cmd);
+    }
+    for (const cmd of [
+      '/goal ship the release',
+      '/goal pause the deployment',
+      '/goal clear the backlog',
+      '/goal resume after lunch',
+    ]) {
+      assert.strictEqual(slashCommandRunsDuringTurn(cmd), false, cmd);
+    }
   });
 
   test('non-slash input is not a slash command', () => {
@@ -329,7 +358,13 @@ suite('messageQueue.turnSafeDeclaration', () => {
 
   test('reads a subcommand-list declaration', () => {
     const cmds = [{ name: 'widget', _meta: { turnSafe: ['', 'list', 'show'] } }];
-    assert.deepStrictEqual(turnSafeDeclaration('widget', cmds), ['', 'list', 'show']);
+    assert.deepStrictEqual(turnSafeDeclaration('widget', cmds), { subs: ['', 'list', 'show'] });
+  });
+
+  test('reads an exactArgs declaration', () => {
+    // For commands whose WHOLE argument decides — /goal in ericli.
+    const cmds = [{ name: 'goal', _meta: { turnSafe: { exactArgs: ['', 'pause', 'resume'] } } }];
+    assert.deepStrictEqual(turnSafeDeclaration('goal', cmds), { exact: ['', 'pause', 'resume'] });
   });
 
   test('returns null when the agent declares nothing, so the caller falls back', () => {
@@ -410,6 +445,17 @@ suite('slashCommandRunsDuringTurn honours the agent declaration', () => {
     assert.strictEqual(slashCommandRunsDuringTurn('/index build', ericli), false);
     assert.strictEqual(slashCommandRunsDuringTurn('/clear', ericli), false);
     assert.strictEqual(slashCommandRunsDuringTurn('/compact', ericli), false);
+  });
+
+  test('a DECLARED exactArgs list closes the same trap', () => {
+    // The agent path must match the whole argument too, not just the first token.
+    const cmds = [
+      { name: 'goal', _meta: { turnSafe: { exactArgs: ['', 'pause', 'resume', 'clear'] } } },
+    ];
+    assert.strictEqual(slashCommandRunsDuringTurn('/goal pause', cmds), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/goal', cmds), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/goal pause the deployment', cmds), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/goal ship it', cmds), false);
   });
 
   test('the memory block appended by the host does not defeat the declaration', () => {
