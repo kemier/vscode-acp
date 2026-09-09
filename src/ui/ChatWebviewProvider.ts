@@ -14485,8 +14485,25 @@ function orderCompactFoldContents(body) {
       var tn = String(rawInput._toolName || rawInput.toolName || '').trim().toLowerCase();
       if (webSearchToolNames.has(tn)) return true;
     }
-    // Human-readable title fallback for agents that send descriptive titles.
-    if (t.indexOf('web search') >= 0 || t.indexOf('web_search') >= 0) return true;
+    // A shell execution is never a web search, whatever its text says.
+    //
+    // For execute_command the TITLE IS THE COMMAND, so the substring fallback below
+    // counted any command that merely mentioned the phrase. A grep for the string
+    // web_search was summarised as "2 web searches" — the fold label described the
+    // haystack instead of the tool.
+    if (rawInput && typeof rawInput === 'object' && typeof rawInput.command === 'string') {
+      return false;
+    }
+    // Human-readable title fallback for agents that send descriptive titles, e.g.
+    // "Web search: cuda graphs". Restricted to things that look like a LABEL: a
+    // command line carries shell metacharacters and tends to be long, and matching
+    // those is what caused the misclassification above.
+    var looksLikeCommand =
+      t.indexOf('&&') >= 0 || t.indexOf('|') >= 0 || t.indexOf(';') >= 0 ||
+      t.indexOf(String.fromCharCode(10)) >= 0 || t.indexOf('--') >= 0;
+    if (!looksLikeCommand && t.length <= 60) {
+      if (t.indexOf('web search') >= 0 || t.indexOf('web_search') >= 0) return true;
+    }
     return false;
   }
 
