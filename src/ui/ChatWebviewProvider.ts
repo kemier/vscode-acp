@@ -14902,7 +14902,17 @@ function hasOpenFence(text) {
   // literal backtick anywhere in this body would terminate the template
   // literal that wraps the entire webview script.
   var bt = String.fromCharCode(96);
-  var fenceRe = new RegExp(bt + '{3,}', 'g');
+  // Line-anchored, matching src/utils/markdownBalance.ts. CommonMark only treats a
+  // run as a fence when it BEGINS a line (up to three leading spaces); a run in the
+  // middle of a sentence is prose, which marked renders literally.
+  //
+  // Unanchored, this deferred the interim commit on any message that merely mentioned
+  // a fence — e.g. prose about moving a citation "between two triple-backtick fences". The commit
+  // at each tool boundary is what interleaves text with tool rows AND starts a fresh
+  // tools group (see ensureTurnTools: "Without this the next tool reuses the OLD
+  // wrapper, which sits BEFORE the text"). Deferring it therefore merged every text
+  // segment of the turn into one block and stacked all tool rows above it.
+  var fenceRe = new RegExp('^ {0,3}(' + bt + '{3,})', 'gm');
   var m = text.match(fenceRe);
   if (!m) return false;
   var openLen = 0;
