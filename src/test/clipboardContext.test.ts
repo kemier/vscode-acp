@@ -68,3 +68,33 @@ suite('buildClipboardBlock', () => {
     assert.strictEqual(buildClipboardBlock('hello', false), null);
   });
 });
+
+suite('@clipboard is discoverable and does not leak into the bubble', () => {
+  const src = fs.readFileSync(SOURCE, 'utf8');
+
+  test('typing "@" offers clipboard', () => {
+    // It shipped without this: the handler worked but nothing advertised it, so "@"
+    // never listed clipboard and the feature was effectively invisible.
+    const at = src.indexOf('const mentions = [');
+    assert.ok(at > 0, 'mention list not found');
+    const list = src.slice(at, src.indexOf('];', at));
+    assert.ok(list.includes("name: 'clipboard'"), 'clipboard must be in the mention list');
+    assert.ok(list.includes('Markdown preview'), 'the hint should say where it helps');
+  });
+
+  test('it sits alongside the other context mentions', () => {
+    const at = src.indexOf('const mentions = [');
+    const list = src.slice(at, src.indexOf('];', at));
+    for (const n of ['terminal', 'file', 'folder', 'problems', 'clipboard']) {
+      assert.ok(list.includes(`name: '${n}'`), `${n} missing from the mention list`);
+    }
+  });
+
+  test('the inline <clipboard> tag is stripped from the user bubble', () => {
+    // Only the embedded-resource path hides the payload; without embeddedContext the
+    // text is prepended inline and the raw tag would otherwise be displayed.
+    const at = src.indexOf('function cleanUserMessage(');
+    const body = src.slice(at, at + 2000);
+    assert.ok(body.includes("stripTag(displayText, 'clipboard', null)"), 'clipboard tag must be stripped');
+  });
+});

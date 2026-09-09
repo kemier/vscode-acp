@@ -7835,6 +7835,9 @@ const builtinCommands = [
     displayText = stripTag(displayText, 'open_files', null);
     displayText = stripTag(displayText, 'terminal', null);
     displayText = stripTag(displayText, 'problems', null);
+    // Same reason as terminal/problems: on an agent without embeddedContext the
+    // clipboard text is prepended inline, and the raw tag must not show in the bubble.
+    displayText = stripTag(displayText, 'clipboard', null);
     displayText = stripTag(displayText, 'file', null);
     displayText = stripTag(displayText, 'folder', null);
     displayText = stripTag(displayText, 'selection', function(block) {
@@ -8672,6 +8675,9 @@ var end = displayText.length;
         { name: 'file', description: 'Attach a file' },
         { name: 'folder', description: 'Attach folder listing' },
        { name: 'problems', description: 'Attach workspace diagnostics' },
+       // Listed so it is discoverable: without an entry here the handler exists but
+       // typing "@" never offers it, which is how it shipped unusable.
+       { name: 'clipboard', description: 'Attach clipboard text (copy from a Markdown preview first)' },
      ];
         // Dedupe by name in case a future merge path injects duplicates.
         var seenMention = {};
