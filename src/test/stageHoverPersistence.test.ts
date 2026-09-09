@@ -29,14 +29,43 @@ const SOURCE = path.resolve(__dirname, '../../src/ui/ChatWebviewProvider.ts');
 suite('subagent stage hover survives a DOM rebuild', () => {
   const src = fs.readFileSync(SOURCE, 'utf8');
 
-  test('createStageElement persists role, mode and prompt as attributes', () => {
-    const at = src.indexOf('function createStageElement(');
-    assert.ok(at > 0, 'createStageElement not found');
-    const body = src.slice(at, at + 2600);
-    assert.ok(body.includes("setAttribute('data-stage-name'"), 'name attribute (pre-existing)');
+  test('persistStageAttrs writes every field the tooltip reads', () => {
+    const at = src.indexOf('function persistStageAttrs(');
+    assert.ok(at > 0, 'persistStageAttrs not found');
+    const body = src.slice(at, at + 900);
     assert.ok(body.includes("setAttribute('data-stage-role'"), 'role must be persisted');
     assert.ok(body.includes("setAttribute('data-stage-mode'"), 'mode must be persisted');
     assert.ok(body.includes("setAttribute('data-stage-prompt'"), 'prompt must be persisted');
+  });
+
+  test('only truthy values are written, so a later empty patch cannot erase a role', () => {
+    const at = src.indexOf('function persistStageAttrs(');
+    const body = src.slice(at, at + 900);
+    assert.ok(body.includes('if (m.role) '), 'role write must be guarded');
+    assert.ok(body.includes('if (m.mode) '), 'mode write must be guarded');
+    assert.ok(body.includes('if (p) '), 'prompt write must be guarded');
+  });
+
+  test('BOTH the creation and the late-arrival paths persist', () => {
+    // Creation alone is not enough: Cursor ACP sends rawInput:{} first and fills
+    // it later, so its stages only learn their role in updateStageFromRawInput.
+    const create = src.indexOf('function createStageElement(');
+    const update = src.indexOf('function updateStageFromRawInput(');
+    assert.ok(create > 0 && update > 0, 'stage functions not found');
+    assert.ok(
+      src.slice(create, create + 2600).includes('persistStageAttrs('),
+      'createStageElement must persist',
+    );
+    assert.ok(
+      src.slice(update, update + 2600).includes('persistStageAttrs('),
+      'updateStageFromRawInput must persist — this is the path Cursor relies on',
+    );
+  });
+
+  test('the late-arrival path still refreshes the name too', () => {
+    const update = src.indexOf('function updateStageFromRawInput(');
+    const body = src.slice(update, update + 2600);
+    assert.ok(body.includes("setAttribute('data-stage-name'"), 'pre-existing name refresh preserved');
   });
 
   test('the persisted prompt is capped so a large crew does not bloat the DOM', () => {

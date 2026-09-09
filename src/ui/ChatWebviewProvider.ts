@@ -15974,25 +15974,42 @@ function commitCurrentTextSegment(opts) {
      }
    }
 
+   /**
+    * Persist the fields the stage hover needs as DOM attributes.
+    *
+    * Everything except the name lived ONLY on the _stageData JS property, which
+    * does not survive a DOM rebuild (session restore / re-render). The name
+    * survived because it had an attribute — which is why the hover already fell
+    * back to getAttribute('data-stage-name'). Role, mode and prompt had no such
+    * fallback, so after a rebuild the tooltip collapsed to a bare "Name: <x>" and
+    * the role looked missing.
+    *
+    * Called from BOTH the creation and the late-arrival paths: agents differ in
+    * when they supply this. ericli and claude-code-acp send role up front; Cursor
+    * ACP "often sends rawInput:{} first and fills later", so its stages only learn
+    * their role in updateStageFromRawInput.
+    *
+    * Only writes truthy values, so a later empty patch cannot erase a role that
+    * an earlier update established.
+    */
+   function persistStageAttrs(stageEl, meta, prompt) {
+     if (!stageEl) return;
+     var m = (meta && typeof meta === 'object') ? meta : {};
+     if (m.role) stageEl.setAttribute('data-stage-role', String(m.role));
+     if (m.mode) stageEl.setAttribute('data-stage-mode', String(m.mode));
+     var p = prompt || m.prompt_template || m.prompt || '';
+     if (p) {
+       // Capped: the tooltip truncates at TC_TOOLTIP_MAX_CHARS anyway, so keeping
+       // more would only bloat the DOM on a crew with many stages.
+       stageEl.setAttribute('data-stage-prompt', String(p).slice(0, TC_TOOLTIP_MAX_CHARS));
+     }
+   }
+
    function createStageElement(stageName, toolCallId, stagePrompt, stageMeta) {
      var stage = document.createElement('div');
      stage.className = 'tc-stage';
      stage.setAttribute('data-stage-name', stageName);
-     // Persist the fields the hover needs, not just the name.
-     //
-     // Everything else lived ONLY on the _stageData JS property, which does not
-     // survive a DOM rebuild (session restore / re-render). The name survived
-     // because it had an attribute — which is why the hover already falls back to
-     // getAttribute('data-stage-name'). Role, mode and prompt had no such
-     // fallback, so after a rebuild the tooltip collapsed to a bare
-     // "Name: <x>" line and the role looked missing.
-     if (stageMeta && stageMeta.role) stage.setAttribute('data-stage-role', String(stageMeta.role));
-     if (stageMeta && stageMeta.mode) stage.setAttribute('data-stage-mode', String(stageMeta.mode));
-     if (stagePrompt) {
-       // Capped: the tooltip truncates at TC_TOOLTIP_MAX_CHARS anyway, so keeping
-       // more would only bloat the DOM on a crew with many stages.
-       stage.setAttribute('data-stage-prompt', String(stagePrompt).slice(0, TC_TOOLTIP_MAX_CHARS));
-     }
+     persistStageAttrs(stage, stageMeta, stagePrompt);
      if (toolCallId) stage.setAttribute('data-tool-call-id', toolCallIdDomKey(toolCallId));
      var desc = (!compactMode && stagePrompt)
        ? (stagePrompt.length > 100 ? stagePrompt.substring(0, 97) + '...' : stagePrompt)
@@ -16366,6 +16383,15 @@ function commitCurrentTextSegment(opts) {
        var nameEl = stageEl.querySelector('.tc-stage-name');
        if (nameEl) nameEl.textContent = label;
      }
+     // Mirror the refined fields into attributes too, not just the name.
+     //
+     // This is the LATE-ARRIVAL path (tool_call_update / restore), and it matters
+     // most for agents that do not send args up front: Cursor ACP "often sends
+     // rawInput:{} first and fills path/locations later", so its stages are born
+     // with no role or prompt and only get them here. Persisting only at creation
+     // would leave those stages with empty attributes, and a later DOM rebuild
+     // would drop the role again — the same asymmetry, one step downstream.
+     persistStageAttrs(stageEl, patch, patch.prompt_template);
      // [STAGE-DBG] tool_call_update / restore path. The patch.role has an
      // 'agent' fallback so it should never be falsy — but Object.assign in
      // attachStageTooltip copies undefined-valued keys, so if rawInput carries
