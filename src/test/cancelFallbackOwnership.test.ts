@@ -86,12 +86,36 @@ suite('cancel fallback state ownership (Send Now after a late cancel)', () => {
     assert.ok(guard < nulled, 'error path: guard must precede the pending-session reset');
   });
 
-  test('the fallback still keys on the pending session (guard not weakened)', () => {
+  test('the fallback still keys on ownership, and is never unconditional', () => {
+    // The guard was split into named conditions when a SECOND legitimate case was
+    // added (an agent-initiated turn, below). The ordering fix this suite protects is
+    // unaffected: ownership is still required on the client-owned path, so a wiped
+    // _pendingPromptSessionId still means "do not fire" for a prompt the client owns.
     const src = fs.readFileSync(SOURCE, 'utf8');
     assert.ok(
-      src.includes('this._pendingPromptSessionId === activeId && this._cancelGeneration === cancelGen'),
-      'the fallback guard itself must stay intact — the fix is about who may clear the state, ' +
-        'not about firing the fallback unconditionally',
+      src.includes('const ownedByClient = this._pendingPromptSessionId === activeId;'),
+      'ownership must still be computed from the pending session',
+    );
+    assert.ok(
+      src.includes('if ((ownedByClient || agentInitiated) && this._cancelGeneration === cancelGen)'),
+      'the fallback must remain gated — ownership OR an agent-initiated turn, AND the ' +
+        'generation check; never unconditional',
+    );
+  });
+
+  test('an agent-initiated turn can also be rescued, gated on no in-flight prompt', () => {
+    // ericli used to call prompt() itself to deliver a late subagent result, so the
+    // panel showed a turn while _pendingPromptSessionId was null. No ordering fix can
+    // make the ownership path true there — the client never registered a prompt — so
+    // Stop had no effect at all and only a reload cleared it.
+    //
+    // The discriminator is the SessionManager's in-flight set, not the webview: if it
+    // holds no prompt for this session there is no newer prompt whose state could be
+    // stolen, which is exactly what distinguishes this from the ordering bug above.
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    assert.ok(
+      src.includes('!ownedByClient && !this.sessionManager.isPromptInFlight(activeId)'),
+      'the agent-initiated path must require that no prompt is in flight',
     );
   });
 });

@@ -2888,8 +2888,33 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         // a new sendPrompt was issued), the cancel generation will have
         // changed. This prevents a stale timer from force-aborting a new
         // prompt that started after the cancel was acknowledged.
-        if (this._pendingPromptSessionId === activeId && this._cancelGeneration === cancelGen) {
-          log('Cancel fallback: agent did not acknowledge within 5s, forcing promptEnd (session kept alive)');
+        // Two ways this may legitimately fire, kept separate on purpose.
+        //
+        // 1. The client owns the prompt (_pendingPromptSessionId === activeId). This is
+        //    the original path and MUST stay keyed on ownership: an earlier incident
+        //    (see cancelFallbackOwnership.test.ts) was an ORDERING bug where a late
+        //    resolution wiped state belonging to a newer prompt, and weakening this
+        //    guard would have masked it instead of fixing it.
+        //
+        // 2. The turn is not the client's at all. ericli used to call prompt() itself
+        //    to deliver a late subagent result, so the panel showed a turn while
+        //    _pendingPromptSessionId was null. session/cancel was a no-op on the agent
+        //    (its abortController had already been cleared) and path 1 was false, so
+        //    every Stop click did nothing and the panel stayed latched with no way out
+        //    but a reload. No ordering fix can make path 1 true here, because the
+        //    client never had a prompt to register.
+        //
+        //    Distinguished from the ordering bug by asking the SessionManager, not the
+        //    webview: if it holds no in-flight prompt for this session then there is no
+        //    newer prompt whose state could be stolen, so forcing promptEnd is safe.
+        const ownedByClient = this._pendingPromptSessionId === activeId;
+        const agentInitiated =
+          !ownedByClient && !this.sessionManager.isPromptInFlight(activeId);
+        if ((ownedByClient || agentInitiated) && this._cancelGeneration === cancelGen) {
+          log(
+            `Cancel fallback: agent did not acknowledge within 5s, forcing promptEnd ` +
+              `(session kept alive, ownedByClient=${ownedByClient}, agentInitiated=${agentInitiated})`,
+          );
           this.streamCoalescer.flush(activeId);
           this.sessionManager.forceAbortPrompt(activeId);
           // Mark the turn as abandoned so late session/update events from it
