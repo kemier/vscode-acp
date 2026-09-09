@@ -1700,6 +1700,30 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           this._hasChatContent = true;
           await this.handleSendPrompt(message.text, message.images);
           break;
+        // Snapshot the clipboard for a message being QUEUED. Read now so the queued
+        // entry carries what the user had copied when they wrote it — by drain time the
+        // clipboard may hold something else entirely, and the steer path that delivers
+        // queued messages does no context resolution of its own.
+        // Surface a webview-side warning through the editor's own UI. Added for the
+        // empty-clipboard-at-queue-time case, which must be reported while the user can
+        // still act on it rather than silently on drain.
+        case 'showWarning':
+          vscode.window.showWarningMessage(String(message.message || ''));
+          break;
+        case 'resolveClipboardForQueue': {
+          let clipText = '';
+          try {
+            clipText = await vscode.env.clipboard.readText();
+          } catch {
+            clipText = '';
+          }
+          this.postMessage({
+            type: 'clipboardForQueue',
+            token: message.token,
+            text: clipText,
+          });
+          break;
+        }
         case 'executeKiroCommand':
           this._hasChatContent = true;
           await this.handleExecuteKiroCommandFromWebview(message.command, message.args);
@@ -6743,6 +6767,24 @@ let isCompacting = false;  // true while /compact is running
    function queueMessage(text, images) {
      const entry = { text, images: images || [] };
      messageQueue.push(entry);
+     // Snapshot @clipboard NOW, not when this drains.
+     //
+     // Two problems otherwise, both observed. A queued message is delivered on the
+     // STEER path, which has no context resolution at all — session 41e95918 shows three
+     // of them arriving as "[User interjection]: @clipboard ..." with the mention still
+     // literal and no content attached, while the two sent directly resolved correctly.
+     // And even with that fixed, the clipboard is volatile shared state: resolving at
+     // drain time would attach whatever was copied LAST, not what the user had copied
+     // when they wrote the message.
+     //
+     // Substituting the content into entry.text here means the payload is already inline
+     // by the time anything sends it, so both paths work and neither needs to re-read the
+     // clipboard. The host's own @clipboard resolver then finds no mention and stays out
+     // of it, so the content cannot be attached twice.
+     if (/@clipboard\\b/i.test(String(text || ''))) {
+       entry.clipboardToken = 'clip-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+       vscode.postMessage({ type: 'resolveClipboardForQueue', token: entry.clipboardToken });
+     }
      renderQueue();
      maybeAutoSteerNext();
    }
@@ -18264,6 +18306,34 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       // path a typed+Enter send uses: drop the text into the input and let
       // handleSend() post it to the host (preserving queueing, compaction
       // guards, and the user bubble).
+      case 'clipboardForQueue': {
+        // Substitute the snapshot into the queued entry so the payload is inline before
+        // anything sends it. The mention is removed, matching what the host's own
+        // resolver does, so the content is never attached twice.
+        for (var _qi = 0; _qi < messageQueue.length; _qi++) {
+          var _qe = messageQueue[_qi];
+          if (!_qe || _qe.clipboardToken !== msg.token) continue;
+          var _clip = String(msg.text || '');
+          var _stripped = String(_qe.text || '').replace(/@clipboard\\b/gi, '').trim();
+          if (_clip.trim()) {
+            _qe.text = '<clipboard>' + String.fromCharCode(10) + _clip +
+              String.fromCharCode(10) + '</clipboard>' + String.fromCharCode(10) +
+              String.fromCharCode(10) + _stripped;
+          } else {
+            // Nothing copied: drop the mention rather than sending it literally, and say
+            // so now while the user can still fix it — not minutes later on drain.
+            _qe.text = _stripped;
+            vscode.postMessage({
+              type: 'showWarning',
+              message: '@clipboard: the clipboard was empty when this message was queued. Copy the text and queue it again.',
+            });
+          }
+          delete _qe.clipboardToken;
+          renderQueue();
+          break;
+        }
+        break;
+      }
       case 'sendPrompt':
         if (typeof msg.text === 'string' && msg.text.length > 0) {
           // Host-dispatched prompt (fork-to-agent). The host tells us whether a
