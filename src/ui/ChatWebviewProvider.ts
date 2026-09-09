@@ -11930,6 +11930,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    function addMessage(role, text) {
      // Drop the post-compact banner once the user continues chatting.
      if (role === 'user') clearCompactNotices();
+     // A new user OR assistant message retires any stale voice-error notice
+     // (the mic warning should not stick around once the conversation moves on).
+     if (role === 'user' || role === 'assistant') clearVoiceNotices();
      // New user message ends the previous assistant turn visually — do not
      // let later agent chunks / placeSummaryAssistant scoop into the old fold
      // (Claude ACP often streams between turns after promptEnd).
@@ -11959,6 +11962,34 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        setTimeout(function () {
          if (el.parentNode) { el.parentNode.removeChild(el); }
        }, 4000);
+     }
+   }
+
+   /**
+    * Voice error notice — DOM-only, tagged .voice-notice so it can be cleared
+    * when the next user/assistant message arrives, and auto-dismissed after
+    * 5s if no message comes. NOT pushed to chatHistory (like showTransientNotice)
+    * so it never survives a reload/resume. Previously the voiceError handler
+    * used addMessage('system', …), which persisted the stale notice to history
+    * and left it stuck in the chat even after new messages.
+    */
+   function showVoiceNotice(text) {
+     clearVoiceNotices();
+     var el = addMessageDOM('system', text);
+     if (el) {
+       el.classList.add('voice-notice');
+       setTimeout(function () {
+         if (el.parentNode) { el.parentNode.removeChild(el); }
+       }, 5000);
+     }
+   }
+
+   /** Remove any live voice notice rows (called when a user/assistant message arrives). */
+   function clearVoiceNotices() {
+     if (!messagesEl) return;
+     var nodes = messagesEl.querySelectorAll('.message.system.voice-notice');
+     for (var i = 0; i < nodes.length; i++) {
+       if (nodes[i].parentNode) { nodes[i].parentNode.removeChild(nodes[i]); }
      }
    }
 
@@ -18001,7 +18032,11 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
 
         case 'voiceError':
           setVoiceState('idle');
-          addMessage('system', '⚠️ ' + (typeof msg.message === 'string' ? msg.message : 'Voice input failed'));
+          // Transient, DOM-only notice: auto-dismisses after 5s and is cleared
+          // when the next user/assistant message arrives. The old
+          // addMessage('system', …) persisted the stale mic warning to
+          // chatHistory, so it stuck around even after new messages.
+          showVoiceNotice('⚠️ ' + (typeof msg.message === 'string' ? msg.message : 'Voice input failed'));
           break;
 
         case 'voiceEnabled':
