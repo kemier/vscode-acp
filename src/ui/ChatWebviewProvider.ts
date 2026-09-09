@@ -9395,6 +9395,25 @@ function handleSend() {
     suppressNextUserBubble = false;
   } else {
     addMessage('user', text || '(image)');
+    // Mark a turn-safe (side-channel) slash command.
+    //
+    // These are answered from a snapshot with no promptStart/promptEnd, and their
+    // output renders as a transient row that deliberately does NOT enter
+    // chatHistory. In saved history they therefore look like a user message with
+    // nothing after it - indistinguishable from a prompt still awaiting a reply.
+    // collectUnansweredTrailingPrompts resurrected them after a resume and
+    // re-rendered them at the BOTTOM of the rebuilt transcript, which is how three
+    // /a2a register commands ended up grouped down there.
+    //
+    // Only turn-safe commands are flagged, so a real prompt that merely starts
+    // with a slash (e.g. /goal <objective>, which is not turn-safe and does start
+    // a turn) keeps the in-flight protection that helper exists to provide.
+    if (text && text.charAt(0) === '/' && slashCommandRunsDuringTurn(text, availableCommands)) {
+      var _lastHist = chatHistory[chatHistory.length - 1];
+      if (_lastHist && _lastHist.kind === 'message' && _lastHist.role === 'user') {
+        _lastHist.sideChannel = true;
+      }
+    }
   }
    promptInput.value = '';
    const images = pendingImages.splice(0);
@@ -13738,6 +13757,17 @@ function orderCompactFoldContents(body) {
         var item = snapshot[i];
         if (!item) continue;
         if (item.kind === 'message' && item.role === 'user') {
+          // A side-channel slash command is NOT an unanswered prompt. It was
+          // already answered from a snapshot, without a promptStart/promptEnd, and
+          // its output is a transient row that never enters chatHistory - so it
+          // merely LOOKS unanswered here. Resurrecting it re-rendered the command
+          // at the bottom of a resumed transcript (three /a2a register lines
+          // grouped there), a position that is wrong and a command the agent has
+          // no record of.
+          //
+          // Skip and keep scanning rather than stopping: a real in-flight prompt
+          // sitting just before one of these must still be preserved.
+          if (item.sideChannel) continue;
           if (String(item.text || '').trim() && !isSessionInterruptNotice(item.text)) {
             out.unshift(item);
           }
