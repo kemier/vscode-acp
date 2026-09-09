@@ -6603,6 +6603,10 @@ let isSendingPrompt = false;
 // (used by fork-to-agent so the forked summary isn't shown in the panel —
 // the summary is still sent to the agent for context, just not displayed).
 let suppressNextUserBubble = false;
+// Client-opened turns for late subagent results. Bounded so a follow-up that itself
+// spawns subagents cannot cascade; mirrors claude-code-acp's AUTO_FOLLOW_UP_CAP.
+var LATE_SUBAGENT_TURN_CAP = 5;
+var lateSubagentTurns = 0;
 var pendingRenderRetries = {}; // keys of pending renderMarkdown retries
 var historyRenderGen = 0; // generation counter for history renders (invalidated on DOM rebuild)
 var suppressFoldOrdering = false; // true during renderChatHistory to skip intermediate re-ordering
@@ -20211,6 +20215,23 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       // this row is transient by design and will not come back after a reload.
       if (!isLoadingSession && content && content.type === 'text' &&
           update._meta && update._meta.commandOutput) {
+        // A late subagent result needs a TURN to be useful. The agent cannot open
+        // one (ACP has no agent-initiated turn; doing it from the agent latched the
+        // panel — see 41e95918), so the client opens a real one it owns and can
+        // close. ericli's steer queue drains the actual result into it at the first
+        // tool-iteration boundary, so the nudge text itself carries no payload.
+        //
+        // Guarded: only when idle (a running turn already absorbs the result via
+        // the steer queue), and capped per session so a follow-up that itself
+        // spawns subagents cannot cascade.
+        if (update._meta && update._meta.subagentLateResult &&
+        !isProcessing && !isSendingPrompt && !isLoadingSession &&
+        lateSubagentTurns < LATE_SUBAGENT_TURN_CAP) {
+        lateSubagentTurns++;
+        promptInput.value = 'Background subagent results have arrived. Incorporate them and continue.';
+        suppressNextUserBubble = true;
+        handleSend();
+        }
         addCommandOutputRow(content.text);
         break;
       }

@@ -65,7 +65,10 @@ suite('slash-command output renders as a transient snapshot row', () => {
   test('the webview renders marked chunks as their own row and stops', () => {
     const at = src.indexOf('update._meta && update._meta.commandOutput) {');
     assert.ok(at > 0, 'webview command-output branch not found');
-    const block = src.slice(at, at + 200);
+    // Window widened: the branch also handles _meta.subagentLateResult (opening a
+    // client-owned turn) before rendering, so the row call sits further down. The
+    // property asserted is unchanged — this branch renders the row and stops.
+    const block = src.slice(at, at + 1600);
     assert.ok(block.includes('addCommandOutputRow(content.text);'), 'must use the snapshot row');
     assert.ok(block.includes('break;'), 'must stop — assistant/turn state is not its business');
   });
