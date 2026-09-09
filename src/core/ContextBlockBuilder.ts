@@ -199,6 +199,33 @@ export function buildDiagnosticsBlock(text: string, supportsEmbedded: boolean): 
 }
 
 /**
+ * Build a block carrying clipboard text.
+ *
+ * The clipboard is the only route to content VS Code will not otherwise expose: a
+ * selection inside a Markdown PREVIEW lives in another extension's webview, and no
+ * API can read a DOM selection there. Ctrl+C in the preview works, and
+ * env.clipboard is readable, so "copy, then ask with @clipboard" carries rendered
+ * content the selection path cannot.
+ *
+ * - With `embeddedContext`: `resource` at `zed:///agent/clipboard`.
+ * - Without: returns `null` so the caller prepends the text inline (the URI is not
+ *   dereferenceable by the agent).
+ */
+export function buildClipboardBlock(text: string, supportsEmbedded: boolean): ContentBlock | null {
+  if (!supportsEmbedded) {
+    return null;
+  }
+  return {
+    type: 'resource',
+    resource: {
+      uri: 'zed:///agent/clipboard',
+      text,
+      mimeType: 'text/plain',
+    },
+  } as ContentBlock;
+}
+
+/**
  * Build a block carrying TencentDB Agent Memory recall text.
  *
  * - With `embeddedContext`: `resource` at `vscode-acp:///memory/<agentId>`.

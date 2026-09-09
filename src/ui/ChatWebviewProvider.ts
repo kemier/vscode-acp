@@ -14,6 +14,7 @@ import {
   buildDirectoryBlock,
   buildTerminalBlock,
   buildDiagnosticsBlock,
+  buildClipboardBlock,
 } from '../core/ContextBlockBuilder';
 import { TerminalOutputStore } from '../core/TerminalOutputStore';
 import { StreamCoalescer } from '../core/StreamCoalescer';
@@ -2663,6 +2664,40 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         // activated (VS Code ZDOTDIR inject), not "user forgot to run a command".
         vscode.window.showWarningMessage(
           `@terminal: no terminal output captured. ${this.terminalContext.getEmptyCaptureHint()}`,
+        );
+      }
+    }
+
+    // Detect @clipboard — the one route to content an extension cannot otherwise
+    // reach.
+    //
+    // A selection inside a Markdown PREVIEW is invisible to us: the preview is
+    // another extension's webview and VS Code exposes no API to read a DOM
+    // selection in it. activeTextEditor is undefined there, and the visible-editor
+    // fallback finds nothing because the source document genuinely has no
+    // selection — measured as selections=0 on every attempt.
+    //
+    // Ctrl+C inside the preview DOES work, and env.clipboard is readable. So
+    // "select in the preview, copy, then ask with @clipboard" is the only path
+    // that actually carries rendered content to the agent.
+    if (/@clipboard\b/i.test(text)) {
+      let clip = '';
+      try {
+        clip = await vscode.env.clipboard.readText();
+      } catch {
+        clip = '';
+      }
+      text = text.replace(/@clipboard\b/gi, '').trim();
+      if (clip.trim()) {
+        const block = buildClipboardBlock(clip, supportsEmbedded);
+        if (block) {
+          contextBlocks.push(block);
+        } else {
+          text = `<clipboard>\n${clip}\n</clipboard>\n\n${text}`;
+        }
+      } else {
+        vscode.window.showWarningMessage(
+          '@clipboard: the clipboard is empty. Select the text (a Markdown preview works), press Ctrl+C, then send again.',
         );
       }
     }
