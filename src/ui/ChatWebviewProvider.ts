@@ -16179,12 +16179,18 @@ function commitCurrentTextSegment(opts) {
       var stages = item.rawInput.stages.slice();
       var anyFailed = false;
       var parentDone = item.status === 'completed';
+      // A DETACHED spawn completes on its launch ack while its children keep
+      // running, so "parent completed" says nothing about them. Without this the
+      // rule below force-marked every live stage FAILED the moment the ack landed
+      // — subagents doing real work turned red, and a later prompt made the whole
+      // crew look failed. ericli marks these with _meta.subagentsDetached.
+      var parentDetached = !!item.subagentsDetached;
       // A completed parent tool_call means the spawn_parallel returned
       // successfully — the subagents finished. Even when the session is
       // marked interrupted (because a LATER turn was interrupted), these
       // stages must remain completed. Only fail stages when the parent
       // itself didn't complete (interrupted mid-execution).
-      if (parentDone) {
+      if (parentDone && !parentDetached) {
         // Parent completed — stages should be completed too. Only fix up
         // stages that are in a running/pending state (interrupted children
         // that didn't get a final status update before the parent finished).
@@ -20773,6 +20779,20 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
          _tcuContent,
           _tcuRawInput,
        );
+       // Persist the detached-spawn marker on the history entry. The toolCall
+       // entry does not keep _meta, and the stage reconciliation pass reads
+       // chatHistory — so without this the flag would vanish and every live stage
+       // would still be force-failed once the parent's launch ack completed it.
+       if (update._meta && update._meta.subagentsDetached) {
+         for (var _dti = chatHistory.length - 1; _dti >= 0; _dti--) {
+           if (chatHistory[_dti].kind === 'toolCall' &&
+               toolCallIdsMatch(chatHistory[_dti].toolCallId, update.toolCallId || 'unknown')) {
+             chatHistory[_dti].subagentsDetached = true;
+             saveState();
+             break;
+           }
+         }
+       }
        break;
      }
 
