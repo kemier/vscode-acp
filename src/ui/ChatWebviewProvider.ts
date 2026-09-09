@@ -15690,6 +15690,21 @@ function commitCurrentTextSegment(opts) {
     e.stopPropagation();
      ensureTcTooltipEl();
      var data = stageEl._stageData || {};
+     // Recover from the DOM when _stageData did not survive a rebuild. The name
+     // already did this; role/mode/prompt did not, so a restored crew card
+     // hovered to a bare "Name: <x>" with the role apparently missing.
+     data = {
+       name: data.name || stageEl.getAttribute('data-stage-name') || '',
+       role: data.role || stageEl.getAttribute('data-stage-role') || '',
+       mode: data.mode || stageEl.getAttribute('data-stage-mode') || '',
+       prompt_template: data.prompt_template || data.prompt ||
+         stageEl.getAttribute('data-stage-prompt') || '',
+       depends_on: data.depends_on,
+       loop_to: data.loop_to,
+       trigger: data.trigger,
+       max_iterations: data.max_iterations,
+       status: data.status,
+     };
      // [STAGE-DBG] capture what _stageData holds at hover time — the smoking gun
      // for "role not shown on hover". If role is absent here but was present at
      // createStageElement, something between creation and hover wiped it.
@@ -15963,6 +15978,21 @@ function commitCurrentTextSegment(opts) {
      var stage = document.createElement('div');
      stage.className = 'tc-stage';
      stage.setAttribute('data-stage-name', stageName);
+     // Persist the fields the hover needs, not just the name.
+     //
+     // Everything else lived ONLY on the _stageData JS property, which does not
+     // survive a DOM rebuild (session restore / re-render). The name survived
+     // because it had an attribute — which is why the hover already falls back to
+     // getAttribute('data-stage-name'). Role, mode and prompt had no such
+     // fallback, so after a rebuild the tooltip collapsed to a bare
+     // "Name: <x>" line and the role looked missing.
+     if (stageMeta && stageMeta.role) stage.setAttribute('data-stage-role', String(stageMeta.role));
+     if (stageMeta && stageMeta.mode) stage.setAttribute('data-stage-mode', String(stageMeta.mode));
+     if (stagePrompt) {
+       // Capped: the tooltip truncates at TC_TOOLTIP_MAX_CHARS anyway, so keeping
+       // more would only bloat the DOM on a crew with many stages.
+       stage.setAttribute('data-stage-prompt', String(stagePrompt).slice(0, TC_TOOLTIP_MAX_CHARS));
+     }
      if (toolCallId) stage.setAttribute('data-tool-call-id', toolCallIdDomKey(toolCallId));
      var desc = (!compactMode && stagePrompt)
        ? (stagePrompt.length > 100 ? stagePrompt.substring(0, 97) + '...' : stagePrompt)
