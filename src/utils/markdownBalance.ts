@@ -31,12 +31,37 @@
  * renders it without treating trailing prose as code. Inline code backticks
  * are left alone — marked renders stray backticks literally (see above).
  */
+/**
+ * Fence runs that actually OPEN or CLOSE a fenced block.
+ *
+ * CommonMark requires a fence to begin a line (up to three leading spaces). A run in
+ * the MIDDLE of a line is not a fence — marked renders it literally.
+ *
+ * Matching every ``` run regardless of position produced a visible artifact: an
+ * assistant message reading "after line 9540, the closing ``` of the PagedAttention
+ * section" has one mid-sentence run, so the text was judged to have an open fence and a
+ * closing run was appended. marked had rendered that prose literally (correctly), so the
+ * appended run became an opener with nothing after it — an empty code block at the end
+ * of the message, complete with a Copy button.
+ *
+ * Anchored with the m flag and an optional 0-3 space indent, so only real fences count.
+ */
+function fenceRuns(text: string): string[] {
+  const out: string[] = [];
+  const re = /^ {0,3}(```+)/gm;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    out.push(m[1] as string);
+  }
+  return out;
+}
+
 export function balanceMarkdownForPartialRender(text: string): string {
   // --- Fenced code blocks (``` or longer runs) ---
   // Pair up fences of length >= 3. If one is left open, close it with a
   // matching-length run so marked ends the <pre><code> block.
-  const fenceMatches = text.match(/```+/g);
-  if (fenceMatches) {
+  const fenceMatches = fenceRuns(text);
+  if (fenceMatches.length > 0) {
     let openFenceLen = 0;
     for (const f of fenceMatches) {
       if (f.length >= 3) {
@@ -74,8 +99,8 @@ export function balanceMarkdownForPartialRender(text: string): string {
  * the model or balanced for the final render.
  */
 export function hasOpenFence(text: string): boolean {
-  const fenceMatches = text.match(/```+/g);
-  if (!fenceMatches) { return false; }
+  const fenceMatches = fenceRuns(text);
+  if (fenceMatches.length === 0) { return false; }
   let openFenceLen = 0;
   for (const f of fenceMatches) {
     if (f.length >= 3) {
@@ -115,7 +140,11 @@ export function stripLoneTrailingFence(text: string): string | null {
   // must not be touched.
   if (!hasOpenFence(text)) { return null; }
   // The trailing fence run may be followed only by whitespace to EOL.
-  const loneFenceRe = /```+[\s]*$/;
+  // Must START a line (a mid-sentence run is prose, not a fence) AND be the last
+  // content in the text. No `m` flag: with it, `$` matches end-of-LINE and a fence
+  // with code after it on later lines would match, stripping a partial code block
+  // that must be preserved.
+  const loneFenceRe = /(?:^|\n) {0,3}```+[\s]*$/;
   if (!loneFenceRe.test(text)) { return null; }
   const stripped = text.replace(loneFenceRe, '').replace(/\s+$/, '');
   return stripped;

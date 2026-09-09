@@ -226,4 +226,50 @@ suite('markdownBalance', () => {
     });
   });
 });
+
+  suite('fence detection requires a line start (CommonMark)', () => {
+    // Reported: an assistant message rendered a trailing EMPTY code block with a Copy
+    // button. Its first paragraph read:
+    //
+    //   "...after line 9540, the closing ``` of the PagedAttention section)..."
+    //
+    // That run is mid-sentence, so marked renders it literally — correctly. But the
+    // balancer matched every ``` run regardless of position, judged a fence open, and
+    // appended a closing run. The appended run DID start a line, so it became an opener
+    // with nothing after it: an empty <pre><code> at the end of the message.
+    const PROSE_WITH_INLINE_RUN =
+      'I will insert after the PagedAttention block (after line 9540, the closing ' +
+      '``` of the PagedAttention section). Let me make the first edit.';
+
+    test('a mid-sentence run is not treated as an open fence', () => {
+      assert.strictEqual(hasOpenFence(PROSE_WITH_INLINE_RUN), false);
+    });
+
+    test('and nothing is appended to it', () => {
+      assert.strictEqual(
+        balanceMarkdownForPartialRender(PROSE_WITH_INLINE_RUN),
+        PROSE_WITH_INLINE_RUN,
+      );
+    });
+
+    test('a real fence at line start is still detected', () => {
+      assert.strictEqual(hasOpenFence('here:\n```\ncode'), true);
+      assert.ok(balanceMarkdownForPartialRender('here:\n```\ncode').endsWith('```'));
+    });
+
+    test('an indented fence (up to 3 spaces) still counts', () => {
+      assert.strictEqual(hasOpenFence('here:\n   ```\ncode'), true);
+    });
+
+    test('a 4-space indented run is code, not a fence', () => {
+      // 4 spaces is an indented code block in CommonMark, not a fence opener.
+      assert.strictEqual(hasOpenFence('here:\n    ```\ncode'), false);
+    });
+
+    test('two mid-sentence runs do not pair into a fence either', () => {
+      const t = 'use ``` to open and ``` to close a block';
+      assert.strictEqual(hasOpenFence(t), false);
+      assert.strictEqual(balanceMarkdownForPartialRender(t), t);
+    });
+  });
 });
