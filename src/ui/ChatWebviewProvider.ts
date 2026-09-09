@@ -2588,24 +2588,47 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // the two is made by SessionManager based on
     // `promptCapabilities.embeddedContext`.
     const selections: import('../core/SessionManager').SelectionContext[] = [];
-    const editor = vscode.window.activeTextEditor;
-    if (editor) {
-      for (const sel of editor.selections) {
+    const collectFrom = (ed: vscode.TextEditor): void => {
+      for (const sel of ed.selections) {
         if (sel.isEmpty) {
           continue;
         }
-        const text = editor.document.getText(sel);
+        const text = ed.document.getText(sel);
         if (!text) {
           continue;
         }
         selections.push({
-          absPath: editor.document.uri.scheme === 'file' ? editor.document.uri.fsPath : null,
-          uri: editor.document.uri.scheme === 'file' ? undefined : editor.document.uri.toString(),
+          absPath: ed.document.uri.scheme === 'file' ? ed.document.uri.fsPath : null,
+          uri: ed.document.uri.scheme === 'file' ? undefined : ed.document.uri.toString(),
           startLine: sel.start.line + 1,
           endLine: sel.end.line + 1,
           text,
-          languageId: editor.document.languageId,
+          languageId: ed.document.languageId,
         });
+      }
+    };
+    const editor = vscode.window.activeTextEditor;
+    if (editor) {
+      collectFrom(editor);
+    }
+    if (selections.length === 0) {
+      // Fall back to any VISIBLE editor that currently holds a selection.
+      //
+      // activeTextEditor is undefined whenever the active tab is not a text
+      // editor, and a Markdown PREVIEW is a webview tab — so selecting in a
+      // document and then focusing its preview lost the selection entirely, and
+      // the prompt went to the agent with selections=0.
+      //
+      // Reading visible editors is not the same as remembering a stale one: the
+      // selection is live in a pane on screen right now. In the usual
+      // source-beside-preview layout that is exactly the selection the user
+      // means.
+      //
+      // Note this cannot recover a selection made INSIDE the preview itself.
+      // The preview is another extension's webview and VS Code exposes no API to
+      // read a DOM selection within it.
+      for (const ed of vscode.window.visibleTextEditors) {
+        collectFrom(ed);
       }
     }
 
