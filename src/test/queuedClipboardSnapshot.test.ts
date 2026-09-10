@@ -84,7 +84,10 @@ suite('queued @clipboard is snapshotted at queue time', () => {
   test('the inline block is collapsed to a pill in the displayed bubble', () => {
     // Otherwise the replayed bubble would show the raw payload. See
     // clipboardResumeStrip.test.ts for the per-agent replay shapes.
-    assert.ok(src.includes("stripTag(displayText, 'clipboard', function(block)"), 'clipboard block replaced');
+    assert.ok(
+      src.includes("stripTag(displayText, 'clipboard', function(b) { return contextTagPill('clipboard', b); })"),
+      'clipboard block replaced',
+    );
   });
 
   test('every send path expands the snapshot; no display path does', () => {

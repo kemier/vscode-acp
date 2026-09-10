@@ -111,7 +111,14 @@ suite('@clipboard is discoverable and does not leak into the bubble', () => {
     // clipboardResumeStrip.test.ts for the per-agent replay shapes.
     const at = src.indexOf('function cleanUserMessage(');
     const body = src.slice(at, at + 3000);
-    assert.ok(body.includes("stripTag(displayText, 'clipboard', function(block)"), 'clipboard block must be replaced');
-    assert.ok(body.includes('clipboardPillLabel('), 'replacement must be the pill');
+    assert.ok(
+      body.includes("stripTag(displayText, 'clipboard', function(b) { return contextTagPill('clipboard', b); })"),
+      'clipboard block must be replaced by its pill',
+    );
+    // Every attached-context block gets the same treatment, so a resumed prompt
+    // never looks as though it arrived with no context.
+    for (const tag of ['open_files', 'terminal', 'problems', 'file', 'folder']) {
+      assert.ok(body.includes(`contextTagPill('${tag}', b)`), `${tag} must collapse to a pill too`);
+    }
   });
 });

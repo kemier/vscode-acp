@@ -28,6 +28,11 @@ import { StreamCoalescer } from '../core/StreamCoalescer';
 import { FollowCoalescer, pickFollowTarget, type ToolCallLocationLike } from '../core/FollowAgent';
 import { needsRestoreAfterCapture } from '../core/SessionCaptureRestore';
 import {
+  readKiroCompactionBoundary,
+  isKiroResumeAnchor,
+  type KiroCompactionBoundary,
+} from '../core/KiroTranscriptReader';
+import {
   CursorSessionToolEnricher,
   findCursorSessionStorePath,
   isCursorAgentName,
@@ -104,6 +109,13 @@ const RESUME_DIAG_MARKERS = [
  * invisible: the load overlay is already up.
  */
 const LOAD_END_TAIL_FLUSH_MS = 30;
+/**
+ * Cap on updates the pre-compaction gate holds for its fail-safe flush.
+ * A rollout can run to tens of thousands of records; the buffer only exists so a
+ * failed anchor match cannot empty the panel, and the newest held updates are the
+ * ones worth keeping.
+ */
+const PRECOMPACTION_HOLD_MAX = 4000;
 
 function isResumeDiagWebviewMessage(message: string): boolean {  if (!message) {
     return false;
@@ -299,6 +311,18 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
   /** Cached git branch for the active session's cwd, shown in the banner. */
   private _cachedGitBranch: string | null = null;
+
+  /**
+   * Pre-compaction replay gate for a kiro session/load (see armPrecompactionSkip).
+   * `held` exists only for the fail-safe flush when the anchor never matches.
+   */
+  private precompactionSkip: {
+    sessionId: string;
+    boundary: KiroCompactionBoundary;
+    held: SessionNotification[];
+    reached: boolean;
+    dropped: number;
+  } | null = null;
 
   private isDebugResume(): boolean {
     return vscode.workspace.getConfiguration('acp').get<boolean>('debugResume', false);
@@ -2146,13 +2170,20 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    // Pre-compaction replay: kiro replays its whole rollout, so drop everything
+    // that predates its own Compaction / Clear before it costs a webview post and
+    // a DOM render. Buffered rather than discarded — if the anchor never shows up
+    // the buffer is flushed at load end, so a mismatch cannot empty the panel.
+    if (this.shouldWithholdPrecompactionUpdate(update)) {
+      return;
+    }
+
     this.postMessage({
       type: 'sessionUpdate',
       update: update.update,
       sessionId: update.sessionId,
       isLoading: this.sessionManager.isLoading(update.sessionId),
     });
-
     // Cursor: stub tool titles / empty rawInput — recover path/pattern from store.db
     // and push a follow-up tool_call_update so the webview title + tooltip update.
     if (updateData?.sessionUpdate === 'tool_call' || updateData?.sessionUpdate === 'tool_call_update') {
@@ -2676,6 +2707,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     const contextBlocks: ContentBlock[] = [];
     const supportsEmbedded = !!this.sessionManager.getPromptCapabilities(activeId)?.embeddedContext;
     const workspaceRoot = vscode.workspace.workspaceFolders?.[0]?.uri;
+    // Labels for what actually gets attached, echoed to the webview so the LIVE
+    // bubble shows the same [Terminal: 40 lines] / [Clipboard: 12 lines] chips the
+    // resumed one does. Resolution happens here, after the webview has already
+    // rendered the raw "@terminal fix this" text, so the panel could not know what
+    // was attached (or how much of it) without being told.
+    const attachedPills: string[] = [];
+    const rawTextForBubble = text;
+    const pillPathBase = (p: string): string => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
 
     // Detect @terminal — terminal output. EmbeddedResource when supported,
     // else inline fallback (a resource_link would point to an unresolvable
@@ -2690,6 +2729,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       const { text: termOutput, name } = this.terminalContext.getLastOutput();
       if (termOutput) {
         text = replaceMentionOutsideContext(text, /@terminal\b/gi, '').trim();
+        const termLines = termOutput.split('\n').length;
+        attachedPills.push(`Terminal: ${termLines} ${termLines === 1 ? 'line' : 'lines'}`);
         const block = buildTerminalBlock(termOutput, supportsEmbedded, this.terminalOutputStore);
         if (block) {
           contextBlocks.push(block);
@@ -2726,6 +2767,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       }
       text = replaceMentionOutsideContext(text, /@clipboard\b/gi, '').trim();
       if (clip.trim()) {
+        const clipLines = clip.split('\n').length;
+        attachedPills.push(`Clipboard: ${clipLines} ${clipLines === 1 ? 'line' : 'lines'}`);
         const block = buildClipboardBlock(clip, supportsEmbedded);
         if (block) {
           contextBlocks.push(block);
@@ -2758,6 +2801,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       }
       text = replaceMentionOutsideContext(text, /@problems\b/gi, '').trim();
       if (lines.length > 0) {
+        attachedPills.push(`Problems: ${lines.length}`);
         const diagText = lines.join('\n');
         const block = buildDiagnosticsBlock(diagText, supportsEmbedded);
         if (block) {
@@ -2788,6 +2832,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             }
           }
           contextBlocks.push(buildFileBlock(uri.fsPath, supportsEmbedded, content));
+          attachedPills.push(`File: ${pillPathBase(uri.fsPath)}`);
         } catch {
           /* ignore */
         }
@@ -2805,11 +2850,32 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         try {
           const uri = vscode.Uri.joinPath(workspaceRoot, folderPath);
           contextBlocks.push(buildDirectoryBlock(uri.fsPath));
+          attachedPills.push(`Directory: ${pillPathBase(uri.fsPath)}/`);
         } catch {
           /* ignore */
         }
         text = replaceMentionOutsideContext(text, new RegExp(escapeForRegExp(match), 'g'), '').trim();
       }
+    }
+
+    // Tell the panel what was attached, so the live bubble carries the same chips
+    // the resumed one will. The webview only rewrites its last user bubble when the
+    // text it rendered still matches what arrived here, so a stale echo (or a
+    // queued entry whose bubble already shows its own snapshot pill) is ignored.
+    for (const sel of selections) {
+      if (!sel.text) {
+        continue;
+      }
+      const base = sel.absPath ? pillPathBase(sel.absPath) : 'Untitled';
+      attachedPills.push(`Selected code: ${base}:${sel.startLine}`);
+    }
+    if (attachedPills.length > 0) {
+      this.postMessage({
+        type: 'contextAttached',
+        pills: attachedPills,
+        rawText: rawTextForBubble,
+        text,
+      });
     }
 
     // Capture the generation at prompt start so we can detect stale
@@ -4724,7 +4790,113 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     if (this.suppressWebviewUpdates) {
       return;
     }
+    this.armPrecompactionSkip();
     this.postMessage({ type: 'loadSessionStart' });
+  }
+
+  /**
+   * Arm the pre-compaction skip for a kiro replay.
+   *
+   * kiro's `session/load` walks its entire append-only rollout and ignores its own
+   * `Compaction` record: measured on one session, 13.1 s to replay 1538 frames of
+   * which roughly half predated the compaction, with the first replayed chunk being
+   * transcript record 0. Kiro sends no boundary marker, so the anchor comes off disk
+   * (readKiroCompactionBoundary) and updates are withheld until the replay reaches it.
+   */
+  private armPrecompactionSkip(): void {
+    this.precompactionSkip = null;
+    const session = this.sessionManager.getActiveSession();
+    const sessionId = this.sessionManager.getActiveSessionId();
+    if (!sessionId || !this.sessionManager.isKiroAgentName(session?.agentName)) {
+      return;
+    }
+    let boundary: KiroCompactionBoundary | null = null;
+    try {
+      boundary = readKiroCompactionBoundary(sessionId);
+    } catch {
+      boundary = null;
+    }
+    if (!boundary) {
+      return;
+    }
+    this.precompactionSkip = { sessionId, boundary, held: [], reached: false, dropped: 0 };
+    log(
+      `precompaction skip armed: session=${sessionId.slice(0, 8)} ${boundary.kind} at record ${boundary.recordIndex} ` +
+        `(${boundary.droppedPrompts} prompt(s), ${boundary.droppedRecords} record(s) before it)`,
+    );
+  }
+
+  /**
+   * True when this replayed update predates the compaction and must not be shown.
+   *
+   * Held, not dropped: the anchor is matched on text, and a miss would otherwise
+   * leave the panel empty. notifyLoadSessionEnd flushes anything still held.
+   */
+  private shouldWithholdPrecompactionUpdate(update: SessionNotification): boolean {
+    const skip = this.precompactionSkip;
+    if (!skip || skip.reached || skip.sessionId !== update.sessionId) {
+      return false;
+    }
+    if (!this.sessionManager.isLoading(update.sessionId)) {
+      // Not a replay any more — stop interfering with live traffic.
+      this.precompactionSkip = null;
+      return false;
+    }
+    const data = update.update as { sessionUpdate?: string; content?: { type?: string; text?: string } };
+    if (data?.sessionUpdate === 'user_message_chunk' && data.content?.type === 'text') {
+      if (isKiroResumeAnchor(skip.boundary, data.content.text || '')) {
+        skip.reached = true;
+        skip.held = [];
+        log(
+          `precompaction skip: reached the post-compaction anchor, dropped ${skip.dropped} replayed update(s) ` +
+            `(${skip.boundary.droppedPrompts} prompt(s) before the ${skip.boundary.kind.toLowerCase()})`,
+        );
+        this.postMessage({
+          type: 'compactionBoundary',
+          sessionId: skip.sessionId,
+          kind: skip.boundary.kind,
+          summary: skip.boundary.summary,
+          droppedPrompts: skip.boundary.droppedPrompts,
+        });
+        return false;
+      }
+    }
+    skip.dropped++;
+    // Bounded: the buffer only exists for the fail-safe flush, and a rollout can be
+    // tens of thousands of records. Past the cap the earliest held updates are the
+    // least useful ones to keep.
+    if (skip.held.length < PRECOMPACTION_HOLD_MAX) {
+      skip.held.push(update);
+    }
+    return true;
+  }
+
+  /**
+   * Flush anything the pre-compaction gate is still holding.
+   *
+   * Runs when the replay ends without ever matching the anchor — the transcript on
+   * disk disagreed with what was replayed (session live in another process, file
+   * rewritten, an agent that reformats the prompt). Showing the whole conversation
+   * is the right failure mode; showing none of it is not.
+   */
+  private flushPrecompactionHold(): void {
+    const skip = this.precompactionSkip;
+    this.precompactionSkip = null;
+    if (!skip || skip.reached || skip.held.length === 0) {
+      return;
+    }
+    log(
+      `precompaction skip: anchor never matched — flushing ${skip.held.length} withheld update(s) ` +
+        `(of ${skip.dropped}) so the conversation is not lost`,
+    );
+    for (const held of skip.held) {
+      this.postMessage({
+        type: 'sessionUpdate',
+        update: held.update,
+        sessionId: held.sessionId,
+        isLoading: this.sessionManager.isLoading(held.sessionId),
+      });
+    }
   }
 
   /** Notify webview that the active replay finished (success or failure). */
@@ -4767,9 +4939,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         }
         this.streamCoalescer.flush(activeId);
       }
+      // Before loadSessionEnd: a fail-safe flush must land while the webview is
+      // still in replay mode, or the withheld updates would be treated as live.
+      this.flushPrecompactionHold();
       this.postMessage({ type: 'loadSessionEnd', ok });
-    }, LOAD_END_TAIL_FLUSH_MS);
-    // Cursor batch enrich is requested by the webview after snapshot-merge +
+    }, LOAD_END_TAIL_FLUSH_MS);    // Cursor batch enrich is requested by the webview after snapshot-merge +
     // renderChatHistory (handleLoadSessionEnd). Scheduling here races ahead of
     // merge and enrichments get wiped when chatHistory is rebuilt.
   }
@@ -5097,6 +5271,41 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
      font-weight: 600;
      border: 1px solid var(--vscode-focusBorder);
      vertical-align: middle;
+   }
+   /* Attached context shown inside a user bubble: [Clipboard: 12 lines],
+      [Terminal: 40 lines], [File: main.ts], … Rendered as a chip rather than
+      left as bracketed text on its own line, which is what the pill text
+      looked like before (the "\n\n" separator forced a line break even for a
+      three-word prompt). Same visual family as .session-mention-pill. */
+   .context-pill {
+     display: inline-block;
+     /* Vertical centring comes from SYMMETRIC padding, not from line-height.
+        Growing the box with line-height (1.7) and no vertical padding splits the
+        extra leading around the text BOX, and a font's ascent/descent are not
+        symmetric — so an all-caps-ish label like "Clipboard: 1 line" rendered
+        visibly high inside the pill. Same padding + vertical-align as
+        .session-mention-pill, which already sits correctly beside message text. */
+     padding: 1px 8px;
+     margin-right: 6px;
+     border-radius: 10px;
+     background: color-mix(in srgb, var(--vscode-badge-background) 88%, transparent);
+     color: var(--vscode-badge-foreground);
+     font-size: 0.82em;
+     font-weight: 600;
+     line-height: 1.45;
+     white-space: nowrap;
+     max-width: 100%;
+     overflow: hidden;
+     text-overflow: ellipsis;
+     vertical-align: middle;
+   }
+   .context-pill:last-child { margin-right: 0; }
+   /* Inside the queue chip the row is already tiny — shrink to match. */
+   .msg-queue-item .context-pill {
+     font-size: 0.78em;
+     padding: 0 6px;
+     margin-right: 4px;
+     line-height: 1.4;
    }
    .session-mention-separator {
      color: var(--vscode-button-foreground);
@@ -6709,6 +6918,81 @@ let isCompacting = false;  // true while /compact is running
       return '[Clipboard: ' + lines + (lines === 1 ? ' line]' : ' lines]');
     }
 
+    /** Undo escapeHtml, so a pill shows the title the user typed. */
+    function unescapeContextHtml(s) {
+      return String(s == null ? '' : s)
+        .split('&lt;').join('<')
+        .split('&gt;').join('>')
+        .split('&quot;').join('"')
+        .split('&#39;').join("'")
+        .split('&amp;').join('&');
+    }
+
+    /** Body of an inlined context block, trimmed. */
+    function contextBlockBody(block, tagName) {
+      var open = block.indexOf('>');
+      var close = block.lastIndexOf('</' + tagName + '>');
+      var body = (open >= 0 && close > open) ? block.slice(open + 1, close) : '';
+      return body.replace(/^[\\s]+/, '').replace(/[\\s]+$/, '');
+    }
+
+    /** Value of attr="…" on an inlined context block, or ''. */
+    function contextBlockAttr(block, name) {
+      var at = block.indexOf(name + '="');
+      if (at < 0) return '';
+      var start = at + name.length + 2;
+      var end = block.indexOf('"', start);
+      return end > start ? block.slice(start, end) : '';
+    }
+
+    /** Last path segment, for [File: main.ts] / [Directory: src/]. */
+    function contextPathBase(p) {
+      var s = String(p || '');
+      while (s.length && (s.charAt(s.length - 1) === '/' || s.charAt(s.length - 1) === String.fromCharCode(92))) {
+        s = s.slice(0, s.length - 1);
+      }
+      var cut = Math.max(s.lastIndexOf('/'), s.lastIndexOf(String.fromCharCode(92)));
+      return cut >= 0 ? s.slice(cut + 1) : s;
+    }
+
+    /**
+     * The pill an inlined context block collapses to, e.g.
+     *   <terminal name="bash">…40 lines…</terminal>  ->  [Terminal: 40 lines]
+     *
+     * EVERY attached-context block gets one. They used to be deleted outright, so a
+     * resumed message gave no sign that the agent had been handed the terminal
+     * buffer, the problem list or a file — the prompt read as if it had arrived with
+     * no context at all. Two further reasons the pill matters more than tidiness:
+     * a block that cleans to nothing makes both render paths fall back to the RAW
+     * text (printing the payload in full), and the same labels are what the live
+     * panel shows, so live and resumed views finally agree.
+     */
+    function contextTagPill(tagName, block) {
+      var nl2 = String.fromCharCode(10) + String.fromCharCode(10);
+      var label;
+      if (tagName === 'clipboard') {
+        label = clipboardPillLabel(contextBlockBody(block, 'clipboard'));
+      } else if (tagName === 'terminal') {
+        var tl = contextBlockBody(block, 'terminal');
+        var tn = tl ? tl.split(String.fromCharCode(10)).length : 0;
+        label = '[Terminal: ' + tn + (tn === 1 ? ' line]' : ' lines]');
+      } else if (tagName === 'problems') {
+        var pc = contextBlockAttr(block, 'count');
+        label = pc ? '[Problems: ' + pc + ']' : '[Problems]';
+      } else if (tagName === 'open_files') {
+        label = '[Open files]';
+      } else if (tagName === 'file') {
+        var fp = contextPathBase(contextBlockAttr(block, 'path'));
+        label = fp ? '[File: ' + fp + ']' : '[File]';
+      } else if (tagName === 'folder') {
+        var dp = contextPathBase(contextBlockAttr(block, 'path'));
+        label = dp ? '[Directory: ' + dp + '/]' : '[Directory]';
+      } else {
+        return '';
+      }
+      return label + nl2;
+    }
+
     /**
      * The text a queued entry SENDS: its clipboard snapshot expanded inline.
      *
@@ -6746,6 +7030,69 @@ let isCompacting = false;  // true while /compact is running
       return display + nl + nl + '— clipboard snapshot —' + nl + preview;
     }
 
+    /**
+     * Split leading context pills off a display string.
+     *
+     * Attached context is carried as text — "[Clipboard: 12 lines]", "[Terminal: 40
+     * lines]", "[File: main.ts]" — because that string is what gets persisted in
+     * chatHistory, re-cleaned on restore, and compared for dedup. Only the RENDERING
+     * needs to differ, so the pills are peeled off here and drawn as chips.
+     *
+     * The trailing blank line each pill carries is dropped: it was there to separate
+     * the pill from the prompt in plain text, and it forced a line break even for a
+     * three-word message.
+     *
+     * A markdown link — "[File: x](file:///x)" — is deliberately NOT a pill; the
+     * link renderer must keep it.
+     */
+    function splitLeadingContextPills(text) {
+      var src = String(text == null ? '' : text);
+      var names = ['Clipboard', 'Terminal', 'Problems', 'File', 'Directory', 'Selected code', 'Memory context', 'Session'];
+      var pills = [];
+      var i = 0;
+      var skipSpace = function(from) {
+        var j = from;
+        while (j < src.length) {
+          var c = src.charCodeAt(j);
+          if (c === 32 || c === 10 || c === 13 || c === 9) { j++; } else break;
+        }
+        return j;
+      };
+      for (;;) {
+        var at = skipSpace(i);
+        if (src.charCodeAt(at) !== 91) break; // '['
+        var close = src.indexOf(']', at + 1);
+        if (close < 0) break;
+        if (src.charAt(close + 1) === '(') break; // markdown link, not a pill
+        var inner = src.slice(at + 1, close);
+        var matched = false;
+        for (var n = 0; n < names.length; n++) {
+          if (inner === names[n] || inner.indexOf(names[n] + ': ') === 0) { matched = true; break; }
+        }
+        if (!matched) break;
+        pills.push(inner);
+        i = close + 1;
+      }
+      if (pills.length === 0) return { pills: [], rest: src };
+      return { pills: pills, rest: src.slice(skipSpace(i)) };
+    }
+
+    /**
+     * Append the pills of a display string to el as chips. Returns the remaining text.
+     * (No backticks in this comment: it lives inside the webview HTML template literal,
+     * where a backtick terminates the literal and the rest of the script becomes TS.)
+     */
+    function appendContextPills(el, text) {
+      var split = splitLeadingContextPills(text);
+      for (var i = 0; i < split.pills.length; i++) {
+        var chip = document.createElement('span');
+        chip.className = 'context-pill';
+        chip.textContent = split.pills[i];
+        el.appendChild(chip);
+      }
+      return split.rest;
+    }
+
     function renderQueue() {
       if (!msgQueueEl) return;
       msgQueueEl.innerHTML = '';
@@ -6761,7 +7108,12 @@ let isCompacting = false;  // true while /compact is running
        chip.className = 'msg-queue-item';
        const textSpan = document.createElement('span');
        textSpan.className = 'queue-text';
-       textSpan.textContent = queueEntryDisplayText(entry) || '(image)';
+       // Same chip treatment as the user bubble: an attached snapshot reads as
+       // "Clipboard: 12 lines" beside the message, never as the payload.
+       const queueRest = appendContextPills(textSpan, queueEntryDisplayText(entry) || '(image)');
+       if (queueRest) {
+         textSpan.appendChild(document.createTextNode(queueRest));
+       }
        textSpan.title = queueEntryTooltip(entry) || '';
        chip.appendChild(textSpan);
        // Edit button — moves message text back to prompt input
@@ -7805,7 +8157,12 @@ const builtinCommands = [
       }
     }
    let previousSessionId = null;
-   // Tracks the session ID that the current chatHistory was built for.
+    // Index in chatHistory where the compaction divider was inserted during the
+    // current replay, or -1. Used at load end to trim pre-compaction items that
+    // survived in the webview's own snapshot (the host only filters the replay).
+    let compactionBoundaryIndex = -1;
+
+    // Tracks the session ID that the current chatHistory was built for.
    // Set in restoreState (from saved state) and in showSessionConnected
    // (when chatHistory is cleared/rebuilt for a new live session).
    // Used by handleLoadSessionStart to correctly label the snapshot:
@@ -8001,26 +8358,12 @@ const builtinCommands = [
     var _dbgPreview = rawText.length > 200 ? rawText.substring(0, 200) + '...' : rawText;
     vscode.postMessage({ type: 'debugLog', message: 'cleanUserMessage IN len=' + rawText.length + ' text="' + _dbgPreview + '"' });
     displayText = stripFlattenedContextMarkers(displayText);
-    displayText = stripTag(displayText, 'open_files', null);
-    displayText = stripTag(displayText, 'terminal', null);
-    displayText = stripTag(displayText, 'problems', null);
-    // Clipboard snapshots are delimited wherever they come from — inlined by the
-    // send path for agents without embeddedContext, and inside the embedded
-    // resource body for the rest (wrapClipboardPayload). Collapse the block to a
-    // pill rather than deleting it: a message whose only content was the snapshot
-    // would otherwise clean to empty, and BOTH render paths fall back to the raw
-    // text in that case, putting the entire payload in the bubble.
-    displayText = stripTag(displayText, 'clipboard', function(block) {
-      var inner = block;
-      var gt = inner.indexOf('>');
-      if (gt >= 0) inner = inner.slice(gt + 1);
-      var close = inner.lastIndexOf('</clipboard>');
-      if (close >= 0) inner = inner.slice(0, close);
-      inner = inner.replace(/^[\\s]+/, '').replace(/[\\s]+$/, '');
-      return clipboardPillLabel(inner) + String.fromCharCode(10) + String.fromCharCode(10);
-    });
-    displayText = stripTag(displayText, 'file', null);
-    displayText = stripTag(displayText, 'folder', null);
+    displayText = stripTag(displayText, 'open_files', function(b) { return contextTagPill('open_files', b); });
+    displayText = stripTag(displayText, 'terminal', function(b) { return contextTagPill('terminal', b); });
+    displayText = stripTag(displayText, 'problems', function(b) { return contextTagPill('problems', b); });
+    displayText = stripTag(displayText, 'clipboard', function(b) { return contextTagPill('clipboard', b); });
+    displayText = stripTag(displayText, 'file', function(b) { return contextTagPill('file', b); });
+    displayText = stripTag(displayText, 'folder', function(b) { return contextTagPill('folder', b); });
     displayText = stripTag(displayText, 'selection', function(block) {
        var pathMatch = block.match(/path="([^"]+)"/);
        var linesMatch = block.match(/lines="([^"]+)"/);
@@ -8090,7 +8433,33 @@ const builtinCommands = [
    // These are concatenated without separators before the real user text.
    displayText = stripLeadingResourceLinkJson(displayText);
  // Strip leading <context ref="...">...</context> blocks
- displayText = stripTag(displayText, 'context', null);
+ //
+ // Agents with embeddedContext (codex, ericli) wrap a replayed resource this way,
+ // so this is where an attachment shows up after resume on those agents. It maps
+ // to the SAME pill the inline path produces, which is what makes the resumed
+ // panel match the live one. Two cases the mapping has to respect:
+ //   - the body may already BE a pill, because the clipboard/terminal strips ran
+ //     first on the block's contents — reuse it rather than recomputing a line
+ //     count from the pill text;
+ //   - machine-injected recall (vscode-acp:///memory/...) is not user-attached
+ //     context. It rides along on every prompt and the live panel never shows it,
+ //     so a pill there would be noise on every bubble.
+ displayText = stripTag(displayText, 'context', function(block) {
+   var nl2 = String.fromCharCode(10) + String.fromCharCode(10);
+   var ref = contextBlockAttr(block, 'ref');
+   if (ref.indexOf('vscode-acp:///memory/') === 0) return '';
+   var body = contextBlockBody(block, 'context');
+   var already = splitLeadingContextPills(body);
+   if (already.pills.length > 0 && !already.rest) {
+     var out = '';
+     for (var ap = 0; ap < already.pills.length; ap++) out += '[' + already.pills[ap] + ']' + nl2;
+     return out;
+   }
+   if (!ref) return '';
+   // A clipboard resource carries no count in its URI — take it from the body.
+   if (ref.indexOf('zed:///agent/clipboard') === 0) return clipboardPillLabel(body) + nl2;
+   return formatResourcePill(ref, null);
+ });
  // Strip the shared-memory recall blob. SharedMemoryProvider prepends it to
  // the prompt (as a resource, or as plain text for agents without embedded
  // context), so session/load replay hands it back as part of the user
@@ -8332,6 +8701,16 @@ var end = displayText.length;
       // "Memory context" pill instead of a misleading [File: <agentId>].
       if (u && u.protocol === 'vscode-acp:' && u.pathname.indexOf('/memory/') === 0) {
         return '[Memory context]' + nl2;
+      }
+
+      // /session <name> lookup. The generated summary is injected as
+      // <context ref="session:<title>">…</context>, so this is what an answered
+      // /session turn looks like after resume. It needs its own branch: the URI has
+      // no path structure, so the generic file logic rendered it as [File: ue].
+      if (uri && uri.indexOf('session:') === 0) {
+        var sessName = unescapeContextHtml(uri.slice('session:'.length)).replace(/^[\\/]+/, '');
+        try { sessName = decodeURIComponent(sessName); } catch (e) { /* keep raw */ }
+        return '[Session: ' + (sessName || 'session') + ']' + nl2;
       }
 
       // Parse "#L<start>(:<end>)?" range fragment if present.
@@ -9669,7 +10048,18 @@ function handleSend() {
     // the flag so a subsequent normal send renders its bubble.
     suppressNextUserBubble = false;
   } else {
-    addMessage('user', text || '(image)');
+    // Display, not wire text. A composer can already hold an injected context
+    // block — the /session <name> picker drops a <context ref="session:…"> summary
+    // straight into it — and the bubble used to show that raw block, while the same
+    // turn came back from session/load as a "[Session: ue]" pill. Cleaning here is
+    // what makes the live panel and the resumed one agree; the untouched text
+    // variable is still what goes to the agent below. (No backticks in this
+    // comment: a backtick here would end the HTML template literal.)
+    var _sendDisplay = cleanUserMessage(String(text || ''));
+    if (!String(_sendDisplay || '').trim()) {
+      _sendDisplay = text;
+    }
+    addMessage('user', _sendDisplay || '(image)');
     // Mark a turn-safe (side-channel) slash command.
     //
     // These are answered from a snapshot with no promptStart/promptEnd, and their
@@ -11012,6 +11402,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      return;
    }
    vscode.postMessage({ type: 'debugLog', message: 'handleLoadSessionStart' });
+   compactionBoundaryIndex = -1;
    // Cancel all pending render retries from restoreState — the DOM is
    // about to be wiped and rebuilt, so stale renderMarkdown requests
    // would target wrong elements.
@@ -11596,6 +11987,27 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       var _pfInterruptNotices = chatHistory.filter(function(x) { return x && x.kind === 'message' && x.role === 'user' && isSessionInterruptNotice(x.text); }).length;
       var _pfSessionInterrupted = sessionMarkedInterrupted();
       vscode.postMessage({ type: 'debugLog', message: '[WV-DIAG] post-finalize: assistants=' + _pfAssistant + ' tools=' + _pfTools + ' users=' + _pfUsers + ' interruptNotices=' + _pfInterruptNotices + ' sessionInterrupted=' + _pfSessionInterrupted + ' chatHistoryLen=' + chatHistory.length });
+    }
+    // The webview's OWN snapshot is a second source of pre-compaction turns: the
+    // host withholds them from the replay, but a panel that was on this session
+    // before the reload still holds them, and the merge above keeps them. Trim to
+    // the divider so the resumed panel shows exactly what the agent still knows.
+    if (compactionBoundaryIndex >= 0) {
+      var _cbAt = -1;
+      for (var _cbi = 0; _cbi < chatHistory.length; _cbi++) {
+        var _cbItem = chatHistory[_cbi];
+        if (_cbItem && _cbItem.kind === 'message' && _cbItem.role === 'system' && _cbItem.compactNotice) {
+          _cbAt = _cbi;
+          break;
+        }
+      }
+      if (_cbAt > 0) {
+        vscode.postMessage({ type: 'debugLog', message:
+          '[WV-COMPACT] trimming ' + _cbAt + ' pre-compaction item(s) that survived in the snapshot' });
+        chatHistory = chatHistory.slice(_cbAt);
+        saveState();
+      }
+      compactionBoundaryIndex = -1;
     }
     // Rebuild the entire messages DOM from chatHistory.  During replay,
      // the agent_message_chunk / tool_call handlers build DOM piecemeal,
@@ -12359,6 +12771,17 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     var _dbgRUMC = typeof text === 'string' ? (text.length > 100 ? text.substring(0, 100) + '...' : text) : '(non-string)';
     vscode.postMessage({ type: 'debugLog', message: 'renderUserMessageContent IN len=' + (typeof text === 'string' ? text.length : -1) + ' text="' + _dbgRUMC + '"' });
     if (typeof text !== 'string') { el.textContent = text; return; }
+    // Attached-context pills first: draw them as chips and continue with the rest,
+    // so a short prompt stays on ONE line beside its chip.
+    var _ctxRest = appendContextPills(el, text);
+    if (_ctxRest !== text) {
+      if (!_ctxRest) return;
+      var _tailEl = document.createElement('span');
+      el.appendChild(_tailEl);
+      // _ctxRest has no leading pill left, so this cannot recurse further.
+      renderUserMessageContent(_tailEl, _ctxRest);
+      return;
+    }
     // Check if text starts with "[@" and find the mention link pattern
     if (text.charCodeAt(0) === 91 /* '[' */ && text.charCodeAt(1) === 64 /* '@' */) {
        var closeBracket = text.indexOf('](', 2);
@@ -17384,7 +17807,7 @@ if (_deduped) {
          vscode.postMessage({ type: 'debugLog', message: '[WV-USER] render item[' + i + '] len=' + displayText.length + ' text="' + (displayText.length > 80 ? displayText.substring(0, 80) + '...' : displayText) + '"' });
          var _sysEl = addMessageDOM(item.role, displayText);
          if (item.role === 'system' && _sysEl &&
-             String(item.text || '').trim() === 'Conversation compacted.') {
+             (item.compactNotice || String(item.text || '').trim() === 'Conversation compacted.')) {
            _sysEl.classList.add('compact-notice');
          }
         } else {
@@ -18446,6 +18869,59 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       // path a typed+Enter send uses: drop the text into the input and let
       // handleSend() post it to the host (preserving queueing, compaction
       // guards, and the user bubble).
+      case 'contextAttached': {
+        // The host resolved @mentions AFTER the webview had already rendered the raw
+        // prompt, so the live bubble said "@terminal fix this" while the resumed one
+        // said "[Terminal: 40 lines] fix this". Rewrite it to the resumed form —
+        // same string, so a reload and a resume both show what is on screen now.
+        var _capPills = Array.isArray(msg.pills) ? msg.pills : [];
+        if (_capPills.length === 0) break;
+        var _capIdx = -1;
+        for (var _ci = chatHistory.length - 1; _ci >= 0; _ci--) {
+          var _cit = chatHistory[_ci];
+          if (_cit && _cit.kind === 'message' && _cit.role === 'user') { _capIdx = _ci; break; }
+        }
+        if (_capIdx < 0) break;
+        // Only the bubble this resolution belongs to. A queued entry whose bubble
+        // already shows its own snapshot pill will not match, and must not be
+        // rewritten — its pill is already correct.
+        if (String(chatHistory[_capIdx].text || '').trim() !== String(msg.rawText || '').trim()) break;
+        var _capText = '';
+        for (var _cp = 0; _cp < _capPills.length; _cp++) {
+          _capText += '[' + _capPills[_cp] + ']' + String.fromCharCode(10) + String.fromCharCode(10);
+        }
+        _capText += String(msg.text || '');
+        chatHistory[_capIdx].text = _capText;
+        saveState();
+        var _capEls = messagesEl.querySelectorAll('.message.user');
+        var _capEl = _capEls[_capEls.length - 1];
+        if (_capEl) {
+          _capEl.innerHTML = '';
+          renderUserMessageContent(_capEl, _capText);
+        }
+        break;
+      }
+      case 'compactionBoundary': {
+        // kiro replays everything, including the turns it already folded into a
+        // summary; the host withheld those, and this is where the surviving
+        // conversation starts. Two things go in: the divider, and the summary kiro
+        // keeps in its Compaction record but never replays — so the resumed panel
+        // finally shows what the agent actually still knows.
+        var _cbLabel = String(msg.kind || '') === 'Clear'
+          ? '— conversation cleared —'
+          : '— conversation compacted —';
+        var _cbDropped = Number(msg.droppedPrompts || 0);
+        if (_cbDropped > 0) {
+          _cbLabel += ' ' + _cbDropped + (_cbDropped === 1 ? ' earlier turn hidden' : ' earlier turns hidden');
+        }
+        compactionBoundaryIndex = chatHistory.length;
+        chatHistory.push({ kind: 'message', role: 'system', text: _cbLabel, compactNotice: true });
+        var _cbSummary = String(msg.summary || '').trim();
+        if (_cbSummary) {
+          chatHistory.push({ kind: 'message', role: 'assistant', text: _cbSummary, compactionSummary: true });
+        }
+        break;
+      }
       case 'clipboardForQueue': {
         // Store the snapshot BESIDE the text and drop the mention (matching what the
         // host's own resolver does, so the content is never attached twice). Display
@@ -19190,6 +19666,26 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        var userMsg = contextBlock;
        if (msg.queryText) {
          userMsg += nl + nl + msg.queryText;
+       }
+       // The bubble already on screen is the command the user typed
+       // ("/session ue what's this"). What the agent receives is the summary block,
+       // and that is what session/load replays — where cleanUserMessage turns it
+       // into a [Session: ue] pill. Rewrite the live bubble to that same form so the
+       // panel does not change shape between now and the next resume.
+       var _ssDisplay = '[Session: ' + sessionTitle + ']' + nl + nl + String(msg.queryText || '');
+       for (var _ssi = chatHistory.length - 1; _ssi >= 0; _ssi--) {
+         var _ssItem = chatHistory[_ssi];
+         if (!_ssItem || _ssItem.kind !== 'message' || _ssItem.role !== 'user') continue;
+         if (String(_ssItem.text || '').indexOf('/session') !== 0) break;
+         _ssItem.text = _ssDisplay;
+         saveState();
+         var _ssEls = messagesEl.querySelectorAll('.message.user');
+         var _ssEl = _ssEls[_ssEls.length - 1];
+         if (_ssEl) {
+           _ssEl.innerHTML = '';
+           renderUserMessageContent(_ssEl, _ssDisplay);
+         }
+         break;
        }
        // The user message was already shown — just send the prompt to the agent.
        vscode.postMessage({ type: 'sendPrompt', text: userMsg, images: [] });
