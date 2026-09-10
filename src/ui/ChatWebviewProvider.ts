@@ -6935,6 +6935,20 @@ let isCompacting = false;  // true while /compact is running
       return '[Clipboard: ' + lines + (lines === 1 ? ' line]' : ' lines]');
     }
 
+    /**
+     * Pill for attached images: [Image] / [Images: 3].
+     *
+     * An image left no trace in the bubble at all. With text alongside it there was
+     * nothing to see, and with no text the bubble said "(image)" — which is not the
+     * same shape as every other attachment, and vanished on resume because the
+     * agent replays an image as its own content block that nothing rendered.
+     */
+    function imagePillLabel(count) {
+      var n = Number(count || 0);
+      if (n <= 0) return '';
+      return n === 1 ? '[Image]' : '[Images: ' + n + ']';
+    }
+
     /** Undo escapeHtml, so a pill shows the title the user typed. */
     function unescapeContextHtml(s) {
       return String(s == null ? '' : s)
@@ -7033,8 +7047,14 @@ let isCompacting = false;  // true while /compact is running
       if (!entry) return '';
       var typed = String(entry.text || '');
       var clip = entry.clipboard && entry.clipboard.text ? String(entry.clipboard.text) : '';
-      if (!clip) return typed;
-      return typed ? clipboardPillLabel(clip) + ' ' + typed : clipboardPillLabel(clip);
+      var pills = [];
+      if (clip) pills.push(clipboardPillLabel(clip));
+      // Images ride as their own content blocks, so they never appear in the text —
+      // only the pill tells the user the attachment is still on this queued message.
+      var imgPill = imagePillLabel(entry.images && entry.images.length);
+      if (imgPill) pills.push(imgPill);
+      if (pills.length === 0) return typed;
+      return typed ? pills.join(' ') + ' ' + typed : pills.join(' ');
     }
 
     /** Chip tooltip: the pill plus a bounded preview, so the snapshot is inspectable. */
@@ -7064,7 +7084,7 @@ let isCompacting = false;  // true while /compact is running
      */
     function splitLeadingContextPills(text) {
       var src = String(text == null ? '' : text);
-      var names = ['Clipboard', 'Terminal', 'Problems', 'File', 'Directory', 'Selected code', 'Memory context', 'Session'];
+      var names = ['Clipboard', 'Terminal', 'Problems', 'File', 'Directory', 'Selected code', 'Memory context', 'Session', 'Image', 'Images'];
       var pills = [];
       var i = 0;
       var skipSpace = function(from) {
@@ -10080,6 +10100,14 @@ function handleSend() {
     var _sendDisplay = cleanUserMessage(String(text || ''));
     if (!String(_sendDisplay || '').trim()) {
       _sendDisplay = text;
+    }
+    // Attached images get the same chip treatment. Read BEFORE the splice below.
+    var _sendImgPill = imagePillLabel(pendingImages.length);
+    if (_sendImgPill) {
+      var _sendBody = String(_sendDisplay || '').trim();
+      _sendDisplay = _sendBody
+        ? _sendImgPill + String.fromCharCode(10) + String.fromCharCode(10) + _sendBody
+        : _sendImgPill;
     }
     addMessage('user', _sendDisplay || '(image)');
     // Mark a turn-safe (side-channel) slash command.
@@ -21378,6 +21406,25 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
            ' chatLen=' + chatHistory.length +
            ' (each UMC finalizeCurrentAssistantTurn → new turn boundary)'
          );
+          } else if (content && content.type === 'image') {
+            // An image attachment is replayed as its own content block. Nothing
+            // rendered it, so a resumed prompt that carried a screenshot looked like
+            // a bare sentence. Same chip as the live bubble, coalesced onto the user
+            // row when there already is one.
+            finalizeCurrentAssistantTurn();
+            var _imgPillText = imagePillLabel(1) + String.fromCharCode(10) + String.fromCharCode(10);
+            var _imgLast = chatHistory[chatHistory.length - 1];
+            if (_imgLast && _imgLast.kind === 'message' && _imgLast.role === 'user') {
+              _imgLast.text += _imgPillText;
+              var _imgUserEls = messagesEl.querySelectorAll('.message.user');
+              var _imgEl = _imgUserEls[_imgUserEls.length - 1];
+              if (_imgEl) {
+                _imgEl.innerHTML = '';
+                renderUserMessageContent(_imgEl, _imgLast.text);
+              }
+            } else {
+              addMessage('user', _imgPillText);
+            }
           } else if (content && (content.type === 'resource' || content.type === 'resource_link')) {
             // ACP "resource"/"resource_link" blocks attached to a user
             // message — editor selections, file/directory mentions,

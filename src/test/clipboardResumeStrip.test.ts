@@ -41,6 +41,7 @@ interface Webview {
   queueEntryDisplayText(entry: unknown): string;
   queueEntryTooltip(entry: unknown): string;
   splitLeadingContextPills(text: string): { pills: string[]; rest: string };
+  imagePillLabel(count: number): string;
   formatResourcePill(uri: string, fallbackName: string | null): string;
 }
 
@@ -72,6 +73,7 @@ function loadWebviewFns(): Webview {
       '\nreturn { cleanUserMessage: cleanUserMessage, clipboardPillLabel: clipboardPillLabel,' +
       ' queueEntryPromptText: queueEntryPromptText, queueEntryDisplayText: queueEntryDisplayText,' +
       ' queueEntryTooltip: queueEntryTooltip, splitLeadingContextPills: splitLeadingContextPills,' +
+      ' imagePillLabel: imagePillLabel,' +
       ' formatResourcePill: formatResourcePill };',
   )() as Webview;
 }
@@ -233,6 +235,34 @@ suite('a queued clipboard snapshot is shown as a pill and expanded only on send'
   test('an entry with no snapshot is untouched on both paths', () => {
     assert.strictEqual(wv.queueEntryDisplayText({ text: 'plain' }), 'plain');
     assert.strictEqual(wv.queueEntryPromptText({ text: 'plain' }), 'plain');
+  });
+
+  test('an attached image shows a chip, singular and plural', () => {
+    // An image left no trace: with text alongside it there was nothing to see, and
+    // with none the bubble said "(image)" — a different shape from every other
+    // attachment.
+    assert.strictEqual(wv.imagePillLabel(1), '[Image]');
+    assert.strictEqual(wv.imagePillLabel(3), '[Images: 3]');
+    assert.strictEqual(wv.imagePillLabel(0), '');
+    assert.strictEqual(
+      wv.queueEntryDisplayText({ text: 'what is this', images: [{ data: 'x', mimeType: 'image/png' }] }),
+      '[Image] what is this',
+    );
+    // Clipboard and image together, in a stable order.
+    assert.strictEqual(
+      wv.queueEntryDisplayText({ text: 'both', clipboard: { text: 'a\nb' }, images: [{}, {}] }),
+      '[Clipboard: 2 lines] [Images: 2] both',
+    );
+  });
+
+  test('the image chip never reaches the wire — images are their own blocks', () => {
+    const entry = { text: 'look', images: [{ data: 'x', mimeType: 'image/png' }] };
+    assert.strictEqual(wv.queueEntryPromptText(entry), 'look');
+  });
+
+  test('an image chip cleans back to itself, so a resume keeps it', () => {
+    assert.strictEqual(wv.cleanUserMessage('[Image]\n\nwhat is this'), '[Image]\n\nwhat is this');
+    assert.strictEqual(wv.splitLeadingContextPills('[Images: 3]\n\nlook').pills[0], 'Images: 3');
   });
 
   test('what is displayed cleans back to itself — no double stripping', () => {
@@ -445,6 +475,24 @@ suite('an answered /session turn is rewritten to its pill', () => {
     const rewrite = body.indexOf('_ssItem.text = _ssDisplay');
     const send = body.indexOf("type: 'sendPrompt', text: userMsg");
     assert.ok(rewrite > 0 && send > rewrite, 'display is the pill, the wire keeps the summary');
+  });
+
+  test('the live bubble carries the image chip, read before the images are consumed', () => {
+    // pendingImages is spliced right after the bubble is added, so the count has to
+    // be read first — otherwise the chip would always say zero.
+    const src2 = fs.readFileSync(SOURCE, 'utf8');
+    const at2 = src2.indexOf('function handleSend()');
+    const body2 = src2.slice(at2, src2.indexOf('const images = pendingImages.splice(0)', at2));
+    assert.ok(body2.includes('imagePillLabel(pendingImages.length)'), 'the chip must be built before the splice');
+  });
+
+  test('a replayed image block renders the chip too', () => {
+    const src2 = fs.readFileSync(SOURCE, 'utf8');
+    const at2 = src2.indexOf("} else if (content && content.type === 'image') {");
+    assert.ok(at2 > 0, 'replayed image blocks are not handled — a resumed prompt loses its attachment');
+    const body2 = src2.slice(at2, at2 + 1200);
+    assert.ok(body2.includes('imagePillLabel(1)'), 'must use the same label');
+    assert.ok(body2.includes('renderUserMessageContent('), 'must re-render the row as chips');
   });
 
   test('the OTHER /session route — summary dropped into the composer — is covered too', () => {
