@@ -81,7 +81,7 @@ export function truncateForCapture(text: string): string {
 export function buildRecallQuery(text: string): string {
   let query = sanitizeMemoryText(text || '');
   query = query.replace(/<context\b[\s\S]*?<\/context>/g, '');
-  query = query.replace(/<(open_files|terminal|problems|selection|file|folder)\b[\s\S]*?<\/\1>/g, '');
+  query = query.replace(/<(open_files|terminal|problems|selection|file|folder|clipboard)\b[\s\S]*?<\/\1>/g, '');
   query = query.replace(/\n{3,}/g, '\n\n').trim();
   if (query.length > RECALL_QUERY_MAX_CHARS) {
     query = query.slice(0, RECALL_QUERY_MAX_CHARS).trim();

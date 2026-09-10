@@ -22,8 +22,11 @@ import * as path from 'path';
  * state, so resolving at drain time would attach whatever was copied LAST rather than
  * what the user had copied minutes earlier.
  *
- * Both are answered by snapshotting at QUEUE time and substituting the content into the
- * queued entry, so the payload is already inline whichever path sends it.
+ * Both are answered by snapshotting at QUEUE time. The snapshot is stored BESIDE the
+ * text (entry.clipboard), not substituted into it: every send path expands it through
+ * queueEntryPromptText, so the payload is inline on the wire whichever path delivers
+ * it, while the chip and the bubble show a `[Clipboard: N lines]` pill instead of a
+ * 1300-character blob.
  */
 
 const SOURCE = path.resolve(__dirname, '../../src/ui/ChatWebviewProvider.ts');
@@ -55,12 +58,12 @@ suite('queued @clipboard is snapshotted at queue time', () => {
     assert.ok(body.includes('catch'), 'a read failure must not break queueing');
   });
 
-  test('the reply substitutes the content inline and drops the mention', () => {
+  test('the reply stores the snapshot beside the text and drops the mention', () => {
     const at = src.indexOf("case 'clipboardForQueue'");
     assert.ok(at > 0, 'webview handler not found');
     const body = src.slice(at, at + 1800);
     assert.ok(body.includes('_qe.clipboardToken !== msg.token'), 'must match by token');
-    assert.ok(body.includes('<clipboard>'), 'content goes inline');
+    assert.ok(body.includes('_qe.clipboard = { text: _clip }'), 'snapshot kept out of the display text');
     assert.ok(body.includes("replace(/@clipboard"), 'mention removed');
     assert.ok(body.includes('delete _qe.clipboardToken'), 'token cleared after use');
   });
@@ -78,8 +81,43 @@ suite('queued @clipboard is snapshotted at queue time', () => {
     assert.ok(src.slice(at, at + 200).includes('showWarningMessage'), 'must use the editor UI');
   });
 
-  test('the inline block is stripped from the displayed bubble', () => {
-    // Otherwise the queued chip and the user bubble would show the raw payload.
-    assert.ok(src.includes("stripTag(displayText, 'clipboard', null)"), 'clipboard tag stripped');
+  test('the inline block is collapsed to a pill in the displayed bubble', () => {
+    // Otherwise the replayed bubble would show the raw payload. See
+    // clipboardResumeStrip.test.ts for the per-agent replay shapes.
+    assert.ok(src.includes("stripTag(displayText, 'clipboard', function(block)"), 'clipboard block replaced');
+  });
+
+  test('every send path expands the snapshot; no display path does', () => {
+    // A payload left in entry.text made the chip and the bubble show the whole blob;
+    // a payload expanded only in one send path would silently drop it in the others.
+    const expanders = src.split('queueEntryPromptText(entry)').length - 1;
+    assert.ok(expanders >= 5, `all send paths must expand, found ${expanders}`);
+    for (const marker of [
+      "vscode.postMessage({ type: 'sendPrompt', text: queueEntryPromptText(entry) || ' ', images: entry.images })",
+      "vscode.postMessage({ type: 'steerPrompt', text: queueEntryPromptText(entry) || ' ' })",
+    ]) {
+      assert.ok(src.includes(marker), `send path not expanding the snapshot: ${marker}`);
+    }
+    const bubbleAt = src.indexOf('function addUserBubbleForQueuedEntry(entry) {');
+    assert.ok(bubbleAt > 0, 'addUserBubbleForQueuedEntry not found');
+    const bubble = src.slice(bubbleAt, bubbleAt + 700);
+    assert.ok(bubble.includes('queueEntryDisplayText(entry)'), 'the bubble must show the pill');
+    assert.ok(!bubble.includes('queueEntryPromptText'), 'the bubble must never carry the payload');
+  });
+
+  test('a steered entry is matched against what was actually sent', () => {
+    // The echo mirrors the expanded text, so matching on the typed text alone would
+    // never ack a clipboard message and it would be delivered twice.
+    const at = src.indexOf('function ackSteeredQueueEntry(echoText) {');
+    assert.ok(at > 0, 'ackSteeredQueueEntry not found');
+    const body = src.slice(at, at + 900);
+    assert.ok(body.includes('steerEchoMatchesEntry(queueEntryPromptText(e), echoText)'), 'must match the sent form');
+  });
+
+  test('editing a queued message restores the mention, not the stale snapshot', () => {
+    const at = src.indexOf('function editQueuedMessage(index) {');
+    assert.ok(at > 0, 'editQueuedMessage not found');
+    const body = src.slice(at, at + 900);
+    assert.ok(body.includes("'@clipboard '"), 'the mention goes back in the composer');
   });
 });

@@ -188,9 +188,11 @@ suite('automatic steering of a mid-turn message', () => {
     const steer = fn.indexOf('maybeAutoSteerNext()');
     assert.ok(push > 0 && steer > push, 'the entry must be queued before steering');
     assert.ok(!fn.includes('messageQueue.splice'), 'queueMessage must not remove the entry');
-    // Removal happens only on the agent's echo.
+    // Removal happens only on the agent's echo, matched against the text that was
+    // actually SENT (a clipboard snapshot is expanded on the wire, so the echo
+    // mirrors the expanded form — matching entry.text alone would never ack it).
     const ack = extractFn('ackSteeredQueueEntry');
-    assert.ok(ack.includes('e.steered && steerEchoMatchesEntry(e.text, echoText)'), ack);
+    assert.ok(ack.includes('e.steered && steerEchoMatchesEntry(queueEntryPromptText(e), echoText)'), ack);
     assert.ok(ack.includes('messageQueue.splice(i, 1)'), ack);
   });
 

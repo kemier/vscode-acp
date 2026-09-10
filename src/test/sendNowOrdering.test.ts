@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
+import { QUEUE_ENTRY_HELPERS_SRC } from './webviewQueueHelpers';
 
 /**
  * "Send Now" ordering regression.
@@ -69,6 +70,7 @@ function makeHarness(opts: { isProcessing: boolean; queue: any[] }): Harness {
     function addUserBubbleForQueuedEntry(e) { calls.push('addUserBubble:' + e.text); }
     function handleLocalSlashCommand() { calls.push('localSlash'); return false; }
     function setProcessing() { calls.push('setProcessing'); }
+    ${QUEUE_ENTRY_HELPERS_SRC}
     ${body}
     return function(index) {
       sendQueuedMessageNow(index);

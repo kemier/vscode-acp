@@ -1,7 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
-import { buildClipboardBlock } from '../core/ContextBlockBuilder';
+import { buildClipboardBlock, wrapClipboardPayload } from '../core/ContextBlockBuilder';
 
 /**
  * @clipboard: the only route to a selection made inside a Markdown preview.
@@ -26,7 +26,9 @@ const SOURCE = path.resolve(__dirname, '../../src/ui/ChatWebviewProvider.ts');
 
 suite('@clipboard context mention', () => {
   const src = fs.readFileSync(SOURCE, 'utf8');
-  const at = src.indexOf('if (/@clipboard\\b/i.test(text)) {');
+  // Prose-only scanning: a mention quoted inside an attached payload is not a
+  // request (see mentionScan.test.ts for the double-attach it prevents).
+  const at = src.indexOf('if (hasMentionOutsideContext(text, /@clipboard\\b/i)) {');
   const block = src.slice(at, at + 1800);
 
   test('the mention is detected', () => {
@@ -35,11 +37,14 @@ suite('@clipboard context mention', () => {
 
   test('it reads the real clipboard and strips the mention from the prompt', () => {
     assert.ok(block.includes('vscode.env.clipboard.readText()'), 'must read the clipboard');
-    assert.ok(block.includes("text.replace(/@clipboard\\b/gi, '')"), 'mention must not reach the agent');
+    assert.ok(
+      block.includes("replaceMentionOutsideContext(text, /@clipboard\\b/gi, '')"),
+      'mention must not reach the agent — and only the prose one is removed',
+    );
   });
 
   test('a clipboard read failure cannot break the send', () => {
-    const guard = block.slice(0, block.indexOf('text = text.replace'));
+    const guard = block.slice(0, block.indexOf('replaceMentionOutsideContext'));
     assert.ok(guard.includes('try {') && guard.includes('catch'), 'readText must be guarded');
   });
 
@@ -51,7 +56,7 @@ suite('@clipboard context mention', () => {
 
   test('it follows the embedded-or-inline convention of the other mentions', () => {
     assert.ok(block.includes('buildClipboardBlock(clip, supportsEmbedded)'), 'uses the builder');
-    assert.ok(block.includes('<clipboard>'), 'inline fallback when embedded context is unsupported');
+    assert.ok(block.includes('wrapClipboardPayload(clip)'), 'inline fallback when embedded context is unsupported');
   });
 });
 
@@ -60,7 +65,16 @@ suite('buildClipboardBlock', () => {
     const b = buildClipboardBlock('hello', true) as { type: string; resource: { uri: string; text: string } };
     assert.strictEqual(b.type, 'resource');
     assert.strictEqual(b.resource.uri, 'zed:///agent/clipboard');
-    assert.strictEqual(b.resource.text, 'hello');
+    // Delimited even here. Agents that FLATTEN an embedded resource into the text
+    // they store (pi-acp: "[Embedded Context] <uri> (<mime>)" + body, Cursor the
+    // same) replay it as plain user text on session/load, and an undelimited
+    // payload is then indistinguishable from something the user typed — the whole
+    // blob came back in the bubble on every resume.
+    assert.strictEqual(b.resource.text, '<clipboard>\nhello\n</clipboard>');
+  });
+
+  test('the wrapper is shared with the inline path so both replay identically', () => {
+    assert.strictEqual(wrapClipboardPayload('hello'), '<clipboard>\nhello\n</clipboard>');
   });
 
   test('returns null without embedded context so the caller inlines it', () => {
@@ -90,11 +104,14 @@ suite('@clipboard is discoverable and does not leak into the bubble', () => {
     }
   });
 
-  test('the inline <clipboard> tag is stripped from the user bubble', () => {
-    // Only the embedded-resource path hides the payload; without embeddedContext the
-    // text is prepended inline and the raw tag would otherwise be displayed.
+  test('the inline <clipboard> block is collapsed to a pill in the user bubble', () => {
+    // Deleting it outright was not enough: a message whose only content was the
+    // snapshot cleaned to empty, and both render paths fall back to the RAW text in
+    // that case — which put the whole payload in the bubble. See
+    // clipboardResumeStrip.test.ts for the per-agent replay shapes.
     const at = src.indexOf('function cleanUserMessage(');
-    const body = src.slice(at, at + 2000);
-    assert.ok(body.includes("stripTag(displayText, 'clipboard', null)"), 'clipboard tag must be stripped');
+    const body = src.slice(at, at + 3000);
+    assert.ok(body.includes("stripTag(displayText, 'clipboard', function(block)"), 'clipboard block must be replaced');
+    assert.ok(body.includes('clipboardPillLabel('), 'replacement must be the pill');
   });
 });

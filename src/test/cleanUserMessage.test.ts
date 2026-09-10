@@ -52,11 +52,53 @@ function selectionReplacement(block: string): string {
   return '';
 }
 
+/**
+ * Marker lines left by agents that FLATTEN an ACP resource block into the user
+ * text they store (pi-acp, Cursor). Mirrors the production
+ * stripFlattenedContextMarkers; see clipboardResumeStrip.test.ts, which tests the
+ * real one.
+ */
+function stripFlattenedContextMarkers(text: string): string {
+  const prefixes = ['[Embedded Context] ', '[Context] '];
+  const schemes = ['zed:///', 'vscode-acp:///', 'file:///'];
+  return String(text || '')
+    .split('\n')
+    .filter((line) => {
+      const trimmed = line.replace(/^[ \t\r]+/, '');
+      const prefix = prefixes.find((p) => trimmed.indexOf(p) === 0);
+      if (!prefix) {
+        return true;
+      }
+      const rest = trimmed.slice(prefix.length);
+      return !schemes.some((s) => rest.indexOf(s) === 0);
+    })
+    .join('\n');
+}
+
+/** Collapse a <clipboard> block to its pill, mirroring the production replacement. */
+function clipboardReplacement(block: string): string {
+  let inner = block;
+  const gt = inner.indexOf('>');
+  if (gt >= 0) {
+    inner = inner.slice(gt + 1);
+  }
+  const close = inner.lastIndexOf('</clipboard>');
+  if (close >= 0) {
+    inner = inner.slice(0, close);
+  }
+  inner = inner.trim();
+  const lines = inner ? inner.split('\n').length : 0;
+  const label = inner ? `[Clipboard: ${lines}${lines === 1 ? ' line]' : ' lines]'}` : '[Clipboard: empty]';
+  return label + '\n\n';
+}
+
 function cleanUserMessage(rawText: string): string {
   let displayText = rawText;
+  displayText = stripFlattenedContextMarkers(displayText);
   displayText = stripTag(displayText, 'open_files', null);
   displayText = stripTag(displayText, 'terminal', null);
   displayText = stripTag(displayText, 'problems', null);
+  displayText = stripTag(displayText, 'clipboard', clipboardReplacement);
   displayText = stripTag(displayText, 'file', null);
   displayText = stripTag(displayText, 'folder', null);
   displayText = stripTag(displayText, 'selection', selectionReplacement);

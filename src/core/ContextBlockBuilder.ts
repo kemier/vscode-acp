@@ -198,6 +198,30 @@ export function buildDiagnosticsBlock(text: string, supportsEmbedded: boolean): 
   } as ContentBlock;
 }
 
+/** Canonical URI for a clipboard snapshot attached to a prompt. */
+export const CLIPBOARD_URI = 'zed:///agent/clipboard';
+
+/**
+ * Wrap a clipboard snapshot in the `<clipboard>` delimiters.
+ *
+ * Used by BOTH clipboard paths — the inline fallback and the embedded resource —
+ * so the payload always carries its own bounds.
+ *
+ * That matters after `session/load`. An agent stores whatever it received and
+ * replays it as user text, and several flatten an embedded resource into that
+ * text: pi-acp emits `[Embedded Context] <uri> (<mime>)` followed by the raw
+ * resource body (`src/acp/translate/prompt.ts`), and Cursor inlines attachments
+ * the same way. An UNDELIMITED payload is then indistinguishable from something
+ * the user typed, so the whole clipboard blob reappeared in the bubble on every
+ * resume — while codex/ericli, which wrap replays in `<context ref="…">`, looked
+ * fine. Delimiting at the source is the only fix that does not need a rule per
+ * agent: `cleanUserMessage` collapses the block to a `[Clipboard: N lines]` pill
+ * whatever the surrounding formatting turns out to be.
+ */
+export function wrapClipboardPayload(text: string): string {
+  return `<clipboard>\n${text}\n</clipboard>`;
+}
+
 /**
  * Build a block carrying clipboard text.
  *
@@ -207,7 +231,8 @@ export function buildDiagnosticsBlock(text: string, supportsEmbedded: boolean): 
  * env.clipboard is readable, so "copy, then ask with @clipboard" carries rendered
  * content the selection path cannot.
  *
- * - With `embeddedContext`: `resource` at `zed:///agent/clipboard`.
+ * - With `embeddedContext`: `resource` at `zed:///agent/clipboard`, body wrapped in
+ *   `<clipboard>` (see {@link wrapClipboardPayload}).
  * - Without: returns `null` so the caller prepends the text inline (the URI is not
  *   dereferenceable by the agent).
  */
@@ -218,8 +243,8 @@ export function buildClipboardBlock(text: string, supportsEmbedded: boolean): Co
   return {
     type: 'resource',
     resource: {
-      uri: 'zed:///agent/clipboard',
-      text,
+      uri: CLIPBOARD_URI,
+      text: wrapClipboardPayload(text),
       mimeType: 'text/plain',
     },
   } as ContentBlock;

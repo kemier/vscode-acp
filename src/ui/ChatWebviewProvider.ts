@@ -15,8 +15,15 @@ import {
   buildTerminalBlock,
   buildDiagnosticsBlock,
   buildClipboardBlock,
+  wrapClipboardPayload,
 } from '../core/ContextBlockBuilder';
 import { TerminalOutputStore } from '../core/TerminalOutputStore';
+import {
+  hasMentionOutsideContext,
+  matchMentionsOutsideContext,
+  replaceMentionOutsideContext,
+  escapeForRegExp,
+} from '../core/MentionScan';
 import { StreamCoalescer } from '../core/StreamCoalescer';
 import { FollowCoalescer, pickFollowTarget, type ToolCallLocationLike } from '../core/FollowAgent';
 import { needsRestoreAfterCapture } from '../core/SessionCaptureRestore';
@@ -2673,10 +2680,16 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // Detect @terminal — terminal output. EmbeddedResource when supported,
     // else inline fallback (a resource_link would point to an unresolvable
     // zed:///agent/terminal-selection URI).
-    if (/@terminal\b/i.test(text)) {
+    //
+    // Every mention below is scanned in PROSE only (see MentionScan): the outgoing
+    // text can already carry an inlined payload — a queued message's <clipboard>
+    // snapshot, or the <terminal>/<problems> fallback — and a mention quoted inside
+    // that payload is not a request. Scanning it as one attached the context twice
+    // and edited the payload; see MentionScan's header for the observed case.
+    if (hasMentionOutsideContext(text, /@terminal\b/i)) {
       const { text: termOutput, name } = this.terminalContext.getLastOutput();
       if (termOutput) {
-        text = text.replace(/@terminal\b/gi, '').trim();
+        text = replaceMentionOutsideContext(text, /@terminal\b/gi, '').trim();
         const block = buildTerminalBlock(termOutput, supportsEmbedded, this.terminalOutputStore);
         if (block) {
           contextBlocks.push(block);
@@ -2704,20 +2717,20 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // Ctrl+C inside the preview DOES work, and env.clipboard is readable. So
     // "select in the preview, copy, then ask with @clipboard" is the only path
     // that actually carries rendered content to the agent.
-    if (/@clipboard\b/i.test(text)) {
+    if (hasMentionOutsideContext(text, /@clipboard\b/i)) {
       let clip = '';
       try {
         clip = await vscode.env.clipboard.readText();
       } catch {
         clip = '';
       }
-      text = text.replace(/@clipboard\b/gi, '').trim();
+      text = replaceMentionOutsideContext(text, /@clipboard\b/gi, '').trim();
       if (clip.trim()) {
         const block = buildClipboardBlock(clip, supportsEmbedded);
         if (block) {
           contextBlocks.push(block);
         } else {
-          text = `<clipboard>\n${clip}\n</clipboard>\n\n${text}`;
+          text = `${wrapClipboardPayload(clip)}\n\n${text}`;
         }
       } else {
         vscode.window.showWarningMessage(
@@ -2728,7 +2741,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
     // Detect @problems — workspace diagnostics. Same embedded-or-inline
     // fallback as @terminal.
-    if (/@problems\b/i.test(text)) {
+    if (hasMentionOutsideContext(text, /@problems\b/i)) {
       const diags = vscode.languages.getDiagnostics();
       const lines: string[] = [];
       for (const [uri, issues] of diags) {
@@ -2743,7 +2756,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           lines.push(`${vscode.workspace.asRelativePath(uri)}:${d.range.start.line + 1}: [${sev}] ${d.message}`);
         }
       }
-      text = text.replace(/@problems\b/gi, '').trim();
+      text = replaceMentionOutsideContext(text, /@problems\b/gi, '').trim();
       if (lines.length > 0) {
         const diagText = lines.join('\n');
         const block = buildDiagnosticsBlock(diagText, supportsEmbedded);
@@ -2760,7 +2773,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // (EmbeddedResource with inline content) when embeddedContext is
     // supported, otherwise a `resource_link` so the agent can read it from
     // disk via the URI.
-    const fileMatches = text.match(/@file:([^\s]+)/gi);
+    const fileMatches = matchMentionsOutsideContext(text, /@file:([^\s]+)/gi);
     if (fileMatches && workspaceRoot) {
       for (const match of fileMatches) {
         const filePath = match.replace(/@file:/i, '');
@@ -2778,14 +2791,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         } catch {
           /* ignore */
         }
-        text = text.replace(match, '').trim();
+        text = replaceMentionOutsideContext(text, new RegExp(escapeForRegExp(match), 'g'), '').trim();
       }
     }
 
     // Detect @folder:path — directory mention. Always emitted as a
     // `resource_link` to the directory URI (trailing `/`). The agent
     // dereferences the URI to list entries.
-    const folderMatches = text.match(/@folder:([^\s]+)/gi);
+    const folderMatches = matchMentionsOutsideContext(text, /@folder:([^\s]+)/gi);
     if (folderMatches && workspaceRoot) {
       for (const match of folderMatches) {
         const folderPath = match.replace(/@folder:/i, '');
@@ -2795,7 +2808,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         } catch {
           /* ignore */
         }
-        text = text.replace(match, '').trim();
+        text = replaceMentionOutsideContext(text, new RegExp(escapeForRegExp(match), 'g'), '').trim();
       }
     }
 
@@ -6678,10 +6691,60 @@ let isCompacting = false;  // true while /compact is running
    // --- Message queue ---
     // When the agent is generating, new messages are queued and
     // auto-sent when the current turn completes (promptEnd).
-    // Each entry: { text: string, images: Array<{data:string,mimeType:string}> }
+    // Each entry: { text: string, images: Array<{data:string,mimeType:string}>,
+    //               clipboard?: { text: string } }
     let messageQueue = [];
     const msgQueueEl = document.getElementById('msgQueue');
     const msgQueueLabelEl = document.getElementById('msgQueueLabel');
+
+    /**
+     * Compact label for a clipboard snapshot: "[Clipboard: 12 lines]".
+     * Same shape as the [Terminal: N lines] / [Problems] pills formatResourcePill
+     * renders, so attached context reads the same wherever it appears.
+     */
+    function clipboardPillLabel(clip) {
+      var t = String(clip == null ? '' : clip);
+      if (!t) return '[Clipboard: empty]';
+      var lines = t.split(String.fromCharCode(10)).length;
+      return '[Clipboard: ' + lines + (lines === 1 ? ' line]' : ' lines]');
+    }
+
+    /**
+     * The text a queued entry SENDS: its clipboard snapshot expanded inline.
+     *
+     * The snapshot is kept out of entry.text on purpose. It is taken at queue time
+     * (the clipboard is volatile shared state — see queueMessage), but a 1300-char
+     * payload sitting in entry.text made the queue chip and the user bubble show the
+     * whole blob. Keeping it beside the text means display can stay a pill while the
+     * agent still receives the full content, expanded here at the moment of sending.
+     */
+    function queueEntryPromptText(entry) {
+      if (!entry) return '';
+      var typed = String(entry.text || '');
+      var clip = entry.clipboard && entry.clipboard.text ? String(entry.clipboard.text) : '';
+      if (!clip) return typed;
+      var nl = String.fromCharCode(10);
+      return '<clipboard>' + nl + clip + nl + '</clipboard>' + nl + nl + typed;
+    }
+
+    /** The text a queued entry SHOWS (chip + user bubble): a pill, never the payload. */
+    function queueEntryDisplayText(entry) {
+      if (!entry) return '';
+      var typed = String(entry.text || '');
+      var clip = entry.clipboard && entry.clipboard.text ? String(entry.clipboard.text) : '';
+      if (!clip) return typed;
+      return typed ? clipboardPillLabel(clip) + ' ' + typed : clipboardPillLabel(clip);
+    }
+
+    /** Chip tooltip: the pill plus a bounded preview, so the snapshot is inspectable. */
+    function queueEntryTooltip(entry) {
+      var display = queueEntryDisplayText(entry);
+      var clip = entry && entry.clipboard && entry.clipboard.text ? String(entry.clipboard.text) : '';
+      if (!clip) return display;
+      var preview = clip.length > 600 ? clip.slice(0, 600) + '…' : clip;
+      var nl = String.fromCharCode(10);
+      return display + nl + nl + '— clipboard snapshot —' + nl + preview;
+    }
 
     function renderQueue() {
       if (!msgQueueEl) return;
@@ -6698,8 +6761,8 @@ let isCompacting = false;  // true while /compact is running
        chip.className = 'msg-queue-item';
        const textSpan = document.createElement('span');
        textSpan.className = 'queue-text';
-       textSpan.textContent = entry.text || '(image)';
-       textSpan.title = entry.text || '';
+       textSpan.textContent = queueEntryDisplayText(entry) || '(image)';
+       textSpan.title = queueEntryTooltip(entry) || '';
        chip.appendChild(textSpan);
        // Edit button — moves message text back to prompt input
        const editBtn = document.createElement('span');
@@ -6777,10 +6840,11 @@ let isCompacting = false;  // true while /compact is running
      // drain time would attach whatever was copied LAST, not what the user had copied
      // when they wrote the message.
      //
-     // Substituting the content into entry.text here means the payload is already inline
-     // by the time anything sends it, so both paths work and neither needs to re-read the
-     // clipboard. The host's own @clipboard resolver then finds no mention and stays out
-     // of it, so the content cannot be attached twice.
+     // The snapshot is stored BESIDE the text (entry.clipboard) rather than substituted
+     // into it: queueEntryPromptText expands it for every send path, so both steer and
+     // drain carry the payload, while the chip and the bubble show a pill instead of the
+     // raw blob. The host's own @clipboard resolver finds no mention in what it receives
+     // and stays out of it, so the content cannot be attached twice.
      if (/@clipboard\\b/i.test(String(text || ''))) {
        entry.clipboardToken = 'clip-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
        vscode.postMessage({ type: 'resolveClipboardForQueue', token: entry.clipboardToken });
@@ -6811,7 +6875,7 @@ let isCompacting = false;  // true while /compact is running
      entry.steered = true;
      entry.steerPending = true;
      hasSteeredThisTurn = true;
-     vscode.postMessage({ type: 'steerPrompt', text: entry.text || ' ' });
+     vscode.postMessage({ type: 'steerPrompt', text: queueEntryPromptText(entry) || ' ' });
      renderQueue();
      showTransientHint('Sent into the running turn — the agent picks it up at its next step.');
      return true;
@@ -6830,7 +6894,9 @@ let isCompacting = false;  // true while /compact is running
    function ackSteeredQueueEntry(echoText) {
      for (var i = 0; i < messageQueue.length; i++) {
        var e = messageQueue[i];
-       if (e && e.steered && steerEchoMatchesEntry(e.text, echoText)) {
+       // Match on the EXPANDED text: that is what was sent, so that is what the
+       // agent echoes back (a clipboard snapshot included).
+       if (e && e.steered && steerEchoMatchesEntry(queueEntryPromptText(e), echoText)) {
          messageQueue.splice(i, 1);
          renderQueue();
          addUserBubbleForQueuedEntry(e);
@@ -6851,9 +6917,12 @@ let isCompacting = false;  // true while /compact is running
    // deliberately does NOT show the bubble at queue time so a prompt queued
    // during a long turn (e.g. /compact) stays hidden until it's processed.
    function addUserBubbleForQueuedEntry(entry) {
-     chatHistory.push({ kind: 'message', role: 'user', text: entry.text || '(image)' });
+     // Display text, not prompt text: an attached clipboard snapshot shows as
+     // "[Clipboard: N lines]" here and is expanded only on the wire.
+     var _display = queueEntryDisplayText(entry) || '(image)';
+     chatHistory.push({ kind: 'message', role: 'user', text: _display });
      saveState();
-     addMessageDOM('user', entry.text || '(image)');
+     addMessageDOM('user', _display);
      // Reset turn + tool state so the next agent_message_chunk / tool_call
      // creates a fresh turn container under this user bubble. Retire the tool
      // registry too — this is the Send Now path, where the interrupted turn is
@@ -6895,7 +6964,7 @@ let isCompacting = false;  // true while /compact is running
      entry.steerPending = true;
      hasSteeredThisTurn = true;
      renderQueue();
-     vscode.postMessage({ type: 'steerPrompt', text: entry.text || ' ' });
+     vscode.postMessage({ type: 'steerPrompt', text: queueEntryPromptText(entry) || ' ' });
      showTransientHint('Sent into the running turn — the agent picks it up at its next step.');
    }
 
@@ -6904,11 +6973,19 @@ let isCompacting = false;  // true while /compact is running
    function editQueuedMessage(index) {
      if (index < 0 || index >= messageQueue.length) return;
      const entry = messageQueue[index];
+     // Restore the @clipboard MENTION, not the snapshot: editing is a new write, so
+     // the message is re-snapshotted when it is queued again. Carrying the old
+     // snapshot into the composer would either paste a blob into the input or attach
+     // content the user can no longer see.
+     var _restored = String(entry.text || '');
+     if (entry.clipboard && entry.clipboard.text) {
+       _restored = ('@clipboard ' + _restored).trim();
+     }
      // Put the text back in the prompt input (append if there's existing text)
      if (promptInput.value.trim()) {
-       promptInput.value = promptInput.value.trim() + '\\n' + (entry.text || '');
+       promptInput.value = promptInput.value.trim() + '\\n' + _restored;
      } else {
-       promptInput.value = entry.text || '';
+       promptInput.value = _restored;
      }
     // Restore images if any
     if (entry.images && entry.images.length > 0) {
@@ -7026,7 +7103,7 @@ let isCompacting = false;  // true while /compact is running
      isSendingPrompt = true;
      // Optimistically set processing=true so the Stop button shows immediately.
      setProcessing(true, 'drainQueue-localslash-notprocessing');
-     vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
+     vscode.postMessage({ type: 'sendPrompt', text: queueEntryPromptText(entry) || ' ', images: entry.images });
     }
   }
 }
@@ -7553,7 +7630,7 @@ hasSentPrompt = true;
   // Optimistically set processing=true so the Stop button shows immediately.
   // See handleSend() for rationale (VS Code webview postMessage throttling).
   setProcessing(true, 'drainQueue-sendPrompt');
-  vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
+  vscode.postMessage({ type: 'sendPrompt', text: queueEntryPromptText(entry) || ' ', images: entry.images });
 }
 return true;
 }
@@ -7873,17 +7950,75 @@ const builtinCommands = [
      return out;
    }
 
+   /**
+    * Strip the marker lines an agent leaves when it FLATTENS an ACP resource block
+    * into the user text it stores, then replays that text on session/load.
+    *
+    * pi-acp does exactly this (src/acp/translate/prompt.ts):
+    *   resource       -> "[Embedded Context] <uri> (<mime>)" + newline + body
+    *   resource_link  -> "[Context] <uri>"
+    * Cursor inlines attachments the same way. Agents that wrap replays in
+    * <context ref="…"> (codex, ericli) never showed this, which is why the leak
+    * looked agent-specific: the marker line, and the body under it, are plain text
+    * with nothing to strip.
+    *
+    * Only the marker LINE is removed here. The body is bounded by its own tags —
+    * <clipboard> for a clipboard snapshot, <agent-memory> for a recall blob — so the
+    * tag strips below collapse it. Deleting to the end of the message instead would
+    * eat the real prompt, which is appended AFTER every context block.
+    */
+   function stripFlattenedContextMarkers(text) {
+     var nl = String.fromCharCode(10);
+     var lines = String(text || '').split(nl);
+     var prefixes = ['[Embedded Context] ', '[Context] '];
+     var schemes = ['zed:///', 'vscode-acp:///', 'file:///'];
+     var kept = [];
+     for (var i = 0; i < lines.length; i++) {
+       var line = lines[i];
+       var lead = 0;
+       while (lead < line.length) {
+         var lc = line.charCodeAt(lead);
+         if (lc === 32 || lc === 13 || lc === 9) { lead++; } else break;
+       }
+       var trimmed = line.slice(lead);
+       var isMarker = false;
+       for (var p = 0; p < prefixes.length; p++) {
+         if (trimmed.indexOf(prefixes[p]) !== 0) continue;
+         var rest = trimmed.slice(prefixes[p].length);
+         for (var s = 0; s < schemes.length; s++) {
+           if (rest.indexOf(schemes[s]) === 0) { isMarker = true; break; }
+         }
+         break;
+       }
+       if (!isMarker) kept.push(line);
+     }
+     return kept.join(nl);
+   }
+
  function cleanUserMessage(rawText) {
     var displayText = rawText;
     // Debug: log cleanUserMessage entry
     var _dbgPreview = rawText.length > 200 ? rawText.substring(0, 200) + '...' : rawText;
     vscode.postMessage({ type: 'debugLog', message: 'cleanUserMessage IN len=' + rawText.length + ' text="' + _dbgPreview + '"' });
+    displayText = stripFlattenedContextMarkers(displayText);
     displayText = stripTag(displayText, 'open_files', null);
     displayText = stripTag(displayText, 'terminal', null);
     displayText = stripTag(displayText, 'problems', null);
-    // Same reason as terminal/problems: on an agent without embeddedContext the
-    // clipboard text is prepended inline, and the raw tag must not show in the bubble.
-    displayText = stripTag(displayText, 'clipboard', null);
+    // Clipboard snapshots are delimited wherever they come from — inlined by the
+    // send path for agents without embeddedContext, and inside the embedded
+    // resource body for the rest (wrapClipboardPayload). Collapse the block to a
+    // pill rather than deleting it: a message whose only content was the snapshot
+    // would otherwise clean to empty, and BOTH render paths fall back to the raw
+    // text in that case, putting the entire payload in the bubble.
+    displayText = stripTag(displayText, 'clipboard', function(block) {
+      var inner = block;
+      var gt = inner.indexOf('>');
+      if (gt >= 0) inner = inner.slice(gt + 1);
+      var close = inner.lastIndexOf('</clipboard>');
+      if (close >= 0) inner = inner.slice(0, close);
+      inner = inner.replace(/^[\\s]+/, '').replace(/[\\s]+$/, '');
+      return clipboardPillLabel(inner) + String.fromCharCode(10) + String.fromCharCode(10);
+    });
     displayText = stripTag(displayText, 'file', null);
     displayText = stripTag(displayText, 'folder', null);
     displayText = stripTag(displayText, 'selection', function(block) {
@@ -8136,6 +8271,7 @@ var end = displayText.length;
           || rawText.indexOf('<selection') >= 0
           || rawText.indexOf('<terminal') >= 0
           || rawText.indexOf('<problems') >= 0
+          || rawText.indexOf('<clipboard') >= 0
           || rawText.indexOf('<file') >= 0
           || rawText.indexOf('<folder') >= 0
           || rawText.indexOf('<context') >= 0
@@ -8144,6 +8280,7 @@ var end = displayText.length;
           || rawText.indexOf('<user-persona') >= 0
           || rawText.indexOf('zed:///') >= 0
           || rawText.indexOf('git:/') >= 0
+          || rawText.indexOf('[Embedded Context] ') >= 0
           || rawText.indexOf('[User interjection]') >= 0
           || rawText.indexOf('"type":"resource_link"') >= 0
           || rawText.indexOf('Additional ACP context:') >= 0
@@ -8182,6 +8319,9 @@ var end = displayText.length;
         }
         if (u.pathname.indexOf('/agent/diagnostics') === 0) {
           return '[Problems]' + nl2;
+        }
+        if (u.pathname.indexOf('/agent/clipboard') === 0) {
+          return '[Clipboard]' + nl2;
         }
         return '[' + (fallbackName || uri) + ']' + nl2;
       }
@@ -18307,22 +18447,20 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       // handleSend() post it to the host (preserving queueing, compaction
       // guards, and the user bubble).
       case 'clipboardForQueue': {
-        // Substitute the snapshot into the queued entry so the payload is inline before
-        // anything sends it. The mention is removed, matching what the host's own
-        // resolver does, so the content is never attached twice.
+        // Store the snapshot BESIDE the text and drop the mention (matching what the
+        // host's own resolver does, so the content is never attached twice). Display
+        // stays a pill; queueEntryPromptText expands it on every send path.
         for (var _qi = 0; _qi < messageQueue.length; _qi++) {
           var _qe = messageQueue[_qi];
           if (!_qe || _qe.clipboardToken !== msg.token) continue;
           var _clip = String(msg.text || '');
           var _stripped = String(_qe.text || '').replace(/@clipboard\\b/gi, '').trim();
+          _qe.text = _stripped;
           if (_clip.trim()) {
-            _qe.text = '<clipboard>' + String.fromCharCode(10) + _clip +
-              String.fromCharCode(10) + '</clipboard>' + String.fromCharCode(10) +
-              String.fromCharCode(10) + _stripped;
+            _qe.clipboard = { text: _clip };
           } else {
             // Nothing copied: drop the mention rather than sending it literally, and say
             // so now while the user can still fix it — not minutes later on drain.
-            _qe.text = _stripped;
             vscode.postMessage({
               type: 'showWarning',
               message: '@clipboard: the clipboard was empty when this message was queued. Copy the text and queue it again.',
@@ -18776,7 +18914,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
               addUserBubbleForQueuedEntry(entry);
             }
             hasSentPrompt = true;
-            vscode.postMessage({ type: 'sendPrompt', text: entry.text || ' ', images: entry.images });
+            vscode.postMessage({ type: 'sendPrompt', text: queueEntryPromptText(entry) || ' ', images: entry.images });
           }
         }
       }, 0);
@@ -19744,7 +19882,9 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
      // auto-compact replaced the conversation with a summary.
      var _queuedTexts = {};
      for (var _mqi = 0; _mqi < messageQueue.length; _mqi++) {
-       if (messageQueue[_mqi].text) _queuedTexts[messageQueue[_mqi].text] = true;
+       // Keyed on the DISPLAY text, which is what the bubble carries.
+       var _mqText = queueEntryDisplayText(messageQueue[_mqi]);
+       if (_mqText) _queuedTexts[_mqText] = true;
      }
      // Preserve IN-FLIGHT tool calls for the same reason we preserve queued
      // user messages: a tool call that is still running is live state, not
