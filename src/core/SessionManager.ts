@@ -1148,6 +1148,11 @@ export class SessionManager extends EventEmitter {
           `(session=${sessionId})`,
       );
     }
+    // Whether this turn produced anything worth remembering. endTurn runs in the
+    // finally below, so without this a turn that THREW (upstream 503, transport
+    // error) was still captured — a user message paired with empty or half-streamed
+    // assistant text, once per retry.
+    let turnFailed = false;
     try {
       const response = await connInfo.connection.prompt({
         sessionId,
@@ -1162,13 +1167,24 @@ export class SessionManager extends EventEmitter {
       }
       log(`Prompt response: stopReason=${response.stopReason}`);
       return response;
+    } catch (err) {
+      turnFailed = true;
+      throw err;
     } finally {
       this.inFlightPromptSessions.delete(sessionId);
       if (DEBUG_LIVE) {
         log(`sendPrompt: IN-FLIGHT DELETE session=${sessionId} slash=${isSlashCommand}`);
       }
       if (!isSlashCommand && this.memoryProvider) {
-        void this.memoryProvider.endTurn(sessionId).catch((e) => logError('Memory capture failed', e));
+        if (turnFailed) {
+          // Drop the buffer rather than leaving it: otherwise the failed turn's text
+          // would be captured by the NEXT turn's endTurn. A CANCELLED turn is still
+          // captured deliberately — the user interrupted a real answer, and that
+          // exchange is worth remembering; only an outright failure is discarded.
+          this.memoryProvider.discardTurn(sessionId);
+        } else {
+          void this.memoryProvider.endTurn(sessionId).catch((e) => logError('Memory capture failed', e));
+        }
       }
     }
   }

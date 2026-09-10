@@ -618,6 +618,22 @@ export class SharedMemoryProvider {
     });
   }
 
+  /**
+   * Drop a turn's buffer WITHOUT capturing it.
+   *
+   * For a turn that failed outright (the prompt threw — upstream 503, transport
+   * error, killed agent). Capturing that writes a user message paired with empty or
+   * half-streamed assistant text into L0, and every retry adds another copy: the
+   * embeddings traffic during one 503 burst was visible in the proxy log. Dropping
+   * is not optional bookkeeping either — leaving the buffer in place would let the
+   * failed text be captured by the NEXT turn's endTurn.
+   */
+  discardTurn(sessionId: string): void {
+    if (this.turns.delete(sessionId)) {
+      log(`Memory capture skipped: turn failed (session=${sessionId})`);
+    }
+  }
+
   /** Flush L0 capture for a completed (or cancelled) turn. */
   async endTurn(sessionId: string): Promise<void> {
     const turn = this.turns.get(sessionId);
