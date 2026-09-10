@@ -5278,13 +5278,16 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       looked like before (the "\n\n" separator forced a line break even for a
       three-word prompt). Same visual family as .session-mention-pill. */
    .context-pill {
-     display: inline-block;
-     /* Vertical centring comes from SYMMETRIC padding, not from line-height.
-        Growing the box with line-height (1.7) and no vertical padding splits the
-        extra leading around the text BOX, and a font's ascent/descent are not
-        symmetric — so an all-caps-ish label like "Clipboard: 1 line" rendered
-        visibly high inside the pill. Same padding + vertical-align as
-        .session-mention-pill, which already sits correctly beside message text. */
+     /* Centring is done by the flex box, not by line-height and not by luck.
+        Two earlier attempts were wrong for the same reason: growing the box with
+        line-height (1.7, then a bare padding: 0 in the queue override) splits the
+        leading around the text BOX, and a font's ascent and descent are not
+        symmetric — so "Clipboard: 1 line" sat visibly high inside the pill. With
+        inline-flex + align-items: center the label is centred whatever the font
+        metrics are, and symmetric padding keeps it that way at any size. */
+     display: inline-flex;
+     align-items: center;
+     justify-content: center;
      padding: 1px 8px;
      margin-right: 6px;
      border-radius: 10px;
@@ -5296,16 +5299,17 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
      white-space: nowrap;
      max-width: 100%;
      overflow: hidden;
-     text-overflow: ellipsis;
      vertical-align: middle;
    }
    .context-pill:last-child { margin-right: 0; }
-   /* Inside the queue chip the row is already tiny — shrink to match. */
+   /* Inside the queue chip the row is already tiny — shrink to match, keeping the
+      vertical padding symmetric so the label stays centred. */
    .msg-queue-item .context-pill {
      font-size: 0.78em;
-     padding: 0 6px;
-     margin-right: 4px;
-     line-height: 1.4;
+     padding: 1px 6px;
+     margin-right: 0;   /* the row's gap handles spacing */
+     line-height: 1.35;
+     flex: 0 0 auto;    /* never squeeze the label */
    }
    .session-mention-separator {
      color: var(--vscode-button-foreground);
@@ -6386,6 +6390,19 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       overflow: hidden;
     }
     .msg-queue-item .queue-text {
+      /* A flex ROW, not inline content. The pill is taller than the message text,
+         so as inline content its position depended on baseline + vertical-align and
+         it sat off-centre against the chip's other items. As flex children the pill
+         and the text are centred against each other by the box model. */
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      min-width: 0;
+      overflow: hidden;
+    }
+    /* min-width:0 is what lets a flex child actually shrink and ellipsise. */
+    .msg-queue-item .queue-text-body {
+      min-width: 0;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
@@ -7112,7 +7129,12 @@ let isCompacting = false;  // true while /compact is running
        // "Clipboard: 12 lines" beside the message, never as the payload.
        const queueRest = appendContextPills(textSpan, queueEntryDisplayText(entry) || '(image)');
        if (queueRest) {
-         textSpan.appendChild(document.createTextNode(queueRest));
+         // Own element, not a bare text node: it has to be a flex child to be
+         // centred against the pill and to ellipsise when the chip runs out of room.
+         const queueBody = document.createElement('span');
+         queueBody.className = 'queue-text-body';
+         queueBody.textContent = queueRest;
+         textSpan.appendChild(queueBody);
        }
        textSpan.title = queueEntryTooltip(entry) || '';
        chip.appendChild(textSpan);

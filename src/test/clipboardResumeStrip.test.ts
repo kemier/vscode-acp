@@ -311,17 +311,38 @@ suite('attached-context pills render as chips, not as bracketed text', () => {
     assert.deepStrictEqual(split.pills, []);
   });
 
-  test('the chip centres its label with padding, not with line-height', () => {
-    // Growing the box with line-height and no vertical padding splits the leading
-    // around the text BOX, and font ascent/descent are not symmetric — the label
-    // rendered visibly high inside the pill.
+  test('the chip centres its label by flex, in the bubble AND in the queue chip', () => {
+    // Wrong twice for the same reason: inflating the box with line-height (1.7),
+    // then a bare "padding: 0" in the queue override. Leading is split around the
+    // text BOX and font ascent/descent are not symmetric, so the label sat high.
     const src = fs.readFileSync(SOURCE, 'utf8');
     const at = src.indexOf('.context-pill {');
     assert.ok(at > 0, 'context-pill style missing');
     const css = src.slice(at, src.indexOf('}', at));
-    assert.ok(/padding:\s*1px 8px/.test(css), `symmetric vertical padding required: ${css}`);
+    assert.ok(/display:\s*inline-flex/.test(css), `flex centring required: ${css}`);
+    assert.ok(/align-items:\s*center/.test(css), 'the label must be centred whatever the font metrics');
+    assert.ok(/padding:\s*1px 8px/.test(css), 'symmetric vertical padding');
     assert.ok(/vertical-align:\s*middle/.test(css), 'the chip must sit level with the message text');
     assert.ok(!/line-height:\s*1\.7/.test(css), 'line-height must not be used to inflate the box');
+
+    // The queue variant is a separate rule and re-broke it once already.
+    const qAt = src.indexOf('.msg-queue-item .context-pill {');
+    assert.ok(qAt > 0, 'queue-chip pill style missing');
+    const qCss = src.slice(qAt, src.indexOf('}', qAt));
+    assert.ok(/padding:\s*1px 6px/.test(qCss), `queue chip needs symmetric padding too: ${qCss}`);
+    assert.ok(!/padding:\s*0 /.test(qCss), 'zero vertical padding is what pushed the label off-centre');
+
+    // …and the row itself must lay the pill out as a flex child. As inline content
+    // its position depended on baseline + vertical-align against a taller box.
+    const rAt = src.indexOf('.msg-queue-item .queue-text {');
+    assert.ok(rAt > 0, 'queue-text style missing');
+    const rCss = src.slice(rAt, src.indexOf('}', rAt));
+    assert.ok(/display:\s*flex/.test(rCss), `the queue row must be flex: ${rCss}`);
+    assert.ok(/align-items:\s*center/.test(rCss), 'pill and text must be centred against each other');
+    assert.ok(/min-width:\s*0/.test(rCss), 'a flex child needs min-width:0 to ellipsise');
+    // The message text needs its own element to be a flex child at all.
+    assert.ok(src.includes("queueBody.className = 'queue-text-body'"), 'queued text must be its own element');
+    assert.ok(src.includes('.msg-queue-item .queue-text-body {'), 'and needs the ellipsis rule');
   });
 
   test('the renderer and the queue chip both use it, and the chip has a style', () => {

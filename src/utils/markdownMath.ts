@@ -23,6 +23,14 @@ function looksLikeMath(tex: string): boolean {
   if (!t) {
     return false;
   }
+  // No letter and no digit means no math. This is what let `\[ ... \]` render:
+  // LLMs write that as a PLACEHOLDER when describing delimiters ("the math is
+  // wrapped in `\[ ... \]`"), and the compact-form rule at the bottom accepted it
+  // because an ellipsis has no whitespace and is under 40 chars. It rendered as a
+  // centred KaTeX "…" in the middle of a sentence.
+  if (!/[A-Za-z0-9]/.test(t)) {
+    return false;
+  }
   // Strong math signals: TeX command, super/subscript/accent, equality.
   if (/(?:\\[A-Za-z@]+\b|[\^_~]|=)/.test(t)) {
     return true;
@@ -55,6 +63,51 @@ function looksLikeMath(tex: string): boolean {
 }
 
 /**
+ * True when `idx` in `src` sits inside code — a fenced block or an inline span.
+ *
+ * A block-level marked extension is offered `start()` so the paragraph tokenizer
+ * knows where to stop, and that cut happens with no regard for inline context. So
+ * a `\[` inside an inline code span split the paragraph there, and the sentence
+ *
+ *   the math is wrapped in **`\[ ... \]`** delimiters
+ *
+ * rendered as: a paragraph ending in a literal "**`", a centred KaTeX block, and a
+ * third paragraph starting "`** delimiters" — with the bold and the code span both
+ * broken open. Text ABOUT math delimiters is common in these conversations, so the
+ * candidate has to be rejected before the cut.
+ *
+ * Fenced blocks were already safe (their own tokenizer consumes the fence before
+ * the extension sees a block boundary) but are checked anyway: `start()` scans the
+ * whole remaining source, not just the current block.
+ */
+function isInsideCode(src: string, idx: number): boolean {
+  const before = src.slice(0, idx);
+  const fences = before.match(/^[ \t]*(?:```|~~~)/gm) ?? [];
+  if (fences.length % 2 === 1) {
+    return true;
+  }
+  // Inline spans do not cross a blank line, so only the current line matters.
+  const lineStart = before.lastIndexOf('\n') + 1;
+  const ticks = before.slice(lineStart).match(/`+/g) ?? [];
+  return ticks.length % 2 === 1;
+}
+
+/** First occurrence of `needle` that is not inside code, or -1. */
+function firstOutsideCode(src: string, needle: string): number {
+  let from = 0;
+  for (;;) {
+    const i = src.indexOf(needle, from);
+    if (i < 0) {
+      return -1;
+    }
+    if (!isInsideCode(src, i)) {
+      return i;
+    }
+    from = i + needle.length;
+  }
+}
+
+/**
  * Render TeX to KaTeX HTML wrapped in a custom element so post-processors
  * (auto-linkify) can skip the whole subtree without choking on nested spans.
  */
@@ -83,8 +136,8 @@ export function createMathExtension(): MarkedExtension {
         name: 'blockKatex',
         level: 'block',
         start(src: string): number | undefined {
-          const bracket = src.indexOf('\\[');
-          const dollars = src.indexOf('$$');
+          const bracket = firstOutsideCode(src, '\\[');
+          const dollars = firstOutsideCode(src, '$$');
           if (bracket < 0) {
             return dollars < 0 ? undefined : dollars;
           }
@@ -112,7 +165,7 @@ export function createMathExtension(): MarkedExtension {
         name: 'inlineKatex',
         level: 'inline',
         start(src: string): number | undefined {
-          const i = src.indexOf('\\(');
+          const i = firstOutsideCode(src, '\\(');
           return i < 0 ? undefined : i;
         },
         tokenizer(src: string): Tokens.Generic | undefined {
