@@ -2714,6 +2714,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // was attached (or how much of it) without being told.
     const attachedPills: string[] = [];
     const rawTextForBubble = text;
+    // The prose the user actually typed, with mentions removed but WITHOUT the
+    // payloads that get inlined into the wire text for agents lacking
+    // embeddedContext. Reporting the wire text instead showed the clipboard chip
+    // TWICE: once from attachedPills, and once more when the inlined
+    // <clipboard> block in that text was later cleaned into a pill of its own.
+    let proseText = text;
     const pillPathBase = (p: string): string => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
 
     // Detect @terminal — terminal output. EmbeddedResource when supported,
@@ -2729,6 +2735,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       const { text: termOutput, name } = this.terminalContext.getLastOutput();
       if (termOutput) {
         text = replaceMentionOutsideContext(text, /@terminal\b/gi, '').trim();
+        proseText = text;
         const termLines = termOutput.split('\n').length;
         attachedPills.push(`Terminal: ${termLines} ${termLines === 1 ? 'line' : 'lines'}`);
         const block = buildTerminalBlock(termOutput, supportsEmbedded, this.terminalOutputStore);
@@ -2766,6 +2773,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         clip = '';
       }
       text = replaceMentionOutsideContext(text, /@clipboard\b/gi, '').trim();
+      proseText = text;
       if (clip.trim()) {
         const clipLines = clip.split('\n').length;
         attachedPills.push(`Clipboard: ${clipLines} ${clipLines === 1 ? 'line' : 'lines'}`);
@@ -2800,6 +2808,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         }
       }
       text = replaceMentionOutsideContext(text, /@problems\b/gi, '').trim();
+      proseText = text;
       if (lines.length > 0) {
         attachedPills.push(`Problems: ${lines.length}`);
         const diagText = lines.join('\n');
@@ -2837,6 +2846,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           /* ignore */
         }
         text = replaceMentionOutsideContext(text, new RegExp(escapeForRegExp(match), 'g'), '').trim();
+        proseText = replaceMentionOutsideContext(proseText, new RegExp(escapeForRegExp(match), 'g'), '').trim();
       }
     }
 
@@ -2855,6 +2865,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           /* ignore */
         }
         text = replaceMentionOutsideContext(text, new RegExp(escapeForRegExp(match), 'g'), '').trim();
+        proseText = replaceMentionOutsideContext(proseText, new RegExp(escapeForRegExp(match), 'g'), '').trim();
       }
     }
 
@@ -2874,7 +2885,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         type: 'contextAttached',
         pills: attachedPills,
         rawText: rawTextForBubble,
-        text,
+        text: proseText,
       });
     }
 
@@ -7055,6 +7066,32 @@ let isCompacting = false;  // true while /compact is running
       if (imgPill) pills.push(imgPill);
       if (pills.length === 0) return typed;
       return typed ? pills.join(' ') + ' ' + typed : pills.join(' ');
+    }
+
+    /**
+     * Display text for a bubble whose attachments the host just resolved.
+     *
+     * Both inputs can carry the same attachment: the host reports a label for each
+     * block it built, and for an agent without embeddedContext the text ALSO has the
+     * payload inlined, which cleanUserMessage turns into a pill. Taking both at face
+     * value rendered "[Clipboard: 1 line] [Clipboard: 1 line] …". Cleaning the text
+     * first and merging by label keeps one chip per attachment, and makes this
+     * string identical to what a resume produces by construction.
+     */
+    function contextAttachedDisplayText(pills, hostText) {
+      var nl = String.fromCharCode(10);
+      var carried = splitLeadingContextPills(cleanUserMessage(String(hostText || '')));
+      var all = [];
+      var add = function(p) {
+        var label = String(p == null ? '' : p);
+        if (label && all.indexOf(label) < 0) all.push(label);
+      };
+      var reported = Array.isArray(pills) ? pills : [];
+      for (var i = 0; i < reported.length; i++) add(reported[i]);
+      for (var j = 0; j < carried.pills.length; j++) add(carried.pills[j]);
+      var out = '';
+      for (var k = 0; k < all.length; k++) out += '[' + all[k] + ']' + nl + nl;
+      return out + carried.rest;
     }
 
     /** Chip tooltip: the pill plus a bounded preview, so the snapshot is inspectable. */
@@ -18936,11 +18973,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         // already shows its own snapshot pill will not match, and must not be
         // rewritten — its pill is already correct.
         if (String(chatHistory[_capIdx].text || '').trim() !== String(msg.rawText || '').trim()) break;
-        var _capText = '';
-        for (var _cp = 0; _cp < _capPills.length; _cp++) {
-          _capText += '[' + _capPills[_cp] + ']' + String.fromCharCode(10) + String.fromCharCode(10);
-        }
-        _capText += String(msg.text || '');
+        var _capText = contextAttachedDisplayText(_capPills, msg.text);
         chatHistory[_capIdx].text = _capText;
         saveState();
         var _capEls = messagesEl.querySelectorAll('.message.user');

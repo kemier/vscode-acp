@@ -156,10 +156,20 @@ suite('the send path uses prose-only scanning for every mention', () => {
       resolver.includes('matchMentionsOutsideContext(text, /@folder:'),
       '@folder: must be collected from prose',
     );
-    assert.strictEqual(
-      resolver.split('replaceMentionOutsideContext(').length - 1,
-      5,
-      'each of the five removals must be prose-only',
+    // Five mentions, seven calls: @file:/@folder: strip their match from the wire
+    // text AND from the prose copy the panel is told about (see proseText).
+    for (const removal of [
+      "replaceMentionOutsideContext(text, /@terminal\\b/gi, '')",
+      "replaceMentionOutsideContext(text, /@clipboard\\b/gi, '')",
+      "replaceMentionOutsideContext(text, /@problems\\b/gi, '')",
+      "replaceMentionOutsideContext(text, new RegExp(escapeForRegExp(match), 'g'), '')",
+      "replaceMentionOutsideContext(proseText, new RegExp(escapeForRegExp(match), 'g'), '')",
+    ]) {
+      assert.ok(resolver.includes(removal), `removal not prose-only: ${removal}`);
+    }
+    assert.ok(
+      resolver.split('replaceMentionOutsideContext(').length - 1 >= 5,
+      'every removal must go through the prose-only helper',
     );
   });
 });

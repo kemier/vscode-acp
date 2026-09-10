@@ -42,6 +42,7 @@ interface Webview {
   queueEntryTooltip(entry: unknown): string;
   splitLeadingContextPills(text: string): { pills: string[]; rest: string };
   imagePillLabel(count: number): string;
+  contextAttachedDisplayText(pills: string[], hostText: string): string;
   formatResourcePill(uri: string, fallbackName: string | null): string;
 }
 
@@ -73,7 +74,7 @@ function loadWebviewFns(): Webview {
       '\nreturn { cleanUserMessage: cleanUserMessage, clipboardPillLabel: clipboardPillLabel,' +
       ' queueEntryPromptText: queueEntryPromptText, queueEntryDisplayText: queueEntryDisplayText,' +
       ' queueEntryTooltip: queueEntryTooltip, splitLeadingContextPills: splitLeadingContextPills,' +
-      ' imagePillLabel: imagePillLabel,' +
+      ' imagePillLabel: imagePillLabel, contextAttachedDisplayText: contextAttachedDisplayText,' +
       ' formatResourcePill: formatResourcePill };',
   )() as Webview;
 }
@@ -395,6 +396,50 @@ suite('attached-context pills render as chips, not as bracketed text', () => {
  * "[Terminal: 40 lines] fix this". The host now echoes the labels it attached and
  * the webview rewrites its last bubble to the resumed form.
  */
+suite('one chip per attachment, however the host reports it', () => {
+  const wv = loadWebviewFns();
+  const CLIP = '@clipboard: the clipboard was empty when this message queued';
+  const PROSE = ': the clipboard was empty when this message queued , before deploy of fix has this issue also';
+
+  test('the reported double chip: label AND inlined payload for the same attachment', () => {
+    // For an agent without embeddedContext the payload is inlined into the text the
+    // host reports, and cleanUserMessage turns that into a pill — so taking the
+    // host's label list at face value too rendered the chip twice.
+    const wire = `<clipboard>\n${CLIP}\n</clipboard>\n\n${PROSE}`;
+    const out = wv.contextAttachedDisplayText(['Clipboard: 1 line'], wire);
+    assert.strictEqual(out, `[Clipboard: 1 line]\n\n${PROSE}`);
+    assert.strictEqual((out.match(/\[Clipboard/g) ?? []).length, 1, out);
+  });
+
+  test('an embedded agent reports a label the text cannot carry', () => {
+    // Nothing is inlined, so the label is the only source.
+    const out = wv.contextAttachedDisplayText(['Clipboard: 4 lines'], 'summarise this');
+    assert.strictEqual(out, '[Clipboard: 4 lines]\n\nsummarise this');
+  });
+
+  test('different attachments each keep their own chip', () => {
+    const wire = '<terminal name="bash">\n$ make\nerr\n</terminal>\n\nwhy?';
+    const out = wv.contextAttachedDisplayText(['Clipboard: 2 lines'], wire);
+    assert.strictEqual(out, '[Clipboard: 2 lines]\n\n[Terminal: 2 lines]\n\nwhy?');
+  });
+
+  test('no labels and no payload leaves the prose alone', () => {
+    assert.strictEqual(wv.contextAttachedDisplayText([], 'just text'), 'just text');
+    assert.strictEqual(wv.contextAttachedDisplayText(undefined as unknown as string[], 'just text'), 'just text');
+  });
+
+  test('the host reports the PROSE, not the wire text', () => {
+    // Root cause of the duplicate: the post used the text after the payload had been
+    // prepended for agents without embeddedContext.
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const at = src.indexOf("type: 'contextAttached'");
+    assert.ok(at > 0, 'contextAttached post missing');
+    const body = src.slice(at, at + 200);
+    assert.ok(body.includes('text: proseText'), `must report the prose: ${body}`);
+    assert.ok(src.includes('let proseText = text;'), 'prose must be tracked separately from the wire text');
+  });
+});
+
 suite('the live bubble is rewritten to the resumed form', () => {
   const src = fs.readFileSync(SOURCE, 'utf8');
   const at = src.indexOf('const contextBlocks: ContentBlock[] = [];');
@@ -433,13 +478,14 @@ suite('the live bubble is rewritten to the resumed form', () => {
   });
 
   test('the rewritten text is exactly what a resume would produce', () => {
-    // Both sides build "[Pill]\n\n[Pill]\n\n<text>", so cleanUserMessage on the
-    // replayed message and this rewrite converge on the same string.
+    // Built by the same helper that cleans the host text, so this rewrite and
+    // cleanUserMessage on the replayed message converge on one string — and one chip
+    // per attachment even when both sources describe the same one.
     const wv = src.indexOf("case 'contextAttached': {");
     const body = src.slice(wv, wv + 2000);
     assert.ok(
-      body.includes("_capText += '[' + _capPills[_cp] + ']' + String.fromCharCode(10) + String.fromCharCode(10);"),
-      'pill separator must match the resume form',
+      body.includes('contextAttachedDisplayText(_capPills, msg.text)'),
+      `the rewrite must go through the merging helper: ${body.slice(0, 400)}`,
     );
   });
 });
