@@ -5289,37 +5289,40 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       looked like before (the "\n\n" separator forced a line break even for a
       three-word prompt). Same visual family as .session-mention-pill. */
    .context-pill {
-     /* Centring is done by the flex box, not by line-height and not by luck.
-        Two earlier attempts were wrong for the same reason: growing the box with
-        line-height (1.7, then a bare padding: 0 in the queue override) splits the
-        leading around the text BOX, and a font's ascent and descent are not
-        symmetric — so "Clipboard: 1 line" sat visibly high inside the pill. With
-        inline-flex + align-items: center the label is centred whatever the font
-        metrics are, and symmetric padding keeps it that way at any size. */
+     /* The chip INHERITS the surrounding font metrics, and that is the whole point.
+        Three earlier attempts each failed for a different reason at the same spot:
+        line-height: 1.7 with no vertical padding (leading is split around the text
+        BOX, and ascent/descent are not symmetric); then padding: 0 in the queue
+        override; then align-items: center with a SMALLER font, which centres the
+        boxes but leaves the chip's label baseline above the neighbouring text — read
+        as misaligned, because text is judged by its baseline.
+        With font-size and line-height inherited, the chip is exactly one line tall,
+        so centring and baseline alignment are the same result and there is nothing
+        left to disagree. The chip stays distinct through weight and background, not
+        through being smaller. */
      display: inline-flex;
      align-items: center;
      justify-content: center;
-     padding: 1px 8px;
+     padding: 0 7px;
      margin-right: 6px;
-     border-radius: 10px;
+     border-radius: 9px;
      background: color-mix(in srgb, var(--vscode-badge-background) 88%, transparent);
      color: var(--vscode-badge-foreground);
-     font-size: 0.82em;
+     font-size: inherit;
+     line-height: inherit;
      font-weight: 600;
-     line-height: 1.45;
      white-space: nowrap;
      max-width: 100%;
      overflow: hidden;
-     vertical-align: middle;
+     vertical-align: baseline;
    }
    .context-pill:last-child { margin-right: 0; }
    /* Inside the queue chip the row is already tiny — shrink to match, keeping the
       vertical padding symmetric so the label stays centred. */
    .msg-queue-item .context-pill {
-     font-size: 0.78em;
-     padding: 1px 6px;
+     /* Inherits the chip row's metrics too — no size override, for the same reason. */
+     padding: 0 6px;
      margin-right: 0;   /* the row's gap handles spacing */
-     line-height: 1.35;
      flex: 0 0 auto;    /* never squeeze the label */
    }
    .session-mention-separator {
@@ -6401,12 +6404,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       overflow: hidden;
     }
     .msg-queue-item .queue-text {
-      /* A flex ROW, not inline content. The pill is taller than the message text,
-         so as inline content its position depended on baseline + vertical-align and
-         it sat off-centre against the chip's other items. As flex children the pill
-         and the text are centred against each other by the box model. */
+      /* A flex ROW, not inline content: as inline content the chip's position
+         depended on baseline + vertical-align against a box of a different height.
+         Baseline alignment (not center) is what matches the chip's label to the
+         message text beside it — and since the chip inherits this row's font metrics,
+         the two are identical anyway. */
       display: flex;
-      align-items: center;
+      align-items: baseline;
       gap: 4px;
       min-width: 0;
       overflow: hidden;
