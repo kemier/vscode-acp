@@ -8872,6 +8872,9 @@ var end = displayText.length;
     lastConnectedAgentDisplay,
     lastConnectedSessionId,
     interruptedSessionIds: interruptedSessionIds,
+    // Usage is only ever reported live, so without persisting it a window reload
+    // blanks the ring until the next model round-trip.
+    tokenUsageBySession: tokenUsageBySession,
   });
   // Debug: log saveState (only user messages)
   for (var _si = 0; _si < capped.length; _si++) {
@@ -8885,6 +8888,11 @@ var end = displayText.length;
   function restoreState() {
     const saved = vscode.getState();
     if (!saved) return;
+    // Usage first: the ring should be right from the first paint, not after the
+    // next model round-trip (which is when the agent next reports usage).
+    if (saved.tokenUsageBySession && typeof saved.tokenUsageBySession === 'object') {
+      tokenUsageBySession = saved.tokenUsageBySession;
+    }
     // Debug: log restoreState entry
     vscode.postMessage({ type: 'debugLog', message: 'restoreState START: saved.chatHistory.length=' + (saved.chatHistory ? saved.chatHistory.length : 0) });
    // Restore the last connected agent so the welcome button can offer
@@ -12096,6 +12104,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       }
       compactionBoundaryIndex = -1;
     }
+    // The load blanked the ring (the load may have been a switch to another
+    // session); now that the loaded session is known, show what it last reported.
+    restoreTokenUsageForSession();
     // Rebuild the entire messages DOM from chatHistory.  During replay,
      // the agent_message_chunk / tool_call handlers build DOM piecemeal,
      // but race conditions (coalescer delays, interleaved user_message_chunk
@@ -21842,8 +21853,41 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
   // events in rapid succession. Without debouncing, the ring flickers
   // between values faster than the 0.3s CSS transition can animate.
   var _tokenUsageDebounce = null;
+  /**
+   * Last known usage per session id.
+   *
+   * The ring is fed only by live usage_update frames, and handleLoadSessionStart
+   * blanks it because a load may be a switch to a DIFFERENT session. But agents
+   * emit usage on a model round-trip, and session/load never replays it — so after
+   * a resume the ring stayed empty until the next LLM call. On a tool-heavy turn
+   * that is minutes, which reads as "the ring only appears after end_turn"
+   * (measured on one ericli turn: prompt at 03:34:56, first usage_update 03:39:42).
+   * Remembering it per session lets a resume show the last known value immediately;
+   * the next live frame corrects it.
+   */
+  var tokenUsageBySession = {};
+  var TOKEN_USAGE_MEMORY_MAX = 20;
+  function rememberTokenUsage() {
+    var sid = sessionState && sessionState.sessionId;
+    if (!sid || !tokenUsage) return;
+    tokenUsageBySession[sid] = tokenUsage;
+    var keys = Object.keys(tokenUsageBySession);
+    while (keys.length > TOKEN_USAGE_MEMORY_MAX) {
+      delete tokenUsageBySession[keys.shift()];
+    }
+  }
+  /** Show the remembered usage for the session just loaded, if any. */
+  function restoreTokenUsageForSession() {
+    var sid = sessionState && sessionState.sessionId;
+    if (!sid) return;
+    var remembered = tokenUsageBySession[sid];
+    if (!remembered || !remembered.size) return;
+    tokenUsage = remembered;
+    updateTokenUsageDOM();
+  }
   function updateTokenUsage(update) {
     tokenUsage = { used: update.used, size: update.size, cost: update.cost };
+    rememberTokenUsage();
     if (!tokenUsageRing) return;
     if (_tokenUsageDebounce) clearTimeout(_tokenUsageDebounce);
     _tokenUsageDebounce = setTimeout(function() {
