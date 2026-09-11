@@ -5289,39 +5289,47 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       looked like before (the "\n\n" separator forced a line break even for a
       three-word prompt). Same visual family as .session-mention-pill. */
    .context-pill {
-     /* The chip INHERITS the surrounding font metrics, and that is the whole point.
-        Three earlier attempts each failed for a different reason at the same spot:
-        line-height: 1.7 with no vertical padding (leading is split around the text
-        BOX, and ascent/descent are not symmetric); then padding: 0 in the queue
-        override; then align-items: center with a SMALLER font, which centres the
-        boxes but leaves the chip's label baseline above the neighbouring text — read
-        as misaligned, because text is judged by its baseline.
-        With font-size and line-height inherited, the chip is exactly one line tall,
-        so centring and baseline alignment are the same result and there is nothing
-        left to disagree. The chip stays distinct through weight and background, not
-        through being smaller. */
+     /* Smaller than the surrounding text, and still sitting on its baseline.
+        Four earlier attempts each failed at this one spot:
+          line-height: 1.7 with no vertical padding — leading is split around the text
+            BOX, and ascent/descent are not symmetric, so the label sat high;
+          padding: 0 in the queue override — the same bug, reintroduced;
+          align-items: center with a SMALLER font — centres the boxes but leaves the
+            label's baseline off the neighbouring text, because a flex container with
+            no baseline-aligned item has to SYNTHESISE its baseline from the box;
+          font-size/line-height: inherit — correct alignment, but the chip is then as
+            large as body text, which on a high-DPI monitor with a big editor font
+            reads as an oversized badge.
+        align-items: baseline is what makes a smaller font legal: the container takes
+        its baseline FROM the label, so vertical-align: baseline lines that label up
+        with the text beside it whatever size the chip is. The chip is then free to be
+        smaller, which is what distinguishes it from prose along with weight and
+        background.
+        No overflow property here on purpose: a non-visible overflow forces an inline-level
+        box to use its bottom margin edge as the baseline, which would undo exactly
+        the alignment this rule depends on. Labels are short and nowrap, and the
+        bubble is the wrapping context. */
      display: inline-flex;
-     align-items: center;
+     align-items: baseline;
      justify-content: center;
-     padding: 0 7px;
+     padding: 1px 6px;
      margin-right: 6px;
      border-radius: 9px;
      background: color-mix(in srgb, var(--vscode-badge-background) 88%, transparent);
      color: var(--vscode-badge-foreground);
-     font-size: inherit;
-     line-height: inherit;
+     font-size: 0.85em;
+     line-height: 1.4;
      font-weight: 600;
      white-space: nowrap;
      max-width: 100%;
-     overflow: hidden;
      vertical-align: baseline;
    }
    .context-pill:last-child { margin-right: 0; }
-   /* Inside the queue chip the row is already tiny — shrink to match, keeping the
-      vertical padding symmetric so the label stays centred. */
+   /* Inside the queue chip the row is already tiny — trim the horizontal padding.
+      No font-size or line-height override: the pill's own 0.85em already scales with
+      whatever the row inherits, and overriding it here is what re-broke this twice. */
    .msg-queue-item .context-pill {
-     /* Inherits the chip row's metrics too — no size override, for the same reason. */
-     padding: 0 6px;
+     padding: 1px 5px;
      margin-right: 0;   /* the row's gap handles spacing */
      flex: 0 0 auto;    /* never squeeze the label */
    }

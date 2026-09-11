@@ -343,29 +343,41 @@ suite('attached-context pills render as chips, not as bracketed text', () => {
   });
 
   test('the chip inherits the surrounding font metrics, so centre == baseline', () => {
-    // Three earlier attempts failed at this one spot, each differently:
+    // Four earlier attempts failed at this one spot, each differently:
     //   line-height: 1.7 + no vertical padding — leading is split around the text
     //     BOX and ascent/descent are not symmetric, so the label sat high;
     //   padding: 0 in the queue override — same bug, reintroduced;
     //   align-items: center with a SMALLER font — centres the boxes but puts the
-    //     chip's label baseline above the neighbouring text, which reads as
-    //     misaligned because text is judged by baseline.
-    // Inheriting font-size and line-height makes the chip exactly one line tall, so
-    // the two alignments cannot disagree. A size override would bring the bug back.
+    //     chip's label baseline off the neighbouring text, because a flex container
+    //     with no baseline-aligned item SYNTHESISES its baseline from the box;
+    //   font-size/line-height: inherit — aligned, but the chip then matches body
+    //     text and reads as an oversized badge on a high-DPI monitor.
+    // align-items: baseline is what makes a smaller font legal: the container takes
+    // its baseline from the LABEL, so vertical-align: baseline lines that label up
+    // with the surrounding text at any chip size.
     const src = fs.readFileSync(SOURCE, 'utf8');
-    // Comments are stripped first: the rule documents the three failed attempts,
-    // and those strings ("line-height: 1.7") otherwise match the guards below.
+    // Comments are stripped first: the rule documents the failed attempts, and those
+    // strings ("line-height: 1.7") otherwise match the guards below.
     const declarations = (block: string): string => block.replace(/\/\*[\s\S]*?\*\//g, '');
     const at = src.indexOf('.context-pill {');
     assert.ok(at > 0, 'context-pill style missing');
     const css = declarations(src.slice(at, src.indexOf('}', at)));
-    assert.ok(/font-size:\s*inherit/.test(css), `the chip must inherit its font size: ${css}`);
-    assert.ok(/line-height:\s*inherit/.test(css), 'and its line height');
-    assert.ok(/display:\s*inline-flex/.test(css), 'label centred inside its own box');
-    assert.ok(/align-items:\s*center/.test(css), 'label centred inside its own box');
+    assert.ok(/display:\s*inline-flex/.test(css), 'chip is its own inline box');
+    assert.ok(/align-items:\s*baseline/.test(css), `the label must supply the container baseline: ${css}`);
+    assert.ok(!/align-items:\s*center/.test(css), 'centring synthesises the baseline from the box — that was attempt 3');
     assert.ok(/vertical-align:\s*baseline/.test(css), 'the chip sits on the text baseline');
-    assert.ok(!/font-size:\s*0\./.test(css), 'a smaller font is what broke the baseline');
-    assert.ok(!/line-height:\s*1\./.test(css), 'a fixed line-height re-opens the mismatch');
+    // Smaller than prose, and relative so it still scales with the editor font.
+    assert.ok(/font-size:\s*0\.\d+em/.test(css), `the chip must be smaller than the text around it: ${css}`);
+    assert.ok(!/font-size:\s*inherit/.test(css), 'inheriting the body size is what made it look oversized');
+    assert.ok(!/font-size:\s*\d+px/.test(css), 'a px size would not scale with the editor font');
+    // A non-visible overflow makes an inline-level box use its bottom margin edge as
+    // its baseline, which would defeat align-items: baseline above.
+    assert.ok(!/overflow:/.test(css), `overflow would override the baseline: ${css}`);
+    // Vertical padding must exist and be symmetric, or the background sits off-centre
+    // around the label.
+    const pad = /padding:\s*([^;]+);/.exec(css);
+    assert.ok(pad, 'chip needs padding');
+    assert.ok(!/^0\s/.test(pad![1].trim()), `vertical padding must not be 0: ${pad![1]}`);
 
     // The queue variant is a separate rule and has re-broken this twice.
     const qAt = src.indexOf('.msg-queue-item .context-pill {');
