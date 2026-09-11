@@ -2880,7 +2880,15 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       const base = sel.absPath ? pillPathBase(sel.absPath) : 'Untitled';
       attachedPills.push(`Selected code: ${base}:${sel.startLine}`);
     }
-    if (attachedPills.length > 0) {
+    // Post whenever the wire text DIFFERS from what the webview drew, not only when
+    // something was attached. A mention is stripped from the outgoing text
+    // unconditionally, so a resolution that produced no attachment — @clipboard with
+    // an empty clipboard is the common one — still changes what the agent receives.
+    // Without this the panel keeps the optimistic raw bubble ("@clipboard no links")
+    // for a mention that was never sent, shows no sign the attachment failed beyond a
+    // toast, and disagrees with the same turn after a resume, which renders the prose.
+    const proseDiffers = proseText.trim() !== rawTextForBubble.trim();
+    if (attachedPills.length > 0 || proseDiffers) {
       this.postMessage({
         type: 'contextAttached',
         pills: attachedPills,
@@ -18985,7 +18993,12 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         // said "[Terminal: 40 lines] fix this". Rewrite it to the resumed form —
         // same string, so a reload and a resume both show what is on screen now.
         var _capPills = Array.isArray(msg.pills) ? msg.pills : [];
-        if (_capPills.length === 0) break;
+        // Zero pills is still worth a rewrite when the host CHANGED the text: the
+        // mention was stripped from what the agent received but produced no
+        // attachment (@clipboard with an empty clipboard). Leaving the raw bubble
+        // there shows a mention that was never sent and contradicts the resumed view.
+        var _capChanged = String(msg.text || '').trim() !== String(msg.rawText || '').trim();
+        if (_capPills.length === 0 && !_capChanged) break;
         var _capIdx = -1;
         for (var _ci = chatHistory.length - 1; _ci >= 0; _ci--) {
           var _cit = chatHistory[_ci];

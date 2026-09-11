@@ -460,6 +460,45 @@ suite('one chip per attachment, however the host reports it', () => {
     assert.ok(body.includes('text: proseText'), `must report the prose: ${body}`);
     assert.ok(src.includes('let proseText = text;'), 'prose must be tracked separately from the wire text');
   });
+
+  test('a stripped mention that attached NOTHING is still reported', () => {
+    // @clipboard is removed from the outgoing text before the clipboard is even read,
+    // so an empty clipboard sends prose with no attachment. Gating the post on
+    // attachedPills left the panel showing "@clipboard no links" — a mention the agent
+    // never received — with only a toast to say why, and disagreeing with the same
+    // turn after a resume.
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const at = src.indexOf("type: 'contextAttached'");
+    const guard = src.slice(src.lastIndexOf('if (', at), at);
+    assert.ok(
+      /attachedPills\.length > 0 \|\| proseDiffers/.test(guard),
+      `the post must also fire when the text changed without an attachment: ${guard}`,
+    );
+    assert.ok(
+      src.includes('const proseDiffers = proseText.trim() !== rawTextForBubble.trim();'),
+      'proseDiffers must compare the prose against what the webview drew',
+    );
+  });
+
+  test('the webview rewrites a zero-pill resolution when the text changed', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const at = src.indexOf("case 'contextAttached': {");
+    assert.ok(at > 0, 'contextAttached handler missing');
+    const handler = src.slice(at, src.indexOf("case 'compactionBoundary'", at));
+    assert.ok(
+      /_capChanged\s*=\s*String\(msg\.text \|\| ''\)\.trim\(\) !== String\(msg\.rawText \|\| ''\)\.trim\(\)/.test(handler),
+      `the handler must notice a text-only change: ${handler.slice(0, 400)}`,
+    );
+    assert.ok(
+      /if \(_capPills\.length === 0 && !_capChanged\) break;/.test(handler),
+      'zero pills alone must no longer skip the rewrite',
+    );
+  });
+
+  test('zero pills renders the prose alone, with no empty chip', () => {
+    // The rewrite must not invent a pill for an attachment that did not happen.
+    assert.strictEqual(wv.contextAttachedDisplayText([], 'no links'), 'no links');
+  });
 });
 
 suite('the live bubble is rewritten to the resumed form', () => {
@@ -481,10 +520,18 @@ suite('the live bubble is rewritten to the resumed form', () => {
     }
   });
 
-  test('nothing is posted when nothing was attached', () => {
+  test('nothing is posted for a prompt the host did not touch', () => {
+    // Sharper than "nothing was attached": a resolution that stripped a mention
+    // without attaching anything (@clipboard, empty clipboard) DOES change the wire
+    // text and must be reported, or the panel keeps a mention the agent never got.
+    // Only a prompt the host left completely alone is a no-op.
     assert.ok(
-      resolver.includes('if (attachedPills.length > 0) {'),
-      'a prompt with no context must not trigger a rewrite',
+      resolver.includes('if (attachedPills.length > 0 || proseDiffers) {'),
+      'a plain prompt must not trigger a rewrite, but a stripped mention must',
+    );
+    assert.ok(
+      resolver.includes('const proseDiffers = proseText.trim() !== rawTextForBubble.trim();'),
+      'the no-op case is "prose identical to what the webview drew"',
     );
     assert.ok(resolver.includes("type: 'contextAttached'"), 'the labels must reach the webview');
     assert.ok(resolver.includes('rawText: rawTextForBubble'), 'the echo must identify the bubble it belongs to');
