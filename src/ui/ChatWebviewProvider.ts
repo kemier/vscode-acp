@@ -17664,22 +17664,46 @@ function commitCurrentTextSegment(opts) {
            : '';
          // Prefer persisted stage.status. Live mid-turn keeps spinning even when
          // the parent spawn tool already flipped to completed.
+         // Does a LIVE detached spawn own this card? Only then does a completed
+         // parent say nothing about its children: a detached spawn_parallel
+         // completes on its launch ack while the subagents keep working. ericli
+         // marks those with _meta.subagentsDetached, which handleToolCallUpdate
+         // persists onto the history entry.
+         var _liveDetachedCrew = false;
+         if (isProcessing && !isLoadingSession) {
+           for (var _hdi = chatHistory.length - 1; _hdi >= 0; _hdi--) {
+             var _hd = chatHistory[_hdi];
+             if (_hd && _hd.kind === 'toolCall' && toolCallIdsMatch(_hd.toolCallId, toolCallId)) {
+               _liveDetachedCrew = !!_hd.subagentsDetached;
+               break;
+             }
+           }
+         }
          var rowStageStatus = stage.status;
          if (!rowStageStatus) {
            if (status === 'failed' || status === 'error') rowStageStatus = 'failed';
+           // A terminal parent settles its stages, and that beats the live-turn
+           // guess below. Ordering it after isProcessing meant ANY running turn
+           // repainted OLD crew cards as running: resume a session, switch model,
+           // send a prompt, and yesterday's finished crew showed three spinners
+           // ("waiting subagent" on a resumed session). The replayed stages carry
+           // no status of their own — client log, resume of 41e95918:
+           // STAGE-DBG kiro-stages init … stageKeys=[name,role,prompt] — so this
+           // fallback is the only thing deciding what the user sees.
+           else if (status === 'completed' && !_liveDetachedCrew) rowStageStatus = 'completed';
            else if (isProcessing && !isLoadingSession) rowStageStatus = 'running';
-           else if (status === 'completed') rowStageStatus = 'completed';
            // Resume/history: missing status means the stage never finished.
            else rowStageStatus = 'failed';
          }
-         // codex spawn_parallel crews: the agent replays the parent spawn tool
+         // ericli spawn_parallel crews: the agent replays the parent spawn tool
          // with status=completed (the spawn itself succeeded) but NO per-stage
          // status — the subagents' results arrive as separate messages, not as
-         // tool_call_update stage patches. So on a completed, non-live parent
-         // the stages did finish; default them to completed instead of failed.
-         // (Live mid-turn keeps 'running' via the isProcessing branch above.)
+         // tool_call_update stage patches. So on a completed parent the stages did
+         // finish; default them to completed instead of failed. Gated on the LIVE
+         // detached crew rather than on isProcessing, so an old card is not left
+         // to the running branch just because a new turn is under way.
          if (!stage.status && isSubagentSpawnTitle(title, rawInput) &&
-             !isProcessing && status === 'completed') {
+             !_liveDetachedCrew && status === 'completed') {
            rowStageStatus = 'completed';
          }
          var stageIcon = stageIconStatus(rowStageStatus);
