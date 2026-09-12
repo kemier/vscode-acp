@@ -3,21 +3,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 
 /**
- * /stop killed the processes but left the turn hanging.
+ * /stop kills the background processes WITHOUT ending the turn.
  *
- * Measured (exthost13, codex session c5015617):
- *
- *   06:36:23  handleSendPrompt: stale response (gen 6 → 7), suppressing promptEnd
- *   06:38:22  Cancelling turn for session c5015617…      <- fallback stranded, never fired
- *   06:46:21  Stop processes for session c5015617…       <- LAST line of the log
- *
- * Nothing followed the /stop: no promptEnd, no new sendPrompt. Killing the
- * background processes does not end the ACP turn — the agent's prompt promise
- * stays pending — so the queued "Send Now" message never drained and the status
- * stayed on "Interrupting…".
- *
- * An explicit /stop now routes through the cancel + 5s fallback path, but only
- * when a prompt is actually in flight.
+ * /stop is a process kill only: it stops all running processes spawned by this
+ * session. If the current turn has an ongoing task, it continues — a steered
+ * prompt mid-turn stays in flight and is dealt with at the agent's next step.
+ * It must NOT route through handleCancelTurn() (which aborts the prompt and
+ * emits end_turn, dropping any steered prompt).
  *
  * handleStopProcesses is plain TypeScript, so it runs against a stub `this`.
  */
@@ -76,19 +68,19 @@ function stub(opts: { activeId: string | null; inFlight: boolean }): Stub {
   return { posted, calls, self };
 }
 
-suite('/stop ends the turn (Interrupting… stuck after a stop)', () => {
+suite('/stop kills processes without ending the turn', () => {
   const handleStopProcesses = loadHandleStopProcesses();
 
-  test('kills the processes and then cancels the in-flight turn', async () => {
+  test('kills the processes but does NOT cancel the in-flight turn', async () => {
     const s = stub({ activeId: 'sess-1', inFlight: true });
     await handleStopProcesses(s.self);
 
     assert.deepStrictEqual(
       s.calls,
-      ['stopProcesses:sess-1', 'handleCancelTurn'],
-      'the processes must die first, then the turn must be ended so promptEnd drains the queue',
+      ['stopProcesses:sess-1'],
+      '/stop only kills the processes — it must not cancel the turn, so a steered prompt / ongoing task continues',
     );
-    assert.deepStrictEqual(s.posted.map((m) => m.type), ['processesStopped', 'setSuppressInterruptNotice']);
+    assert.deepStrictEqual(s.posted.map((m) => m.type), ['processesStopped']);
   });
 
   test('does not cancel when no prompt is in flight', async () => {

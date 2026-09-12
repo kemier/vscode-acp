@@ -3156,23 +3156,15 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // running process." notice. This is set by the "Send Now" path, which
     // kills processes as a side effect of interrupting the turn — the user
     // did not run /stop, so the "Killed" feedback is noise, not intent.
+    // /stop ONLY kills the background processes spawned by this session. It
+    // must NOT cancel the active turn: if the current turn has an ongoing task,
+    // it should continue (a steered prompt mid-turn stays in flight and is
+    // dealt with at the agent's next step). Previously this routed through
+    // handleCancelTurn(), which aborted the prompt and emitted end_turn — that
+    // dropped any steered prompt and ended a task the user only wanted the
+    // background processes for. Killing processes does not end the ACP turn;
+    // the prompt promise stays pending and the turn keeps running.
     this.postMessage({ type: 'processesStopped', suppressNotice: !!suppressNotice });
-    // An explicit /stop means the user is done with this turn. Killing the
-    // processes does NOT end the ACP turn: the agent's prompt promise stays
-    // pending, so no promptEnd arrives, a queued "Send Now" message never
-    // drains and the composer stays blocked showing "Interrupting…".
-    // Measured: `Stop processes for session …` was the LAST line in the log,
-    // 8 minutes after the cancel, with no promptEnd and no new turn.
-    // Route through the same cancel + 5s fallback path so the turn reliably
-    // ends. handleCancelTurn dedups when a fallback is already pending, and
-    // this is a no-op when nothing is in flight.
-    if (this.sessionManager.isPromptInFlight(activeId)) {
-      log(`Stop processes: turn still in flight for ${activeId}, requesting cancel so the turn ends`);
-      // /stop is a process kill, not an interruption — suppress the
-      // "Conversation interrupted" notice in the webview.
-      this.postMessage({ type: 'setSuppressInterruptNotice' });
-      await this.handleCancelTurn();
-    }
   }
 
   /**
@@ -12779,12 +12771,24 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      return addMessageDOM(role, text);
    }
 
+   /** Currently-shown transient system notice (see showTransientNotice). Tracked
+    *  so a late-rendered user bubble (e.g. a steered prompt confirmed after the
+    *  notice was appended) can push it back to the bottom instead of leaving it
+    *  stranded ABOVE the new message. */
+   var transientNoticeEl = null;
+
    /** Show a transient system notification that auto-dismisses after 4s. */
    function showTransientNotice(text) {
+     // Null the tracker BEFORE addMessageDOM so the notice's own append does
+     // not try to re-position itself (see the notice re-positioning in
+     // addMessageDOM).
+     transientNoticeEl = null;
      var el = addMessageDOM('system', text);
      if (el) {
+       transientNoticeEl = el;
        setTimeout(function () {
          if (el.parentNode) { el.parentNode.removeChild(el); }
+         if (transientNoticeEl === el) { transientNoticeEl = null; }
        }, 4000);
      }
    }
@@ -13016,6 +13020,18 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        el.textContent = text;
      }
      messagesEl.appendChild(el);
+     // If a transient notice (e.g. the "/stop Killed N running process(es)."
+     // confirmation) was appended while a later message was still pending, it
+     // would sit ABOVE that message. Re-append it to the very bottom so the
+     // notice always lands after the last message, not above it. Guarded: the
+     // notice's own append runs with transientNoticeEl null (showTransientNotice
+     // nulls it first), so this never re-positions the notice on itself.
+     if (transientNoticeEl && transientNoticeEl !== el &&
+         transientNoticeEl.parentNode === messagesEl &&
+         messagesEl.lastElementChild !== transientNoticeEl) {
+       messagesEl.removeChild(transientNoticeEl);
+       messagesEl.appendChild(transientNoticeEl);
+     }
      scrollToBottom();
      return el;
    }
