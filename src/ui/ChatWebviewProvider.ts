@@ -16566,8 +16566,14 @@ function commitCurrentTextSegment(opts) {
      // Recover from the DOM when _stageData did not survive a rebuild. The name
      // already did this; role/mode/prompt did not, so a restored crew card
      // hovered to a bare "Name: <x>" with the role apparently missing.
+     // The VISIBLE .tc-stage-name is the single source of truth for the title
+     // (it reflects crewStageLabel, e.g. the Cursor task text "xxx"), so prefer
+     // it over a possibly-stale _stageData.name / data-stage-name attribute.
+     var _visibleNameEl = stageEl.querySelector('.tc-stage-name');
+     var _visibleName = (_visibleNameEl && _visibleNameEl.textContent)
+       ? _visibleNameEl.textContent.trim() : '';
      data = {
-       name: data.name || stageEl.getAttribute('data-stage-name') || '',
+       name: _visibleName || data.name || stageEl.getAttribute('data-stage-name') || '',
        role: data.role || stageEl.getAttribute('data-stage-role') || '',
        mode: data.mode || stageEl.getAttribute('data-stage-mode') || '',
        prompt_template: data.prompt_template || data.prompt ||
