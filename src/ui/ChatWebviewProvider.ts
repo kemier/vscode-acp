@@ -16770,10 +16770,25 @@ function commitCurrentTextSegment(opts) {
      // first stage show the parent's prompt and then flip to "parent" once the
      // spawnAgent completion update landed. Only fall back to task/description
      // text for NON-spawn tools (where the label is genuinely descriptive).
-     var desc = rawInput && (
-       rawInput.agentPath || rawInput.agent_path || rawInput.subagent_type ||
-       rawInput.name || rawInput.agent_name || rawInput.role
-     );
+     //
+     // Cursor exception: cursor/task carries subagent_type + description + prompt
+     // where description/prompt is the ACTUAL subagent task (e.g. "Explore
+     // codebase", "Find where authentication is handled"), not the parent's
+     // prompt. Showing the bare type ("explore") or "Subagent 1" is unhelpful,
+     // so for Cursor spawns prefer description/prompt over the type label.
+     var isCursorTaskSpawn = !!(rawInput && typeof rawInput === 'object' &&
+       (rawInput.subagent_type || rawInput.subagentType));
+     if (isCursorTaskSpawn) {
+       var cursorDesc = rawInput && (rawInput.description || rawInput.prompt || rawInput.task);
+       if (typeof cursorDesc === 'string' && cursorDesc.trim()) {
+         var cs = cursorDesc.trim();
+         return cs.length > 60 ? cs.substring(0, 57) + '...' : cs;
+       }
+     }
+    var desc = rawInput && (
+      rawInput.agentPath || rawInput.agent_path || rawInput.subagent_type ||
+      rawInput.name || rawInput.agent_name || rawInput.role
+    );
     if (typeof desc === 'string' && desc.trim()) {
       var sd = desc.trim();
       // agentPath/agent_path carry a full filesystem path; basename it so the

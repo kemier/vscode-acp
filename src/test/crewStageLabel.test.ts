@@ -86,7 +86,25 @@ suite('crewStageLabel (subagent stage title)', () => {
 
   test('agent_path and subagent_type identity fields are preferred over prompt', () => {
     assert.strictEqual(label({ prompt: 'do x', agent_path: 'explore' }, 'spawnAgent', 1), 'explore');
-    assert.strictEqual(label({ prompt: 'do x', subagent_type: 'file-analyzer' }, 'Task', 1), 'file-analyzer');
+    // Cursor task spawn: subagent_type + description/prompt — the description/
+    // prompt IS the subagent's actual task, so it wins over the bare type.
+    assert.strictEqual(label({ prompt: 'do x', subagent_type: 'file-analyzer' }, 'Task', 1), 'do x');
+  });
+
+  test('cursor/task spawn shows the subagent task title, not the type or Subagent N', () => {
+    // Cursor ACP: description/prompt is the actual subagent task; subagent_type
+    // is just the role (explore/browser_use/...). Prefer description, then prompt.
+    assert.strictEqual(
+      label({ description: 'Explore codebase', prompt: 'Find auth handling', subagent_type: 'explore' }, 'Task', 1),
+      'Explore codebase',
+    );
+    assert.strictEqual(
+      label({ prompt: 'Find where authentication is handled', subagent_type: 'explore' }, 'Task', 1),
+      'Find where authentication is handled',
+    );
+    // No description/prompt → fall back to the type, then Subagent N.
+    assert.strictEqual(label({ subagent_type: 'explore' }, 'Task', 1), 'explore');
+    assert.strictEqual(label({}, 'Task', 1), 'Subagent 1');
   });
 
   test('codex spawn_agent with {name, role} shows the subagent name', () => {
