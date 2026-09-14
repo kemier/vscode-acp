@@ -64,7 +64,7 @@ suite('queued @clipboard is snapshotted at queue time', () => {
     const body = src.slice(at, at + 1800);
     assert.ok(body.includes('_qe.clipboardToken !== msg.token'), 'must match by token');
     assert.ok(body.includes('_qe.clipboard = { text: _clip }'), 'snapshot kept out of the display text');
-    assert.ok(body.includes("replace(/@clipboard"), 'mention removed');
+    assert.ok(body.includes('replace(/@clipboard'), 'mention removed');
     assert.ok(body.includes('delete _qe.clipboardToken'), 'token cleared after use');
   });
 
@@ -95,11 +95,17 @@ suite('queued @clipboard is snapshotted at queue time', () => {
     // a payload expanded only in one send path would silently drop it in the others.
     const expanders = src.split('queueEntryPromptText(entry)').length - 1;
     assert.ok(expanders >= 5, `all send paths must expand, found ${expanders}`);
-    for (const marker of [
-      "vscode.postMessage({ type: 'sendPrompt', text: queueEntryPromptText(entry) || ' ', images: entry.images })",
-      "vscode.postMessage({ type: 'steerPrompt', text: queueEntryPromptText(entry) || ' ' })",
-    ]) {
-      assert.ok(src.includes(marker), `send path not expanding the snapshot: ${marker}`);
+    // Matched as patterns, not literals: the drained sendPrompt sites also pass a
+    // `selections: []` override now, to stop the host re-reading the editor and
+    // attaching a live selection on top of the snapshot already in the text.
+    for (const [label, re] of [
+      [
+        'sendPrompt',
+        /vscode\.postMessage\(\{\s*type: 'sendPrompt', text: queueEntryPromptText\(entry\) \|\| ' ', images: entry\.images,/,
+      ],
+      ['steerPrompt', /vscode\.postMessage\(\{ type: 'steerPrompt', text: queueEntryPromptText\(entry\) \|\| ' ' \}\)/],
+    ] as Array<[string, RegExp]>) {
+      assert.ok(re.test(src), `send path not expanding the snapshot: ${label}`);
     }
     const bubbleAt = src.indexOf('function addUserBubbleForQueuedEntry(entry) {');
     assert.ok(bubbleAt > 0, 'addUserBubbleForQueuedEntry not found');

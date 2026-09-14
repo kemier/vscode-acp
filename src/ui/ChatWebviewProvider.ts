@@ -1878,7 +1878,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       switch (message.type) {
         case 'sendPrompt':
           this._hasChatContent = true;
-          await this.handleSendPrompt(message.text, message.images);
+          // message.selections is present only for a drained/queued entry, which
+          // carries the selection captured when it was composed.
+          await this.handleSendPrompt(message.text, message.images, message.selections);
           break;
         // Snapshot the clipboard for a message being QUEUED. Read now so the queued
         // entry carries what the user had copied when they wrote it — by drain time the
@@ -1890,6 +1892,19 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         case 'showWarning':
           vscode.window.showWarningMessage(String(message.message || ''));
           break;
+        case 'resolveSelectionsForQueue': {
+          // Snapshot the editor selection at QUEUE time. Nothing about this depends
+          // on an @ mention — a selection is picked up implicitly — so the webview
+          // asks for it whenever it queues a message. Capturing at drain time
+          // instead returns whatever is selected then, which is why a queued
+          // message arrived with no selected code.
+          this.postMessage({
+            type: 'selectionsForQueue',
+            token: message.token,
+            selections: this.captureEditorSelections(),
+          });
+          break;
+        }
         case 'resolveClipboardForQueue': {
           let clipText = '';
           try {
@@ -2653,9 +2668,84 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Capture every non-empty selection from the editor the user is looking at.
+   *
+   * Extracted so the queue snapshot can use the identical rule. A queued message
+   * posts sendPrompt only when it drains, and re-reading the editor at that point
+   * returns whatever is selected THEN — usually nothing, because the user has since
+   * clicked into the composer, scrolled, or the agent has opened its own files. The
+   * selection has to be recorded when the message is composed.
+   */
+  private captureEditorSelections(): import('../core/SessionManager').SelectionContext[] {
+    // Capture all non-empty selections from the active editor.
+    //
+    // Mirrors Zed's `AddSelectionToThread` flow (see
+    // `zed-industries/zed::crates/agent_ui/src/mention_set.rs::
+    //  confirm_mention_for_selection`): each selection is forwarded to the
+    // agent as a dedicated `resource` (or `resource_link`) ACP ContentBlock
+    // rather than wrapped inline in the prompt text. The decision between
+    // the two is made by SessionManager based on
+    // `promptCapabilities.embeddedContext`.
+    const selections: import('../core/SessionManager').SelectionContext[] = [];
+    const collectFrom = (ed: vscode.TextEditor): void => {
+      for (const sel of ed.selections) {
+        if (sel.isEmpty) {
+          continue;
+        }
+        const text = ed.document.getText(sel);
+        if (!text) {
+          continue;
+        }
+        selections.push({
+          absPath: ed.document.uri.scheme === 'file' ? ed.document.uri.fsPath : null,
+          uri: ed.document.uri.scheme === 'file' ? undefined : ed.document.uri.toString(),
+          startLine: sel.start.line + 1,
+          endLine: sel.end.line + 1,
+          text,
+          languageId: ed.document.languageId,
+        });
+      }
+    };
+    const editor = vscode.window.activeTextEditor;
+    if (editor) {
+      collectFrom(editor);
+    }
+    if (selections.length === 0) {
+      // Fall back to any VISIBLE editor that currently holds a selection.
+      //
+      // activeTextEditor is undefined whenever the active tab is not a text
+      // editor, and a Markdown PREVIEW is a webview tab — so selecting in a
+      // document and then focusing its preview lost the selection entirely, and
+      // the prompt went to the agent with selections=0.
+      //
+      // Reading visible editors is not the same as remembering a stale one: the
+      // selection is live in a pane on screen right now. In the usual
+      // source-beside-preview layout that is exactly the selection the user
+      // means.
+      //
+      // Note this cannot recover a selection made INSIDE the preview itself.
+      // The preview is another extension's webview and VS Code exposes no API to
+      // read a DOM selection within it.
+      for (const ed of vscode.window.visibleTextEditors) {
+        collectFrom(ed);
+      }
+    }
+    return selections;
+  }
+
+  /**
    * Handle a prompt sent from the webview.
    */
-  private async handleSendPrompt(text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void> {
+  /**
+   * @param selectionsOverride Editor selections captured EARLIER, for a message that
+   *   was queued. Re-reading the editor here would return whatever is selected at
+   *   drain time — usually nothing — so a queued entry carries its own snapshot.
+   */
+  private async handleSendPrompt(
+    text: string,
+    images?: Array<{ data: string; mimeType: string }>,
+    selectionsOverride?: import('../core/SessionManager').SelectionContext[],
+  ): Promise<void> {
     // TEMP-DEBUG (cannot-send investigation): entry marker so we can tell
     // "webview never posted" apart from "host received but dropped".
     if (DEBUG_LIVE) {
@@ -2822,59 +2912,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     }
     this.postMessage({ type: 'promptStart' });
 
-    // Capture all non-empty selections from the active editor.
-    //
-    // Mirrors Zed's `AddSelectionToThread` flow (see
-    // `zed-industries/zed::crates/agent_ui/src/mention_set.rs::
-    //  confirm_mention_for_selection`): each selection is forwarded to the
-    // agent as a dedicated `resource` (or `resource_link`) ACP ContentBlock
-    // rather than wrapped inline in the prompt text. The decision between
-    // the two is made by SessionManager based on
-    // `promptCapabilities.embeddedContext`.
-    const selections: import('../core/SessionManager').SelectionContext[] = [];
-    const collectFrom = (ed: vscode.TextEditor): void => {
-      for (const sel of ed.selections) {
-        if (sel.isEmpty) {
-          continue;
-        }
-        const text = ed.document.getText(sel);
-        if (!text) {
-          continue;
-        }
-        selections.push({
-          absPath: ed.document.uri.scheme === 'file' ? ed.document.uri.fsPath : null,
-          uri: ed.document.uri.scheme === 'file' ? undefined : ed.document.uri.toString(),
-          startLine: sel.start.line + 1,
-          endLine: sel.end.line + 1,
-          text,
-          languageId: ed.document.languageId,
-        });
-      }
-    };
-    const editor = vscode.window.activeTextEditor;
-    if (editor) {
-      collectFrom(editor);
-    }
-    if (selections.length === 0) {
-      // Fall back to any VISIBLE editor that currently holds a selection.
-      //
-      // activeTextEditor is undefined whenever the active tab is not a text
-      // editor, and a Markdown PREVIEW is a webview tab — so selecting in a
-      // document and then focusing its preview lost the selection entirely, and
-      // the prompt went to the agent with selections=0.
-      //
-      // Reading visible editors is not the same as remembering a stale one: the
-      // selection is live in a pane on screen right now. In the usual
-      // source-beside-preview layout that is exactly the selection the user
-      // means.
-      //
-      // Note this cannot recover a selection made INSIDE the preview itself.
-      // The preview is another extension's webview and VS Code exposes no API to
-      // read a DOM selection within it.
-      for (const ed of vscode.window.visibleTextEditors) {
-        collectFrom(ed);
-      }
-    }
+    const selections = selectionsOverride ?? this.captureEditorSelections();
 
     // Collect additional ACP content blocks for workspace context that used
     // to be wrapped in pseudo-XML tags (<open_files>, <file>, <folder>,
@@ -7191,6 +7229,46 @@ let isCompacting = false;  // true while /compact is running
      * same shape as every other attachment, and vanished on resume because the
      * agent replays an image as its own content block that nothing rendered.
      */
+    /**
+     * Compact label for one captured selection: "[Selected code: file.ts:12]".
+     *
+     * Mirrors the host's own pill (attachedPills.push('Selected code: …')) so a queued
+     * message shows the same chip a directly-sent one does.
+     */
+    function selectionPillLabel(sels) {
+      if (!Array.isArray(sels) || sels.length === 0) return '';
+      var parts = [];
+      for (var i = 0; i < sels.length; i++) {
+        var sl = sels[i];
+        if (!sl || !sl.text) continue;
+        var p = String(sl.absPath || '');
+        var base = p ? p.split('/').pop().split('\\\\').pop() : 'Untitled';
+        parts.push('[Selected code: ' + base + ':' + sl.startLine + ']');
+      }
+      return parts.join(' ');
+    }
+
+    /**
+     * The captured selections as text, for the send paths that carry text only.
+     *
+     * session/steer has no content-block support at all, and for an auto-steering
+     * agent the steer IS how a queued message reaches the model — so the selection
+     * has to travel inline or not at all. Shaped like the host's own selection
+     * resource so the model sees a familiar block.
+     */
+    function selectionPromptBlock(sels) {
+      if (!Array.isArray(sels) || sels.length === 0) return '';
+      var nl = String.fromCharCode(10);
+      var out = [];
+      for (var i = 0; i < sels.length; i++) {
+        var sl = sels[i];
+        if (!sl || !sl.text) continue;
+        var loc = String(sl.absPath || sl.uri || 'Untitled') + ':' + sl.startLine + '-' + sl.endLine;
+        out.push('<selection path="' + loc + '">' + nl + String(sl.text) + nl + '</selection>');
+      }
+      return out.join(nl);
+    }
+
     function imagePillLabel(count) {
       var n = Number(count || 0);
       if (n <= 0) return '';
@@ -7320,9 +7398,13 @@ let isCompacting = false;  // true while /compact is running
       if (!entry) return '';
       var typed = String(entry.text || '');
       var clip = entry.clipboard && entry.clipboard.text ? String(entry.clipboard.text) : '';
-      if (!clip) return typed;
+      var sel = selectionPromptBlock(entry.selections);
+      if (!clip && !sel) return typed;
       var nl = String.fromCharCode(10);
-      return '<clipboard>' + nl + clip + nl + '</clipboard>' + nl + nl + typed;
+      var head = [];
+      if (sel) head.push(sel);
+      if (clip) head.push('<clipboard>' + nl + clip + nl + '</clipboard>');
+      return head.join(nl) + nl + nl + typed;
     }
 
     /** The text a queued entry SHOWS (chip + user bubble): a pill, never the payload. */
@@ -7331,6 +7413,8 @@ let isCompacting = false;  // true while /compact is running
       var typed = String(entry.text || '');
       var clip = entry.clipboard && entry.clipboard.text ? String(entry.clipboard.text) : '';
       var pills = [];
+      var selPill = selectionPillLabel(entry.selections);
+      if (selPill) pills.push(selPill);
       if (clip) pills.push(clipboardPillLabel(clip));
       // Images ride as their own content blocks, so they never appear in the text —
       // only the pill tells the user the attachment is still on this queued message.
@@ -7635,6 +7719,15 @@ let isCompacting = false;  // true while /compact is running
        entry.clipboardToken = 'clip-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
        vscode.postMessage({ type: 'resolveClipboardForQueue', token: entry.clipboardToken });
      }
+     // Snapshot the editor selection NOW, for the same reason as the clipboard —
+     // except this one needs no mention at all. A selection is picked up implicitly
+     // by the host, which reads the editor when sendPrompt arrives. A queued message
+     // posts sendPrompt only when it drains, so the host saw whatever was selected
+     // minutes later — normally nothing, because the user has since clicked into the
+     // composer or the agent has opened its own files. That is why selected text
+     // reached the agent on a direct send and vanished on a queued one.
+     entry.selectionToken = 'sel-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
+     vscode.postMessage({ type: 'resolveSelectionsForQueue', token: entry.selectionToken });
      renderQueue();
      wvQueueLog('QUEUED', 'text=' + String(text || '').substring(0, 60));
      maybeAutoSteerNext();
@@ -7891,7 +7984,12 @@ let isCompacting = false;  // true while /compact is running
      isSendingPrompt = true;
      // Optimistically set processing=true so the Stop button shows immediately.
      setProcessing(true, 'drainQueue-localslash-notprocessing');
-     vscode.postMessage({ type: 'sendPrompt', text: queueEntryPromptText(entry) || ' ', images: entry.images });
+     vscode.postMessage({ type: 'sendPrompt', text: queueEntryPromptText(entry) || ' ', images: entry.images,
+       // Always pass the array, even when empty: it tells the host to use this
+       // entry's snapshot and NOT re-read the editor. Without it the host would
+       // capture whatever is selected at drain time and attach it on top of the
+       // selection already inlined by queueEntryPromptText — the same text twice.
+       selections: [] });
     }
   }
 }
@@ -8521,7 +8619,12 @@ hasSentPrompt = true;
   // Optimistically set processing=true so the Stop button shows immediately.
   // See handleSend() for rationale (VS Code webview postMessage throttling).
   setProcessing(true, 'drainQueue-sendPrompt');
-  vscode.postMessage({ type: 'sendPrompt', text: queueEntryPromptText(entry) || ' ', images: entry.images });
+  vscode.postMessage({ type: 'sendPrompt', text: queueEntryPromptText(entry) || ' ', images: entry.images,
+       // Always pass the array, even when empty: it tells the host to use this
+       // entry's snapshot and NOT re-read the editor. Without it the host would
+       // capture whatever is selected at drain time and attach it on top of the
+       // selection already inlined by queueEntryPromptText — the same text twice.
+       selections: [] });
 }
 return true;
 }
@@ -19716,8 +19819,22 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         }
         break;
       }
+      case 'selectionsForQueue': {
+        // The editor selection as it was when this message was composed. Stored on
+        // the entry so every send path carries it; queueEntryPromptText inlines it
+        // and queueEntryDisplayText shows it as a pill.
+        for (var _si = 0; _si < messageQueue.length; _si++) {
+          var _se = messageQueue[_si];
+          if (!_se || _se.selectionToken !== msg.token) continue;
+          var _sels = Array.isArray(msg.selections) ? msg.selections : [];
+          if (_sels.length > 0) _se.selections = _sels;
+          delete _se.selectionToken;
+          renderQueue();
+          break;
+        }
+        break;
+      }
       case 'clipboardForQueue': {
-        // Store the snapshot BESIDE the text and drop the mention (matching what the
         // host's own resolver does, so the content is never attached twice). Display
         // stays a pill; queueEntryPromptText expands it on every send path.
         for (var _qi = 0; _qi < messageQueue.length; _qi++) {
@@ -20206,7 +20323,12 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
               addUserBubbleForQueuedEntry(entry);
             }
             hasSentPrompt = true;
-            vscode.postMessage({ type: 'sendPrompt', text: queueEntryPromptText(entry) || ' ', images: entry.images });
+            vscode.postMessage({ type: 'sendPrompt', text: queueEntryPromptText(entry) || ' ', images: entry.images,
+       // Always pass the array, even when empty: it tells the host to use this
+       // entry's snapshot and NOT re-read the editor. Without it the host would
+       // capture whatever is selected at drain time and attach it on top of the
+       // selection already inlined by queueEntryPromptText — the same text twice.
+       selections: [] });
           }
         }
       }, 0);
