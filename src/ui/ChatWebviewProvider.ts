@@ -10009,6 +10009,12 @@ var end = displayText.length;
       wvQueueLog('handleQueue:DROP-empty', 'nothing to queue');
       return;
     }
+    // Drain the pending attachments into a local BEFORE the strip is cleared:
+    // queueMessage stores them on the entry, and both send paths read them from
+    // there. Losing this line made handleQueue throw ReferenceError at the
+    // queueMessage call — after promptInput had already been cleared — so a
+    // message typed mid-turn vanished with no chip, no bubble and no queue entry.
+    const images = pendingImages.splice(0);
     imagePreviewStrip.innerHTML = '';
     promptInput.value = '';
     updateSendButton();
