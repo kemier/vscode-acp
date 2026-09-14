@@ -171,4 +171,20 @@ suite('no caller reinstates the raw title', () => {
       'no tree call site may fall back to the raw title',
     );
   });
+
+  test('BOTH title paths to the webview use the same cleaner', () => {
+    // There are two. The `state` message carries session.title, and
+    // notifySessionInfoUpdate carries a live session_info_update from the agent. The
+    // second used to post the RAW title and rely on the webview's cleanUserMessage,
+    // which strips context tags and links but NOT a bare @mention — so fixing only
+    // the first left "@clipboard" arriving by the other route, which is the path a
+    // live session actually takes.
+    // Anchor on the DEFINITION; a plain indexOf finds a call site first.
+    const at = providerSrc.indexOf('notifySessionInfoUpdate(title: string | undefined | null): void {');
+    assert.ok(at > 0, 'notifySessionInfoUpdate definition not found');
+    const fn = providerSrc.slice(at, providerSrc.indexOf('\n  }', at));
+    assert.ok(fn.includes('cleanSessionTitle(title)'), 'the live path must clean too: ' + fn);
+    // null still means "delete the title" and must not be coerced into a string.
+    assert.ok(fn.includes("typeof title === 'string'"), 'null must pass through untouched');
+  });
 });

@@ -5218,7 +5218,16 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // field), do NOT post — the webview would interpret null as "delete
     // title" and fall back to the agent name ("Codex"), losing the real title.
     if (title !== undefined) {
-      this.postMessage({ type: 'sessionInfoUpdate', title });
+      // Clean here, on the SAME cleaner the `state` message uses. This path posted
+      // the agent's raw title, and the webview's own cleanUserMessage strips context
+      // tags and links but not a bare @mention — so a session whose first prompt was
+      // a paste (the paste-to-clipboard feature inserts "@clipboard " for you) was
+      // titled "@clipboard" through this route even after the state path was fixed.
+      // Two title paths, one cleaner.
+      this.postMessage({
+        type: 'sessionInfoUpdate',
+        title: typeof title === 'string' ? cleanSessionTitle(title) : title,
+      });
     }
   }
 
