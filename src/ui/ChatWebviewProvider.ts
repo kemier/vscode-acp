@@ -8095,6 +8095,44 @@ function cursorModelSupportsImage(baseModelId) {
 }
 
 /**
+ * Does this title look like a shell command or a sentence rather than a tool name?
+ *
+ * The subagent predicates match on SUBSTRINGS of the title, which is fine for a
+ * tool name and wrong for a command line. A shell call whose text merely mentions
+ * spawning an agent was classified as a spawn and rendered a false
+ * "spawned 1 subagent" crew card: grepping a log for the phrase
+ * Spawning agent produced exactly that, and so does
+ * echo "spawning the agent now". Kiro's own spawn titles are short names or short
+ * phrases (subagent, Spawning agent crew), never quoted or piped, so requiring the
+ * title to look like a name costs nothing and removes the whole class.
+ *
+ * Deliberately NOT a length-only test: "Spawning agent crew" must still pass.
+ * Uses indexOf rather than regexes because this lives inside the webview template
+ * literal, where a single-backslash escape would be collapsed.
+ */
+function titleLooksLikeCommandOrProse(title) {
+  var t = String(title || '');
+  if (!t) return false;
+  // An agent tool name is short. Real ones seen: subagent, spawn_agent,
+  // spawnAgent, spawn_agents_on_csv, Spawning agent crew, Task, Agent.
+  if (t.length > 40) return true;
+  // Quoting and shell metacharacters never appear in a tool NAME.
+  if (t.indexOf('|') >= 0) return true;
+  if (t.indexOf('$') >= 0) return true;
+  if (t.indexOf('&') >= 0) return true;
+  if (t.indexOf(';') >= 0) return true;
+  if (t.indexOf('>') >= 0) return true;
+  if (t.indexOf('<') >= 0) return true;
+  if (t.indexOf('=') >= 0) return true;
+  if (t.indexOf("'") >= 0) return true;
+  if (t.indexOf('"') >= 0) return true;
+  // Path separators mean a file, not an agent op (already guarded in
+  // isSubagentToolCall; isSubagentSpawnTitle had no such check at all).
+  if (t.indexOf('/') >= 0) return true;
+  return false;
+}
+
+/**
  * Explain WHY a tool call was routed into the subagent/crew UI, or 'none'.
  *
  * Mirrors isSubagentSpawnTitle / looksLikeClaudeAgentSpawn but returns the
@@ -8124,6 +8162,9 @@ function subagentSpawnReason(title, rawInput) {
   }
   if (tl === 'task' || tl === 'agent' || tl === 'subagent') return 'title==' + tl;
   if (tn === 'spawnAgent' || tn === 'spawn_agent' || tn === 'spawn_agents_on_csv') return 'title==' + tn;
+  // Mirrors the ordering in isSubagentSpawnTitle: exact tool names above are matched
+  // first, then the loose substring patterns below only for name-shaped titles.
+  if (titleLooksLikeCommandOrProse(tn)) return 'none(command-or-prose title)';
   if (tl.indexOf('spawn') === 0 && tl.indexOf('agent') >= 0) return 'title:spawn*agent';
   if (tl.indexOf('spawning') >= 0 && tl.indexOf('agent') >= 0) return 'title:spawning+agent';
   if (tl.indexOf('agent crew') >= 0) return 'title:agent-crew';
@@ -15949,10 +15990,20 @@ function orderCompactFoldContents(body) {
     if (/[\\/]/.test(t) || /\\.[a-zA-Z0-9]{1,8}$/.test(t)) return false;
     var lower = t.toLowerCase();
     if (subagentToolNames.has(lower)) return true;
-    // Also check common patterns (human-readable titles, not bare filenames)
-    if (lower.startsWith('spawn') && lower.includes('agent')) return true;
+    // Fixed prefixes the real adapters emit WITH a description appended, so these are
+    // matched before the command-shape guard below — they are legitimately long.
+    //   codex-acp  formatSubAgentActivityTitle: "Start subagent <name>",
+    //              "Interact with subagent <name>", "Interrupt subagent <name>"
+    //   claude-code-acp buildToolCallUpdate:     "Start subagent: <desc up to 60>"
+    if (lower.startsWith('start subagent') || lower.startsWith('close subagent') ||
+        lower.startsWith('interact with subagent') || lower.startsWith('interrupt subagent')) {
+      return true;
+    }
     if (lower.startsWith('subagent') || lower.startsWith('sub_agent')) return true;
-    if (lower.startsWith('start subagent') || lower.startsWith('close subagent')) return true;
+    // Beyond the known shapes, only titles that look like a NAME may match the loose
+    // substring patterns. A shell command mentioning an agent is not an agent op.
+    if (titleLooksLikeCommandOrProse(t)) return false;
+    if (lower.startsWith('spawn') && lower.includes('agent')) return true;
     // Kiro CLI sends subagent tool calls with human-readable titles:
     // "Spawning agent crew" (toolName: subagent), "Summarizing" (toolName: summary)
     // These have _meta.kiro.toolName on the wire, but by the time we get here
@@ -15966,12 +16017,25 @@ function orderCompactFoldContents(body) {
   }
 
   function isSubagentSpawnTitle(title, rawInput, toolName) {
+    // 1. Structured identification first — this is how the real adapters signal a
+    //    spawn. claude-code-acp puts subagent_type/description/prompt in rawInput for
+    //    its Task/Agent tool; codex-acp additionally sends
+    //    _meta.codex.collaboration.tool, which does not reach the webview today (see
+    //    the note in isSubagentToolCall). Authoritative regardless of the title.
     if (looksLikeClaudeAgentSpawn(title, rawInput, toolName)) return true;
     var tn = (title || '').trim();
     var tnLower = tn.toLowerCase();
-    return tn === 'spawnAgent' || tn === 'spawn_agent' || tn === 'spawn_agents_on_csv' ||
-      (tnLower.startsWith('spawn') && tnLower.includes('agent')) ||
-      tnLower === 'subagent' ||
+    // 2. Exact tool names, which is what codex-acp puts in the title: it sends
+    //    title === item.tool, one of spawnAgent / sendInput / resumeAgent / wait /
+    //    closeAgent. Matched before the shape guard because they ARE bare names.
+    if (tn === 'spawnAgent' || tn === 'spawn_agent' || tn === 'spawn_agents_on_csv') return true;
+    if (tnLower === 'subagent') return true;
+    // 3. Only now the loose substring patterns, and only for a title that looks like a
+    //    NAME. Neither adapter ever puts free-form text in a spawn title, so a shell
+    //    command that merely mentions spawning an agent is not one — that produced a
+    //    false "spawned 1 subagent" card. See titleLooksLikeCommandOrProse.
+    if (titleLooksLikeCommandOrProse(tn)) return false;
+    return (tnLower.startsWith('spawn') && tnLower.includes('agent')) ||
       (tnLower.includes('spawning') && tnLower.includes('agent')) ||
       tnLower.includes('agent crew');
   }

@@ -52,9 +52,13 @@ function extractLabelScope(): { crewStageLabel: LabelFn; claudeStageLabel: Claud
     'function looksLikeClaudeAgentSpawn(title, rawInput, toolName) {',
   );
   const isSubagentSpawnTitle = extractFunction(src, 'function isSubagentSpawnTitle(title, rawInput, toolName) {');
+  // isSubagentSpawnTitle delegates its command-shape check to this sibling.
+  const titleLooksLikeCommandOrProse = extractFunction(src, 'function titleLooksLikeCommandOrProse(title) {');
   const crewStageLabel = extractFunction(src, 'function crewStageLabel(rawInput, title, index) {');
   const claudeStageLabel = extractFunction(src, 'function claudeStageLabel(rawInput, index) {');
   const body =
+    titleLooksLikeCommandOrProse +
+    '\n' +
     looksLikeClaudeAgentSpawn +
     '\n' +
     isSubagentSpawnTitle +

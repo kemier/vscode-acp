@@ -29,7 +29,15 @@ function loadReason(): (title: unknown, rawInput?: unknown) => string {
   const end = src.indexOf('\n/**', start);
   assert.ok(end > start, 'end marker after subagentSpawnReason not found');
   const body = src.slice(start, end).trim();
-  return new Function(`${body}\nreturn subagentSpawnReason;`)() as any;
+  // subagentSpawnReason now delegates the command-shape check to a sibling helper in
+  // the same outer webview scope. Injecting it keeps the harness honest: without it
+  // the eval throws ReferenceError, which is exactly the failure this file exists to
+  // guard against elsewhere.
+  const guardStart = src.indexOf('function titleLooksLikeCommandOrProse(title) {');
+  assert.ok(guardStart >= 0, 'titleLooksLikeCommandOrProse not found');
+  const guardEnd = src.indexOf('\n}', guardStart) + 2;
+  const guard = src.slice(guardStart, guardEnd);
+  return new Function(`${guard}\n${body}\nreturn subagentSpawnReason;`)() as any;
 }
 
 suite('subagent crew routing reason (false "spawned N subagent" diagnostic)', () => {
@@ -47,18 +55,18 @@ suite('subagent crew routing reason (false "spawned N subagent" diagnostic)', ()
       ['Editing ChatWebviewProvider.ts', { path: 'x.ts', oldStr: 'a', newStr: 'b' }],
       ['Creating idleThoughtDrop.test.ts', { path: 'x.ts', content: 'y' }],
     ] as Array<[string, any]>) {
-      assert.strictEqual(reason(title, ri), 'none', `expected none for ${title}`);
+      // Silence, not an exact literal: a title whose WORDS matched but whose shape was
+      // rejected reports 'none(command-or-prose title)', which is still silent for
+      // routing purposes and strictly more informative in a log.
+      assert.ok(reason(title, ri).startsWith('none'), `expected a none* reason for ${title}, got ${reason(title, ri)}`);
     }
   });
 
   test('stays silent when a command merely mentions agents', () => {
     // Self-referential false positives: my own grep commands contained the words
     // spawn_parallel / subAgentActivity and showed up as tool titles.
-    assert.strictEqual(
-      reason('grep -oiE "subagent|spawn_parallel|crew" log.txt', { command: 'grep …' }),
-      'none',
-    );
-    assert.strictEqual(reason('echo "=== my agent processes ==="', { command: 'echo' }), 'none');
+    assert.ok(reason('grep -oiE "subagent|spawn_parallel|crew" log.txt', { command: 'grep …' }).startsWith('none'));
+    assert.ok(reason('echo "=== my agent processes ==="', { command: 'echo' }).startsWith('none'));
   });
 
   test('names the rawInput triggers', () => {
@@ -84,10 +92,7 @@ suite('subagent crew routing reason (false "spawned N subagent" diagnostic)', ()
   });
 
   test('rawInput triggers take precedence over the title', () => {
-    assert.strictEqual(
-      reason('Task', { subagent_type: 'explorer' }),
-      'rawInput.subagent_type=explorer',
-    );
+    assert.strictEqual(reason('Task', { subagent_type: 'explorer' }), 'rawInput.subagent_type=explorer');
   });
 
   test('tolerates junk input', () => {
