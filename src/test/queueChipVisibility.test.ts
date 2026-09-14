@@ -139,13 +139,40 @@ suite('a message queued mid-turn renders a visible chip', () => {
     const start = src.indexOf('const WEBVIEW_ALWAYS_LOG_MARKERS');
     assert.ok(start > 0, 'WEBVIEW_ALWAYS_LOG_MARKERS must exist');
     const list = src.slice(start, src.indexOf('];', start));
-    for (const marker of ['[WV-ERROR]', '[WV-QUEUE]', 'VERDICT=CRUSHED']) {
+    for (const marker of ['[WV-ERROR]', '[WV-QUEUE]', '[WV-QUEUEVIS]']) {
       assert.ok(list.includes(marker), marker + ' must be forwarded regardless of any debug setting');
     }
-    // A healthy strip and routine traces are not faults and must stay gated,
-    // otherwise the always-on channel becomes noise and gets turned off again.
+    // Verbose per-keystroke traces stay gated so the always-on channel does not
+    // become noise and get switched off again. [WV-QUEUEVIS] is deliberately NOT
+    // gated on the CRUSHED verdict: a strip that measures VISIBLE while nothing is
+    // on screen rules geometry out entirely and points at an ancestor, so both
+    // outcomes carry information while this defect is open.
     assert.ok(!list.includes('[WV-PROBE]'), 'verbose traces must stay behind the debug gate');
-    assert.ok(!list.includes('VERDICT=VISIBLE'), 'a healthy queue strip is not a fault');
+    assert.ok(!list.includes('[DRAIN-DBG]'), 'verbose traces must stay behind the debug gate');
+  });
+
+  test('the visibility probe can see past the strip itself', () => {
+    const probe = fnBody('reportQueueVisibility');
+    // offsetHeight alone cannot distinguish "crushed" from "fine but hidden by a
+    // parent" or "laid out off-screen", which are different bugs.
+    assert.ok(probe.includes('getBoundingClientRect'), 'must compare against the viewport');
+    assert.ok(probe.includes('onScreen='), 'must state whether the strip is on screen');
+    assert.ok(probe.includes('ancestors='), 'must report the ancestor chain');
+    assert.ok(probe.includes('parentElement'), 'must actually walk parents');
+  });
+
+  test('faults reach a file, not only the flush-timed output channel', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    // During the reproduction the window's output_logging_* directory held
+    // 2-ACP Traffic.log at 360 KB and no 1-ACP Client.log at all, so every
+    // always-logged fault line was still unreadable.
+    assert.ok(src.includes('appendWebviewFault'), 'a file-backed fault sink must exist');
+    assert.ok(src.includes('webview-faults.log'), 'faults must land in a named file');
+    const at = src.indexOf('private appendWebviewFault(');
+    assert.ok(at > 0, 'appendWebviewFault must be a method on the provider');
+    const fn = src.slice(at, src.indexOf('\n  }', at));
+    assert.ok(fn.includes('appendFileSync'), 'the write must be synchronous to survive a live turn');
+    assert.ok(!fn.includes('isDebugResume'), 'the fault sink must not be gated by a setting');
   });
 
   test('the always-log branch runs before the debugResume gate', () => {

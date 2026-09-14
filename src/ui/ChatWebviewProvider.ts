@@ -157,7 +157,7 @@ function isResumeDiagWebviewMessage(message: string): boolean {  if (!message) {
  * keypress actually took. The host already logs one line per `sendPrompt`, so
  * this is the same order of volume.
  */
-const WEBVIEW_ALWAYS_LOG_MARKERS = ['[WV-ERROR]', '[WV-QUEUE]', 'VERDICT=CRUSHED'];
+const WEBVIEW_ALWAYS_LOG_MARKERS = ['[WV-ERROR]', '[WV-QUEUE]', '[WV-QUEUEVIS]'];
 
 export function isAlwaysLoggedWebviewMessage(message: string): boolean {
   if (!message) {
@@ -383,6 +383,35 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       fs.appendFileSync(
         path.join(dir, 'resume-diag.jsonl'),
         JSON.stringify({ ts: new Date().toISOString(), msg: message }) + '\n',
+        'utf8',
+      );
+    } catch {
+      // Best-effort diagnostic file — never block the chat UI.
+    }
+  }
+
+  /**
+   * Append a webview fault to ~/.acp-debug/webview-faults.log, synchronously.
+   *
+   * Not a duplicate of the ACP Client output channel — a replacement for it on
+   * this path, because the channel is not a dependable record. VS Code writes a
+   * plain OutputChannel to disk on a flush timer, so a low-volume channel can sit
+   * unflushed indefinitely: during the reproduction of this very bug the window's
+   * `output_logging_*` directory contained `2-ACP Traffic.log` at 360 KB and no
+   * `1-ACP Client.log` at all, so every fault line that had been emitted was
+   * unreadable. Combined with the acp.debugResume gate resolving false through the
+   * Machine-settings override, three separate repros produced no evidence.
+   *
+   * appendFileSync lands immediately and is readable while the turn is still
+   * running. Faults only, so the volume stays negligible.
+   */
+  private appendWebviewFault(message: string): void {
+    try {
+      const dir = path.join(os.homedir(), '.acp-debug');
+      fs.mkdirSync(dir, { recursive: true });
+      fs.appendFileSync(
+        path.join(dir, 'webview-faults.log'),
+        `[${new Date().toISOString()}] ${message}\n`,
         'utf8',
       );
     } catch {
@@ -1970,6 +1999,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           // WEBVIEW_ALWAYS_LOG_MARKERS for why these must not depend on a setting.
           if (isAlwaysLoggedWebviewMessage(wvMsg)) {
             log('[DEBUG-WV] ' + wvMsg);
+            // ...and to a file, because the output channel is not a dependable
+            // record on a flush timer. See appendWebviewFault.
+            this.appendWebviewFault(wvMsg);
             break;
           }
           // TEMP-DEBUG (copy button / cannot-send investigation): forward
@@ -7424,6 +7456,26 @@ let isCompacting = false;  // true while /compact is running
          } else if (msgQueueEl.childElementCount > 0) {
            parts.push('VERDICT=VISIBLE');
          }
+         // Walk the ancestors. A measured-VISIBLE strip that is still not on screen
+         // is not a geometry problem at all — it means an ANCESTOR is hiding or
+         // clipping it, and offsetWidth/offsetHeight on the strip itself cannot see
+         // that. getBoundingClientRect vs the viewport catches the off-screen and
+         // clipped-away cases that a non-zero box still permits.
+         var r = msgQueueEl.getBoundingClientRect();
+         parts.push('rect=' + Math.round(r.left) + ',' + Math.round(r.top) +
+           ' ' + Math.round(r.width) + 'x' + Math.round(r.height) +
+           ' viewport=' + window.innerWidth + 'x' + window.innerHeight +
+           ' onScreen=' + (r.width > 0 && r.height > 0 && r.bottom > 0 && r.top < window.innerHeight));
+         var chain = [];
+         var node = msgQueueEl.parentElement;
+         for (var depth = 0; node && depth < 6; depth++) {
+           var pcs = window.getComputedStyle(node);
+           chain.push((node.id || node.className || node.tagName) +
+             '{d=' + pcs.display + ',v=' + pcs.visibility + ',o=' + pcs.opacity +
+             ',ov=' + pcs.overflow + ',h=' + node.offsetHeight + '}');
+           node = node.parentElement;
+         }
+         parts.push('ancestors=' + chain.join(' < '));
          vscode.postMessage({ type: 'debugLog', message: '[WV-QUEUEVIS] ' + parts.join(' ') });
        } catch (e) {
          vscode.postMessage({ type: 'debugLog', message: '[WV-QUEUEVIS] probe failed: ' + String(e) });
