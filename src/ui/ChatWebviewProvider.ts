@@ -19521,10 +19521,32 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         }
        // Kiro /compact can still be running after execute's promptEnd — keep
        // the Stop/spinner state until we get a true compacted notice.
+       // BUT: if the turn was CANCELLED (user clicked Stop), the compaction
+       // was aborted too — clear the compaction state so the spinner doesn't
+       // stay stuck forever waiting for a completion notice that never comes.
+       // This is the auto-compaction-cancel hang: ericli auto-compact runs a
+       // nested LLM call to summarize; clicking Stop cancels the turn, but the
+       // agent is deep inside that call and cannot acknowledge session/cancel
+       // promptly, so the host fallback forces promptEnd(cancelled). The
+       // compaction never completes, so without this reset isCompacting stays
+       // true and the "Compacting conversation..." spinner + blocked input
+       // remain forever.
        if (isCompacting) {
-         setProcessing(true, 'promptEnd-keepwaiting-compacting');
-         if (statusEl && !statusEl.innerHTML) {
-           showCompactionProgress('Compacting conversation...', null);
+         if (_wasCancelled) {
+           if (kiroCompactWatchdog) { clearTimeout(kiroCompactWatchdog); kiroCompactWatchdog = null; }
+           if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
+           isCompacting = false;
+           manualCompacting = false;
+           compactedWarningText = '';
+           compactedNoticeText = '';
+           pendingPostCompactChunks = [];
+           hideCompactionProgress();
+           if (statusEl) statusEl.innerHTML = '';
+         } else {
+           setProcessing(true, 'promptEnd-keepwaiting-compacting');
+           if (statusEl && !statusEl.innerHTML) {
+             showCompactionProgress('Compacting conversation...', null);
+           }
          }
        } else if (isClearing) {
          setProcessing(true, 'promptEnd-keepwaiting-clearing');
