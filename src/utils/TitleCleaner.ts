@@ -173,6 +173,32 @@ function stripAdditionalAcpContext(text: string): string {
   return text.substring(0, cut);
 }
 
+/**
+ * Drop bare context mentions left behind once their attached block is stripped.
+ *
+ * The mention is only a request: the host resolves it into a `<context ref="…">`
+ * block (or an ACP resource) and the literal `@clipboard` stays in the prose. Every
+ * earlier step here removes the BLOCK, so a prompt that was nothing but `@clipboard`
+ * plus its payload reduced to the mention itself and the session was titled
+ * "@clipboard " — reported against a session whose real subject was the pasted text.
+ *
+ * Only leading mentions are removed. Mid-sentence "@clipboard" is ordinary prose (a
+ * question *about* the feature is the obvious case) and is the better title of the
+ * two, so it stays. This mirrors hasLeadingClipboardMention, which is what decides
+ * whether the host attaches anything in the first place.
+ */
+function stripLeadingContextMentions(text: string): string {
+  let out = text;
+  // Loop: a prompt can open with several mentions ("@terminal @problems fix this").
+  for (;;) {
+    const next = out.replace(/^\s*@(?:clipboard|terminal|problems|selection|file|folder)\b[ \t]*/i, '');
+    if (next === out) {
+      return out;
+    }
+    out = next;
+  }
+}
+
 export function cleanSessionTitle(title: string | null | undefined): string {
   if (!title) {
     return '';
@@ -183,6 +209,10 @@ export function cleanSessionTitle(title: string | null | undefined): string {
   cleaned = stripContextTags(cleaned);
   cleaned = stripBareZedUris(cleaned);
   cleaned = stripAdditionalAcpContext(cleaned);
+  // Last, after every block/link/URI form is gone: whatever attached context this
+  // mention asked for has been removed by now, so a mention still sitting at the
+  // front is a leftover request, not the subject of the session.
+  cleaned = stripLeadingContextMentions(cleaned);
   // Trim trailing whitespace
   let end = cleaned.length;
   while (end > 0) {

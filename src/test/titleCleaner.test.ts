@@ -1,4 +1,6 @@
 import * as assert from 'assert';
+import * as fs from 'fs';
+import * as path from 'path';
 import { cleanSessionTitle } from '../utils/TitleCleaner';
 
 suite('cleanSessionTitle', () => {
@@ -91,5 +93,82 @@ suite('cleanSessionTitle', () => {
       '[@new](file:///proj/epg-tools/gcc/16.1.0_1.rhel8/include/c%2B%2B/16.1.0/new)' +
       'go on';
     assert.strictEqual(cleanSessionTitle(input), 'go on');
+  });
+});
+
+/**
+ * A bare @mention is a REQUEST for context, not the subject of the session.
+ *
+ * The host resolves it into a `<context ref="…">` block (or an ACP resource) and
+ * leaves the literal `@clipboard` in the prose. Every other step in cleanSessionTitle
+ * removes the BLOCK, so a prompt that was nothing but `@clipboard` plus its payload
+ * reduced to the mention itself and the session banner read "@clipboard".
+ */
+suite('cleanSessionTitle strips leading context mentions', () => {
+  test('the reported case: mention whose block has been stripped', () => {
+    assert.strictEqual(cleanSessionTitle('@clipboard '), '');
+    assert.strictEqual(cleanSessionTitle('@clipboard'), '');
+  });
+
+  test('the prose after the mention becomes the title', () => {
+    assert.strictEqual(cleanSessionTitle('@clipboard explain this diff'), 'explain this diff');
+    assert.strictEqual(cleanSessionTitle('  @clipboard   review it'), 'review it');
+  });
+
+  test('several mentions can open a prompt', () => {
+    assert.strictEqual(cleanSessionTitle('@terminal @problems fix this'), 'fix this');
+  });
+
+  test('every mention form the host resolves is handled', () => {
+    for (const m of ['clipboard', 'terminal', 'problems', 'selection', 'file', 'folder']) {
+      assert.strictEqual(cleanSessionTitle('@' + m + ' do the thing'), 'do the thing', m);
+    }
+  });
+
+  test('a MID-SENTENCE mention is prose and must survive', () => {
+    // Asking a question about the feature is the obvious case, and that sentence is
+    // the better title of the two. Mirrors hasLeadingClipboardMention, which is what
+    // decides whether the host attaches anything at all.
+    assert.strictEqual(cleanSessionTitle('how does @clipboard work?'), 'how does @clipboard work?');
+    assert.strictEqual(cleanSessionTitle('compare @terminal output'), 'compare @terminal output');
+  });
+
+  test('a word that merely starts with a mention is untouched', () => {
+    assert.strictEqual(cleanSessionTitle('@clipboardfoo bar'), '@clipboardfoo bar');
+  });
+
+  test('ordinary titles are unaffected', () => {
+    assert.strictEqual(cleanSessionTitle('enrich the references'), 'enrich the references');
+  });
+});
+
+/**
+ * The cleaner is only half the fix: a caller that falls back to the RAW title on an
+ * empty result puts the mention straight back. Three call sites fall back to a short
+ * session id; the session banner used to fall back to session.title, which is exactly
+ * where "@clipboard" was being displayed.
+ */
+suite('no caller reinstates the raw title', () => {
+  const providerSrc = fs.readFileSync(path.resolve(__dirname, '../../src/ui/ChatWebviewProvider.ts'), 'utf8');
+
+  test('the session banner does not fall back to session.title', () => {
+    assert.ok(
+      providerSrc.includes('title: cleanSessionTitle(session.title),'),
+      'the banner must use the cleaned title as-is',
+    );
+    assert.ok(
+      !providerSrc.includes('cleanSessionTitle(session.title) || session.title'),
+      'falling back to the raw title reinstates the bare mention',
+    );
+  });
+
+  test('the tree views fall back to a session id, never the raw title', () => {
+    const treeSrc = fs.readFileSync(path.resolve(__dirname, '../../src/ui/SessionTreeProvider.ts'), 'utf8');
+    const fallbacks = treeSrc.split('cleanSessionTitle(').length - 1;
+    assert.ok(fallbacks >= 3, `expected the tree call sites, found ${fallbacks}`);
+    assert.ok(
+      !/cleanSessionTitle\([^)]*\) \|\| (?:title|entry\.title|info\.title)/.test(treeSrc),
+      'no tree call site may fall back to the raw title',
+    );
   });
 });

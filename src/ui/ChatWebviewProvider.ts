@@ -4763,7 +4763,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             sessionId: session.sessionId,
             agentName: session.agentDisplayName,
             agentConfigKey: session.agentName,
-            title: cleanSessionTitle(session.title) || session.title,
+            // Falling back to the RAW title would reinstate exactly what the cleaner
+            // removed. A prompt that was only "@clipboard" plus its attached block
+            // cleans to nothing, and the old fallback put the bare mention back into
+            // the banner — the reported "title shows @clipboard". An empty title is
+            // the honest answer; the webview already renders the session without one.
+            // The tree views fall back to a short session id for the same reason.
+            title: cleanSessionTitle(session.title),
             cwd: session.cwd,
             gitBranch: this._cachedGitBranch || undefined,
             modes: session.modes,
