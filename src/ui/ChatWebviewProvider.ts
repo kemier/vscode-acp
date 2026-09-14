@@ -2722,6 +2722,28 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     let proseText = text;
     const pillPathBase = (p: string): string => p.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || p;
 
+    // A clipboard mention counts only at a LINE START — the start of the message or
+    // immediately after a newline. Mid-sentence "@clipboard" is literal text, not an
+    // attach request: observed when the user typed a web-search query that happened to
+    // contain "@clipboard" ("Web search: AI assistant @clipboard mention …") and the
+    // old /@clipboard\b/i scan hijacked it — stripping the literal token and attaching
+    // the clipboard, which produced two copies (a <clipboard> block plus the raw text).
+    function hasLeadingClipboardMention(t: string): boolean {
+      const src = String(t || '');
+      const re = /@clipboard\b/gi;
+      let m: RegExpExecArray | null;
+      while ((m = re.exec(src)) !== null) {
+        const before = src.slice(0, m.index);
+        if (before.trim().length === 0 || /(?:\r?\n)\s*$/.test(before)) {
+          return true;
+        }
+        if (m[0] === '') {
+          re.lastIndex++;
+        }
+      }
+      return false;
+    }
+
     // Detect @terminal — terminal output. EmbeddedResource when supported,
     // else inline fallback (a resource_link would point to an unresolvable
     // zed:///agent/terminal-selection URI).
@@ -2765,7 +2787,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // Ctrl+C inside the preview DOES work, and env.clipboard is readable. So
     // "select in the preview, copy, then ask with @clipboard" is the only path
     // that actually carries rendered content to the agent.
-    if (hasMentionOutsideContext(text, /@clipboard\b/i)) {
+    if (hasLeadingClipboardMention(text)) {
       let clip = '';
       try {
         clip = await vscode.env.clipboard.readText();
@@ -7288,7 +7310,7 @@ let isCompacting = false;  // true while /compact is running
      // drain carry the payload, while the chip and the bubble show a pill instead of the
      // raw blob. The host's own @clipboard resolver finds no mention in what it receives
      // and stays out of it, so the content cannot be attached twice.
-     if (/@clipboard\\b/i.test(String(text || ''))) {
+     if (hasLeadingClipboardMention(String(text || ''))) {
        entry.clipboardToken = 'clip-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
        vscode.postMessage({ type: 'resolveClipboardForQueue', token: entry.clipboardToken });
      }

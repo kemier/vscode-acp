@@ -145,12 +145,18 @@ suite('the send path uses prose-only scanning for every mention', () => {
   });
 
   test('all five mentions go through the prose-only helpers', () => {
-    for (const mention of ['@terminal', '@clipboard', '@problems']) {
+    for (const mention of ['@terminal', '@problems']) {
       assert.ok(
         resolver.includes(`hasMentionOutsideContext(text, /${mention}\\b/i)`),
         `${mention} must be scanned in prose only`,
       );
     }
+    // @clipboard is stricter: only a LEADING mention (start of message / start of
+    // line) is an attach request. Mid-sentence "@clipboard" is literal text and must
+    // not hijack the send — observed with a web-search query that contained it, which
+    // produced a duplicate <clipboard> block plus the raw text. It still routes through
+    // the prose-aware helper for the strip step.
+    assert.ok(resolver.includes('hasLeadingClipboardMention(text)'), '@clipboard must use the leading-mention guard');
     assert.ok(resolver.includes('matchMentionsOutsideContext(text, /@file:'), '@file: must be collected from prose');
     assert.ok(
       resolver.includes('matchMentionsOutsideContext(text, /@folder:'),

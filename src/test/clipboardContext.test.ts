@@ -28,7 +28,10 @@ suite('@clipboard context mention', () => {
   const src = fs.readFileSync(SOURCE, 'utf8');
   // Prose-only scanning: a mention quoted inside an attached payload is not a
   // request (see mentionScan.test.ts for the double-attach it prevents).
-  const at = src.indexOf('if (hasMentionOutsideContext(text, /@clipboard\\b/i)) {');
+  // Additionally, only a LEADING @clipboard (start of message / start of line)
+  // is an attach request — mid-sentence "@clipboard" is literal text and must
+  // not hijack the send (observed with a web-search query containing it).
+  const at = src.indexOf('if (hasLeadingClipboardMention(text)) {');
   const block = src.slice(at, at + 1800);
 
   test('the mention is detected', () => {
