@@ -24,10 +24,13 @@ function extractFn(name: string): string {
   let i = src.indexOf('{', start);
   let depth = 0;
   for (; i < src.length; i++) {
-    if (src[i] === '{') {depth++;}
-    else if (src[i] === '}') {
+    if (src[i] === '{') {
+      depth++;
+    } else if (src[i] === '}') {
       depth--;
-      if (depth === 0) {break;}
+      if (depth === 0) {
+        break;
+      }
     }
   }
   return src.slice(start, i + 1);
@@ -55,7 +58,11 @@ suite('turn progress label', () => {
     assert.strictEqual(f(30_000, 19_999), '30s');
     // The 120s silent model call from the measured turn.
     assert.ok(f(266_000, 120_000).indexOf('4m 26s') === 0);
-    assert.ok(/waiting on agent 2m 0s$/.test(f(266_000, 120_000)), f(266_000, 120_000));
+    // Names what it measures — time since the last ACP frame — instead of "waiting on
+    // agent", which collided with "subagent" and was read as "a subagent has not come
+    // back" on a turn whose subagent_wait rows were all completed.
+    assert.ok(/no output for 2m 0s$/.test(f(266_000, 120_000)), f(266_000, 120_000));
+    assert.ok(!/waiting on agent/.test(f(266_000, 120_000)), 'the ambiguous wording must be gone');
   });
 
   test('never renders negative or NaN-ish values', () => {

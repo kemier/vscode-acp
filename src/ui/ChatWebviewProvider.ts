@@ -11089,6 +11089,15 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    * The idle figure is what distinguishes "working" from "stuck": frames arrive
    * steadily while tools run, then stop dead during a long model call.
    */
+  /**
+   * It measures ONE thing — time since the last ACP frame of any kind — and now says
+   * so literally. It used to read "waiting on agent Ns", which collides with the word
+   * subagent and was read as "a subagent has not come back": reported against a turn
+   * whose subagent_wait rows all showed completed while the banner said
+   * "waiting on agent 40s". Both readings were correct and unrelated — the four
+   * subagents were genuinely still running, and the 40s was ericli sitting in a silent
+   * non-streaming model call. Naming the measurement removes the collision.
+   */
   function formatTurnStatusLabel(elapsedMs, idleMs) {
     function human(ms) {
       var total = Math.max(0, Math.round(ms / 1000));
@@ -11098,7 +11107,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
     var label = human(elapsedMs);
     if (idleMs >= 20000) {
-      label += ' \u00b7 waiting on agent ' + human(idleMs);
+      label += ' \u00b7 no output for ' + human(idleMs);
     }
     return label;
   }
