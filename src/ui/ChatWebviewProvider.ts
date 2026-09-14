@@ -8110,6 +8110,60 @@ function cursorModelSupportsImage(baseModelId) {
  * Uses indexOf rather than regexes because this lives inside the webview template
  * literal, where a single-backslash escape would be collapsed.
  */
+/**
+ * The adapter's OWN machine-readable statement that a tool call is an agent op.
+ *
+ * Every subagent predicate receives rawInput but never _meta, so the authoritative
+ * signals the adapters send were unreachable and routing fell back to reading the
+ * human title. That is how a shell command mentioning "Spawning agent" produced a
+ * false crew card. stashAdapterToolSignals copies them onto rawInput at the
+ * tool_call boundary — the same trick already used for claude-code-acp's _toolName —
+ * and this reads them back.
+ *
+ * Returns 'spawn' for a spawn, 'op' for another agent operation, '' for neither.
+ *
+ *   codex-acp  _meta.codex.collaboration.tool, one of the CollabAgentTool names:
+ *              spawnAgent | sendInput | resumeAgent | wait | closeAgent
+ *   kiro-cli   _meta.kiro.toolName. kiro documents no spawn method at all (core is
+ *              initialize/session/new/load/prompt/cancel/set_mode/set_model, updates
+ *              are AgentMessageChunk/ToolCall/ToolCallUpdate/TurnEnd), so a spawn
+ *              arrives as a plain ToolCall and this is its only reliable marker.
+ *
+ * claude-code-acp stays in looksLikeClaudeAgentSpawn, which already covers
+ * rawInput.subagent_type and _toolName=agent. cursor needs nothing here: it sends a
+ * dedicated cursor/task notification carrying subagentType, handled on its own path.
+ */
+function adapterAgentSignal(rawInput, toolName) {
+  var ri = (rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput)) ? rawInput : null;
+  var tn = String(toolName || (ri && ri._toolName) || '').trim().toLowerCase();
+  // Kiro sends "Spawning agent crew" with toolName subagent.
+  if (tn === 'subagent') return 'spawn';
+  var collab = ri ? String(ri._collabAgentTool || '').trim() : '';
+  if (collab === 'spawnAgent') return 'spawn';
+  if (collab) return 'op';
+  return '';
+}
+
+/**
+ * Copy the adapters' structured tool signals from _meta onto rawInput.
+ *
+ * Returns rawInput unchanged when there is nothing to add, so the common path does
+ * not allocate. Never overwrites a value already present: a persisted/restored entry
+ * may already carry _toolName from a previous pass.
+ */
+function stashAdapterToolSignals(rawInput, meta) {
+  if (!meta || typeof meta !== 'object') return rawInput;
+  var collab = meta.codex && meta.codex.collaboration && meta.codex.collaboration.tool;
+  var kiroName = meta.kiro && meta.kiro.toolName;
+  if (!collab && !kiroName) return rawInput;
+  var out = (rawInput && typeof rawInput === 'object' && !Array.isArray(rawInput))
+    ? Object.assign({}, rawInput)
+    : {};
+  if (collab && !out._collabAgentTool) out._collabAgentTool = String(collab);
+  if (kiroName && !out._toolName) out._toolName = String(kiroName);
+  return out;
+}
+
 function titleLooksLikeCommandOrProse(title) {
   var t = String(title || '');
   if (!t) return false;
@@ -8159,6 +8213,13 @@ function subagentSpawnReason(title, rawInput) {
   }
   if (ri && String(ri._toolName || '').trim().toLowerCase() === 'agent') {
     return 'rawInput._toolName=agent';
+  }
+  // Structured signals stashed from _meta — see adapterAgentSignal.
+  var _sig = adapterAgentSignal(rawInput, null);
+  if (_sig === 'spawn' || _sig === 'op') {
+    var _collab = ri ? String(ri._collabAgentTool || '').trim() : '';
+    if (_collab) return 'meta.codex.collaboration.tool=' + _collab;
+    return 'meta.kiro.toolName=' + String((ri && ri._toolName) || '').trim();
   }
   if (tl === 'task' || tl === 'agent' || tl === 'subagent') return 'title==' + tl;
   if (tn === 'spawnAgent' || tn === 'spawn_agent' || tn === 'spawn_agents_on_csv') return 'title==' + tn;
@@ -15979,6 +16040,10 @@ function orderCompactFoldContents(body) {
     // EXCEPTION: Claude Code's "Agent" tool sends kind=execute with
     // subagent_type in rawInput — check for that first before rejecting.
     if (looksLikeClaudeAgentSpawn(title, rawInput, toolName)) return true;
+    // The adapter said so itself — codex's collaboration tool or kiro's toolName.
+    // Authoritative, so it precedes the concrete-kind rejection below just as the
+    // claude check does.
+    if (adapterAgentSignal(rawInput, toolName)) return true;
     if (toolKind === 'read' || toolKind === 'edit' || toolKind === 'delete' ||
         toolKind === 'move' || toolKind === 'search' || toolKind === 'fetch' ||
         toolKind === 'execute') {
@@ -16023,6 +16088,10 @@ function orderCompactFoldContents(body) {
     //    _meta.codex.collaboration.tool, which does not reach the webview today (see
     //    the note in isSubagentToolCall). Authoritative regardless of the title.
     if (looksLikeClaudeAgentSpawn(title, rawInput, toolName)) return true;
+    // codex-acp's _meta.codex.collaboration.tool === 'spawnAgent' and kiro's
+    // _meta.kiro.toolName === 'subagent'. Only a spawn counts here; sendInput /
+    // resumeAgent / wait / closeAgent are agent ops but not spawns.
+    if (adapterAgentSignal(rawInput, toolName) === 'spawn') return true;
     var tn = (title || '').trim();
     var tnLower = tn.toLowerCase();
     // 2. Exact tool names, which is what codex-acp puts in the title: it sends
@@ -22312,6 +22381,11 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       var _tcRawInput = tc.rawInput && tc.rawInput.taskResult
         ? stripTaskResult(tc.rawInput)
         : tc.rawInput;
+      // Carry the adapters' own spawn signals onto rawInput before any routing:
+      // every subagent predicate receives rawInput and none receives _meta, so
+      // without this codex's collaboration tool and kiro's toolName were unreachable
+      // and routing had to guess from the human title.
+      _tcRawInput = stashAdapterToolSignals(_tcRawInput, update._meta);
       if (_claudeToolName === 'Agent' || looksLikeClaudeAgentSpawn(_tcTitleForUi, _tcRawInput, _claudeToolName)) {
         if (_tcRawInput && typeof _tcRawInput === 'object') {
           _tcRawInput = Object.assign({}, _tcRawInput);
@@ -22364,6 +22438,10 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       var _tcuRawInput = update.rawInput && update.rawInput.taskResult
         ? stripTaskResult(update.rawInput)
         : update.rawInput;
+      // Same stash as the tool_call case: an update may be the first frame that
+      // carries rawInput at all (the live stub enrich path fills title/rawInput
+      // later), so the structured signal has to survive here too.
+      _tcuRawInput = stashAdapterToolSignals(_tcuRawInput, update._meta);
       // status may be omitted (e.g. Cursor store.db enrich patch that only
       // fills title/rawInput) — pass undefined so updateToolCall keeps the
       // current icon/status instead of forcing "running".

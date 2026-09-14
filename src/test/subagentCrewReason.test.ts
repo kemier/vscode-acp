@@ -33,11 +33,17 @@ function loadReason(): (title: unknown, rawInput?: unknown) => string {
   // the same outer webview scope. Injecting it keeps the harness honest: without it
   // the eval throws ReferenceError, which is exactly the failure this file exists to
   // guard against elsewhere.
-  const guardStart = src.indexOf('function titleLooksLikeCommandOrProse(title) {');
-  assert.ok(guardStart >= 0, 'titleLooksLikeCommandOrProse not found');
-  const guardEnd = src.indexOf('\n}', guardStart) + 2;
-  const guard = src.slice(guardStart, guardEnd);
-  return new Function(`${guard}\n${body}\nreturn subagentSpawnReason;`)() as any;
+  // subagentSpawnReason delegates to two siblings in the same outer webview scope:
+  // the command-shape guard and the structured-signal reader. Inject both, or the
+  // eval throws ReferenceError — the failure this suite exists to catch elsewhere.
+  const deps = ['function titleLooksLikeCommandOrProse(title) {', 'function adapterAgentSignal(rawInput, toolName) {']
+    .map((sig) => {
+      const at = src.indexOf(sig);
+      assert.ok(at >= 0, `${sig} not found`);
+      return src.slice(at, src.indexOf('\n}', at) + 2);
+    })
+    .join('\n');
+  return new Function(`${deps}\n${body}\nreturn subagentSpawnReason;`)() as any;
 }
 
 suite('subagent crew routing reason (false "spawned N subagent" diagnostic)', () => {
