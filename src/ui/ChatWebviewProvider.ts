@@ -138,32 +138,43 @@ function isResumeDiagWebviewMessage(message: string): boolean {  if (!message) {
 }
 
 /**
- * Webview messages forwarded to the log REGARDLESS of any debug setting.
+ * Webview messages forwarded to the log REGARDLESS of any setting.
  *
- * Gating these behind acp.debugResume is what made the queued-message reports
- * undiagnosable across several sessions. Two reasons, both observed:
+ * Only faults belong here, and the list is deliberately one entry long.
  *
- * 1. They are faults, not traces. An uncaught webview exception and a queue strip
- *    measured at zero height are defects that already happened; there is no
- *    reading of "debug diagnostics" under which a fault should be silent.
- * 2. The setting did not resolve the way the user believed. acp.debugResume
- *    declares no `scope`, so it defaults to `window`, and a remote window reads
- *    Machine settings at higher precedence than User settings. With
- *    User=true and Machine=false the effective value was false, so a repro
- *    performed specifically to capture the trace produced an empty log.
+ * An uncaught webview exception is a defect that already happened, and its volume
+ * during healthy operation is exactly zero — so there is no cost to leaving it on
+ * and a demonstrated cost to gating it. Gating it is what made a ReferenceError in
+ * queueMessage invisible for several sessions: it aborted the function between
+ * messageQueue.push and renderQueue, so a message queued mid-turn was held with no
+ * chip and no steer, and the only visible effect was the message surfacing when the
+ * turn ended. Nothing in the UI, and nothing in any log, named the cause.
  *
- * [WV-QUEUE] is here too, at one line per queue/steer/drain decision. It is the
- * single fact none of the existing signals expose: which branch the Enter
- * keypress actually took. The host already logs one line per `sendPrompt`, so
- * this is the same order of volume.
+ * Two further reasons a setting was the wrong gate for it, both observed:
+ * acp.debugResume resolved to false through the Machine-settings override while
+ * appearing enabled, and a plain OutputChannel is written on a flush timer, so even
+ * the lines that were emitted never reached disk. See appendWebviewFault.
+ *
+ * The chatty diagnostics — [WV-QUEUE] per composer submission and [WV-QUEUEVIS]
+ * per render — are gated by acp.debugWebviewQueue instead.
  */
-const WEBVIEW_ALWAYS_LOG_MARKERS = ['[WV-ERROR]', '[WV-QUEUE]', '[WV-QUEUEVIS]'];
+const WEBVIEW_ALWAYS_LOG_MARKERS = ['[WV-ERROR]'];
+
+/** Composer/queue diagnostics, kept but gated behind acp.debugWebviewQueue. */
+const WEBVIEW_QUEUE_DEBUG_MARKERS = ['[WV-QUEUE]', '[WV-QUEUEVIS]'];
 
 export function isAlwaysLoggedWebviewMessage(message: string): boolean {
   if (!message) {
     return false;
   }
   return WEBVIEW_ALWAYS_LOG_MARKERS.some((marker) => message.includes(marker));
+}
+
+export function isQueueDebugWebviewMessage(message: string): boolean {
+  if (!message) {
+    return false;
+  }
+  return WEBVIEW_QUEUE_DEBUG_MARKERS.some((marker) => message.includes(marker));
 }
 
 /** Result of a fork-to-agent conversation export: flat transcript + messages. */
@@ -371,6 +382,21 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     return vscode.workspace.getConfiguration('acp').get<boolean>('debugResume', false);
   }
 
+  /**
+   * Gate for the composer queue traces and the queue-strip measurement.
+   *
+   * Deliberately NOT acp.debugResume. That setting declares no `scope`, so it
+   * defaults to `window`, and a remote window reads Machine settings above User
+   * settings — with User=true and Machine=false it resolved to false, and three
+   * reproductions run specifically to capture a trace produced empty logs while
+   * the setting looked enabled. A separate key avoids inheriting that confusion.
+   *
+   * [WV-ERROR] is deliberately not gated by this: see appendWebviewFault.
+   */
+  private isDebugWebviewQueue(): boolean {
+    return vscode.workspace.getConfiguration('acp').get<boolean>('debugWebviewQueue', false);
+  }
+
   /** ACP Client + optional ~/.cursor/acp-debug/resume-diag.jsonl when acp.debugResume is on. */
   private logResumeDiag(message: string): void {
     log(message);
@@ -409,11 +435,19 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     try {
       const dir = path.join(os.homedir(), '.acp-debug');
       fs.mkdirSync(dir, { recursive: true });
-      fs.appendFileSync(
-        path.join(dir, 'webview-faults.log'),
-        `[${new Date().toISOString()}] ${message}\n`,
-        'utf8',
-      );
+      const file = path.join(dir, 'webview-faults.log');
+      // Truncate once past the cap rather than growing without bound. With
+      // acp.debugWebviewQueue on this takes several lines per submission, and the
+      // interesting content is always the most recent repro. Rotating to .prev
+      // keeps one generation, which is enough to compare before and after a fix.
+      try {
+        if (fs.statSync(file).size > 2 * 1024 * 1024) {
+          fs.renameSync(file, file + '.prev');
+        }
+      } catch {
+        // No file yet, or the rotate raced another window — either way, just append.
+      }
+      fs.appendFileSync(file, `[${new Date().toISOString()}] ${message}\n`, 'utf8');
     } catch {
       // Best-effort diagnostic file — never block the chat UI.
     }
@@ -2002,6 +2036,16 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             // ...and to a file, because the output channel is not a dependable
             // record on a flush timer. See appendWebviewFault.
             this.appendWebviewFault(wvMsg);
+            break;
+          }
+          // Kept, but off by default: one line per composer submission and per
+          // render is too much for permanent logging. Same file sink so a single
+          // `cat` shows faults and queue decisions interleaved in order.
+          if (isQueueDebugWebviewMessage(wvMsg)) {
+            if (this.isDebugWebviewQueue()) {
+              log('[DEBUG-WV] ' + wvMsg);
+              this.appendWebviewFault(wvMsg);
+            }
             break;
           }
           // TEMP-DEBUG (copy button / cannot-send investigation): forward
@@ -4627,6 +4671,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // removed from the queue, and only the second was answered. Queue-and-drain
       // keeps order and gives every message its own turn.
       autoSteerQueued: vscode.workspace.getConfiguration('acp').get<boolean>('autoSteerQueuedMessages') !== false,
+      // Pushed rather than read in the webview so the composer traces and the
+      // layout measurement are not merely discarded host-side but never taken:
+      // reportQueueVisibility does getComputedStyle plus an ancestor walk on every
+      // render, which is not work to do on every keystroke by default.
+      debugWebviewQueue: this.isDebugWebviewQueue(),
       activeSessionId: activeId,
       session: session
         ? {
@@ -7463,6 +7512,9 @@ let isCompacting = false;  // true while /compact is running
     */
    function reportQueueVisibility() {
      if (!msgQueueEl) return;
+     // Off by default: the measurement below forces a layout read and walks six
+     // ancestors, which is not worth doing on every render just in case.
+     if (!debugWebviewQueueEnabled) return;
      requestAnimationFrame(function () {
        try {
          var chip0 = msgQueueEl.firstElementChild;
@@ -9445,6 +9497,12 @@ var end = displayText.length;
     // Mirrors acp.autoSteerQueuedMessages (default on). The host sends the real
     // value with the state message; until then assume on, matching the setting.
     let autoSteerQueuedEnabled = true;
+    // Mirrors acp.debugWebviewQueue (default off). Gates the composer decision
+    // traces and the queue-strip measurement at the SOURCE, so a default session
+    // does no getComputedStyle/ancestor walk per render and posts no extra
+    // messages. Uncaught errors are reported regardless — they are faults, and a
+    // healthy session emits none.
+    let debugWebviewQueueEnabled = false;
     let toolIdRetireGen = 0;
     let toolCallDiffs = {};
 
@@ -9612,6 +9670,7 @@ var end = displayText.length;
     * record rather than inferred.
     */
    function wvQueueLog(decision, detail) {
+     if (!debugWebviewQueueEnabled) return;
      try {
        vscode.postMessage({
          type: 'debugLog',
@@ -19325,6 +19384,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
          break;
        case 'state':
          if (typeof msg.autoSteerQueued === 'boolean') autoSteerQueuedEnabled = msg.autoSteerQueued;
+         if (typeof msg.debugWebviewQueue === 'boolean') debugWebviewQueueEnabled = msg.debugWebviewQueue;
          // Update last-connected agent from extension host (workspaceState
          // persists across restarts, unlike webview getState).
         if (msg.lastAgent) {

@@ -130,25 +130,19 @@ suite('a message queued mid-turn renders a visible chip', () => {
     assert.ok(src.includes('[WV-ERROR]'), 'errors must carry the [WV-ERROR] marker');
   });
 
-  test('faults and queue decisions log with every debug setting off', () => {
-    // acp.debugResume declares no scope, so it defaults to `window`, and a remote
-    // window reads Machine settings above User settings. With User=true and
-    // Machine=false the effective value was false, so a repro run specifically to
-    // capture the trace produced an empty log. Faults must not depend on it.
+  test('the verbose resume traces stay out of both ungated lists', () => {
     const src = fs.readFileSync(SOURCE, 'utf8');
     const start = src.indexOf('const WEBVIEW_ALWAYS_LOG_MARKERS');
     assert.ok(start > 0, 'WEBVIEW_ALWAYS_LOG_MARKERS must exist');
-    const list = src.slice(start, src.indexOf('];', start));
-    for (const marker of ['[WV-ERROR]', '[WV-QUEUE]', '[WV-QUEUEVIS]']) {
-      assert.ok(list.includes(marker), marker + ' must be forwarded regardless of any debug setting');
+    const always = src.slice(start, src.indexOf('];', start));
+    const qStart = src.indexOf('const WEBVIEW_QUEUE_DEBUG_MARKERS');
+    const gated = src.slice(qStart, src.indexOf('];', qStart));
+    // [WV-PROBE] and [DRAIN-DBG] fire far more often than one line per submission and
+    // belong to the resume investigation, so they stay under acp.debugResume alone.
+    for (const marker of ['[WV-PROBE]', '[DRAIN-DBG]']) {
+      assert.ok(!always.includes(marker), marker + ' must not be always-on');
+      assert.ok(!gated.includes(marker), marker + ' belongs to the resume gate, not this one');
     }
-    // Verbose per-keystroke traces stay gated so the always-on channel does not
-    // become noise and get switched off again. [WV-QUEUEVIS] is deliberately NOT
-    // gated on the CRUSHED verdict: a strip that measures VISIBLE while nothing is
-    // on screen rules geometry out entirely and points at an ancestor, so both
-    // outcomes carry information while this defect is open.
-    assert.ok(!list.includes('[WV-PROBE]'), 'verbose traces must stay behind the debug gate');
-    assert.ok(!list.includes('[DRAIN-DBG]'), 'verbose traces must stay behind the debug gate');
   });
 
   test('the visibility probe can see past the strip itself', () => {
@@ -173,6 +167,89 @@ suite('a message queued mid-turn renders a visible chip', () => {
     const fn = src.slice(at, src.indexOf('\n  }', at));
     assert.ok(fn.includes('appendFileSync'), 'the write must be synchronous to survive a live turn');
     assert.ok(!fn.includes('isDebugResume'), 'the fault sink must not be gated by a setting');
+  });
+
+  test('faults are ungated; queue traces are gated but kept', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const always = src.slice(
+      src.indexOf('const WEBVIEW_ALWAYS_LOG_MARKERS'),
+      src.indexOf('];', src.indexOf('const WEBVIEW_ALWAYS_LOG_MARKERS')),
+    );
+    const gated = src.slice(
+      src.indexOf('const WEBVIEW_QUEUE_DEBUG_MARKERS'),
+      src.indexOf('];', src.indexOf('const WEBVIEW_QUEUE_DEBUG_MARKERS')),
+    );
+    // An uncaught exception is a defect that already happened and emits nothing in a
+    // healthy session, so there is no cost to leaving it on — and a demonstrated cost
+    // to gating it: a ReferenceError in queueMessage stayed invisible for sessions.
+    assert.ok(always.includes('[WV-ERROR]'), 'uncaught errors must never be gated');
+    for (const chatty of ['[WV-QUEUE]', '[WV-QUEUEVIS]']) {
+      assert.ok(!always.includes(chatty), chatty + ' is per-keystroke and must be gated');
+      assert.ok(gated.includes(chatty), chatty + ' must still be available behind the gate');
+    }
+  });
+
+  test('the queue gate is its own setting, not acp.debugResume', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const at = src.indexOf('private isDebugWebviewQueue()');
+    assert.ok(at > 0, 'a dedicated gate must exist');
+    const fn = src.slice(at, src.indexOf('\n  }', at));
+    // acp.debugResume declares no scope, defaults to `window`, and a remote window
+    // reads Machine settings above User settings — it resolved false while appearing
+    // enabled. Reusing it would inherit that trap.
+    assert.ok(fn.includes("get<boolean>('debugWebviewQueue', false)"), fn);
+    assert.ok(!fn.includes('debugResume'), 'must not piggyback on acp.debugResume');
+
+    const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8')) as {
+      contributes: { configuration: { properties: Record<string, { default: unknown; scope?: string }> } };
+    };
+    const prop = pkg.contributes.configuration.properties['acp.debugWebviewQueue'];
+    assert.ok(prop, 'the setting must be declared so it is discoverable in the UI');
+    assert.strictEqual(prop.default, false, 'diagnostics stay off by default');
+    // Declared explicitly so nobody has to rediscover the Machine-vs-User precedence.
+    assert.strictEqual(prop.scope, 'window', 'scope must be explicit');
+  });
+
+  test('the gate is applied in the webview, not just host-side', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    // Discarding host-side would still pay for a layout read and an ancestor walk on
+    // every render, plus a postMessage per submission.
+    const emit = fnBody('wvQueueLog');
+    assert.ok(emit.includes('if (!debugWebviewQueueEnabled) return;'), emit);
+    const probe = fnBody('reportQueueVisibility');
+    assert.ok(
+      probe.includes('if (!debugWebviewQueueEnabled) return;'),
+      'the measurement must not run when the gate is off: ' + probe.slice(0, 300),
+    );
+    // The flag has to reach the webview, and the webview default must match the
+    // setting default so behaviour is the same before the first state message.
+    assert.ok(src.includes('debugWebviewQueue: this.isDebugWebviewQueue(),'), 'host must push the flag');
+    assert.ok(
+      src.includes("if (typeof msg.debugWebviewQueue === 'boolean') debugWebviewQueueEnabled = msg.debugWebviewQueue;"),
+      'webview must store the pushed flag',
+    );
+    assert.ok(src.includes('let debugWebviewQueueEnabled = false;'), 'webview default must be off');
+  });
+
+  test('uncaught errors are still reported with the gate off', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    // The error listeners must not consult the gate, otherwise turning diagnostics
+    // off restores the exact blindness this whole investigation ran into.
+    const at = src.indexOf("window.addEventListener('error'");
+    const listener = src.slice(at, at + 900);
+    assert.ok(!listener.includes('debugWebviewQueueEnabled'), 'error reporting must be unconditional');
+    const rej = src.indexOf("window.addEventListener('unhandledrejection'");
+    assert.ok(
+      !src.slice(rej, rej + 500).includes('debugWebviewQueueEnabled'),
+      'rejection reporting must be unconditional',
+    );
+  });
+
+  test('the fault file is size-capped', () => {
+    const at = fs.readFileSync(SOURCE, 'utf8').indexOf('private appendWebviewFault(');
+    const fn = fs.readFileSync(SOURCE, 'utf8').slice(at, at + 1400);
+    assert.ok(fn.includes('statSync'), 'must check the current size');
+    assert.ok(fn.includes('renameSync'), 'must rotate rather than grow without bound');
   });
 
   test('the always-log branch runs before the debugResume gate', () => {
