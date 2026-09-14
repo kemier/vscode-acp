@@ -7181,6 +7181,41 @@ let isCompacting = false;  // true while /compact is running
     }
 
     /**
+     * Does this text ask for the clipboard to be attached?
+     *
+     * A webview-side copy of the host's helper of the same name, and it has to be:
+     * queueMessage runs in the webview, where the host's TypeScript scope does not
+     * exist. Calling it from there threw ReferenceError AFTER messageQueue.push had
+     * already succeeded, so the entry was queued while renderQueue(),
+     * maybeAutoSteerNext() and the QUEUED trace below it never ran. That is the whole
+     * "message typed mid-turn shows no chip, then appears when the turn ends" report:
+     * the queue was correct and only its rendering was skipped, which is why Stop
+     * made the message appear and start a turn — drainQueue found the pushed entry.
+     *
+     * Semantics must match the host's, so the two agree on what counts as a mention:
+     * only at a LINE START, meaning the start of the message or immediately after a
+     * newline. A mid-sentence "@clipboard" is literal text, not an attach request.
+     *
+     * Escapes are doubled because this lives inside the HTML template literal —
+     * a single backslash would be eaten before the browser ever sees the regex.
+     */
+    function hasLeadingClipboardMention(t) {
+      var src = String(t || '');
+      var re = /@clipboard\\b/gi;
+      var m;
+      while ((m = re.exec(src)) !== null) {
+        var before = src.slice(0, m.index);
+        if (before.trim().length === 0 || /(?:\\r?\\n)\\s*$/.test(before)) {
+          return true;
+        }
+        if (m[0] === '') {
+          re.lastIndex++;
+        }
+      }
+      return false;
+    }
+
+    /**
      * The text a queued entry SENDS: its clipboard snapshot expanded inline.
      *
      * The snapshot is kept out of entry.text on purpose. It is taken at queue time
