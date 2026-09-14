@@ -98,6 +98,20 @@ const RESUME_DIAG_MARKERS = [
   'restoreState',
   'handleLoadSession',
   'orphan merge:',
+  // Queue-chip visibility. A message queued mid-turn was appended to #msgQueue
+  // and the container was displayed, yet nothing showed until the turn ended —
+  // the chip was rendering into a zero-height flex item. These three markers are
+  // what make that diagnosable at all: [WV-PROBE]/[DRAIN-DBG] were already
+  // emitted by wvProbe/handleQueue but were filtered out here, so every repro
+  // produced an empty log, and [WV-QUEUEVIS] reports the MEASURED box after
+  // layout instead of the intended style.
+  '[WV-PROBE]',
+  '[DRAIN-DBG]',
+  '[WV-QUEUEVIS]',
+  // Uncaught webview errors. The webview installed no error listener, so a throw
+  // inside a render function (renderQueue included) was swallowed silently and
+  // presented as "the UI just did not update".
+  '[WV-ERROR]',
 ];
 
 /**
@@ -6430,6 +6444,20 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       padding: 4px 8px;
       max-height: 120px;
       overflow-y: auto;
+      /* flex-shrink:0 is load-bearing, not cosmetic.
+         .input-area is a fixed-height column flex container once the user drags
+         the resize handle (applyInputHeight sets an explicit px height), and a
+         flex item whose overflow is not "visible" gets an AUTOMATIC MINIMUM SIZE
+         OF 0 — unlike its siblings, whose min-height:auto floors them at their
+         content height. .input-toolbar and .input-resize-handle are already
+         flex-shrink:0 and .input-editor-wrap has flex-basis:0%, so when the
+         toolbar wraps to a second/third row and the base sizes exceed the fixed
+         height, THIS was the only item the flex algorithm could take space from —
+         and it took all of it. The chip was appended and the container was
+         displayed, but its used height was 0, so a message queued mid-turn
+         rendered into a zero-height box: invisible until something else relaxed
+         the height pressure. Never let the queue absorb the deficit. */
+      flex-shrink: 0;
     }
     .msg-queue:empty {
       display: none;
@@ -6516,6 +6544,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
      font-size: 0.8em;
      opacity: 0.7;
      padding: 2px 8px;
+     /* Same rationale as .msg-queue: this row must never be the one that gives
+        way when .input-area is height-constrained. */
+     flex-shrink: 0;
    }
 
     /* Slash command autocomplete popup */
@@ -7223,7 +7254,13 @@ let isCompacting = false;  // true while /compact is running
         return;
       }
       msgQueueLabelEl.style.display = 'block';
-      msgQueueEl.style.display = 'block';
+      // 'flex', NOT 'block'. The stylesheet lays this container out as
+      // display:flex with flex-wrap:wrap and gap:6px; writing 'block' into the
+      // inline style overrode that every time the queue was rendered, so the
+      // gap was dropped and the chips fell back to inline layout. The empty
+      // case above is already covered by the .msg-queue:empty rule, so this only
+      // ever needs to restore the stylesheet's own display value.
+      msgQueueEl.style.display = 'flex';
       messageQueue.forEach((entry, index) => {
        const chip = document.createElement('div');
        chip.className = 'msg-queue-item';
@@ -7302,6 +7339,60 @@ let isCompacting = false;  // true while /compact is running
          chip.appendChild(steerBtn);
        }
        msgQueueEl.appendChild(chip);
+     });
+     reportQueueVisibility();
+   }
+
+   /**
+    * Report the MEASURED geometry of the queue strip, once layout has settled.
+    *
+    * renderQueue can only assert what it intended: it appends a chip and sets
+    * display. That is exactly what made the "chip does not show until the turn
+    * ends" report so hard to pin down — every readable signal said the chip was
+    * there, because it was: appended, in a displayed container, with a non-empty
+    * queue. What no signal covered was the USED height, and .msg-queue was a
+    * scroll container (overflow-y:auto), which in a height-constrained column
+    * flex parent gets an automatic minimum size of 0 and can therefore be
+    * flattened to nothing while still reporting display:flex.
+    *
+    * Measured in requestAnimationFrame because offsetHeight read straight after
+    * appendChild would force a synchronous reflow and, worse, be taken before the
+    * flex algorithm has redistributed space.
+    */
+   function reportQueueVisibility() {
+     if (!msgQueueEl) return;
+     requestAnimationFrame(function () {
+       try {
+         var chip0 = msgQueueEl.firstElementChild;
+         var cs = window.getComputedStyle(msgQueueEl);
+         var parts = [
+           'queueLen=' + messageQueue.length,
+           'children=' + msgQueueEl.childElementCount,
+           'queueBox=' + msgQueueEl.offsetWidth + 'x' + msgQueueEl.offsetHeight,
+           'chipBox=' + (chip0 ? chip0.offsetWidth + 'x' + chip0.offsetHeight : 'none'),
+           'display=' + cs.display,
+           'visibility=' + cs.visibility,
+           'opacity=' + cs.opacity,
+           'flexShrink=' + cs.flexShrink,
+           'maxHeight=' + cs.maxHeight,
+           // The suspected squeezer: an explicit px height on .input-area (set
+           // only by the resize-handle drag) turns the composer into a
+           // fixed-height flex container.
+           'inputAreaStyleHeight=' + ((inputArea && inputArea.style.height) || '(auto)'),
+           'inputAreaBox=' + (inputArea ? inputArea.offsetWidth + 'x' + inputArea.offsetHeight : 'none'),
+           'isProcessing=' + isProcessing,
+         ];
+         // A chip that exists in a zero-height box is THE failure being hunted;
+         // label it so the log can be grepped for the conclusion, not the raw numbers.
+         if (msgQueueEl.childElementCount > 0 && msgQueueEl.offsetHeight === 0) {
+           parts.push('VERDICT=CRUSHED(chip present, zero height)');
+         } else if (msgQueueEl.childElementCount > 0) {
+           parts.push('VERDICT=VISIBLE');
+         }
+         vscode.postMessage({ type: 'debugLog', message: '[WV-QUEUEVIS] ' + parts.join(' ') });
+       } catch (e) {
+         vscode.postMessage({ type: 'debugLog', message: '[WV-QUEUEVIS] probe failed: ' + String(e) });
+       }
      });
    }
 
@@ -9355,6 +9446,34 @@ var end = displayText.length;
          (detail ? ' | ' + detail : ''),
      });
    }
+
+   /**
+    * Forward uncaught webview errors to the extension host.
+    *
+    * The webview had no error listener at all, which is why a whole class of
+    * "the UI silently did not update" reports were undiagnosable: a throw inside
+    * any render function aborts the rest of that function — leaving a half-built
+    * DOM — and then vanishes, because a webview iframe's console is only visible
+    * to someone who has the Developer Tools open at the time. Reported under
+    * [WV-ERROR] so a repro leaves evidence in the ACP Client log instead.
+    */
+   window.addEventListener('error', function (ev) {
+     try {
+       var where = (ev && ev.filename ? ' at ' + ev.filename + ':' + ev.lineno + ':' + ev.colno : '');
+       var stack = ev && ev.error && ev.error.stack ? ' | stack=' + String(ev.error.stack).substring(0, 600) : '';
+       vscode.postMessage({
+         type: 'debugLog',
+         message: '[WV-ERROR] uncaught: ' + String((ev && ev.message) || 'unknown') + where + stack,
+       });
+     } catch (_e) { /* never let the reporter throw inside the error path */ }
+   });
+   window.addEventListener('unhandledrejection', function (ev) {
+     try {
+       var r = ev && ev.reason;
+       var detail = r && r.stack ? String(r.stack).substring(0, 600) : String(r);
+       vscode.postMessage({ type: 'debugLog', message: '[WV-ERROR] unhandled rejection: ' + detail });
+     } catch (_e) { /* as above */ }
+   });
    function updateSendButton() {
      if (isProcessing) return; // Stop button is always enabled
      const hasText = promptInput.value.trim().length > 0;
