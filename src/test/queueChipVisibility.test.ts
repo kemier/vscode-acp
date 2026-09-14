@@ -129,4 +129,61 @@ suite('a message queued mid-turn renders a visible chip', () => {
     assert.ok(src.includes("window.addEventListener('unhandledrejection'"), 'rejected promises must be reported too');
     assert.ok(src.includes('[WV-ERROR]'), 'errors must carry the [WV-ERROR] marker');
   });
+
+  test('faults and queue decisions log with every debug setting off', () => {
+    // acp.debugResume declares no scope, so it defaults to `window`, and a remote
+    // window reads Machine settings above User settings. With User=true and
+    // Machine=false the effective value was false, so a repro run specifically to
+    // capture the trace produced an empty log. Faults must not depend on it.
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const start = src.indexOf('const WEBVIEW_ALWAYS_LOG_MARKERS');
+    assert.ok(start > 0, 'WEBVIEW_ALWAYS_LOG_MARKERS must exist');
+    const list = src.slice(start, src.indexOf('];', start));
+    for (const marker of ['[WV-ERROR]', '[WV-QUEUE]', 'VERDICT=CRUSHED']) {
+      assert.ok(list.includes(marker), marker + ' must be forwarded regardless of any debug setting');
+    }
+    // A healthy strip and routine traces are not faults and must stay gated,
+    // otherwise the always-on channel becomes noise and gets turned off again.
+    assert.ok(!list.includes('[WV-PROBE]'), 'verbose traces must stay behind the debug gate');
+    assert.ok(!list.includes('VERDICT=VISIBLE'), 'a healthy queue strip is not a fault');
+  });
+
+  test('the always-log branch runs before the debugResume gate', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const at = src.indexOf("case 'debugLog'");
+    assert.ok(at > 0, 'the debugLog handler must exist');
+    const body = src.slice(at, at + 1600);
+    const always = body.indexOf('isAlwaysLoggedWebviewMessage');
+    const gated = body.indexOf('isDebugResume()');
+    assert.ok(always > 0, 'the handler must consult the always-log list');
+    assert.ok(gated > 0, 'the gated path must still exist for verbose traces');
+    assert.ok(always < gated, 'faults must be logged before any setting is consulted');
+  });
+
+  test('every composer branch records the decision it took', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    // No chip, no session/steer and no sendPrompt are three ABSENCES that look
+    // identical whether the text was queued and mis-rendered, swallowed by a
+    // handleSend guard, or never handled at all — and those need different fixes.
+    for (const decision of [
+      "wvQueueLog('QUEUED'",
+      "wvQueueLog('STEERED'",
+      "wvQueueLog('DRAINED'",
+      "wvQueueLog('steer:SKIP'",
+      "wvQueueLog('send:POSTING'",
+      "wvQueueLog('send:queueing-midturn'",
+      "wvQueueLog('send:GUARD-no-active-session'",
+      "wvQueueLog('handleQueue:DROP-empty'",
+    ]) {
+      assert.ok(src.includes(decision), 'missing decision probe: ' + decision);
+    }
+  });
+
+  test('each steer bail-out names the gate that stopped it', () => {
+    const fn = fnBody('maybeAutoSteerNext');
+    const returns = (fn.match(/return false;/g) || []).length;
+    const logged = (fn.match(/wvQueueLog\('steer:SKIP'/g) || []).length;
+    assert.ok(returns > 0, 'maybeAutoSteerNext must have bail-out paths');
+    assert.strictEqual(logged, returns, 'every steer bail-out needs its own logged reason');
+  });
 });

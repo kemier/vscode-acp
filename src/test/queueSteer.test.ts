@@ -247,7 +247,11 @@ suite('auto-steer is settable, and ordered by delivery', () => {
 
   test('nothing is auto-steered unless the setting is on', () => {
     const fn = extractFn('maybeAutoSteerNext');
-    assert.ok(fn.includes('if (!autoSteerQueuedEnabled) return false;'), fn);
+    // Matched as a pattern rather than a literal: each bail-out now also records
+    // WHICH gate stopped it (wvQueueLog('steer:SKIP', …)), because "no steer
+    // happened" was otherwise unattributable in a log. The property under test is
+    // unchanged — the flag short-circuits with return false.
+    assert.ok(/if \(!autoSteerQueuedEnabled\)[^\n]*return false;/.test(fn), fn);
     // The flag must be checked BEFORE the in-flight and agent checks, so the default
     // path costs nothing and cannot steer by accident.
     const gate = fn.indexOf('autoSteerQueuedEnabled');

@@ -137,6 +137,35 @@ function isResumeDiagWebviewMessage(message: string): boolean {  if (!message) {
   return RESUME_DIAG_MARKERS.some((marker) => message.includes(marker));
 }
 
+/**
+ * Webview messages forwarded to the log REGARDLESS of any debug setting.
+ *
+ * Gating these behind acp.debugResume is what made the queued-message reports
+ * undiagnosable across several sessions. Two reasons, both observed:
+ *
+ * 1. They are faults, not traces. An uncaught webview exception and a queue strip
+ *    measured at zero height are defects that already happened; there is no
+ *    reading of "debug diagnostics" under which a fault should be silent.
+ * 2. The setting did not resolve the way the user believed. acp.debugResume
+ *    declares no `scope`, so it defaults to `window`, and a remote window reads
+ *    Machine settings at higher precedence than User settings. With
+ *    User=true and Machine=false the effective value was false, so a repro
+ *    performed specifically to capture the trace produced an empty log.
+ *
+ * [WV-QUEUE] is here too, at one line per queue/steer/drain decision. It is the
+ * single fact none of the existing signals expose: which branch the Enter
+ * keypress actually took. The host already logs one line per `sendPrompt`, so
+ * this is the same order of volume.
+ */
+const WEBVIEW_ALWAYS_LOG_MARKERS = ['[WV-ERROR]', '[WV-QUEUE]', 'VERDICT=CRUSHED'];
+
+export function isAlwaysLoggedWebviewMessage(message: string): boolean {
+  if (!message) {
+    return false;
+  }
+  return WEBVIEW_ALWAYS_LOG_MARKERS.some((marker) => message.includes(marker));
+}
+
 /** Result of a fork-to-agent conversation export: flat transcript + messages. */
 export interface ConversationExportResult {
   /** The whole (post-compaction) transcript as one text block. */
@@ -1937,6 +1966,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         }
         case 'debugLog': {
           const wvMsg = message.message || '(empty)';
+          // Faults and queue decisions first, with no gate: see
+          // WEBVIEW_ALWAYS_LOG_MARKERS for why these must not depend on a setting.
+          if (isAlwaysLoggedWebviewMessage(wvMsg)) {
+            log('[DEBUG-WV] ' + wvMsg);
+            break;
+          }
           // TEMP-DEBUG (copy button / cannot-send investigation): forward
           // every webview debugLog to the ACP Client log so a repro captures
           // the latch state. Gated behind DEBUG_LIVE (default off) so normal
@@ -7419,6 +7454,7 @@ let isCompacting = false;  // true while /compact is running
        vscode.postMessage({ type: 'resolveClipboardForQueue', token: entry.clipboardToken });
      }
      renderQueue();
+     wvQueueLog('QUEUED', 'text=' + String(text || '').substring(0, 60));
      maybeAutoSteerNext();
    }
 
@@ -7435,17 +7471,18 @@ let isCompacting = false;  // true while /compact is running
      // agent echoing a steered message when it DELIVERS it to the model, not when it
      // receives it — codex echoing on receipt let two interjections pile up and the
      // model answered only the last (codex now echoes at drain time).
-     if (!autoSteerQueuedEnabled) return false;
-     if (!isProcessing || isCompacting || isClearing) return false;
-     if (!agentAutoSteersQueuedMessages(currentAgentLabel())) return false;
+     if (!autoSteerQueuedEnabled) { wvQueueLog('steer:SKIP', 'autoSteer disabled'); return false; }
+     if (!isProcessing || isCompacting || isClearing) { wvQueueLog('steer:SKIP', 'not in a steerable turn'); return false; }
+     if (!agentAutoSteersQueuedMessages(currentAgentLabel())) { wvQueueLog('steer:SKIP', 'agent does not auto-steer'); return false; }
      var idx = nextAutoSteerIndex(messageQueue);
-     if (idx < 0) return false;
+     if (idx < 0) { wvQueueLog('steer:SKIP', 'no eligible entry (nextAutoSteerIndex=-1)'); return false; }
      var entry = messageQueue[idx];
      entry.steered = true;
      entry.steerPending = true;
      hasSteeredThisTurn = true;
      vscode.postMessage({ type: 'steerPrompt', text: queueEntryPromptText(entry) || ' ' });
      renderQueue();
+     wvQueueLog('STEERED', 'idx=' + idx);
      showTransientHint('Sent into the running turn — the agent picks it up at its next step.');
      return true;
    }
@@ -8191,6 +8228,7 @@ hasSentPrompt = true;
    }
  } else {
     vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drainQueue: sending as sendPrompt' });
+    wvQueueLog('DRAINED', 'sending queued entry as a normal prompt');
     addUserBubbleForQueuedEntry(entry);
    // The sendPrompt is now in flight — a message typed in the transition
    // tick (before promptStart arrives) must queue, and the next queued
@@ -9474,6 +9512,34 @@ var end = displayText.length;
        vscode.postMessage({ type: 'debugLog', message: '[WV-ERROR] unhandled rejection: ' + detail });
      } catch (_e) { /* as above */ }
    });
+
+   /**
+    * Record which branch a composer submission actually took. Always logged.
+    *
+    * The gap this closes: when a message typed mid-turn goes missing, the three
+    * signals that exist are all silent about the cause. The queue chip is not
+    * rendered, no session/steer frame is emitted, and no sendPrompt reaches the
+    * host — three absences that look identical whether the text was queued and
+    * mis-rendered, swallowed by a guard in handleSend, or never delivered to the
+    * handler at all. Those need different fixes, so the branch has to be on the
+    * record rather than inferred.
+    */
+   function wvQueueLog(decision, detail) {
+     try {
+       vscode.postMessage({
+         type: 'debugLog',
+         message: '[WV-QUEUE] ' + decision +
+           ' isProcessing=' + isProcessing +
+           ' isSendingPrompt=' + isSendingPrompt +
+           ' isCompacting=' + isCompacting +
+           ' isClearing=' + isClearing +
+           ' queueLen=' + (typeof messageQueue === 'undefined' ? '?' : messageQueue.length) +
+           ' agent=' + (currentAgentLabel() || '(none)') +
+           ' autoSteer=' + autoSteerQueuedEnabled +
+           (detail ? ' | ' + detail : ''),
+       });
+     } catch (_e) { /* diagnostics must never break the send path */ }
+   }
    function updateSendButton() {
      if (isProcessing) return; // Stop button is always enabled
      const hasText = promptInput.value.trim().length > 0;
@@ -9863,6 +9929,7 @@ var end = displayText.length;
     }
     if (isProcessing) {
       // /rename works even during streaming (like Claude Code's immediate commands)
+      wvQueueLog('enter:isProcessing', 'len=' + fastTrackText.length);
       if (handleLocalSlashCommand()) { return; }
       // Everything else goes to handleSend(), which owns the AUTHORITATIVE
       // decision: it sends a slash command the AGENT declared turn-safe
@@ -9886,8 +9953,10 @@ var end = displayText.length;
     function handleQueue() {
     const text = promptInput.value.trim();
     wvProbe('handleQueue ENTER', 'text=' + (text || '(empty)').substring(0, 40));
-    if (!text && pendingImages.length === 0) return;
-    const images = pendingImages.splice(0);
+    if (!text && pendingImages.length === 0) {
+      wvQueueLog('handleQueue:DROP-empty', 'nothing to queue');
+      return;
+    }
     imagePreviewStrip.innerHTML = '';
     promptInput.value = '';
     updateSendButton();
@@ -10241,12 +10310,14 @@ function handleLocalSlashCommand(cmdText) {
 function handleSend() {
   const text = promptInput.value.trim();
   wvProbe('handleSend ENTER', 'textLen=' + text.length + ' hasImages=' + (pendingImages.length > 0));
+  wvQueueLog('send:ENTER', 'len=' + text.length);
   if (!text && pendingImages.length === 0) return;
   // Guard: don't send if there's no active agent session (e.g. after reload
   // before reconnecting). The Send button is also disabled via
   // updateSendButton, but this catches edge cases like Enter key.
   if (!hasActiveSession) {
     wvProbe('handleSend GUARD:no-active-session', 'showResumeBar');
+  wvQueueLog('send:GUARD-no-active-session', 'text dropped; resume bar shown');
     // Show the resume bar instead
     updateResumeBar();
     return;
@@ -10256,6 +10327,7 @@ function handleSend() {
    // Sending now would race the in-flight session/prompt. Queue instead.
    if (isSendingPrompt) {
      wvProbe('handleSend GUARD:isSendingPrompt-stuck', 'queueing instead of posting sendPrompt');
+  wvQueueLog('send:GUARD-isSendingPrompt', 'queueing instead of posting');
      handleQueue();
      return;
    }
@@ -10265,6 +10337,7 @@ function handleSend() {
    // interact with the agent.
    if (isCompacting || isClearing) {
      wvProbe('handleSend GUARD:compacting-clearing', 'isCompacting=' + isCompacting + ' isClearing=' + isClearing);
+  wvQueueLog('send:GUARD-compacting', '');
      // Local slash commands (e.g. /ps, /rename) execute immediately even
      // during compaction — they don't interact with the agent.
      if (text.startsWith('/') && handleLocalSlashCommand()) { return; }
@@ -10278,6 +10351,7 @@ function handleSend() {
    // /rename works immediately, even during streaming
    if (handleLocalSlashCommand()) {
      wvProbe('handleSend GUARD:local-slash', 'text=' + text.substring(0, 40));
+  wvQueueLog('send:local-slash', 'handled locally, no prompt sent');
      return;
    }
 // Read-only slash commands go through during streaming — ericli answers
@@ -10289,11 +10363,13 @@ function handleSend() {
    // per turn, FIFO, after the current turn's promptEnd.
    if (isProcessing && (!text.startsWith('/') || !slashCommandRunsDuringTurn(text, availableCommands))) {
      wvProbe('handleSend GUARD:isProcessing-queued', 'text=' + text.substring(0, 40));
+  wvQueueLog('send:queueing-midturn', 'len=' + text.length);
      handleQueue();
      return;
    }
 
   wvProbe('handleSend POSTING', 'text=' + text.substring(0, 40));
+  wvQueueLog('send:POSTING', 'len=' + text.length);
   if (suppressNextUserBubble) {
     // Fork-to-agent: the summary is sent to the agent for context but the
     // user bubble is hidden. clearChat already reset the turn state, so we
