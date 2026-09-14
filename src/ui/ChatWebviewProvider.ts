@@ -11608,6 +11608,17 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      hasSentPrompt = false;
      hasSteeredThisTurn = false;
      isSendingPrompt = false;
+    // A session switch / reload must NOT carry the previous session's queued
+    // messages into the new session's queue. messageQueue is a webview-level
+    // array (never persisted) — if it still holds entries from the prior
+    // session (e.g. messages queued during a stuck auto-compaction), they
+    // would leak into the freshly-loaded session and show as stale queue
+    // chips with no way to drain them. Clear it here alongside the other
+    // per-session state resets.
+    if (messageQueue.length > 0) {
+      messageQueue = [];
+      renderQueue();
+    }
     if (tokenUsageRing) tokenUsageRing.classList.remove('visible');
     if (typeof clearCursorTodosPlan === 'function') clearCursorTodosPlan();
       // Keep a copy of the restored webview history. Claude session/load for an
@@ -18767,6 +18778,17 @@ forceCollapseTurnFolds();
   hasSentPrompt = false;
   hasSteeredThisTurn = false;
   isSendingPrompt = false;
+  // A session switch / new-session connect must NOT carry the previous
+  // session's queued messages into the new session's queue. messageQueue is a
+  // webview-level array (never persisted) — if it still holds entries from the
+  // prior session (e.g. messages queued during a stuck auto-compaction), they
+  // would leak into the freshly-connected session and show as stale queue
+  // chips with no way to drain them. Clear it here alongside the other
+  // per-session state resets (mirrors handleLoadSessionStart).
+  if (messageQueue.length > 0) {
+    messageQueue = [];
+    renderQueue();
+  }
   // Capture the session ID that was active BEFORE this switch so
    // handleLoadSessionStart can label its chatHistory snapshot correctly.
    // sessionState is overwritten below, so we must grab the old value first.
