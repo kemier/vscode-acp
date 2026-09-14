@@ -421,13 +421,13 @@
         "acp.debugResume": {
           "type": "boolean",
           "default": false,
-          "description": "Log session resume/load diagnostics ([WV-DIAG], [WV-MERGE], user_message_chunk turn boundaries) to the ACP Client output channel and ~/.cursor/acp-debug/resume-diag.jsonl. Enable when debugging collapsed-block splits after reload."
+          "description": "Log session resume/load diagnostics ([WV-DIAG], [WV-MERGE], user_message_chunk turn boundaries) to the ACP Client output channel and ~/.acp-debug/resume-diag.jsonl. Enable when debugging collapsed-block splits after reload. Enabled if set true in any settings scope, so a value left over in Remote/Machine settings cannot silence it."
         },
         "acp.debugWebviewQueue": {
           "type": "boolean",
           "default": false,
           "scope": "window",
-          "description": "Log composer queue diagnostics ([WV-QUEUE] per submission, [WV-QUEUEVIS] per render) to the ACP Client output channel and ~/.acp-debug/webview-faults.log. Enable when a message typed during a streaming turn does not appear as a queue chip. Uncaught webview errors ([WV-ERROR]) are always logged and are not affected by this setting."
+          "description": "Log composer queue diagnostics ([WV-QUEUE] per submission, [WV-QUEUEVIS] per render) to the ACP Client output channel and ~/.acp-debug/webview-faults.log. Enable when a message typed during a streaming turn does not appear as a queue chip. Enabled if set true in any settings scope. Uncaught webview errors ([WV-ERROR]) are always logged and are not affected by this setting."
         },
         "acp.compaction.hookWatcher": {
           "type": "boolean",

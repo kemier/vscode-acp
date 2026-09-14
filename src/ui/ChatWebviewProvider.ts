@@ -177,6 +177,49 @@ export function isQueueDebugWebviewMessage(message: string): boolean {
   return WEBVIEW_QUEUE_DEBUG_MARKERS.some((marker) => message.includes(marker));
 }
 
+/**
+ * Is a diagnostic flag switched on in ANY settings scope?
+ *
+ * `get()` alone resolves by precedence, and for a diagnostic toggle that is the
+ * wrong rule: in a remote window the order is Default < User < Remote/Machine <
+ * Workspace, and none of these keys declare a `scope` beyond `window`, so a Remote
+ * value outranks the User value. With `"acp.debugResume": true` in User settings
+ * and `false` in Machine settings the effective value was false, so three
+ * reproductions run specifically to capture a trace produced empty logs while the
+ * Settings UI showed the flag enabled.
+ *
+ * Precedence exists so a more specific scope can override a general preference.
+ * That is right for behaviour and backwards for "also write me a log file": nobody
+ * sets a debug flag true by accident, and a stale false left in another scope
+ * should not veto it. So any explicit true wins, and the default stays off because
+ * no scope says true.
+ *
+ * Split from the vscode lookup so the rule itself is directly testable.
+ */
+export function diagnosticFlagFromScopes(
+  effective: boolean | undefined,
+  scopes:
+    | { globalValue?: boolean; workspaceValue?: boolean; workspaceFolderValue?: boolean }
+    | undefined,
+): boolean {
+  if (effective === true) {
+    return true;
+  }
+  if (!scopes) {
+    return false;
+  }
+  return (
+    scopes.globalValue === true ||
+    scopes.workspaceValue === true ||
+    scopes.workspaceFolderValue === true
+  );
+}
+
+function diagnosticFlagEnabled(key: string): boolean {
+  const cfg = vscode.workspace.getConfiguration('acp');
+  return diagnosticFlagFromScopes(cfg.get<boolean>(key, false), cfg.inspect<boolean>(key));
+}
+
 /** Result of a fork-to-agent conversation export: flat transcript + messages. */
 export interface ConversationExportResult {
   /** The whole (post-compaction) transcript as one text block. */
@@ -379,67 +422,62 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   } | null = null;
 
   private isDebugResume(): boolean {
-    return vscode.workspace.getConfiguration('acp').get<boolean>('debugResume', false);
+    return diagnosticFlagEnabled('debugResume');
   }
 
   /**
    * Gate for the composer queue traces and the queue-strip measurement.
    *
-   * Deliberately NOT acp.debugResume. That setting declares no `scope`, so it
-   * defaults to `window`, and a remote window reads Machine settings above User
-   * settings — with User=true and Machine=false it resolved to false, and three
-   * reproductions run specifically to capture a trace produced empty logs while
-   * the setting looked enabled. A separate key avoids inheriting that confusion.
+   * A key of its own rather than reusing acp.debugResume, so that turning on the
+   * per-keystroke composer traces does not also turn on the far chattier resume
+   * replay traces, and vice versa.
    *
-   * [WV-ERROR] is deliberately not gated by this: see appendWebviewFault.
+   * [WV-ERROR] is deliberately not gated by this: see WEBVIEW_ALWAYS_LOG_MARKERS.
    */
   private isDebugWebviewQueue(): boolean {
-    return vscode.workspace.getConfiguration('acp').get<boolean>('debugWebviewQueue', false);
+    return diagnosticFlagEnabled('debugWebviewQueue');
   }
 
-  /** ACP Client + optional ~/.cursor/acp-debug/resume-diag.jsonl when acp.debugResume is on. */
+  /** ACP Client + ~/.acp-debug/resume-diag.jsonl when acp.debugResume is on. */
   private logResumeDiag(message: string): void {
     log(message);
     if (!this.isDebugResume()) {
       return;
     }
-    try {
-      const dir = path.join(os.homedir(), '.cursor', 'acp-debug');
-      fs.mkdirSync(dir, { recursive: true });
-      fs.appendFileSync(
-        path.join(dir, 'resume-diag.jsonl'),
-        JSON.stringify({ ts: new Date().toISOString(), msg: message }) + '\n',
-        'utf8',
-      );
-    } catch {
-      // Best-effort diagnostic file — never block the chat UI.
-    }
+    // Same directory as webview-faults.log. It used to write under ~/.cursor/,
+    // which is a stale path for a VS Code extension and meant the two diagnostic
+    // outputs for one investigation lived in different trees — easy to look in the
+    // wrong one and conclude nothing was recorded.
+    this.appendDiagFile(
+      'resume-diag.jsonl',
+      JSON.stringify({ ts: new Date().toISOString(), msg: message }),
+    );
   }
 
   /**
-   * Append a webview fault to ~/.acp-debug/webview-faults.log, synchronously.
+   * Append a line to ~/.acp-debug/<name>, synchronously, with a size cap.
    *
-   * Not a duplicate of the ACP Client output channel — a replacement for it on
-   * this path, because the channel is not a dependable record. VS Code writes a
-   * plain OutputChannel to disk on a flush timer, so a low-volume channel can sit
-   * unflushed indefinitely: during the reproduction of this very bug the window's
-   * `output_logging_*` directory contained `2-ACP Traffic.log` at 360 KB and no
-   * `1-ACP Client.log` at all, so every fault line that had been emitted was
-   * unreadable. Combined with the acp.debugResume gate resolving false through the
+   * Not a duplicate of the ACP Client output channel — a replacement for it on the
+   * diagnostic paths, because the channel is not a dependable record. VS Code
+   * writes a plain OutputChannel to disk on a flush timer, so a low-volume channel
+   * can sit unflushed indefinitely: during the reproduction of the queue-chip bug
+   * the window's `output_logging_*` directory contained `2-ACP Traffic.log` at
+   * 360 KB and no `1-ACP Client.log` at all, so every line that had been emitted
+   * was unreadable. Combined with the gate resolving false through the
    * Machine-settings override, three separate repros produced no evidence.
    *
    * appendFileSync lands immediately and is readable while the turn is still
-   * running. Faults only, so the volume stays negligible.
+   * running.
    */
-  private appendWebviewFault(message: string): void {
+  private appendDiagFile(name: string, line: string): void {
     try {
       const dir = path.join(os.homedir(), '.acp-debug');
       fs.mkdirSync(dir, { recursive: true });
-      const file = path.join(dir, 'webview-faults.log');
-      // Truncate once past the cap rather than growing without bound. With
-      // acp.debugWebviewQueue on this takes several lines per submission, and the
-      // interesting content is always the most recent repro. Rotating to .prev
-      // keeps one generation, which is enough to compare before and after a fix.
+      const file = path.join(dir, name);
+      // Truncate once past the cap rather than growing without bound. With the
+      // diagnostics on these take several lines per submission, and the interesting
+      // content is always the most recent repro. Rotating to .prev keeps one
+      // generation, which is enough to compare before and after a fix.
       try {
         if (fs.statSync(file).size > 2 * 1024 * 1024) {
           fs.renameSync(file, file + '.prev');
@@ -447,10 +485,15 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       } catch {
         // No file yet, or the rotate raced another window — either way, just append.
       }
-      fs.appendFileSync(file, `[${new Date().toISOString()}] ${message}\n`, 'utf8');
+      fs.appendFileSync(file, line + '\n', 'utf8');
     } catch {
       // Best-effort diagnostic file — never block the chat UI.
     }
+  }
+
+  /** Webview faults and (when enabled) composer queue traces. */
+  private appendWebviewFault(message: string): void {
+    this.appendDiagFile('webview-faults.log', `[${new Date().toISOString()}] ${message}`);
   }
 
   /** Trace Cursor ACP session/update traffic (compaction investigation). Enable acp.debugResume. */

@@ -1,6 +1,7 @@
 import * as assert from 'assert';
 import * as fs from 'fs';
 import * as path from 'path';
+import { diagnosticFlagFromScopes } from '../ui/ChatWebviewProvider';
 
 /**
  * A message queued mid-turn showed no chip until the turn ended.
@@ -162,8 +163,8 @@ suite('a message queued mid-turn renders a visible chip', () => {
     // always-logged fault line was still unreadable.
     assert.ok(src.includes('appendWebviewFault'), 'a file-backed fault sink must exist');
     assert.ok(src.includes('webview-faults.log'), 'faults must land in a named file');
-    const at = src.indexOf('private appendWebviewFault(');
-    assert.ok(at > 0, 'appendWebviewFault must be a method on the provider');
+    const at = src.indexOf('private appendDiagFile(');
+    assert.ok(at > 0, 'the shared file writer must be a method on the provider');
     const fn = src.slice(at, src.indexOf('\n  }', at));
     assert.ok(fn.includes('appendFileSync'), 'the write must be synchronous to survive a live turn');
     assert.ok(!fn.includes('isDebugResume'), 'the fault sink must not be gated by a setting');
@@ -194,10 +195,9 @@ suite('a message queued mid-turn renders a visible chip', () => {
     const at = src.indexOf('private isDebugWebviewQueue()');
     assert.ok(at > 0, 'a dedicated gate must exist');
     const fn = src.slice(at, src.indexOf('\n  }', at));
-    // acp.debugResume declares no scope, defaults to `window`, and a remote window
-    // reads Machine settings above User settings — it resolved false while appearing
-    // enabled. Reusing it would inherit that trap.
-    assert.ok(fn.includes("get<boolean>('debugWebviewQueue', false)"), fn);
+    // A key of its own so enabling the per-keystroke composer traces does not also
+    // enable the far chattier resume replay traces.
+    assert.ok(fn.includes("diagnosticFlagEnabled('debugWebviewQueue')"), fn);
     assert.ok(!fn.includes('debugResume'), 'must not piggyback on acp.debugResume');
 
     const pkg = JSON.parse(fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8')) as {
@@ -208,6 +208,66 @@ suite('a message queued mid-turn renders a visible chip', () => {
     assert.strictEqual(prop.default, false, 'diagnostics stay off by default');
     // Declared explicitly so nobody has to rediscover the Machine-vs-User precedence.
     assert.strictEqual(prop.scope, 'window', 'scope must be explicit');
+  });
+
+  test('a diagnostic flag set true in any scope wins over a false elsewhere', () => {
+    // The reported symptom: "acp.debugResume": true in User settings, false in
+    // Machine settings, and in a remote window Machine outranks User — so get()
+    // returned false and three repros produced empty logs while the Settings UI
+    // showed the flag on. Precedence is right for behaviour and backwards for
+    // "also write me a log file": nobody enables a debug flag by accident.
+    const decide = diagnosticFlagFromScopes;
+
+    // The exact reported configuration: effective false, User true.
+    assert.strictEqual(decide(false, { globalValue: true }), true, 'a User true must not be vetoed');
+    // Unset everywhere stays off, so the default is genuinely off.
+    assert.strictEqual(decide(false, {}), false, 'unset stays off');
+    assert.strictEqual(decide(false, undefined), false, 'no inspect data stays off');
+    assert.strictEqual(decide(undefined, undefined), false, 'an absent value stays off');
+    assert.strictEqual(decide(false, { globalValue: false }), false, 'an explicit false stays off');
+    // Normal enablement still works without consulting scopes.
+    assert.strictEqual(decide(true, {}), true, 'an effective true is enough');
+    assert.strictEqual(decide(false, { workspaceValue: true }), true, 'a workspace true counts');
+    assert.strictEqual(decide(false, { workspaceFolderValue: true }), true, 'a folder true counts');
+  });
+
+  test('both gates go through the scope-aware helper', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    for (const [gate, key] of [
+      ['isDebugResume', 'debugResume'],
+      ['isDebugWebviewQueue', 'debugWebviewQueue'],
+    ]) {
+      const at = src.indexOf('private ' + gate + '()');
+      assert.ok(at > 0, gate + ' must exist');
+      const fn = src.slice(at, src.indexOf('\n  }', at));
+      assert.ok(
+        fn.includes("diagnosticFlagEnabled('" + key + "')"),
+        gate + ' must use the scope-aware helper, not a bare get(): ' + fn,
+      );
+    }
+  });
+
+  test('both diagnostic files live in one directory', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    // The resume trace used to write under ~/.cursor/, so the two outputs for one
+    // investigation sat in different trees — easy to check the wrong one and
+    // conclude nothing was recorded.
+    const at = src.indexOf('private appendDiagFile(');
+    assert.ok(at > 0, 'a shared diagnostic writer must exist');
+    const fn = src.slice(at, src.indexOf('\n  }', at));
+    assert.ok(fn.includes("path.join(os.homedir(), '.acp-debug')"), fn);
+    const resume = src.slice(src.indexOf('private logResumeDiag('), at);
+    assert.ok(resume.includes('appendDiagFile('), 'resume diag must use the shared writer');
+    assert.ok(resume.includes("'resume-diag.jsonl'"), 'resume diag keeps its own file name');
+    assert.ok(!resume.includes("'.cursor'"), 'resume diag must no longer write under ~/.cursor');
+    // The compaction hook file is an INPUT written by an external Cursor hook, so
+    // that path must stay where Cursor puts it.
+    assert.ok(
+      fs
+        .readFileSync(path.resolve(__dirname, '../../src/core/CompactionHookWatcher.ts'), 'utf8')
+        .includes("'.cursor', 'acp-debug', 'compaction-events.jsonl'"),
+      'the externally-written hook file must keep its own path',
+    );
   });
 
   test('the gate is applied in the webview, not just host-side', () => {
@@ -246,10 +306,14 @@ suite('a message queued mid-turn renders a visible chip', () => {
   });
 
   test('the fault file is size-capped', () => {
-    const at = fs.readFileSync(SOURCE, 'utf8').indexOf('private appendWebviewFault(');
-    const fn = fs.readFileSync(SOURCE, 'utf8').slice(at, at + 1400);
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const at = src.indexOf('private appendDiagFile(');
+    const fn = src.slice(at, src.indexOf('\n  }', at));
     assert.ok(fn.includes('statSync'), 'must check the current size');
     assert.ok(fn.includes('renameSync'), 'must rotate rather than grow without bound');
+    // Both diagnostic outputs go through this writer, so both are capped.
+    assert.ok(src.includes("appendDiagFile('webview-faults.log'"), 'faults use the capped writer');
+    assert.ok(src.includes('appendDiagFile('), 'resume diag uses the capped writer');
   });
 
   test('the always-log branch runs before the debugResume gate', () => {
