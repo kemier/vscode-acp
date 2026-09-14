@@ -21,6 +21,9 @@ import {
   confirmedFileMutationKind,
   indexToolCallsFromBlobTextsOrdered,
   SQL_JSON_BLOB_PREFIX,
+  isLargeCursorStore,
+  loadEnrichedToolCallsByPrefix,
+  toolCallIdPrefix,
 } from '../core/CursorToolEnricher';
 
 suite('CursorToolEnricher', () => {
@@ -111,7 +114,6 @@ suite('CursorToolEnricher', () => {
   });
 
   test('isLargeCursorStore detects multi-100MB store.db', () => {
-    const { isLargeCursorStore } = require('../core/CursorToolEnricher') as typeof import('../core/CursorToolEnricher');
     const tmp = path.join(os.tmpdir(), `acp-store-size-${Date.now()}.db`);
     try {
       fs.writeFileSync(tmp, Buffer.alloc(121 * 1024 * 1024));
@@ -320,10 +322,6 @@ suite('CursorToolEnricher', () => {
 
   test('loadEnrichedToolCallsByPrefix finds Read/Grep args in live store', async function () {
     this.timeout(10000);
-    const {
-      loadEnrichedToolCallsByPrefix,
-      toolCallIdPrefix,
-    } = require('../core/CursorToolEnricher') as typeof import('../core/CursorToolEnricher');
     const sid = 'a4879912-b370-4918-ac86-965e011333ff';
     const db = findCursorSessionStorePath(sid);
     if (!db || !fs.existsSync(db) || fs.statSync(db).size < 1000) {
@@ -404,10 +402,6 @@ suite('CursorToolEnricher', () => {
   });
 
   test('lookupEnriched prefers call- prefix over shared fc_ batch id', () => {
-    const {
-      lookupEnriched,
-      formatCursorEnrichedTitle,
-    } = require('../core/CursorToolEnricher') as typeof import('../core/CursorToolEnricher');
     const map = new Map();
     const fc = 'fc_shared-batch-id';
     map.set(`call-aaa-1\n${fc}_0`, {

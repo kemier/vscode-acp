@@ -2390,7 +2390,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    */
   private noteCursorToolArgsIfPresent(sessionId: string, updateData: any): void {
     const toolCallId = updateData?.toolCallId as string | undefined;
-    if (!toolCallId) return;
+    if (!toolCallId) {return;}
     const key = `${sessionId}::${toolCallId}`;
     const rawInput = updateData.rawInput;
     if (
@@ -2418,17 +2418,17 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     options?: { force?: boolean },
   ): Promise<void> {
     try {
-      if (!needsCursorToolEnrichment(updateData)) return;
+      if (!needsCursorToolEnrichment(updateData)) {return;}
       const toolCallId = updateData.toolCallId as string;
-      if (!toolCallId || String(toolCallId).startsWith('replay-')) return;
+      if (!toolCallId || String(toolCallId).startsWith('replay-')) {return;}
       const satisfiedKey = `${sessionId}::${toolCallId}`;
-      if (this.cursorToolArgsSatisfied.has(satisfiedKey)) return;
+      if (this.cursorToolArgsSatisfied.has(satisfiedKey)) {return;}
       // session/load uses synthetic replay-* ids that are never in store.db —
       // skip per-tool polls (batch enrich runs at loadSessionEnd instead).
-      if (this.sessionManager.isLoading(sessionId)) return;
+      if (this.sessionManager.isLoading(sessionId)) {return;}
       const session = this.sessionManager.getSession(sessionId);
       const agentLabel = session?.agentName || session?.agentDisplayName || '';
-      if (!isCursorAgentName(agentLabel)) return;
+      if (!isCursorAgentName(agentLabel)) {return;}
 
       // Per-tool store.db polls block the extension host (Git SCM starves on
       // large sessions). Batch enrich is already deferred; defer live polls too.
@@ -2446,7 +2446,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       }
 
       const inflightKey = satisfiedKey;
-      if (this.cursorToolEnrichInFlight.has(inflightKey)) return;
+      if (this.cursorToolEnrichInFlight.has(inflightKey)) {return;}
       this.cursorToolEnrichInFlight.add(inflightKey);
       let enriched;
       try {
@@ -2462,8 +2462,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         return;
       }
       // Session may have switched while we waited.
-      if (this.sessionManager.getActiveSessionId() !== sessionId) return;
-      if (this.suppressWebviewUpdates) return;
+      if (this.sessionManager.getActiveSessionId() !== sessionId) {return;}
+      if (this.suppressWebviewUpdates) {return;}
 
       const patch: Record<string, unknown> = {
         sessionUpdate: 'tool_call_update',
@@ -2496,7 +2496,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           workspaceRoot: vscode.workspace.workspaceFolders?.[0]?.uri.fsPath,
           homeDir: process.env.HOME,
         });
-        if (target) this.followCoalescer.submit(target);
+        if (target) {this.followCoalescer.submit(target);}
       }
     } catch (e: any) {
       log(`Cursor tool enrich failed: ${e?.message || e}`);
@@ -2506,9 +2506,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   /** Run per-tool enrich polls queued during an in-flight agent turn. */
   private async flushDeferredCursorToolEnrich(sessionId: string): Promise<void> {
     const pending = this.deferredCursorToolEnrich.get(sessionId);
-    if (!pending?.size) return;
+    if (!pending?.size) {return;}
     // A newer turn may have started before a stale sendPrompt resolved.
-    if (this.sessionManager.isPromptInFlight(sessionId)) return;
+    if (this.sessionManager.isPromptInFlight(sessionId)) {return;}
     this.deferredCursorToolEnrich.delete(sessionId);
     log(
       `Cursor tool enrich: flushing ${pending.size} deferred tool(s) (session=${sessionId.slice(0, 8)}…)`,
@@ -2542,7 +2542,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     sessionId: string | null | undefined,
     reason?: string,
   ): void {
-    if (!sessionId) return;
+    if (!sessionId) {return;}
     if (this.cursorBatchEnrichTimer) {
       clearTimeout(this.cursorBatchEnrichTimer);
     }
@@ -2571,7 +2571,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       }
       const session = this.sessionManager.getSession(sessionId);
       const agentLabel = session?.agentName || session?.agentDisplayName || '';
-      if (!isCursorAgentName(agentLabel)) return;
+      if (!isCursorAgentName(agentLabel)) {return;}
       // Batch enrich scans store.db on the extension host. While the agent is
       // mid-turn (file edits streaming), defer so Git SCM / other extensions
       // are not starved by a multi-second SQLite read.

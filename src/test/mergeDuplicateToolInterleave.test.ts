@@ -74,9 +74,9 @@ function tool(toolCallId: string, title: string): any {
 /** Compact shape of the merged timeline, for readable assertions. */
 function shape(rows: any[]): string[] {
   return rows.map((r) => {
-    if (r.kind === 'toolCall') return 'tool:' + r.title;
-    if (r.kind === 'thought') return 'thought:' + r.text;
-    if (r.kind === 'message') return r.role + ':' + r.text;
+    if (r.kind === 'toolCall') {return 'tool:' + r.title;}
+    if (r.kind === 'thought') {return 'thought:' + r.text;}
+    if (r.kind === 'message') {return r.role + ':' + r.text;}
     return r.kind;
   });
 }

@@ -32,7 +32,7 @@ function loadStripper(): (text: string) => string {
   const endIdx = src.indexOf(endMarker, startIdx);
   assert.ok(endIdx > startIdx, 'end marker not found');
   const body = src.slice(startIdx, endIdx).replace(/\\\\/g, '\\');
-  // eslint-disable-next-line no-new-func
+   
   return new Function(body + '\nreturn stripLeadingResourceLinkJson;')() as (t: string) => string;
 }
 
@@ -123,7 +123,7 @@ function loadIsMachineContextOnly(): (text: string) => boolean {
   };
   const predicate = grab('isMachineContextOnly', '/**\n    * Truncate a session title');
   const stripper = grab('stripLeadingResourceLinkJson', 'function cleanUserMessage(rawText) {');
-  // eslint-disable-next-line no-new-func
+   
   return new Function(
     stripper + '\n' + predicate + '\nreturn isMachineContextOnly;',
   )() as (t: string) => boolean;

@@ -37,12 +37,12 @@ export function stablePermissionToolBucket(toolCall: unknown): string | undefine
   const isShell = (n: string) =>
     n === 'shell' || n === 'bash' || n === 'run' || n === 'run_terminal_cmd';
 
-  if (isRead(toolName) || kind === 'read') return 'read';
-  if (isEdit(toolName) || kind === 'edit') return 'edit';
-  if (isDelete(toolName) || kind === 'delete') return 'delete';
-  if (isSearch(toolName) || kind === 'search' || kind === 'fetch') return 'search';
-  if (isShell(toolName) || kind === 'execute') return 'execute';
-  if (kind === 'move') return 'move';
+  if (isRead(toolName) || kind === 'read') {return 'read';}
+  if (isEdit(toolName) || kind === 'edit') {return 'edit';}
+  if (isDelete(toolName) || kind === 'delete') {return 'delete';}
+  if (isSearch(toolName) || kind === 'search' || kind === 'fetch') {return 'search';}
+  if (isShell(toolName) || kind === 'execute') {return 'execute';}
+  if (kind === 'move') {return 'move';}
   return undefined;
 }
 

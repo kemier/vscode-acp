@@ -48,7 +48,7 @@ function loadCollect(): Collect {
     'collectUnansweredTrailingPrompts',
     '/** Scan chatHistory',
   ).replace(/\\\\/g, '\\');
-  // eslint-disable-next-line no-new-func
+   
   return new Function(
     notice + '\n' + collect + '\nreturn collectUnansweredTrailingPrompts;',
   )() as Collect;

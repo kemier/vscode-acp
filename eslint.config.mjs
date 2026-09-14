@@ -15,7 +15,9 @@ export default defineConfig({
 			},
 		],
 		curly: "warn",
-		eqeqeq: "warn",
+		// `== null` is the deliberate idiom for "null or undefined"; forcing `===`
+		// there would narrow the check and change behaviour. Matches a2a's config.
+		eqeqeq: ["warn", "always", { "null": "ignore" }],
 		"no-throw-literal": "warn",
 		semi: "warn",
 	},

@@ -24,10 +24,10 @@ function extractFn(name: string): string {
   let i = src.indexOf('{', start);
   let depth = 0;
   for (; i < src.length; i++) {
-    if (src[i] === '{') depth++;
+    if (src[i] === '{') {depth++;}
     else if (src[i] === '}') {
       depth--;
-      if (depth === 0) break;
+      if (depth === 0) {break;}
     }
   }
   return src.slice(start, i + 1);

@@ -84,7 +84,6 @@ export interface L1StateStorage {
   delete(): void;
 }
 
-const L1_STATE_STORAGE_KEY = 'acp.memory.l1State';
 
 export class SharedMemoryProvider {
   private readonly listener: (update: SessionNotification) => void;
@@ -123,16 +122,16 @@ export class SharedMemoryProvider {
    * entry is harmless; resetL1Dedup removes it on compaction / disposal.
    */
   private restoreL1StateFromStorage(): void {
-    if (!this.l1StateStorage) return;
+    if (!this.l1StateStorage) {return;}
     let persisted: Record<string, { injectedIds: string[]; injectedSkillIds: string[] }> | undefined;
     try {
       persisted = this.l1StateStorage.get();
     } catch {
       return;
     }
-    if (!persisted) return;
+    if (!persisted) {return;}
     for (const [sid, st] of Object.entries(persisted)) {
-      if (!sid || !st) continue;
+      if (!sid || !st) {continue;}
       this.l1State.set(sid, {
         injectedIds: new Set(Array.isArray(st.injectedIds) ? st.injectedIds : []),
         injectedSkillIds: new Set(Array.isArray(st.injectedSkillIds) ? st.injectedSkillIds : []),
@@ -142,7 +141,7 @@ export class SharedMemoryProvider {
 
   /** Serialize the in-memory l1State to storage (fire-and-forget). */
   private persistL1StateToStorage(): void {
-    if (!this.l1StateStorage) return;
+    if (!this.l1StateStorage) {return;}
     try {
       const out: Record<string, { injectedIds: string[]; injectedSkillIds: string[] }> = {};
       for (const [sid, st] of this.l1State.entries()) {

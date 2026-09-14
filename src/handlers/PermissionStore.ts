@@ -64,9 +64,9 @@ export function mergePermissionLists(
 ): string[] {
   const out = new Set<string>();
   for (const src of [fromSettings, fromFile]) {
-    if (!src) continue;
+    if (!src) {continue;}
     for (const item of src) {
-      if (!item) continue;
+      if (!item) {continue;}
       out.add(normalizeToolFp ? normalizeApprovedToolFingerprint(item) : item);
     }
   }

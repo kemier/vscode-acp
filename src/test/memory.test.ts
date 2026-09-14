@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import { pickExactSkillId } from '../core/memory/MemoryHttpClient';
 import { resolveMemoryAgentId } from '../core/memory/MemoryAgentId';
 import { formatL1Memories, formatRecallContext, formatSkills } from '../core/memory/MemoryFormat';
 import {
@@ -520,7 +521,6 @@ suite('MemorySanitize.buildRecallQuery', () => {
 });
 
 suite('MemoryHttpClient.pickExactSkillId', () => {
-  const { pickExactSkillId } = require('../core/memory/MemoryHttpClient') as typeof import('../core/memory/MemoryHttpClient');
 
   test('requires exact name and skl- id', () => {
     assert.strictEqual(

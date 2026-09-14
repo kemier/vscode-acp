@@ -293,7 +293,7 @@ export class MemoryHttpClient {
       // Prefer structured hits when markdown parse misses a row (or budget
       // truncates listing text before hits).
       for (const h of res.hits ?? []) {
-        if (!h?.name || seen.has(h.name)) continue;
+        if (!h?.name || seen.has(h.name)) {continue;}
         items.push({
           skill_id: h.skill_id,
           name: h.name,
@@ -422,14 +422,14 @@ export class MemoryHttpClient {
   ): Promise<string | null> {
     // 1) Default team listing (same set as unqueried recall top-N).
     const fromDefault = pickExactSkillId(skillName, (await this.listSkills(iso)).items);
-    if (fromDefault) return fromDefault;
+    if (fromDefault) {return fromDefault;}
 
     // 2) Name-ranked listing — pulls the skill into the char_budget window.
     const fromQuery = pickExactSkillId(
       skillName,
       (await this.listSkills(iso, { query: skillName })).items,
     );
-    if (fromQuery) return fromQuery;
+    if (fromQuery) {return fromQuery;}
 
     // 3) Semantic search; require exact name match (avoid near-miss siblings).
     const searched = await this.searchSkills(iso, { query: skillName, topK: 10 });

@@ -31,15 +31,15 @@ export function isCursorAgentName(agentName: string | null | undefined): boolean
 
 /** True when rawInput carries enough args to render a path/pattern/command without store.db. */
 export function hasActionableToolArgs(rawInput: Record<string, unknown>): boolean {
-  if (extractPathFromArgs(rawInput)) return true;
+  if (extractPathFromArgs(rawInput)) {return true;}
   for (const key of ['pattern', 'query', 'regex'] as const) {
     const v = rawInput[key];
-    if (typeof v === 'string' && v.trim()) return true;
+    if (typeof v === 'string' && v.trim()) {return true;}
   }
-  if (rawInput.command) return true;
+  if (rawInput.command) {return true;}
   for (const key of ['glob', 'glob_pattern', 'globPattern', 'target_directory'] as const) {
     const v = rawInput[key];
-    if (typeof v === 'string' && v.trim()) return true;
+    if (typeof v === 'string' && v.trim()) {return true;}
   }
   return false;
 }
@@ -50,11 +50,11 @@ export function hasActionableToolArgs(rawInput: Record<string, unknown>): boolea
  * still poll store.db for the real args.
  */
 export function isEmptyRawInput(rawInput: unknown): boolean {
-  if (rawInput == null) return true;
-  if (typeof rawInput === 'string') return !rawInput.trim();
-  if (typeof rawInput !== 'object' || Array.isArray(rawInput)) return false;
+  if (rawInput == null) {return true;}
+  if (typeof rawInput === 'string') {return !rawInput.trim();}
+  if (typeof rawInput !== 'object' || Array.isArray(rawInput)) {return false;}
   const rec = rawInput as Record<string, unknown>;
-  if (Object.keys(rec).length === 0) return true;
+  if (Object.keys(rec).length === 0) {return true;}
   return !hasActionableToolArgs(rec);
 }
 
@@ -82,11 +82,11 @@ const CURSOR_STUB_TITLES = new Set([
 ]);
 
 export function isCursorStubToolTitle(title: unknown): boolean {
-  if (typeof title !== 'string') return true;
+  if (typeof title !== 'string') {return true;}
   const t = title.trim().toLowerCase();
-  if (!t) return true;
-  if (CURSOR_STUB_TITLES.has(t)) return true;
-  if (/^mcp:\s/i.test(t)) return true;
+  if (!t) {return true;}
+  if (CURSOR_STUB_TITLES.has(t)) {return true;}
+  if (/^mcp:\s/i.test(t)) {return true;}
   return false;
 }
 
@@ -97,8 +97,8 @@ export function needsCursorToolEnrichment(update: {
   rawInput?: unknown;
 }): boolean {
   const kind = update?.sessionUpdate;
-  if (kind !== 'tool_call' && kind !== 'tool_call_update') return false;
-  if (!update.toolCallId) return false;
+  if (kind !== 'tool_call' && kind !== 'tool_call_update') {return false;}
+  if (!update.toolCallId) {return false;}
 
   const hasTitle = update.title !== undefined && update.title !== null;
   const hasRawInput = update.rawInput !== undefined && update.rawInput !== null;
@@ -123,18 +123,18 @@ export function needsCursorToolEnrichment(update: {
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {return null;}
   return value as Record<string, unknown>;
 }
 
 /** Parse args that may be an object or a JSON / Python-repr string. */
 export function parseCursorToolArgs(raw: unknown): Record<string, unknown> {
-  if (raw == null) return {};
+  if (raw == null) {return {};}
   const obj = asRecord(raw);
-  if (obj) return { ...obj };
-  if (typeof raw !== 'string') return {};
+  if (obj) {return { ...obj };}
+  if (typeof raw !== 'string') {return {};}
   const s = raw.trim();
-  if (!s) return {};
+  if (!s) {return {};}
   try {
     const parsed = JSON.parse(s);
     const rec = asRecord(parsed);
@@ -170,7 +170,7 @@ export function extractPathFromArgs(args: Record<string, unknown>): string | und
     'target_directory',
   ]) {
     const v = args[key];
-    if (typeof v === 'string' && v.trim()) return v.trim();
+    if (typeof v === 'string' && v.trim()) {return v.trim();}
   }
   return undefined;
 }
@@ -178,10 +178,10 @@ export function extractPathFromArgs(args: Record<string, unknown>): string | und
 /** Path / directory / glob scope for search tools when path is absent. */
 export function extractSearchScope(args: Record<string, unknown>): string | undefined {
   const pathArg = extractPathFromArgs(args);
-  if (pathArg) return pathArg;
+  if (pathArg) {return pathArg;}
   for (const key of ['glob', 'glob_pattern', 'globPattern']) {
     const v = args[key];
-    if (typeof v === 'string' && v.trim()) return v.trim();
+    if (typeof v === 'string' && v.trim()) {return v.trim();}
   }
   return undefined;
 }
@@ -221,8 +221,8 @@ export function cursorToolMatchKind(
     return 'glob';
   }
   // toolName wins over title — Cursor often sends title "Edit File" for Write/Delete.
-  if (n === 'write' || n === 'write_file' || n === 'writefile') return 'write';
-  if (n === 'delete' || n === 'delete_file' || n === 'deletefile' || k === 'delete') return 'delete';
+  if (n === 'write' || n === 'write_file' || n === 'writefile') {return 'write';}
+  if (n === 'delete' || n === 'delete_file' || n === 'deletefile' || k === 'delete') {return 'delete';}
   if (
     n === 'streplace' ||
     n === 'strreplace' ||
@@ -236,13 +236,13 @@ export function cursorToolMatchKind(
   ) {
     return 'edit';
   }
-  if (t === 'write file' || t.startsWith('write ')) return 'write';
-  if (t === 'delete file' || t.startsWith('delete ')) return 'delete';
-  if (n === 'shell' || n === 'bash' || n === 'run' || k === 'execute') return 'shell';
+  if (t === 'write file' || t.startsWith('write ')) {return 'write';}
+  if (t === 'delete file' || t.startsWith('delete ')) {return 'delete';}
+  if (n === 'shell' || n === 'bash' || n === 'run' || k === 'execute') {return 'shell';}
   if (k === 'search') {
     // ACP toolKind alone — disambiguate from enriched title prefix when possible.
-    if (t.startsWith('find ')) return 'glob';
-    if (t.startsWith('grep ')) return 'grep';
+    if (t.startsWith('find ')) {return 'glob';}
+    if (t.startsWith('grep ')) {return 'grep';}
     return 'grep';
   }
   return 'other';
@@ -283,9 +283,9 @@ export function formatCursorEnrichedTitle(
   }
   if (lower === 'grep' || lower === 'rg' || lower === 'search') {
     const scope = extractSearchScope(args);
-    if (pattern && scope) return `grep ${JSON.stringify(pattern)} ${scope}`;
-    if (pattern) return `grep ${JSON.stringify(pattern)}`;
-    if (scope) return `grep ${scope}`;
+    if (pattern && scope) {return `grep ${JSON.stringify(pattern)} ${scope}`;}
+    if (pattern) {return `grep ${JSON.stringify(pattern)}`;}
+    if (scope) {return `grep ${scope}`;}
     return fallbackTitle || 'grep';
   }
   if (lower === 'glob' || lower === 'find' || lower === 'listdir' || lower === 'list_dir') {
@@ -294,9 +294,9 @@ export function formatCursorEnrichedTitle(
       (typeof args.glob_pattern === 'string' && args.glob_pattern) ||
       (typeof args.globPattern === 'string' && args.globPattern) ||
       undefined;
-    if (globPat && pathArg) return `Find ${JSON.stringify(globPat)} in ${pathArg}`;
-    if (globPat) return `Find ${JSON.stringify(globPat)}`;
-    if (pathArg) return `Find ${pathArg}`;
+    if (globPat && pathArg) {return `Find ${JSON.stringify(globPat)} in ${pathArg}`;}
+    if (globPat) {return `Find ${JSON.stringify(globPat)}`;}
+    if (pathArg) {return `Find ${pathArg}`;}
     return fallbackTitle || 'Find';
   }
   if (lower === 'shell' || lower === 'bash' || lower === 'run_terminal_cmd' || lower === 'run') {
@@ -307,16 +307,16 @@ export function formatCursorEnrichedTitle(
     return fallbackTitle || 'Shell';
   }
 
-  if (pathArg && pattern) return `${name || 'Tool'} ${JSON.stringify(pattern)} ${pathArg}`;
-  if (pathArg) return `${name || fallbackTitle || 'Tool'} ${pathArg}`;
-  if (pattern) return `${name || fallbackTitle || 'Tool'} ${JSON.stringify(pattern)}`;
-  if (cmdStr) return cmdStr.length > 120 ? cmdStr.slice(0, 117) + '...' : cmdStr;
+  if (pathArg && pattern) {return `${name || 'Tool'} ${JSON.stringify(pattern)} ${pathArg}`;}
+  if (pathArg) {return `${name || fallbackTitle || 'Tool'} ${pathArg}`;}
+  if (pattern) {return `${name || fallbackTitle || 'Tool'} ${JSON.stringify(pattern)}`;}
+  if (cmdStr) {return cmdStr.length > 120 ? cmdStr.slice(0, 117) + '...' : cmdStr;}
   return fallbackTitle || name || 'Tool Call';
 }
 
 export function locationsFromCursorArgs(args: Record<string, unknown>): Array<{ path: string; line?: number }> | undefined {
   const filePath = extractPathFromArgs(args);
-  if (!filePath) return undefined;
+  if (!filePath) {return undefined;}
   const lineRaw = args.line ?? args.lineNumber ?? args.offset ?? args.start_line;
   const line =
     typeof lineRaw === 'number' && Number.isFinite(lineRaw)
@@ -342,20 +342,20 @@ function collectToolCallsFromBlob(
   into: Map<string, EnrichedCursorToolCall>,
   order?: string[],
 ): void {
-  if (!obj || typeof obj !== 'object') return;
+  if (!obj || typeof obj !== 'object') {return;}
   const rec = obj as Record<string, unknown>;
   const content = rec.content;
-  if (!Array.isArray(content)) return;
+  if (!Array.isArray(content)) {return;}
 
   for (const part of content) {
-    if (!part || typeof part !== 'object') continue;
+    if (!part || typeof part !== 'object') {continue;}
     const p = part as ToolCallPart;
-    if (p.type !== 'tool-call' && p.type !== 'tool_call') continue;
+    if (p.type !== 'tool-call' && p.type !== 'tool_call') {continue;}
     const toolCallId = typeof p.toolCallId === 'string' ? p.toolCallId : undefined;
-    if (!toolCallId) continue;
+    if (!toolCallId) {continue;}
     const toolName = String(p.toolName || p.name || '').trim();
     const args = parseCursorToolArgs(p.args ?? p.input ?? p.arguments);
-    if (order && !into.has(toolCallId)) order.push(toolCallId);
+    if (order && !into.has(toolCallId)) {order.push(toolCallId);}
     into.set(toolCallId, {
       toolCallId,
       toolName,
@@ -370,7 +370,7 @@ function collectToolCallsFromBlob(
 export function indexToolCallsFromBlobTexts(texts: string[]): Map<string, EnrichedCursorToolCall> {
   const map = new Map<string, EnrichedCursorToolCall>();
   for (const text of texts) {
-    if (!text || text[0] !== '{' && text[0] !== '[') continue;
+    if (!text || text[0] !== '{' && text[0] !== '[') {continue;}
     try {
       const obj = JSON.parse(text);
       collectToolCallsFromBlob(obj, map);
@@ -386,7 +386,7 @@ export function indexToolCallsFromBlobTextsOrdered(texts: string[]): EnrichedCur
   const map = new Map<string, EnrichedCursorToolCall>();
   const order: string[] = [];
   for (const text of texts) {
-    if (!text || text[0] !== '{' && text[0] !== '[') continue;
+    if (!text || text[0] !== '{' && text[0] !== '[') {continue;}
     try {
       const obj = JSON.parse(text);
       collectToolCallsFromBlob(obj, map, order);
@@ -401,16 +401,16 @@ export function indexToolCallsFromBlobTextsOrdered(texts: string[]): EnrichedCur
 
 /** Kind buckets to try when ordinal grep vs glob classification diverges. */
 export function cursorSearchKindFallback(kind: string): string[] {
-  if (kind === 'glob') return ['glob', 'grep'];
-  if (kind === 'grep') return ['grep', 'glob'];
+  if (kind === 'glob') {return ['glob', 'grep'];}
+  if (kind === 'grep') {return ['grep', 'glob'];}
   return [kind];
 }
 
 /** Edit / Write / Delete share Cursor stub titles — try all file-mutation queues. */
 export function cursorFileMutateKindFallback(kind: string): string[] {
-  if (kind === 'edit') return ['edit', 'write', 'delete'];
-  if (kind === 'write') return ['write', 'edit', 'delete'];
-  if (kind === 'delete') return ['delete', 'edit', 'write'];
+  if (kind === 'edit') {return ['edit', 'write', 'delete'];}
+  if (kind === 'write') {return ['write', 'edit', 'delete'];}
+  if (kind === 'delete') {return ['delete', 'edit', 'write'];}
   return [kind];
 }
 
@@ -424,8 +424,8 @@ export function confirmedFileMutationKind(
   toolKind?: string | undefined,
 ): 'write' | 'edit' | 'delete' | null {
   const n = (toolName || '').trim().toLowerCase();
-  if (n === 'write' || n === 'write_file' || n === 'writefile') return 'write';
-  if (n === 'delete' || n === 'delete_file' || n === 'deletefile') return 'delete';
+  if (n === 'write' || n === 'write_file' || n === 'writefile') {return 'write';}
+  if (n === 'delete' || n === 'delete_file' || n === 'deletefile') {return 'delete';}
   if (
     n === 'streplace' ||
     n === 'strreplace' ||
@@ -436,8 +436,8 @@ export function confirmedFileMutationKind(
     return 'edit';
   }
   const tl = (title || '').trim().toLowerCase();
-  if (tl.startsWith('write ') && tl !== 'write file' && tl !== 'write') return 'write';
-  if (tl.startsWith('delete ') && tl !== 'delete file' && tl !== 'delete') return 'delete';
+  if (tl.startsWith('write ') && tl !== 'write file' && tl !== 'write') {return 'write';}
+  if (tl.startsWith('delete ') && tl !== 'delete file' && tl !== 'delete') {return 'delete';}
   if (
     (tl.startsWith('edit ') || tl.startsWith('strreplace ')) &&
     tl !== 'edit file' &&
@@ -446,13 +446,13 @@ export function confirmedFileMutationKind(
   ) {
     return 'edit';
   }
-  if ((toolKind || '').trim().toLowerCase() === 'delete') return 'delete';
+  if ((toolKind || '').trim().toLowerCase() === 'delete') {return 'delete';}
   return null;
 }
 
 /** True when store.db has real content (ACP often creates a 0-byte stub). */
 export function isUsableCursorStore(dbPath: string | null | undefined): boolean {
-  if (!dbPath) return false;
+  if (!dbPath) {return false;}
   try {
     return fs.statSync(dbPath).size > 256;
   } catch {
@@ -464,10 +464,10 @@ export function findCursorSessionStorePath(
   sessionId: string,
   cursorDir: string = path.join(os.homedir(), '.cursor'),
 ): string | null {
-  if (!sessionId) return null;
+  if (!sessionId) {return null;}
 
   const flat = path.join(cursorDir, 'acp-sessions', sessionId, 'store.db');
-  if (isUsableCursorStore(flat)) return flat;
+  if (isUsableCursorStore(flat)) {return flat;}
   // Prefer usable DB; keep empty stub path only as last resort for callers
   // that need to know the canonical location exists.
   const flatExists = fs.existsSync(flat);
@@ -477,7 +477,7 @@ export function findCursorSessionStorePath(
     try {
       for (const hash of fs.readdirSync(chatsRoot)) {
         const candidate = path.join(chatsRoot, hash, sessionId, 'store.db');
-        if (isUsableCursorStore(candidate)) return candidate;
+        if (isUsableCursorStore(candidate)) {return candidate;}
       }
     } catch {
       // ignore
@@ -509,7 +509,7 @@ export const SQL_JSON_BLOB_PREFIX =
   "(substr(data, 1, 1) = X'7B' OR substr(data, 1, 1) = X'5B')";
 
 export function isLargeCursorStore(dbPath: string | null | undefined): boolean {
-  if (!dbPath) return false;
+  if (!dbPath) {return false;}
   try {
     return fs.statSync(dbPath).size > MAX_LIVE_ENRICH_FULL_SCAN_BYTES;
   } catch {
@@ -523,7 +523,7 @@ export function listRecentCursorStorePaths(
   maxBytes: number = MAX_FALLBACK_STORE_BYTES,
 ): string[] {
   const sessionsRoot = path.join(cursorDir, 'acp-sessions');
-  if (!fs.existsSync(sessionsRoot)) return [];
+  if (!fs.existsSync(sessionsRoot)) {return [];}
   const scored: Array<{ p: string; mtime: number }> = [];
   try {
     for (const name of fs.readdirSync(sessionsRoot)) {
@@ -545,9 +545,9 @@ export function listRecentCursorStorePaths(
 }
 
 function blobDataToText(d: unknown): string {
-  if (typeof d === 'string') return d;
-  if (Buffer.isBuffer(d)) return d.toString('utf8');
-  if (d instanceof Uint8Array) return Buffer.from(d).toString('utf8');
+  if (typeof d === 'string') {return d;}
+  if (Buffer.isBuffer(d)) {return d.toString('utf8');}
+  if (d instanceof Uint8Array) {return Buffer.from(d).toString('utf8');}
   return '';
 }
 
@@ -600,7 +600,7 @@ async function readBlobTextsViaSqliteCli(dbPath: string, smallJsonOnly: boolean)
         maxBuffer: 64 * 1024 * 1024,
         encoding: 'utf8',
       });
-      if (!stdout.trim()) continue;
+      if (!stdout.trim()) {continue;}
       const rows = JSON.parse(stdout) as string[];
       return Array.isArray(rows) ? rows.filter((t) => typeof t === 'string' && t.length > 0) : [];
     } catch {
@@ -618,7 +618,7 @@ async function readBlobTextsViaSqliteCli(dbPath: string, smallJsonOnly: boolean)
       ],
       { maxBuffer: 64 * 1024 * 1024, encoding: 'utf8' },
     );
-    if (!stdout.trim()) return [];
+    if (!stdout.trim()) {return [];}
     const rows = JSON.parse(stdout) as Array<{ data?: string }>;
     return rows.map((r) => (typeof r.data === 'string' ? r.data : '')).filter(Boolean);
   } catch {
@@ -644,13 +644,13 @@ export async function loadEnrichedToolCallsByPrefix(
   toolCallId: string,
 ): Promise<Map<string, EnrichedCursorToolCall>> {
   const prefix = toolCallIdPrefix(toolCallId);
-  if (!prefix || !dbPath) return new Map();
+  if (!prefix || !dbPath) {return new Map();}
   const texts = await readBlobsMatchingSubstring(dbPath, prefix);
   return indexToolCallsFromBlobTexts(texts);
 }
 
 async function readBlobsMatchingSubstring(dbPath: string, needle: string): Promise<string[]> {
-  if (!needle) return [];
+  if (!needle) {return [];}
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { DatabaseSync } = require('node:sqlite') as {
@@ -697,7 +697,7 @@ async function readBlobsMatchingSubstring(dbPath: string, needle: string): Promi
         maxBuffer: 32 * 1024 * 1024,
         encoding: 'utf8',
       });
-      if (!stdout.trim()) return [];
+      if (!stdout.trim()) {return [];}
       const rows = JSON.parse(stdout) as string[];
       return Array.isArray(rows) ? rows.filter((t) => typeof t === 'string' && t.length > 0) : [];
     } catch {
@@ -708,7 +708,7 @@ async function readBlobsMatchingSubstring(dbPath: string, needle: string): Promi
 
 /** Wire IDs are `call-…\nfc_…` — prefix before the newline uniquely IDs the call. */
 export function toolCallIdPrefix(toolCallId: string): string {
-  if (!toolCallId) return '';
+  if (!toolCallId) {return '';}
   return toolCallId.split(/\n|\\n/)[0] || toolCallId;
 }
 
@@ -721,18 +721,18 @@ export function lookupEnriched(
   index: Map<string, EnrichedCursorToolCall> | null | undefined,
   toolCallId: string,
 ): EnrichedCursorToolCall | null {
-  if (!index || !toolCallId) return null;
+  if (!index || !toolCallId) {return null;}
   const direct = index.get(toolCallId);
-  if (isUsableEnrichment(direct)) return direct;
+  if (isUsableEnrichment(direct)) {return direct;}
   // Wire IDs use a real newline before fc_*; some blobs keep the escaped form.
   if (toolCallId.includes('\n')) {
     const alt = toolCallId.replace(/\n/g, '\\n');
     const hit = index.get(alt);
-    if (isUsableEnrichment(hit)) return hit;
+    if (isUsableEnrichment(hit)) {return hit;}
   } else if (toolCallId.includes('\\n')) {
     const alt = toolCallId.replace(/\\n/g, '\n');
     const hit = index.get(alt);
-    if (isUsableEnrichment(hit)) return hit;
+    if (isUsableEnrichment(hit)) {return hit;}
   }
   // Prefer call-… prefix (unique per tool). Do NOT fall through to a shared
   // fc_* batch id — parallel Read/Grep/Edit share the same fc_ UUID stem and
@@ -740,7 +740,7 @@ export function lookupEnriched(
   const prefix = toolCallIdPrefix(toolCallId);
   if (prefix) {
     for (const [key, hit] of index) {
-      if (!isUsableEnrichment(hit)) continue;
+      if (!isUsableEnrichment(hit)) {continue;}
       if (key === prefix || key.startsWith(prefix + '\n') || key.startsWith(prefix + '\\n')) {
         return hit;
       }
@@ -752,10 +752,10 @@ export function lookupEnriched(
   if (fc) {
     const hits: EnrichedCursorToolCall[] = [];
     for (const [key, hit] of index) {
-      if (!isUsableEnrichment(hit)) continue;
-      if (key.includes(fc)) hits.push(hit);
+      if (!isUsableEnrichment(hit)) {continue;}
+      if (key.includes(fc)) {hits.push(hit);}
     }
-    if (hits.length === 1) return hits[0];
+    if (hits.length === 1) {return hits[0];}
   }
   return isUsableEnrichment(direct) ? direct : null;
 }
@@ -769,15 +769,15 @@ export async function findStoreContainingToolCallId(
   cursorDir: string = path.join(os.homedir(), '.cursor'),
   excludePath?: string | null,
 ): Promise<string | null> {
-  if (!toolCallId) return null;
+  if (!toolCallId) {return null;}
   // Wire IDs are "call-…\nfc_…"; JSON blobs escape the newline as "\\n".
   // Searching the call- UUID prefix avoids newline mismatch and is enough
   // to identify the owning store.
   const prefix = toolCallIdPrefix(toolCallId);
   for (const dbPath of listRecentCursorStorePaths(cursorDir, 16)) {
-    if (excludePath && path.resolve(dbPath) === path.resolve(excludePath)) continue;
+    if (excludePath && path.resolve(dbPath) === path.resolve(excludePath)) {continue;}
     try {
-      if (await storeBlobContainsSubstring(dbPath, prefix)) return dbPath;
+      if (await storeBlobContainsSubstring(dbPath, prefix)) {return dbPath;}
     } catch {
       // try next store
     }
@@ -786,7 +786,7 @@ export async function findStoreContainingToolCallId(
 }
 
 async function storeBlobContainsSubstring(dbPath: string, needle: string): Promise<boolean> {
-  if (!needle) return false;
+  if (!needle) {return false;}
   try {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { DatabaseSync } = require('node:sqlite') as {
@@ -892,7 +892,7 @@ export class CursorSessionToolEnricher {
       (primary && isUsableCursorStore(primary) ? primary : null) ||
       (this.dbPath && isUsableCursorStore(this.dbPath) ? this.dbPath : null) ||
       (await this.ensureDbPath('call-'));
-    if (!dbPath || !isUsableCursorStore(dbPath)) return [];
+    if (!dbPath || !isUsableCursorStore(dbPath)) {return [];}
     try {
       const mtime = fs.statSync(dbPath).mtimeMs;
       const largeStore = isLargeCursorStore(dbPath);
@@ -935,8 +935,8 @@ export class CursorSessionToolEnricher {
       const targeted = await loadEnrichedToolCallsByPrefix(dbPath, toolCallId);
       const targetedHit = lookupEnriched(targeted, toolCallId);
       if (targetedHit) {
-        if (!this.index) this.index = new Map();
-        for (const [k, v] of targeted) this.index.set(k, v);
+        if (!this.index) {this.index = new Map();}
+        for (const [k, v] of targeted) {this.index.set(k, v);}
         this.dbMtimeMs = mtime;
         this.lastScanMs = Date.now();
         return this.index;
@@ -950,8 +950,8 @@ export class CursorSessionToolEnricher {
       if (dbSize > MAX_LIVE_ENRICH_FULL_SCAN_BYTES) {
         // Prefix query only — full ORDER BY rowid scan on 400MB+ store.db
         // routinely exceeds the live enrich timeout.
-        if (!this.index) this.index = new Map();
-        for (const [k, v] of targeted) this.index.set(k, v);
+        if (!this.index) {this.index = new Map();}
+        for (const [k, v] of targeted) {this.index.set(k, v);}
         this.dbMtimeMs = mtime;
         this.lastScanMs = Date.now();
         return this.index;
@@ -959,7 +959,7 @@ export class CursorSessionToolEnricher {
       const texts = await readBlobTexts(dbPath);
       this.index = indexToolCallsFromBlobTexts(texts);
       // Merge any targeted rows we already saw (full scan may skip huge blobs).
-      for (const [k, v] of targeted) this.index.set(k, v);
+      for (const [k, v] of targeted) {this.index.set(k, v);}
       this.dbMtimeMs = mtime;
       this.lastScanMs = Date.now();
       return this.index;
@@ -991,8 +991,8 @@ export class CursorSessionToolEnricher {
         const targeted = await loadEnrichedToolCallsByPrefix(dbPath, toolCallId);
         const prefixHit = lookupEnriched(targeted, toolCallId);
         if (prefixHit) {
-          if (!this.index) this.index = new Map();
-          for (const [k, v] of targeted) this.index.set(k, v);
+          if (!this.index) {this.index = new Map();}
+          for (const [k, v] of targeted) {this.index.set(k, v);}
           this.lastScanMs = Date.now();
           return prefixHit;
         }
@@ -1002,9 +1002,9 @@ export class CursorSessionToolEnricher {
         await this.refreshIndex(toolCallId);
       }
       const hit = lookupEnriched(this.index, toolCallId);
-      if (hit) return hit;
-      if (delay > 0 && Date.now() + delay > deadline) break;
-      if (delay > 0) await new Promise((r) => setTimeout(r, delay));
+      if (hit) {return hit;}
+      if (delay > 0 && Date.now() + delay > deadline) {break;}
+      if (delay > 0) {await new Promise((r) => setTimeout(r, delay));}
       delay = delay === 0 ? 15 : Math.min(Math.floor(delay * 1.5), 120);
     }
 
