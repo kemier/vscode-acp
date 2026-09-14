@@ -72,6 +72,17 @@ suite('web-search classification', () => {
     assert.strictEqual(isWebSearch('Web search: cuda graphs', {}), true);
   });
 
+  test('a LONG "Web search:" label is still detected (was falling through to "search")', () => {
+    // Regression: a query longer than 60 chars exceeded the old length guard, so the
+    // title fell through to categorizeToolCall, which classified it as plain "search"
+    // (collapsed block showed "1 search" instead of "1 web search"). The "web search:"
+    // prefix is an unambiguous label and must win regardless of length.
+    const longQuery =
+      'Web search: AI assistant mention attach clipboard across different workspace repo stale wrong content 2026';
+    assert.ok(longQuery.length > 60, 'test title must exceed the old 60-char guard');
+    assert.strictEqual(isWebSearch(longQuery, {}), true);
+  });
+
   test('a command-like title is not, even with no rawInput', () => {
     // Covers agents that send the command as the title and no rawInput at all.
     assert.strictEqual(isWebSearch(GREP_COMMAND, undefined), false);

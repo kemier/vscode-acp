@@ -15244,8 +15244,15 @@ function orderCompactFoldContents(body) {
     var looksLikeCommand =
       t.indexOf('&&') >= 0 || t.indexOf('|') >= 0 || t.indexOf(';') >= 0 ||
       t.indexOf(String.fromCharCode(10)) >= 0 || t.indexOf('--') >= 0;
-    if (!looksLikeCommand && t.length <= 60) {
-      if (t.indexOf('web search') >= 0 || t.indexOf('web_search') >= 0) return true;
+    if (!looksLikeCommand) {
+      // A "web search:" prefix is an unambiguous label — accept it regardless of
+      // length. Long queries exceed the 60-char limit and were falling through to
+      // categorizeToolCall, which classified them as plain "search" ("1 search"
+      // instead of "1 web search" in the collapsed block).
+      if (t.indexOf('web search:') === 0) return true;
+      // Looser substring fallback stays length-limited so a long command line that
+      // merely mentions the phrase is not mislabelled.
+      if (t.length <= 60 && (t.indexOf('web search') >= 0 || t.indexOf('web_search') >= 0)) return true;
     }
     return false;
   }
