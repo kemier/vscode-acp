@@ -125,3 +125,39 @@ suite('@clipboard is discoverable and does not leak into the bubble', () => {
     }
   });
 });
+
+suite('paste-to-clipboard (non-image text paste becomes @clipboard)', () => {
+  const src = fs.readFileSync(SOURCE, 'utf8');
+  const at = src.indexOf("promptInput.addEventListener('paste', (e) => {");
+  const body = src.slice(at, at + 2000);
+
+  test('the paste handler intercepts text paste', () => {
+    assert.ok(at > 0, 'paste handler not found');
+    assert.ok(body.includes("getData('text/plain')"), 'must read the pasted text');
+    assert.ok(body.includes('e.preventDefault()'), 'must stop the raw text entering the composer');
+  });
+
+  test('it writes the pasted text to the host clipboard so @clipboard resolves to it', () => {
+    assert.ok(
+      body.includes("vscode.postMessage({ type: 'writeClipboard', text: text })"),
+      'must hand the pasted text to the host clipboard',
+    );
+  });
+
+  test('it inserts a @clipboard mention at the cursor instead of the raw text', () => {
+    assert.ok(body.includes("'@clipboard '"), 'must insert the clipboard mention');
+    assert.ok(body.includes('promptInput.selectionStart'), 'must respect the cursor position');
+  });
+
+  test('image paste is untouched', () => {
+    assert.ok(body.includes("item.type.startsWith('image/')"), 'image items still handled as images');
+    assert.ok(body.includes('addPendingImage'), 'image paste still adds a pending image');
+  });
+
+  test('the host writeClipboard case writes to the OS clipboard', () => {
+    const host = src.indexOf("case 'writeClipboard':");
+    assert.ok(host > 0, 'writeClipboard host case not found');
+    const hostBody = src.slice(host, host + 400);
+    assert.ok(hostBody.includes('vscode.env.clipboard.writeText'), 'must write to the OS clipboard');
+  });
+});

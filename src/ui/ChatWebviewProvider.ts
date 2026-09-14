@@ -1755,6 +1755,19 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           });
           break;
         }
+        case 'writeClipboard': {
+          // Paste-to-clipboard: the webview intercepted a text paste and asks the
+          // host to put that text on the OS clipboard, so the @clipboard mention it
+          // inserted resolves to the PASTED text at send time (not whatever was
+          // copied earlier / in another repo).
+          try {
+            await vscode.env.clipboard.writeText(String(message.text || ''));
+          } catch {
+            // Best-effort: if the write fails the @clipboard resolution will read
+            // whatever is currently on the clipboard.
+          }
+          break;
+        }
         case 'executeKiroCommand':
           this._hasChatContent = true;
           await this.handleExecuteKiroCommandFromWebview(message.command, message.args);
@@ -10282,17 +10295,43 @@ function handleSend() {
 
     // Paste handler
    promptInput.addEventListener('paste', (e) => {
-     if (!isImageInputSupported()) return;
      const items = e.clipboardData && e.clipboardData.items;
       if (!items) return;
+      let handled = false;
       for (const item of items) {
         if (item.type.startsWith('image/')) {
+          if (!isImageInputSupported()) continue;
           e.preventDefault();
+          handled = true;
           const file = item.getAsFile();
           if (!file) continue;
           const reader = new FileReader();
           reader.onload = () => addPendingImage(reader.result);
           reader.readAsDataURL(file);
+        }
+      }
+      // Paste-to-clipboard: pasting TEXT (not an image) becomes a clipboard
+      // attachment instead of raw text. We write the pasted text to the OS
+      // clipboard (via the host) and insert a @clipboard mention, so the send
+      // attaches it as a [Clipboard: N lines] chip — no raw duplicate, and the
+      // earlier "two copies" (clipboard block + raw text) cannot happen.
+      if (!handled) {
+        const text = e.clipboardData && e.clipboardData.getData('text/plain');
+        if (text && text.trim()) {
+          e.preventDefault();
+          vscode.postMessage({ type: 'writeClipboard', text: text });
+          // Insert '@clipboard ' at the cursor, replacing any selection.
+          const start = promptInput.selectionStart;
+          const end = promptInput.selectionEnd;
+          const before = promptInput.value.slice(0, start);
+          const after = promptInput.value.slice(end);
+          const insert = '@clipboard ';
+          promptInput.value = before + insert + after;
+          const caret = start + insert.length;
+          promptInput.selectionStart = caret;
+          promptInput.selectionEnd = caret;
+          promptInput.dispatchEvent(new Event('input', { bubbles: true }));
+          promptInput.focus();
         }
       }
     });
