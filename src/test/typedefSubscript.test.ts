@@ -1,6 +1,5 @@
 import * as assert from 'assert';
-import * as fs from 'fs';
-import * as path from 'path';
+import { makeTypedefRegex } from '../ui/markdownLinkifyPatterns';
 
 /**
  * The `_t` typedef linkifier must not claim math subscripts.
@@ -12,29 +11,19 @@ import * as path from 'path';
  * course document where `k_t = W_up_k c_t, v_t = W_up_v c_t` rendered with three of its
  * variables as clickable symbol links.
  *
- * This extracts the REAL regex from the production source rather than restating it.
- * linkifier.test.ts reimplements the linkification pipeline and carries the warning
- * "When the production code changes, update this too" — a copy cannot catch a change to
- * the original, which is exactly the class of bug under test here.
+ * This imports the PRODUCTION factory. The first version scraped the regex literal out
+ * of ChatWebviewProvider.ts, because the pattern lived inline there and linkifier.test.ts
+ * only had a copy of it. Once the pattern moved into markdownLinkifyPatterns.ts the
+ * scrape failed loudly — which was the designed behaviour, and the signal to switch to a
+ * direct import.
  */
-const SOURCE = path.resolve(__dirname, '../../src/ui/ChatWebviewProvider.ts');
-
-function productionTypedefRegex(): RegExp {
-  const src = fs.readFileSync(SOURCE, 'utf8');
-  const m = /const typedefRegex = (\/(?:[^/\\\n]|\\.)+\/[gimsuy]*);/.exec(src);
-  assert.ok(m, 'could not find the typedefRegex literal in ChatWebviewProvider.ts');
-  const body = m![1];
-  const lastSlash = body.lastIndexOf('/');
-  // Drop the global flag: this test asks "does it match at all", and a shared /g
-  // regex carries lastIndex between calls.
-  const flags = body.slice(lastSlash + 1).replace('g', '');
-  return new RegExp(body.slice(1, lastSlash), flags);
-}
 
 /** Would the linkifier turn this token into a symbol link? */
 function linkifies(token: string): boolean {
   // Trailing space satisfies the lookahead, matching how prose presents the token.
-  return productionTypedefRegex().test(`${token} `);
+  // A fresh regex per call: the production pattern carries /g, so a shared instance
+  // would carry lastIndex between assertions.
+  return makeTypedefRegex().test(`${token} `);
 }
 
 suite('typedef _t linkifier vs math subscripts', () => {
@@ -61,23 +50,21 @@ suite('typedef _t linkifier vs math subscripts', () => {
     assert.ok(linkifies('ab_t'), 'two chars before _t is a plausible type');
   });
 
-  test('a lone suffix or bare underscore is not a symbol', () => {
-    for (const sym of ['_t', '__t']) {
-      // `_t` alone has nothing before the suffix; `__t` is not an identifier anyone
-      // clicks through to.
-      assert.ok(!linkifies(sym) || sym === '__t', `${sym} should not be a symbol link`);
-    }
+  test('a lone suffix is not a symbol', () => {
     assert.ok(!linkifies('_t'), '_t alone is not a type name');
   });
 
-  test('the production regex is the one being tested', () => {
-    // Guards the extraction itself: if the declaration is renamed or moved, this test
-    // must fail loudly rather than silently pass against a stale copy.
-    const src = fs.readFileSync(SOURCE, 'utf8');
-    assert.ok(src.includes('const typedefRegex = '), 'typedefRegex declaration moved');
-    assert.ok(
-      /\[a-zA-Z_\]\[a-zA-Z0-9_\]\+_t/.test(src),
-      'the prefix quantifier must stay + (>=2 chars before _t), not *',
-    );
+  test('the pattern keeps the + quantifier', () => {
+    // Pins the fix itself: reverting to * would re-match k_t while every assertion above
+    // about real typedefs still passed, so the quantifier is asserted directly.
+    assert.match(makeTypedefRegex().source, /\[a-zA-Z0-9_\]\+_t/);
+  });
+
+  test('each call gets a regex with a clean lastIndex', () => {
+    const a = makeTypedefRegex();
+    const b = makeTypedefRegex();
+    assert.notStrictEqual(a, b, 'must not share one instance');
+    a.test('uint32_t ');
+    assert.strictEqual(makeTypedefRegex().lastIndex, 0);
   });
 });

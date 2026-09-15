@@ -5,6 +5,14 @@ import {
   NON_SYMBOL_PASCAL_CASE,
 } from './markdownLinkifyKeywords';
 import { marked } from 'marked';
+import {
+  makeFilePathRegex,
+  makePascalCaseRegex,
+  makeSnakeCaseRegex,
+  makeSplitRegex,
+  makeSplitRegexWithFileRef,
+  makeTypedefRegex,
+} from './markdownLinkifyPatterns';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as os from 'os';
@@ -48,7 +56,7 @@ import {
 import { log, logError, formatAcpErrorMessage, getOutputChannel } from '../utils/Logger';
 import { sendEvent } from '../utils/TelemetryManager';
 import { cleanSessionTitle } from '../utils/TitleCleaner';
-import { ACP_MATH_SPLIT_RE, createMathExtension } from '../utils/markdownMath';
+import { createMathExtension } from '../utils/markdownMath';
 import { balanceMarkdownForPartialRender } from '../utils/markdownBalance';
 import { cleanAgentToolTitle } from '../utils/toolTitle';
 import { orderedLinkRoots, symbolFallbackFromLinkText } from '../utils/codeLink';
@@ -806,27 +814,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // File path regex: matches paths with optional :line or :line-range
       //   src/main.rs:74  |  application/.../Handler.h:69  |  Handler.h:98  |  Handler.h
       // Also matches bare filenames with known code extensions (no line number).
-      const codeExt =
-        '(?:c\\+\\+|h\\+\\+|hpp|hxx|htc|cpp|cxx|cc|hh|cu|cuh|tsx|jsx|mjs|cjs|pyi|pyw|kts|csx|fsx|exs|cljs|sc|sh|rs|py|go|java|kt|swift|ts|js|rb|cs|php|scala|bash|zsh|sql|proto|graphql|vue|svelte|zig|nim|lua|pl|pm|erl|clj|hs|ml|fs|elm|inl|tpp|ipp|mm|ex|jl|d|v|h|c|m|cmake|make|mk|gradle|toml|yaml|yml|json|xml|svg|txt|md|rst|cfg|conf|ini|env|lock|log|diff|patch|csv|tsv|wxs|wxi|wxl|iss|nsi|nsh|doxy|doxygen|dockerfile|gemspec|podspec|rake|gemfile|procfile|vagrantfile|bashrc|zshrc|vimrc|gitignore|gitattributes|editorconfig|dockerignore|npmrc|yarnrc|service|timer|socket|mount|automount|swap|link|path|network|netdev|plantuml|puml)';
-      const filePathRegex = new RegExp(
-        '(^|[^\\w\\/])' + // prefix: start or non-word, non-slash
-          '(' +
-          '(?:~\\/|\\.?\\/?[\\w.-]+\\/)+' + // at least one dir separator (path with /); ~/ home-relative dir
-          '[\\w.-]*(?:\\s+[\\w.-]+)*\\.' + //   filename may be a dotfile or have spaces (e.g. "DI_Lodge SMF BGP Route Details.txt")
-          codeExt +
-          '(?::\\d+(?:-\\d+)?)?' + //   + filename.ext[:line[:-end]]
-          '(?=$|[\\s,;:\\)\\]\\}\\<|])' + //   word boundary after extension
-          '|' +
-          '[\\w.-]+(?:\\s+[\\w.-]+)*\\.' + // bare filename.ext:line — allows spaces in filename (e.g. "DI_Lodge SMF BGP Route Details.txt:40")
-          codeExt +
-          '(?::\\d+(?:-\\d+)?)' + // bare filename.ext:line[:-end]
-          '|' +
-          '[\\w.-]*\\.' + //   bare filename may be a dotfile (.env, .md)
-          codeExt +
-          '(?=$|[\\s,;:\\)\\]\\}<|])' + // bare filename.ext (no line)
-          ')',
-        'g',
-      );
+      const filePathRegex = makeFilePathRegex();
 
       // PascalCase symbol regex: C++, Rust types, Go exported, Java, C#
       //   ConfigDataPrivate  |  N2ResModifyUpdateHandlerBase  |  PiafData  |  N11Info
@@ -840,13 +828,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // - addSliceRouteReq → 'd' is a word char, blocks 'SliceRouteReq'
       // - std::Foo / obj.Method / TC123_Test → blocked by : . _
       // Lookahead excludes ':' so 'Service::Builder' doesn't match 'Service'
-      const pascalCaseRegex = /(?<![\w:._])([A-Z][a-z0-9]+(?:[A-Z][a-zA-Z0-9]*)+)(?=$|[\s,;)\]\}<])/g;
+      const pascalCaseRegex = makePascalCaseRegex();
       // snake_case symbol regex: Python, Rust functions, C, Go unexported
       //   process_data  |  get_user_info  |  handle_request
       // Excludes ALL_CAPS (constants). Requires 2+ underscore segments.
       // Negative lookbehind (?<![:.]) skips namespaced functions (std::to_underlying,
       // boost::split) and method calls (obj.get_data).
-      const _snakeCaseRegex = /(?<![:.])([a-z][a-z0-9]*(?:_[a-z0-9]+)+)(?=$|[\s,;:\)\]\}\.<])/g;
+      const _snakeCaseRegex = makeSnakeCaseRegex();
       // Tech/product names that look like code symbols — see
       // markdownLinkifyKeywords.ts.
       const keywords = NON_SYMBOL_PASCAL_CASE;
@@ -857,14 +845,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // Even indices = plain text (prose); odd indices = HTML elements to skip.
       // For snake_case linkification, we need a second pass that splits on
       // <code> tags too, so we only linkify snake_case inside code spans.
-      const splitRegex = new RegExp(
-        `(${ACP_MATH_SPLIT_RE}|<pre>.*?</pre>|<span class="nolink">.*?</span>|<a\\s[^>]*>.*?</a>|https?:\\/\\/[^\\s<]+|www\\.[^\\s<]+|file:\\/\\/\\/[^\\s<"]+|(?:github|gitlab|bitbucket|stackoverflow|developer\\.mozilla|en\\.wikipedia|docs\\.python|docs\\.rust-lang|crates\\.io|pypi\\.org|npmjs\\.com|docs\\.oracle|learn\\.microsoft|developer\\.android|kubernetes\\.io|docker\\.com|nodejs\\.org|python\\.org|go\\.dev|rust-lang\\.org|swift\\.org|jetbrains\\.com|visualstudio\\.com|atlassian\\.com|confluence\\.atlassian|jira\\.atlassian|gerrit\\.googlesource|gerrit-review\\.googlesource)\\.[a-z]+\\/[^\\s<]+)`,
-        'gs',
-      );
-      const splitRegexWithFileRef = new RegExp(
-        `(${ACP_MATH_SPLIT_RE}|<pre>.*?</pre>|<code>.*?</code>|<span class="nolink">.*?</span>|<span class="file-ref">.*?</span>|<a\\s[^>]*>.*?</a>|https?:\\/\\/[^\\s<]+|www\\.[^\\s<]+|file:\\/\\/\\/[^\\s<"]+|(?:github|gitlab|bitbucket|stackoverflow|developer\\.mozilla|en\\.wikipedia|docs\\.python|docs\\.rust-lang|crates\\.io|pypi\\.org|npmjs\\.com|docs\\.oracle|learn\\.microsoft|developer\\.android|kubernetes\\.io|docker\\.com|nodejs\\.org|python\\.org|go\\.dev|rust-lang\\.org|swift\\.org|jetbrains\\.com|visualstudio\\.com|atlassian\\.com|confluence\\.atlassian|jira\\.atlassian|gerrit\\.googlesource|gerrit-review\\.googlesource)\\.[a-z]+\\/[^\\s<]+)`,
-        'gs',
-      );
+      const splitRegex = makeSplitRegex();
+      const splitRegexWithFileRef = makeSplitRegexWithFileRef();
 
       // Pass 1: linkify file paths (creates new <a> tags)
       let parts = html.split(splitRegex);
@@ -957,7 +939,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // with three of its variables as clickable symbol links. Every real short
       // typedef still qualifies — `id_t`, `fd_t`, `pid_t`, `uid_t`, `off_t`, `key_t`,
       // `size_t`, `time_t` all carry two or more characters before the suffix.
-      const typedefRegex = /(?<![\w:._])([a-zA-Z_][a-zA-Z0-9_]+_t)(?=$|[\s,;:\)\]\}\.<])/g;
+      const typedefRegex = makeTypedefRegex();
       parts = html.split(splitRegexWithFileRef);
       for (let pi = 0; pi < parts.length; pi++) {
         if (pi % 2 === 1) {

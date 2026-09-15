@@ -26,16 +26,31 @@ const MODULE = path.resolve(__dirname, '../../src/ui/markdownLinkifyKeywords.ts'
 
 suite('markdown linkify keyword lists', () => {
   test('every list survived the extraction intact', () => {
-    // Sizes measured against the inline originals at the moment of the move.
-    assert.strictEqual(LANGUAGE_KEYWORDS.size, 240, 'language keywords');
+    // Sizes measured against the inline originals at the moment of the move, then
+    // updated when a list legitimately grows. LANGUAGE_KEYWORDS went 240 -> 512 to add
+    // the plain single-word keywords: the markdown-link pass gates only on this set with
+    // no structural filter, so `[consteval](file.h)` was becoming an @symbol link.
+    assert.strictEqual(LANGUAGE_KEYWORDS.size, 512, 'language keywords');
     assert.strictEqual(NON_SYMBOL_PASCAL_CASE.size, 271, 'PascalCase product names');
     assert.strictEqual(ENGLISH_SNAKE_CASE_PHRASES.size, 117, 'English snake_case phrases');
     assert.strictEqual(NON_SYMBOL_CALL_NAMES.length, 79, 'call-position names');
   });
 
+  test('the plain keywords the link pass needs are present and lowercase', () => {
+    // Both consumers compare lowercased — `has(symLower)` in the markdown-link pass and
+    // `includes(symName.toLowerCase())` in Pass 2b — so a capitalized entry is dead
+    // weight that silently fails to match.
+    for (const kw of ['consteval', 'const', 'int', 'auto', 'class', 'string', 'option', 'result']) {
+      assert.ok(LANGUAGE_KEYWORDS.has(kw), `${kw} must be listed`);
+    }
+    for (const kw of LANGUAGE_KEYWORDS) {
+      assert.strictEqual(kw, kw.toLowerCase(), `${kw} must be stored lowercase`);
+    }
+  });
+
   test('representative members of each list are present', () => {
     // Chosen from different regions of each list, so a truncated extraction shows up.
-    for (const kw of ['thread_local', 'static_assert', '_Atomic', 'typeof_unqual']) {
+    for (const kw of ['thread_local', 'static_assert', '_atomic', 'typeof_unqual']) {
       assert.ok(LANGUAGE_KEYWORDS.has(kw), 'language keyword: ' + kw);
     }
     for (const kw of ['WebSocket', 'GitHub', 'TypeScript', 'ChatGPT', 'EricAI']) {
