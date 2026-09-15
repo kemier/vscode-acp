@@ -7378,6 +7378,24 @@ function nextAutoSteerIndex(queue) {
     if (e.steered) continue; // already sent once; waiting for its echo or for drain
     if (e.images && e.images.length) continue;
     if (String(e.text || '').trim().indexOf('/') === 0) continue;
+    // Snapshot still in flight — steering NOW would send the entry without it.
+    //
+    // queueMessage posts resolveClipboardForQueue / resolveSelectionsForQueue and then
+    // calls maybeAutoSteerNext in the SAME tick, so the host's reply always loses the
+    // race. Measured repeatedly against a live ericli session: the steer went out as
+    // the bare mention and the payload only arrived on the later drain —
+    //   02:00:57 Steered "@clipboard"        02:01:24 sendPrompt "<clipboard>..."
+    //   02:13:39 Steered "@clipboard"        02:13:45 sendPrompt "<clipboard>..."
+    // so the agent received an interjection with nothing attached and went looking for
+    // a clipboard file over the shell. It also broke the echo match, since
+    // ackSteeredQueueEntry compares against the EXPANDED text: the raw echo never
+    // matched, the entry was never acked, and the same message was delivered a second
+    // time as a prompt.
+    //
+    // Skipping is safe: the clipboardForQueue / selectionsForQueue handlers call
+    // maybeAutoSteerNext once the token clears, and an entry whose reply never arrives
+    // still drains normally at promptEnd. Late is recoverable; wrong is not.
+    if (e.clipboardToken || e.selectionToken) continue;
     return j;
   }
   return -1;
@@ -19096,6 +19114,10 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           if (_sels.length > 0) _se.selections = _sels;
           delete _se.selectionToken;
           renderQueue();
+          // The snapshot is on the entry now, so it is finally safe to steer it.
+          // nextAutoSteerIndex skips an entry with a token outstanding; without this
+          // call the entry would wait for the drain instead.
+          maybeAutoSteerNext();
           break;
         }
         break;
@@ -19121,6 +19143,9 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           }
           delete _qe.clipboardToken;
           renderQueue();
+          // Same as the selection snapshot: release the steer now that the payload is
+          // attached, so the interjection carries it instead of the bare mention.
+          maybeAutoSteerNext();
           break;
         }
         break;

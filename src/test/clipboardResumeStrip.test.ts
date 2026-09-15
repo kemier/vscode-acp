@@ -364,7 +364,10 @@ suite('attached-context pills render as chips, not as bracketed text', () => {
     const css = declarations(src.slice(at, src.indexOf('}', at)));
     assert.ok(/display:\s*inline-flex/.test(css), 'chip is its own inline box');
     assert.ok(/align-items:\s*baseline/.test(css), `the label must supply the container baseline: ${css}`);
-    assert.ok(!/align-items:\s*center/.test(css), 'centring synthesises the baseline from the box — that was attempt 3');
+    assert.ok(
+      !/align-items:\s*center/.test(css),
+      'centring synthesises the baseline from the box — that was attempt 3',
+    );
     assert.ok(/vertical-align:\s*baseline/.test(css), 'the chip sits on the text baseline');
     // Smaller than prose, and relative so it still scales with the editor font.
     assert.ok(/font-size:\s*0\.\d+em/.test(css), `the chip must be smaller than the text around it: ${css}`);
@@ -486,7 +489,9 @@ suite('one chip per attachment, however the host reports it', () => {
     assert.ok(at > 0, 'contextAttached handler missing');
     const handler = src.slice(at, src.indexOf("case 'compactionBoundary'", at));
     assert.ok(
-      /_capChanged\s*=\s*String\(msg\.text \|\| ''\)\.trim\(\) !== String\(msg\.rawText \|\| ''\)\.trim\(\)/.test(handler),
+      /_capChanged\s*=\s*String\(msg\.text \|\| ''\)\.trim\(\) !== String\(msg\.rawText \|\| ''\)\.trim\(\)/.test(
+        handler,
+      ),
       `the handler must notice a text-only change: ${handler.slice(0, 400)}`,
     );
     assert.ok(
@@ -705,6 +710,7 @@ suite('a clipboard message queued during a streaming turn shows a pill, not the 
       bubbles: [] as string[],
       chips: [] as string[],
       posted: [] as Array<Record<string, unknown>>,
+      steerReleases: 0,
     };
     const factory = new Function(
       'state',
@@ -717,6 +723,11 @@ suite('a clipboard message queued during a streaming turn shows a pill, not the 
       function addMessageDOM(role, text) { state.bubbles.push(role + ':' + text); }
       function renderQueue() { state.chips = messageQueue.map(queueEntryDisplayText); }
       function retireToolCallRegistry() {}
+      // The clipboardForQueue handler now releases the auto-steer once the token
+      // clears — a queued entry must not be steered while its snapshot is still in
+      // flight, or the interjection goes out as the bare mention. Counted so the
+      // harness proves the release happens rather than just tolerating the call.
+      function maybeAutoSteerNext() { state.steerReleases++; }
       ${body}
       return {
         resolve: (token, text) => applyClipboardReply({ token, text }),
