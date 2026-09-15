@@ -154,7 +154,18 @@ export function formatMemorySkillTools(opts: MemorySkillToolsOptions): string {
     '<memory_skill_tools>',
     'The <available_skills> block above lists **name + description only**.',
     'Before following a memory skill — or when one skill references another as a prerequisite —',
-    `load the full SKILL.md with **memory_skill_view** (${shellHint}).`,
+    'you must load its full SKILL.md.',
+    '',
+    // Self-selecting by the model's own tool list. Agents that expose a native skill
+    // tool covering memory skills (ericli's manage_skills) should use it: a structured
+    // tool call cannot be mangled the way these quote-heavy shell recipes can be on
+    // models whose calls are recovered from prose instead of sent as tool_calls.
+    // Agents without such a tool simply fall through to the recipes below.
+    'FIRST: if your tool list has a skill tool that reads a skill by name (e.g. `manage_skills`',
+    'with action "read"/"search"), use it — it covers memory-only skills and avoids quoting',
+    'mistakes. Use the shell recipes below ONLY when you have no such tool.',
+    '',
+    `Fallback — load the full SKILL.md with **memory_skill_view** (${shellHint}).`,
     '',
     '  <tool name="memory_skill_view">',
     `    ${viewCmd}`,

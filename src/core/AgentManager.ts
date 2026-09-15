@@ -84,12 +84,37 @@ export class AgentManager extends EventEmitter {
 
   private agents: Map<string, AgentInstance> = new Map();
   private nextId = 1;
+  private agentEnvProvider: ((agentName: string) => Record<string, string>) | null = null;
+
+  /**
+   * Supply extra spawn-time environment variables, resolved per agent name.
+   *
+   * Used to hand the agent the memory skill bridge URL and its memory agent id so it
+   * can read memory-only skills through a normal tool call. The bridge port is chosen
+   * at runtime, so this cannot live in static `acp.agents` config. Values are applied
+   * BELOW `config.env`, so user configuration always wins.
+   */
+  setAgentEnvProvider(provider: ((agentName: string) => Record<string, string>) | null): void {
+    this.agentEnvProvider = provider;
+  }
+
+  private resolveSpawnEnv(name: string, config: AgentConfigEntry): NodeJS.ProcessEnv {
+    let extra: Record<string, string> = {};
+    try {
+      extra = this.agentEnvProvider?.(name) || {};
+    } catch (err) {
+      // A failing provider must never block spawning an agent.
+      log(`Agent env provider failed for "${name}": ${err}`);
+    }
+    return { ...process.env, ...extra, ...(config.env || {}) };
+  }
 
   /**
    * Spawn an agent as a child process with stdin/stdout piped.
    */
   spawnAgent(name: string, config: AgentConfigEntry, cwd?: string): AgentInstance {
     const id = `agent_${this.nextId++}`;
+    const spawnEnv = this.resolveSpawnEnv(name, config);
     log(`Spawning agent "${name}" (${id}): ${config.command} ${(config.args || []).join(' ')}`);
 
     const child = (() => {
@@ -98,7 +123,7 @@ export class AgentManager extends EventEmitter {
         // shell resolution via cmd.exe.
         return spawn(config.command, config.args || [], {
           stdio: ['pipe', 'pipe', 'pipe'],
-          env: { ...process.env, ...(config.env || {}) },
+          env: spawnEnv,
           cwd: cwd || undefined,
           shell: true,
         });
@@ -115,7 +140,7 @@ export class AgentManager extends EventEmitter {
       sendEvent('agent/spawn/shell', { shell: shellName, useLoginFlag: String(useLoginFlag) });
       return spawn(shell, shellArgs, {
         stdio: ['pipe', 'pipe', 'pipe'],
-        env: { ...process.env, ...(config.env || {}) },
+        env: spawnEnv,
         cwd: cwd || undefined,
         // Put the child in its own process group (POSIX setsid) so we can
         // kill the entire tree (shell + npx + node + codex-acp) with a

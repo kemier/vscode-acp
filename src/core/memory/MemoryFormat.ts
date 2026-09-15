@@ -149,7 +149,10 @@ export function formatSkills(
     if (base) {
       // Self-contained recipe so later l1-only turns don't need to recall the
       // syntax from the first full profile turn (platform-aware for Windows).
-      lines.push('Load full SKILL.md from the memory system (NOT the filesystem — memory skills are API-only):');
+      // A native skill tool, when the agent has one, is preferred over these shell
+      // recipes: it cannot be mangled by quoting the way a curl can on models whose
+      // tool calls are recovered from prose rather than sent as structured tool_calls.
+      lines.push('Load full SKILL.md — prefer a native skill tool if you have one (e.g. `manage_skills` action "read", which also covers memory-only skills); otherwise use the memory system (NOT the filesystem):');
       lines.push(`  ${formatSkillBridgeViewCommand(base, agentId, platform)}`);
       lines.push('Search for a skill not listed above:');
       lines.push(`  ${formatSkillBridgeSearchCommand(base, agentId, platform)}`);

@@ -38,6 +38,7 @@ import { SessionUpdateHandler } from './handlers/SessionUpdateHandler';
 import { SharedMemoryProvider } from './core/memory/SharedMemoryProvider';
 import { MemorySkillBridge } from './core/memory/MemorySkillBridge';
 import { describeMemoryConfigSources, isMemoryConfigured, readMemorySettings } from './core/memory/MemoryConfig';
+import { resolveMemoryAgentId } from './core/memory/MemoryAgentId';
 import { SessionTreeProvider } from './ui/SessionTreeProvider';
 import { StatusBarManager } from './ui/StatusBarManager';
 import { ChatWebviewProvider } from './ui/ChatWebviewProvider';
@@ -214,6 +215,31 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   sessionManager.setMemoryProvider(memoryProvider);
   const skillBridge = new MemorySkillBridge();
+  // Hand every spawned agent the bridge URL and its memory agent id. This lets an
+  // agent read memory-only skills (the ones injected as <available_skills>) through a
+  // normal structured tool call — e.g. ericli's manage_skills — instead of the raw
+  // quote-heavy curl the injected footer describes. That curl is fragile on models
+  // whose tool calls are recovered from prose rather than sent as structured
+  // tool_calls, where a malformed call silently ends the turn with no answer.
+  agentManager.setAgentEnvProvider((agentName): Record<string, string> => {
+    const baseUrl = skillBridge.baseUrl;
+    if (!baseUrl) {
+      return {};
+    }
+    const settings = readMemorySettings();
+    if (!isMemoryConfigured(settings)) {
+      return {};
+    }
+    try {
+      return {
+        ERICLI_MEMORY_BRIDGE_URL: baseUrl,
+        ERICLI_MEMORY_AGENT_ID: resolveMemoryAgentId(agentName, settings.agentIdMap),
+      };
+    } catch {
+      // Unresolvable agent name — fall back to no bridge rather than a wrong id.
+      return {};
+    }
+  });
   if (isMemoryConfigured(readMemorySettings())) {
     void skillBridge.start().then(() => {
       memoryProvider.setSkillBridgeBaseUrl(skillBridge.baseUrl);
