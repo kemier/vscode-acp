@@ -28,7 +28,39 @@ function looksLikeMath(tex: string): boolean {
   // wrapped in `\[ ... \]`"), and the compact-form rule at the bottom accepted it
   // because an ellipsis has no whitespace and is under 40 chars. It rendered as a
   // centred KaTeX "…" in the middle of a sentence.
-  if (!/[A-Za-z0-9]/.test(t)) {
+  //
+  // Unicode-aware on purpose. An ASCII-only class silently rejected every CJK
+  // formula, because the label carries the meaning and the operators are the only
+  // ASCII present: `$$元素值 = ...$$` and `$$总数据量 = 批次 × 长度$$` both fell through
+  // to a paragraph and rendered as literal `$$` text, while `$$scale编码 = ...$$`
+  // beside them rendered correctly purely because of the word "scale". Observed in a
+  // Chinese course document, where it looked like a fence/render fault.
+  // `\p{L}\p{N}` still rejects the `\[ ... \]` placeholder — an ellipsis has neither.
+  if (!/[\p{L}\p{N}]/u.test(t)) {
+    return false;
+  }
+  // PROSE VETO — runs before the strong-signal check on purpose.
+  //
+  // The signal check treats `_`, `^`, `=` and any `\command` as proof of math. That is
+  // fine for a formula but catastrophic for a SENTENCE that happens to contain one,
+  // because the `$$...$$` tokenizer is lazy across newlines: it takes everything from
+  // one `$$` to the next and hands the whole span here. Reported live while the session
+  // was editing `k_t` formulas in `讲义_transmla.md` — both contain an underscore, so a
+  // paragraph discussing them passed the signal check and rendered as one long
+  // horizontally-scrolling KaTeX block with every space collapsed:
+  //
+  //   'block.There'snoclosing''''—sothewholerestisinsideanopenfence.
+  //
+  // Two things a formula never contains, and prose about markdown always does:
+  //  1. A code-fence marker or a doubled backtick. TeX has no use for either.
+  if (/```|~~~|``/.test(t)) {
+    return false;
+  }
+  //  2. Several words AND sentence punctuation. Required together, so a multi-line
+  //     aligned equation (many whitespace-separated tokens, no sentence stops) still
+  //     renders, while an English or Chinese sentence does not.
+  const words = t.split(/\s+/).filter(Boolean);
+  if (words.length >= 8 && /[.!?。！？；][\s"')\]]|[.!?。！？；]$/.test(t)) {
     return false;
   }
   // Strong math signals: TeX command, super/subscript/accent, equality.

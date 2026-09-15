@@ -10,6 +10,91 @@ suite('markdownMath', () => {
     return m.parse(md) as string;
   };
 
+  // A `$$...$$` span must not swallow a sentence. The tokenizer is lazy ACROSS newlines,
+  // so it takes everything between one `$$` and the next and asks looksLikeMath about the
+  // whole thing. The signal check counts `_`, `^`, `=` and any TeX command as proof of
+  // math — fine for a formula, catastrophic for a sentence containing one. Reported live
+  // while the session was editing `k_t` formulas in `讲义_transmla.md`: both carry an
+  // underscore, so a paragraph discussing them rendered as one long horizontally
+  // scrolling KaTeX block with every space collapsed.
+  suite('prose is never swallowed as math', () => {
+    const PROSE = "` block. There's no closing ``` — so the whole rest is inside an "
+      + 'open fence. The original structure was one fenced block';
+
+    test('a sentence containing an incidental math character stays prose', () => {
+      const carriers: Record<string, string> = {
+        'underscore (k_t, filename)': ' in 讲义_transmla.md',
+        'equals': ' where x = 1',
+        'caret': ' at line^39',
+        'backslash command': String.raw` \text{x}`,
+        'nothing at all': '',
+      };
+      for (const [why, tail] of Object.entries(carriers)) {
+        const html = parse(`$$${PROSE}${tail}$$`);
+        assert.ok(!html.includes('acp-math'), `${why} must stay prose: ${html.slice(0, 160)}`);
+      }
+    });
+
+    test('a fence marker or doubled backtick is never math', () => {
+      for (const md of ['$$see ``` here$$', '$$use ``code`` inline$$', '$$~~~ fence$$']) {
+        assert.ok(!parse(md).includes('acp-math'), md);
+      }
+    });
+
+    test('genuine formulas still render, including shapes the veto could catch', () => {
+      const good = [
+        '$$k_t = W_k h_t$$',
+        '$$总数据量 = 批次 × 序列长度 × 隐藏维度$$',
+        String.raw`$$\begin{aligned} a &= b + c \\ d &= e + f \end{aligned}$$`,
+        String.raw`$$S = \frac{QK^\top}{\sqrt{d_k}} + \text{bias}$$`,
+      ];
+      for (const md of good) {
+        assert.ok(parse(md).includes('acp-math'), `should be math: ${md}`);
+      }
+    });
+
+    test('the veto needs BOTH many words and sentence punctuation', () => {
+      // Many tokens, no sentence stop -> still math (aligned equations look like this).
+      assert.ok(parse(String.raw`$$a = b + c + d + e + f + g + h + i + j$$`).includes('acp-math'));
+      // A sentence stop with few words -> still math (x = 1. is a formula).
+      assert.ok(parse('$$x = 1.$$').includes('acp-math'));
+    });
+  });
+
+  // CJK math was silently dropped. The content guard demanded an ASCII letter or digit,
+  // so a formula whose identifiers are Chinese has none — the operators are the only
+  // ASCII present — and it fell through to a paragraph, rendering as literal `$$` text.
+  // Observed in a Chinese course document: `$$元素值 = ...$$` and `$$scale编码 = ...$$` sat
+  // on adjacent lines and only the second rendered, purely because of the word "scale".
+  // That asymmetry is what made it look like a fence/render fault.
+  suite('CJK math', () => {
+    test('renders display math whose identifiers are CJK', () => {
+      for (const md of ['$$元素值 = ...$$', '$$总数据量 = 批次 × 长度$$', '$$scale编码 = ...$$']) {
+        const html = parse(md);
+        assert.ok(html.includes('acp-math'), `should be math: ${md}`);
+        assert.ok(!html.includes('$$'), `delimiters should be consumed: ${md}`);
+      }
+    });
+
+    test('renders adjacent CJK and ASCII formulas alike', () => {
+      // The reported pair, in the order they appeared.
+      const html = parse('$$元素值 = ...$$\n$$scale编码 = ...$$');
+      assert.strictEqual((html.match(/<acp-math/g) ?? []).length, 2, html);
+    });
+
+    test('renders inline CJK math', () => {
+      assert.ok(parse(String.raw`维度是 \(输入维度\) 的函数`).includes('<acp-math>'));
+    });
+
+    test('still rejects a delimiter placeholder with no letters or digits', () => {
+      // The guard exists for this: LLMs write \[ ... \] when DESCRIBING delimiters.
+      // Widening it to Unicode must not let a bare ellipsis through.
+      for (const md of [String.raw`the math is wrapped in \[ ... \] delimiters`, String.raw`\[ ... \]`]) {
+        assert.ok(!parse(md).includes('acp-math'), `should stay prose: ${md}`);
+      }
+    });
+  });
+
   test('renders inline \\(...\\) as KaTeX', () => {
     const html = parse(String.raw`Score \(S=QK^\top/\sqrt{d}\) in HBM`);
     assert.ok(html.includes('<acp-math>'), html);
