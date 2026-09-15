@@ -950,7 +950,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // references type names in narrative text. Standard types like uint32_t
       // won't be found in project source, so clicking them harmlessly falls back
       // to Quick Open.
-      const typedefRegex = /(?<![\w:._])([a-zA-Z_][a-zA-Z0-9_]*_t)(?=$|[\s,;:\)\]\}\.<])/g;
+      //
+      // At least TWO characters must precede `_t`. A single letter before it is a
+      // math subscript, not a C type: `k_t`, `c_t`, `v_t`, `h_t`, `x_t`. Reported from
+      // a Chinese course document where `k_t = W_up_k c_t, v_t = W_up_v c_t` rendered
+      // with three of its variables as clickable symbol links. Every real short
+      // typedef still qualifies — `id_t`, `fd_t`, `pid_t`, `uid_t`, `off_t`, `key_t`,
+      // `size_t`, `time_t` all carry two or more characters before the suffix.
+      const typedefRegex = /(?<![\w:._])([a-zA-Z_][a-zA-Z0-9_]+_t)(?=$|[\s,;:\)\]\}\.<])/g;
       parts = html.split(splitRegexWithFileRef);
       for (let pi = 0; pi < parts.length; pi++) {
         if (pi % 2 === 1) {
