@@ -2223,12 +2223,27 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // Ctrl+C inside the preview DOES work, and env.clipboard is readable. So
     // "select in the preview, copy, then ask with @clipboard" is the only path
     // that actually carries rendered content to the agent.
+    // A mention the resolver will NOT honour, e.g. "in this folder:@clipboard".
+    // Only a line-start mention attaches (mid-sentence is deliberately prose, so a
+    // question about the feature cannot hijack the clipboard). Without this the bare
+    // mention was simply forwarded and the agent went hunting for a clipboard file
+    // over the shell — the reported failure. Say so instead of sending it silently.
+    //
+    // Scanned with hasMentionOutsideContext, not against the raw text: a mention
+    // sitting INSIDE an already-attached payload is not the user asking for anything,
+    // and warning about it would be noise. That is the same prose-only rule the
+    // @terminal and @problems resolvers use.
+    if (!hasLeadingClipboardMention(text) && hasMentionOutsideContext(text, /@clipboard\b/i)) {
+      vscode.window.showWarningMessage(
+        '@clipboard only attaches at the start of a line. Put it on its own line (or at the ' +
+          'very start of the message) — mid-sentence it is treated as ordinary text.',
+      );
+    }
     if (hasLeadingClipboardMention(text)) {
       let clip = '';
       try {
         clip = await vscode.env.clipboard.readText();
-      } catch {
-        clip = '';
+      } catch {        clip = '';
       }
       text = replaceMentionOutsideContext(text, /@clipboard\b/gi, '').trim();
       proseText = text;
@@ -10152,7 +10167,17 @@ function handleSend() {
           const end = promptInput.selectionEnd;
           const before = promptInput.value.slice(0, start);
           const after = promptInput.value.slice(end);
-          const insert = '@clipboard ';
+          // The mention MUST land at a line start, or the host refuses to resolve it.
+          // hasLeadingClipboardMention only attaches when the text before the mention
+          // is empty or ends in a newline — mid-sentence "@clipboard" is deliberately
+          // treated as prose so a question about the feature cannot hijack the
+          // clipboard. Pasting at a mid-line caret therefore produced
+          // "check those testcases in this folder:@clipboard", which attached NOTHING:
+          // the bare mention reached the agent, which then hunted for a clipboard file
+          // over the shell and failed. Pasting is an unambiguous request to attach, so
+          // put the mention where it will be honoured.
+          var needsNewline = before.length > 0 && !/(?:\\r?\\n)[ \\t]*$/.test(before);
+          const insert = (needsNewline ? String.fromCharCode(10) : '') + '@clipboard ';
           promptInput.value = before + insert + after;
           const caret = start + insert.length;
           promptInput.selectionStart = caret;
