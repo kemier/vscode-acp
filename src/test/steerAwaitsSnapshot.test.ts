@@ -91,11 +91,15 @@ suite('a snapshot in flight blocks the steer', () => {
     assert.strictEqual(pick([entry]), 0);
   });
 
-  test('a pending entry does not block a later ready one from being skipped over', () => {
+  test('a pending entry blocks the whole queue rather than being skipped over', () => {
     const pick = loadPicker();
-    // Order is preserved: the pending head is skipped, not promoted past.
+    // This originally asserted 1, on the reasoning that "the pending head is skipped,
+    // not promoted past". That was wrong: skipping the head IS promoting the entry
+    // behind it. Reported live — "@clipboard ..." queued first and "no links bare text"
+    // queued second, and the second reached the chat panel and the agent first. The head
+    // now blocks; the snapshot handlers re-run this once the token clears.
     const idx = pick([{ text: '@clipboard first', clipboardToken: 'clip-1' }, { text: 'second, no snapshot' }]);
-    assert.strictEqual(idx, 1, 'the ready entry is eligible');
+    assert.strictEqual(idx, -1, 'nothing may pass the pending head');
   });
 
   test('an entry with no snapshot at all is unaffected', () => {

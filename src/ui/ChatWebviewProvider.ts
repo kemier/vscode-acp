@@ -7372,12 +7372,31 @@ function nextAutoSteerIndex(queue) {
     // Already delivered once — never steer the same entry twice.
     if (queue[i] && queue[i].steered && !queue[i].steerPending) continue;
   }
+  // HEAD-OF-LINE BLOCKING. Only the oldest not-yet-delivered entry may be steered.
+  //
+  // This loop used to skip (continue) past an ineligible entry and return a LATER index,
+  // which broke FIFO visibly: queue "@clipboard ..." then "no links bare text", and the
+  // second one was steered immediately while the first waited for its snapshot, so the
+  // newer message appeared in the chat panel first and the agent answered them out of
+  // order. drainQueue is strict FIFO (messageQueue.shift()), so the steer path was the
+  // only place ordering could invert.
+  //
+  // An ineligible head now blocks instead of being skipped. That is safe for every
+  // reason it can be ineligible:
+  //   - clipboard/selection snapshot in flight — the clipboardForQueue /
+  //     selectionsForQueue handlers call maybeAutoSteerNext once the token clears, so
+  //     the block lifts on its own.
+  //   - images, or a slash command — never steerable at all; they must start their own
+  //     turn, so they wait for drain at promptEnd. Anything behind them waits too,
+  //     which is the point.
   for (var j = 0; j < queue.length; j++) {
     var e = queue[j];
     if (!e) continue;
-    if (e.steered) continue; // already sent once; waiting for its echo or for drain
-    if (e.images && e.images.length) continue;
-    if (String(e.text || '').trim().indexOf('/') === 0) continue;
+    if (e.steered) continue; // already sent once, in order; waiting for echo or drain
+    // From here on, e is the head of the undelivered queue. Ineligible => steer
+    // nothing this round rather than reaching past it.
+    if (e.images && e.images.length) return -1;
+    if (String(e.text || '').trim().indexOf('/') === 0) return -1;
     // Snapshot still in flight — steering NOW would send the entry without it.
     //
     // queueMessage posts resolveClipboardForQueue / resolveSelectionsForQueue and then
@@ -7392,10 +7411,9 @@ function nextAutoSteerIndex(queue) {
     // matched, the entry was never acked, and the same message was delivered a second
     // time as a prompt.
     //
-    // Skipping is safe: the clipboardForQueue / selectionsForQueue handlers call
-    // maybeAutoSteerNext once the token clears, and an entry whose reply never arrives
-    // still drains normally at promptEnd. Late is recoverable; wrong is not.
-    if (e.clipboardToken || e.selectionToken) continue;
+    // Waiting is safe: the token handlers re-run this, and an entry whose reply never
+    // arrives still drains normally at promptEnd. Late is recoverable; wrong is not.
+    if (e.clipboardToken || e.selectionToken) return -1;
     return j;
   }
   return -1;

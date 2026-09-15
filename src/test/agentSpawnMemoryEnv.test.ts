@@ -18,17 +18,40 @@ type EnvProvider = (agentName: string) => Record<string, string>;
 /**
  * Resolve the spawn env the way spawnAgent does, without spawning a process.
  * Mirrors the private resolveSpawnEnv contract: process.env < provider < config.env.
+ *
+ * The bridge vars are scrubbed from process.env for the duration of the call. Without
+ * that this suite passes or fails depending on how the test process was started: an
+ * agent spawned by this very feature inherits ERICLI_MEMORY_BRIDGE_URL, so `npm test`
+ * run from inside such an agent saw the var already set and the "injects nothing" cases
+ * failed. The assertions are about what the PROVIDER contributes, not about the ambient
+ * environment.
  */
 function resolveEnv(
   provider: EnvProvider | null,
   configEnv?: Record<string, string>,
   agentName = 'EricCLI',
 ): NodeJS.ProcessEnv {
-  const mgr = new AgentManager();
-  mgr.setAgentEnvProvider(provider);
-  return (mgr as unknown as {
-    resolveSpawnEnv: (n: string, c: { env?: Record<string, string> }) => NodeJS.ProcessEnv;
-  }).resolveSpawnEnv(agentName, { env: configEnv });
+  const scrubbed = ['ERICLI_MEMORY_BRIDGE_URL', 'ERICLI_MEMORY_AGENT_ID'];
+  const saved = new Map<string, string | undefined>();
+  for (const key of scrubbed) {
+    saved.set(key, process.env[key]);
+    delete process.env[key];
+  }
+  try {
+    const mgr = new AgentManager();
+    mgr.setAgentEnvProvider(provider);
+    return (mgr as unknown as {
+      resolveSpawnEnv: (n: string, c: { env?: Record<string, string> }) => NodeJS.ProcessEnv;
+    }).resolveSpawnEnv(agentName, { env: configEnv });
+  } finally {
+    for (const [key, value] of saved) {
+      if (value === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = value;
+      }
+    }
+  }
 }
 
 suite('agent spawn env — memory skill bridge', () => {

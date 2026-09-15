@@ -143,8 +143,9 @@ suite('automatic steering of a mid-turn message', () => {
     // start its own turn rather than being folded into the running one.
     assert.strictEqual(pick([{ text: 'look', images: [{}] }]), -1);
     assert.strictEqual(pick([{ text: '/compact' }]), -1);
-    // The first eligible entry wins, skipping the ineligible ones before it.
-    assert.strictEqual(pick([{ text: '/ps' }, { text: 'do it' }]), 1);
+    // An ineligible entry BLOCKS the ones behind it rather than being skipped. Steering
+    // past it would deliver a newer message first; see autoSteerFifo.test.ts.
+    assert.strictEqual(pick([{ text: '/ps' }, { text: 'do it' }]), -1);
     const fn = extractFn('maybeAutoSteerNext');
     // Never during compaction / clearing, which own the turn.
     assert.ok(fn.includes('!isProcessing || isCompacting || isClearing'), fn);
