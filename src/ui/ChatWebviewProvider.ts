@@ -22721,7 +22721,25 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
     } else {
       scheduleCompactionFlush();
     }
-    setProcessing(false, 'finalizeKiroCompact');
+    // Only a MANUAL /compact ends the turn here. It runs through
+    // _kiro.dev/commands/execute, which produces no promptEnd, so nothing else
+    // would ever clear the processing latch.
+    //
+    // Auto-compaction is different: the agent compacts because the context
+    // filled up MID-TURN and then continues streaming the same reply (the
+    // pendingPostCompactChunks buffer exists precisely for that continuation).
+    // Clearing the latch on completion flipped the button back to Send while
+    // the agent was still working, so the user could neither stop the turn nor
+    // trust the control. promptEnd is the only honest terminator for that case.
+    //
+    // manualCompacting is already the right discriminator: the status-RPC entry
+    // sets it false ("Status RPC covers auto-compaction too"), and a manual
+    // /compact keeps it true because it has isCompacting set before the RPC
+    // arrives, so that branch is skipped. The contextCompaction paths follow
+    // the same rule — only failed/cancelled compactions clear it.
+    if (manualCompacting) {
+      setProcessing(false, 'finalizeKiroCompact-manual');
+    }
   }
 
   /**
