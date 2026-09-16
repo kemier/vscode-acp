@@ -316,16 +316,39 @@ suite('a message queued mid-turn renders a visible chip', () => {
     assert.ok(src.includes('appendDiagFile('), 'resume diag uses the capped writer');
   });
 
-  test('the always-log branch runs before the debugResume gate', () => {
+  test('the always-log branch runs before the gated ones', () => {
     const src = fs.readFileSync(SOURCE, 'utf8');
     const at = src.indexOf("case 'debugLog'");
     assert.ok(at > 0, 'the debugLog handler must exist');
-    const body = src.slice(at, at + 1600);
+    // Brace-matched, not a fixed slice: this asserted over src.slice(at, at + 1600) and
+    // silently stopped covering the handler as soon as a branch was added — which is how
+    // it broke when the [WV-MDRENDER] gate landed.
+    let i = src.indexOf('{', at);
+    let depth = 0;
+    let end = src.length;
+    for (; i < src.length; i++) {
+      if (src[i] === '{') {
+        depth++;
+      } else if (src[i] === '}') {
+        depth--;
+        if (depth === 0) {
+          end = i + 1;
+          break;
+        }
+      }
+    }
+    const body = src.slice(at, end);
     const always = body.indexOf('isAlwaysLoggedWebviewMessage');
     const gated = body.indexOf('isDebugResume()');
     assert.ok(always > 0, 'the handler must consult the always-log list');
     assert.ok(gated > 0, 'the gated path must still exist for verbose traces');
-    assert.ok(always < gated, 'faults must be logged before any setting is consulted');
+    assert.ok(always < gated, 'faults must be logged before any settings gate is consulted');
+    // Every gated family must sit after the always-log branch too.
+    for (const gate of ['isDebugWebviewQueue()', 'isDebugRender()']) {
+      const g = body.indexOf(gate);
+      assert.ok(g > 0, `${gate} must be consulted in the handler`);
+      assert.ok(always < g, `${gate} must not precede the always-log branch`);
+    }
   });
 
   test('every composer branch records the decision it took', () => {
@@ -353,5 +376,59 @@ suite('a message queued mid-turn renders a visible chip', () => {
     const logged = (fn.match(/wvQueueLog\('steer:SKIP'/g) || []).length;
     assert.ok(returns > 0, 'maybeAutoSteerNext must have bail-out paths');
     assert.strictEqual(logged, returns, 'every steer bail-out needs its own logged reason');
+  });
+});
+
+suite('markdown-render diagnostics are runtime-gateable', () => {
+  // These traces already existed but were unreachable: the debugLog forwarding they used
+  // is guarded by `const DEBUG_LIVE = false` / `const DEBUG = false` — compile-time
+  // constants that no setting can flip, despite a comment inviting the reader to "set
+  // acp.debugResume". Two separate render investigations died at that gate.
+  const src = fs.readFileSync(SOURCE, 'utf8');
+
+  test('the render markers have their own gate', () => {
+    assert.ok(src.includes("WEBVIEW_RENDER_DEBUG_MARKERS = ['[WV-MDRENDER]']"));
+    assert.ok(src.includes('isRenderDebugWebviewMessage'));
+    assert.ok(src.includes("diagnosticFlagEnabled('debugRender')"));
+  });
+
+  test('every markdownRendered decision carries the marker', () => {
+    // Including the two that used to `continue` silently — the likeliest causes, since
+    // commitCurrentTextSegment bumps streamingRenderGen and invalidates the only
+    // in-flight render for a bubble that was never rendered.
+    for (const branch of [
+      'DISCARDED (stale gen=',
+      'DISCARDED (live el already md-committed)',
+      'SKIPPED (stale hgen=',
+      'SKIPPED (targets live streaming el)',
+      'SKIPPED (same hash)',
+      'painted RAW text (never rendered)',
+    ]) {
+      const at = src.indexOf(branch);
+      assert.ok(at > 0, `missing trace: ${branch}`);
+      // The marker must be on the SAME postMessage as the text, or it routes ungated.
+      const lineStart = src.lastIndexOf('\n', at);
+      const line = src.slice(lineStart, at);
+      assert.ok(line.includes('[WV-MDRENDER]'), `trace not tagged: ${branch}`);
+    }
+  });
+
+  test('no markdownRendered trace is left ungated', () => {
+    // A stray untagged one would go to the DEBUG_LIVE path and never be seen.
+    const traces = src.match(/message: '(\[WV-MDRENDER\] )?markdownRendered/g) ?? [];
+    assert.ok(traces.length > 0, 'expected markdownRendered traces');
+    for (const t of traces) {
+      assert.ok(t.includes('[WV-MDRENDER]'), `untagged trace: ${t}`);
+    }
+  });
+
+  test('the setting is declared with window scope', () => {
+    const pkg = JSON.parse(
+      fs.readFileSync(path.resolve(__dirname, '../../package.json'), 'utf8'),
+    ) as { contributes: { configuration: { properties: Record<string, { scope?: string; default?: unknown }> } } };
+    const decl = pkg.contributes.configuration.properties['acp.debugRender'];
+    assert.ok(decl, 'acp.debugRender must be declared');
+    assert.strictEqual(decl.default, false, 'must default off');
+    assert.strictEqual(decl.scope, 'window', 'window scope, like the other diag flags');
   });
 });

@@ -176,6 +176,23 @@ const WEBVIEW_ALWAYS_LOG_MARKERS = ['[WV-ERROR]'];
 /** Composer/queue diagnostics, kept but gated behind acp.debugWebviewQueue. */
 const WEBVIEW_QUEUE_DEBUG_MARKERS = ['[WV-QUEUE]', '[WV-QUEUEVIS]'];
 
+/**
+ * Markdown-render decisions, gated behind acp.debugRender.
+ *
+ * The markdownRendered handler already logged every branch it can take — stale gen, stale
+ * hgen, "targets live streaming el", element not found, same-hash skip — but those lines
+ * went through the ungated `debugLog` path, which is guarded by the module-level
+ * `const DEBUG_LIVE = false` / `const DEBUG = false`. Compile-time constants: no setting
+ * turns them on, so the traces could never be captured from a running install even though
+ * a comment invited the reader to "set acp.debugResume".
+ *
+ * That cost two investigations. A bubble stuck without the `md-rendered` class renders raw
+ * markdown with pre-wrap whitespace — literal `**bold**`, every blank line preserved — and
+ * an earlier report of an empty bubble hit the same wall. In both cases the deciding branch
+ * was one already-written log line away, behind a gate that could not be opened.
+ */
+const WEBVIEW_RENDER_DEBUG_MARKERS = ['[WV-MDRENDER]'];
+
 export function isAlwaysLoggedWebviewMessage(message: string): boolean {
   if (!message) {
     return false;
@@ -188,6 +205,13 @@ export function isQueueDebugWebviewMessage(message: string): boolean {
     return false;
   }
   return WEBVIEW_QUEUE_DEBUG_MARKERS.some((marker) => message.includes(marker));
+}
+
+export function isRenderDebugWebviewMessage(message: string): boolean {
+  if (!message) {
+    return false;
+  }
+  return WEBVIEW_RENDER_DEBUG_MARKERS.some((marker) => message.includes(marker));
 }
 
 /**
@@ -449,6 +473,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    */
   private isDebugWebviewQueue(): boolean {
     return diagnosticFlagEnabled('debugWebviewQueue');
+  }
+
+  /** ACP Client + ~/.acp-debug/webview-faults.log when acp.debugRender is on. */
+  private isDebugRender(): boolean {
+    return diagnosticFlagEnabled('debugRender');
   }
 
   /** ACP Client + ~/.acp-debug/resume-diag.jsonl when acp.debugResume is on. */
@@ -1313,6 +1342,16 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           // `cat` shows faults and queue decisions interleaved in order.
           if (isQueueDebugWebviewMessage(wvMsg)) {
             if (this.isDebugWebviewQueue()) {
+              log('[DEBUG-WV] ' + wvMsg);
+              this.appendWebviewFault(wvMsg);
+            }
+            break;
+          }
+          // Markdown-render decisions — same file sink, own gate. These name the exact
+          // branch that left a bubble without md-rendered (and so showing raw markdown
+          // with pre-wrap blank lines), which is not recoverable from the traffic log.
+          if (isRenderDebugWebviewMessage(wvMsg)) {
+            if (this.isDebugRender()) {
               log('[DEBUG-WV] ' + wvMsg);
               this.appendWebviewFault(wvMsg);
             }
@@ -15892,6 +15931,12 @@ function commitCurrentTextSegment(opts) {
        // that DO have rendered HTML.
        if (!currentAssistantEl.classList.contains('md-rendered') && !currentAssistantEl.textContent) {
          currentAssistantEl.textContent = committedText;
+         // This is the raw-paint fallback. It stops the bubble being EMPTY, but the
+         // element still lacks md-rendered, so CSS gives it pre-wrap + dimmed — literal
+         // asterisk-bold markers and every blank line preserved. If the index render
+         // below does not land, this is what the user is left looking at, so say when we
+         // take it.
+         vscode.postMessage({ type: 'debugLog', message: '[WV-MDRENDER] commit: painted RAW text (never rendered) len=' + committedText.length + ' index=' + committedIndex });
        }
        var renderIndex = committedIndex;
        vscode.postMessage({ type: 'debugLog', message: 'commitCurrentTextSegment: sending renderMarkdown index=' + renderIndex + ' textLen=' + committedText.length });
@@ -20308,16 +20353,26 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         const rendered = msg.items || [];
         // Clear all pending render retries — the extension host responded
         for (var _rk in pendingRenderRetries) { delete pendingRenderRetries[_rk]; }
-        vscode.postMessage({ type: 'debugLog', message: 'markdownRendered: ' + rendered.length + ' items' });
+        vscode.postMessage({ type: 'debugLog', message: '[WV-MDRENDER] markdownRendered: ' + rendered.length + ' items' });
         for (const item of rendered) {
            // index === -1 means streaming render for the live assistant element
            if (item.index === -1) {
              // Discard stale renders from a previous text segment
-             if (item.gen !== undefined && item.gen !== streamingRenderGen) continue;
+             if (item.gen !== undefined && item.gen !== streamingRenderGen) {
+               // Logged because this is the likeliest way a bubble ends up without
+               // md-rendered: commitCurrentTextSegment bumps streamingRenderGen, which
+               // invalidates the only in-flight render for a bubble that was never
+               // rendered. It used to discard silently.
+               vscode.postMessage({ type: 'debugLog', message: '[WV-MDRENDER] markdownRendered[-1]: DISCARDED (stale gen=' + item.gen + ' current=' + streamingRenderGen + ')' });
+               continue;
+             }
              // Never paint streaming HTML onto an already-committed bubble
              // (can happen if currentAssistantEl briefly lags a commit).
-             if (currentAssistantEl && currentAssistantEl.classList.contains('md-committed')) continue;
-             vscode.postMessage({ type: 'debugLog', message: 'markdownRendered[-1]: gen=' + item.gen + ' currentGen=' + streamingRenderGen + ' hasEl=' + !!currentAssistantEl + ' htmlLen=' + (item.html ? item.html.length : 0) });
+             if (currentAssistantEl && currentAssistantEl.classList.contains('md-committed')) {
+               vscode.postMessage({ type: 'debugLog', message: '[WV-MDRENDER] markdownRendered[-1]: DISCARDED (live el already md-committed)' });
+               continue;
+             }
+             vscode.postMessage({ type: 'debugLog', message: '[WV-MDRENDER] markdownRendered[-1]: gen=' + item.gen + ' currentGen=' + streamingRenderGen + ' hasEl=' + !!currentAssistantEl + ' htmlLen=' + (item.html ? item.html.length : 0) });
            if (currentAssistantEl) { currentAssistantEl.innerHTML = item.html; currentAssistantEl.classList.add('md-rendered'); wireFileLinks(currentAssistantEl); }
             if (currentAssistantEl) renderMermaidBlocks(currentAssistantEl);
             continue;
@@ -20332,7 +20387,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           // if it doesn't match the current historyRenderGen, the DOM
           // has been rebuilt since then and this response is stale.
           if (item.hgen !== undefined && item.hgen !== historyRenderGen) {
-            vscode.postMessage({ type: 'debugLog', message: 'markdownRendered[' + item.index + ']: SKIPPED (stale hgen=' + item.hgen + ' current=' + historyRenderGen + ')' });
+            vscode.postMessage({ type: 'debugLog', message: '[WV-MDRENDER] markdownRendered[' + item.index + ']: SKIPPED (stale hgen=' + item.hgen + ' current=' + historyRenderGen + ')' });
             continue;
           }
 
@@ -20352,16 +20407,16 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           }
           // Never clobber the in-progress streaming bubble with a history paint.
           if (el && el === currentAssistantEl) {
-            vscode.postMessage({ type: 'debugLog', message: 'markdownRendered[' + item.index + ']: SKIPPED (targets live streaming el)' });
+            vscode.postMessage({ type: 'debugLog', message: '[WV-MDRENDER] markdownRendered[' + item.index + ']: SKIPPED (targets live streaming el)' });
             continue;
           }
-           vscode.postMessage({ type: 'debugLog', message: 'markdownRendered[' + item.index + ']: foundEl=' + !!el + ' htmlLen=' + (item.html ? item.html.length : 0) });
+           vscode.postMessage({ type: 'debugLog', message: '[WV-MDRENDER] markdownRendered[' + item.index + ']: foundEl=' + !!el + ' htmlLen=' + (item.html ? item.html.length : 0) });
            if (el) {
              // Skip if already rendered with the same HTML (prevents
              // copy-button blinking from duplicate renderMarkdown responses)
              var renderHash = (function(h){for(var i=0;i<item.html.length;i++){h=((h<<5)-h+item.html.charCodeAt(i))|0;}return h;})(5381) + ':' + item.index;
              if (el.classList.contains('md-rendered') && el.getAttribute('data-render-hash') === renderHash) {
-               vscode.postMessage({ type: 'debugLog', message: 'markdownRendered[' + item.index + ']: SKIPPED (same hash)' });
+               vscode.postMessage({ type: 'debugLog', message: '[WV-MDRENDER] markdownRendered[' + item.index + ']: SKIPPED (same hash)' });
                continue;
              }
               el.classList.add('md-rendered');
