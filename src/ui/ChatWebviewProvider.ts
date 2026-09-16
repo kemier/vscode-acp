@@ -404,6 +404,22 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   private connectAgentCommandChain: Promise<unknown> = Promise.resolve();
 
   /**
+   * Orders the OS-clipboard write from a paste against every later clipboard READ.
+   *
+   * onDidReceiveMessage is not awaited, so two webview messages interleave freely. Paste
+   * posts `writeClipboard`, whose handler yields at `await clipboard.writeText(...)`; a
+   * `resolveClipboardForQueue` arriving right behind it then reads the clipboard BEFORE
+   * the write lands and snapshots the old value — or nothing at all. Reported as:
+   *
+   *   "@clipboard: the clipboard was empty when this message was queued.
+   *    Copy the text and queue it again."
+   *
+   * after a paste that plainly had content. Every read now waits on the outstanding
+   * write, which is the same technique connectAgentCommandChain uses above.
+   */
+  private clipboardWriteChain: Promise<unknown> = Promise.resolve();
+
+  /**
    * "Follow Agent" feature — mirrors Zed's `workspace.follow(CollaboratorId::Agent)`.
    * When `_isFollowing` is true and a `tool_call` / `tool_call_update` carries
    * a `locations` array, the editor auto-opens the first location's file at
@@ -1149,6 +1165,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         case 'resolveClipboardForQueue': {
           let clipText = '';
           try {
+            // Wait for a paste's clipboard write to land first. Without this the read
+            // can overtake it and snapshot an empty clipboard.
+            await this.clipboardWriteChain;
             clipText = await vscode.env.clipboard.readText();
           } catch {
             clipText = '';
@@ -1165,12 +1184,20 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           // host to put that text on the OS clipboard, so the @clipboard mention it
           // inserted resolves to the PASTED text at send time (not whatever was
           // copied earlier / in another repo).
-          try {
-            await vscode.env.clipboard.writeText(String(message.text || ''));
-          } catch {
-            // Best-effort: if the write fails the @clipboard resolution will read
-            // whatever is currently on the clipboard.
-          }
+          //
+          // Published on clipboardWriteChain BEFORE awaiting, so a clipboard READ
+          // arriving in the next message tick observes the pending write instead of
+          // racing past it. Assigning after the await would leave exactly the gap the
+          // chain exists to close.
+          this.clipboardWriteChain = (async () => {
+            try {
+              await vscode.env.clipboard.writeText(String(message.text || ''));
+            } catch {
+              // Best-effort: if the write fails the @clipboard resolution will read
+              // whatever is currently on the clipboard.
+            }
+          })();
+          await this.clipboardWriteChain;
           break;
         }
         case 'executeKiroCommand':
@@ -2290,6 +2317,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     if (clipboardMentionResolves) {
       let clip = '';
       try {
+        // Same ordering hazard as resolveClipboardForQueue: a paste posts writeClipboard
+        // and this send can be dispatched before that write lands, reading an empty or
+        // stale clipboard. Wait for the outstanding write.
+        await this.clipboardWriteChain;
         clip = await vscode.env.clipboard.readText();
       } catch {        clip = '';
       }

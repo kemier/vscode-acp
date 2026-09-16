@@ -157,7 +157,56 @@ suite('paste-to-clipboard (non-image text paste becomes @clipboard)', () => {
   test('the host writeClipboard case writes to the OS clipboard', () => {
     const host = src.indexOf("case 'writeClipboard':");
     assert.ok(host > 0, 'writeClipboard host case not found');
-    const hostBody = src.slice(host, host + 400);
+    // Brace-matched, not src.slice(host, host + 400): a fixed window stops covering the
+    // case as soon as a comment is added, which is how this broke when the
+    // clipboardWriteChain ordering fix landed.
+    let i = src.indexOf('{', host);
+    let depth = 0;
+    let end = src.length;
+    for (; i < src.length; i++) {
+      if (src[i] === '{') {
+        depth++;
+      } else if (src[i] === '}') {
+        depth--;
+        if (depth === 0) {
+          end = i + 1;
+          break;
+        }
+      }
+    }
+    const hostBody = src.slice(host, end);
     assert.ok(hostBody.includes('vscode.env.clipboard.writeText'), 'must write to the OS clipboard');
+  });
+
+  test('a clipboard READ waits for a pending paste write', () => {
+    // onDidReceiveMessage is not awaited, so a resolveClipboardForQueue arriving right
+    // behind a paste could read the clipboard BEFORE writeClipboard's await landed and
+    // snapshot nothing — reported as "the clipboard was empty when this message was
+    // queued" after a paste that plainly had content.
+    assert.ok(
+      src.includes('private clipboardWriteChain'),
+      'the ordering chain must exist',
+    );
+    // Both readers must await it: the queue-time snapshot and the send-time resolution.
+    const readers = src.split('await this.clipboardWriteChain;').length - 1;
+    assert.ok(readers >= 3, `expected the chain to be awaited by both readers and the writer, saw ${readers}`);
+    for (const anchor of ["case 'resolveClipboardForQueue'", 'if (clipboardMentionResolves) {']) {
+      const at = src.indexOf(anchor);
+      assert.ok(at > 0, `${anchor} not found`);
+      const body = src.slice(at, at + 700);
+      assert.ok(
+        body.includes('await this.clipboardWriteChain'),
+        `${anchor} must wait for the pending clipboard write`,
+      );
+    }
+  });
+
+  test('the write is published on the chain BEFORE it is awaited', () => {
+    // Assigning after the await would leave exactly the gap the chain closes: the reader
+    // would observe the previous (already-resolved) chain and race past the new write.
+    const at = src.indexOf('this.clipboardWriteChain = (async () => {');
+    assert.ok(at > 0, 'the write must publish itself on the chain');
+    const awaitAt = src.indexOf('await this.clipboardWriteChain;', at);
+    assert.ok(awaitAt > at, 'the await must come after the assignment');
   });
 });
