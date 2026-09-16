@@ -7016,7 +7016,12 @@ let isCompacting = false;  // true while /compact is running
        if (e && e.steered && steerEchoMatchesEntry(queueEntryPromptText(e), echoText)) {
          messageQueue.splice(i, 1);
          renderQueue();
-         addUserBubbleForQueuedEntry(e);
+         // The bubble may already be on screen from the stage-1 accepted echo
+         // (user_message_accepted). Do not render a duplicate — only the chip
+         // removal + next-message release belong to the delivered echo.
+         if (!e.bubbleShown) {
+           addUserBubbleForQueuedEntry(e);
+         }
          vscode.postMessage({
            type: 'debugLog',
            message: '[STEER] agent confirmed a steered message; promoted it into the chat',
@@ -7027,6 +7032,70 @@ let isCompacting = false;  // true while /compact is running
        }
      }
      return false;
+   }
+
+   /**
+    * Stage-1 steer receipt: the agent acknowledged a steered message on arrival
+    * (user_message_accepted). Show its bubble immediately, but keep the queue
+    * entry in place — the delivered echo (user_message_chunk) is the only signal
+    * that may splice it and release the next message. Marks the entry so the
+    * later delivered echo does not render a duplicate bubble.
+    *
+    * The bubble is inserted BEFORE the current streaming turn (messages the user
+    * sent mid-turn read above the agent's in-flight output) and deliberately
+    * does NOT reset turn/tool state — the agent is still streaming, so
+    * currentTurnEl / currentAssistantEl must stay intact for the rest of the
+    * turn. Only the delivered echo (ackSteeredQueueEntry → addUserBubbleForQueuedEntry)
+    * resets state, at the moment the agent has actually consumed the message.
+    */
+   function markSteeredEntryBubbleShown(echoText) {
+     for (var i = 0; i < messageQueue.length; i++) {
+       var e = messageQueue[i];
+       if (e && e.steered && !e.bubbleShown && steerEchoMatchesEntry(queueEntryPromptText(e), echoText)) {
+         e.bubbleShown = true;
+         renderQueue();
+         addUserBubbleEarly(e);
+         vscode.postMessage({
+           type: 'debugLog',
+           message: '[STEER] agent acknowledged a steered message (stage-1 accepted); bubble shown, still queued',
+         });
+         return true;
+       }
+     }
+     return false;
+   }
+
+   /**
+    * Early (stage-1 accepted) user bubble: render the steered message as a user
+    * bubble immediately, inserted BEFORE the current streaming turn so the chat
+    * reads user-message-then-agent-output. Unlike addUserBubbleForQueuedEntry it
+    * does NOT reset turn/tool state (retireToolCallRegistry, currentTurnEl=null,
+    * etc.) — the agent is still mid-turn, and resetting would orphan the
+    * in-flight assistant output into a detached container.
+    */
+   function addUserBubbleEarly(entry) {
+     var _display = queueEntryDisplayText(entry) || '(image)';
+     chatHistory.push({ kind: 'message', role: 'user', text: _display });
+     saveState();
+     hideEmpty();
+     var el = document.createElement('div');
+     el.className = 'message user';
+     renderUserMessageContent(el, _display);
+     // Insert before the current turn container (if any) so the user message
+     // reads above the agent's in-flight output. Fall back to append when no
+     // turn is open (e.g. a steer that races promptStart).
+     if (currentTurnEl && currentTurnEl.parentNode === messagesEl) {
+       messagesEl.insertBefore(el, currentTurnEl);
+     } else {
+       messagesEl.appendChild(el);
+     }
+     if (transientNoticeEl && transientNoticeEl !== el &&
+         transientNoticeEl.parentNode === messagesEl &&
+         messagesEl.lastElementChild !== transientNoticeEl) {
+       messagesEl.removeChild(transientNoticeEl);
+       messagesEl.appendChild(transientNoticeEl);
+     }
+     scrollToBottom();
    }
 
    // Add a user bubble for a queue entry at the moment it is actually being
@@ -7883,7 +7952,14 @@ hasSentPrompt = true;
  } else {
     vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drainQueue: sending as sendPrompt' });
     wvQueueLog('DRAINED', 'sending queued entry as a normal prompt');
-    addUserBubbleForQueuedEntry(entry);
+    // If the agent already acknowledged this steered entry on arrival
+    // (stage-1 accepted, user_message_accepted) its bubble is already on
+    // screen — do not render a duplicate. This is the undrained-steer path
+    // (turn ended before the agent delivered it); the entry was shown once
+    // at accept time, so the re-sent prompt must not add a second bubble.
+    if (!entry.bubbleShown) {
+      addUserBubbleForQueuedEntry(entry);
+    }
    // The sendPrompt is now in flight — a message typed in the transition
    // tick (before promptStart arrives) must queue, and the next queued
    // message must wait for THIS turn's promptEnd (strict FIFO, one per turn).
@@ -21510,6 +21586,32 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
          autoScrollIfAtBottom();
        }
        break;
+      }
+
+      case 'user_message_accepted': {
+        // Stage-1 steer receipt (ericli two-stage steer, Option A): the agent
+        // ACKNOWLEDGED the steered message on arrival (visual-only) but has NOT
+        // yet delivered it to the model. Show the user bubble immediately so the
+        // user gets instant feedback their mid-turn message was received — instead
+        // of a chip stuck tagged "in turn" for the whole tool call.
+        //
+        // CRITICAL: this must NOT splice the queue entry or release the next
+        // queued message (maybeAutoSteerNext). The agent will send a separate
+        // user_message_chunk (delivered echo) at the drain, and only THAT signal
+        // may splice + release. Treating accepted as delivered was the pile-up bug:
+        // two interjections during one long tool call both got spliced + injected
+        // at the same boundary and the model answered only the last.
+        const accContent = update.content;
+        if (
+          !isLoadingSession &&
+          accContent &&
+          accContent.type === 'text' &&
+          typeof accContent.text === 'string' &&
+          typeof ackSteeredQueueEntry === 'function'
+        ) {
+          markSteeredEntryBubbleShown(accContent.text);
+        }
+        break;
       }
 
       case 'user_message_chunk': {
