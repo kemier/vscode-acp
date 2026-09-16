@@ -1086,7 +1086,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           this._hasChatContent = true;
           // message.selections is present only for a drained/queued entry, which
           // carries the selection captured when it was composed.
-          await this.handleSendPrompt(message.text, message.images, message.selections);
+          await this.handleSendPrompt(
+            message.text,
+            message.images,
+            message.selections,
+            // Set by the composer's paste handler; see the parameter's doc comment.
+            message.clipboardPasted === true,
+          );
           break;
         // Snapshot the clipboard for a message being QUEUED. Read now so the queued
         // entry carries what the user had copied when they wrote it — by drain time the
@@ -1951,6 +1957,17 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     text: string,
     images?: Array<{ data: string; mimeType: string }>,
     selectionsOverride?: import('../core/SessionManager').SelectionContext[],
+    /**
+     * True when the @clipboard mention in `text` was inserted by a PASTE, not typed.
+     *
+     * Paste is unambiguous intent to attach, so the mention resolves wherever it sits.
+     * Typed mentions still need a line start, because position is the only thing that
+     * separates a real mention from prose about the feature ("how does @clipboard
+     * work?") — and a paste flag is exactly the intent signal position cannot carry.
+     * Without this, paste had to force the mention onto its own line, which broke up
+     * the sentence the user was writing.
+     */
+    clipboardPasted?: boolean,
   ): Promise<void> {
     // TEMP-DEBUG (cannot-send investigation): entry marker so we can tell
     // "webview never posted" apart from "host received but dropped".
@@ -2222,13 +2239,16 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // sitting INSIDE an already-attached payload is not the user asking for anything,
     // and warning about it would be noise. That is the same prose-only rule the
     // @terminal and @problems resolvers use.
-    if (!hasLeadingClipboardMention(text) && hasMentionOutsideContext(text, /@clipboard\b/i)) {
+    // A pasted mention is honoured wherever it sits, so only a TYPED one can be
+    // mid-sentence and unresolvable — that is the case worth warning about.
+    const clipboardMentionResolves = hasLeadingClipboardMention(text) || !!clipboardPasted;
+    if (!clipboardMentionResolves && hasMentionOutsideContext(text, /@clipboard\b/i)) {
       vscode.window.showWarningMessage(
         '@clipboard only attaches at the start of a line. Put it on its own line (or at the ' +
           'very start of the message) — mid-sentence it is treated as ordinary text.',
       );
     }
-    if (hasLeadingClipboardMention(text)) {
+    if (clipboardMentionResolves) {
       let clip = '';
       try {
         clip = await vscode.env.clipboard.readText();
@@ -6442,6 +6462,12 @@ let isCompacting = false;  // true while /compact is running
     // Each entry: { text: string, images: Array<{data:string,mimeType:string}>,
     //               clipboard?: { text: string } }
     let messageQueue = [];
+    // Set by the composer's paste handler, cleared on send. Says the @clipboard mention in
+    // the composer came from a PASTE rather than being typed, which lets the host attach it
+    // mid-sentence: paste is unambiguous intent, and position is the only signal a typed
+    // mention has. Declared at column 0 scope because both the paste handler and handleSend
+    // touch it.
+    let clipboardPastedPending = false;
     const msgQueueEl = document.getElementById('msgQueue');
     const msgQueueLabelEl = document.getElementById('msgQueueLabel');
 
@@ -10192,7 +10218,12 @@ function handleSend() {
     isSendingPrompt = true;
     setProcessing(true, 'handleSend');
   }
- vscode.postMessage({ type: 'sendPrompt', text: text || ' ', images });
+ // clipboardPastedPending says the @clipboard mention in this text came from a PASTE, so
+ // the host attaches it wherever it sits instead of requiring a line start. Only sent when
+ // the mention actually survived editing — the user may have deleted it after pasting.
+ var pastedNow = clipboardPastedPending && /@clipboard\\b/i.test(String(text || ''));
+ clipboardPastedPending = false;
+ vscode.postMessage({ type: 'sendPrompt', text: text || ' ', images, clipboardPasted: pastedNow });
 }
 
     function handleCancel() {
@@ -10268,18 +10299,21 @@ function handleSend() {
           const end = promptInput.selectionEnd;
           const before = promptInput.value.slice(0, start);
           const after = promptInput.value.slice(end);
-          // The mention MUST land at a line start, or the host refuses to resolve it.
-          // hasLeadingClipboardMention only attaches when the text before the mention
-          // is empty or ends in a newline — mid-sentence "@clipboard" is deliberately
-          // treated as prose so a question about the feature cannot hijack the
-          // clipboard. Pasting at a mid-line caret therefore produced
-          // "check those testcases in this folder:@clipboard", which attached NOTHING:
-          // the bare mention reached the agent, which then hunted for a clipboard file
-          // over the shell and failed. Pasting is an unambiguous request to attach, so
-          // put the mention where it will be honoured.
-          var needsNewline = before.length > 0 && !/(?:\\r?\\n)[ \\t]*$/.test(before);
-          const insert = (needsNewline ? String.fromCharCode(10) : '') + '@clipboard ';
+          // Insert INLINE, exactly where the caret is.
+          //
+          // This used to force a newline first, because the host only attaches a mention
+          // that sits at a line start: mid-sentence "@clipboard" is treated as prose so a
+          // question about the feature cannot hijack the clipboard. But breaking the
+          // user's sentence in half to satisfy a positional rule is the wrong trade —
+          // typing "i see ", pasting, then " this has" produced two lines.
+          //
+          // Paste is unambiguous intent to attach, so instead of moving the mention we
+          // now SAY it was pasted: clipboardPastedPending rides along with the send and
+          // the host resolves the mention wherever it sits. Position still governs typed
+          // mentions, which is the only case that needs the guard.
+          const insert = '@clipboard ';
           promptInput.value = before + insert + after;
+          clipboardPastedPending = true;
           const caret = start + insert.length;
           promptInput.selectionStart = caret;
           promptInput.selectionEnd = caret;

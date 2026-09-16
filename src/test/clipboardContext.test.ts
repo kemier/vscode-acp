@@ -31,7 +31,7 @@ suite('@clipboard context mention', () => {
   // Additionally, only a LEADING @clipboard (start of message / start of line)
   // is an attach request — mid-sentence "@clipboard" is literal text and must
   // not hijack the send (observed with a web-search query containing it).
-  const at = src.indexOf('if (hasLeadingClipboardMention(text)) {');
+  const at = src.indexOf('if (clipboardMentionResolves) {');
   const block = src.slice(at, at + 1800);
 
   test('the mention is detected', () => {
