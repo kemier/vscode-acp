@@ -3066,6 +3066,21 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       let cleanPath = filePath;
       if (cleanPath.startsWith('file://')) {
         cleanPath = vscode.Uri.parse(cleanPath).fsPath;
+      } else if (/%[0-9A-Fa-f]{2}/.test(cleanPath)) {
+        // Backstop for a scheme-less path that still carries percent-escapes. The
+        // file:// branch decodes via Uri.parse, but a caller that already stripped the
+        // scheme skips it — which is how "%E8%AE%B2%E4%B9%89_longcat.md" reached
+        // openTextDocument verbatim and failed as "File not found". A real filename can
+        // legitimately contain a '%', so only take the decoded form when it actually
+        // decodes to something different, and never let a malformed escape throw.
+        try {
+          const decoded = decodeURIComponent(cleanPath);
+          if (decoded !== cleanPath) {
+            cleanPath = decoded;
+          }
+        } catch {
+          // Malformed escape sequence — keep the original path.
+        }
       }
 
       // Expand a leading ~ to the user's home dir (e.g. ~/notes/x.md, ~/.zshrc).
@@ -20691,7 +20706,16 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         // e.g. file:///absolute/path/to/file.rs#L142 or file:///path/file.rs#L10-L20
         if (href.startsWith('file://')) {
           const url = new URL(href);
-          const filePath = url.pathname; // already decoded
+          // URL.pathname is NOT decoded — it keeps percent-escapes. The comment here used
+          // to claim it was, so a CJK filename arrived at the host as a literal
+          // "%E8%AE%B2%E4%B9%89_longcat.md" and opening it failed with "File not found".
+          // Affects any path with non-ASCII characters or spaces.
+          let filePath = url.pathname;
+          try {
+            filePath = decodeURIComponent(filePath);
+          } catch (e) {
+            // Malformed escape — keep the raw pathname rather than losing the link.
+          }
           let lineNumber = undefined;
           let lineEnd = undefined;
           // Extract ?symbol= query param for symbol-based line correction
