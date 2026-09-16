@@ -132,3 +132,69 @@ suite('paste-to-clipboard inserts an inline mention', () => {
     assert.strictEqual(hasLeading('  @clipboard'), true);
   });
 });
+
+suite('two pastes carry two payloads', () => {
+  // The OS clipboard holds exactly ONE value, so using it as the transport meant a second
+  // paste overwrote the first. Two pastes produced two @clipboard mentions but a single
+  // "Clipboard: 1 line" chip carrying only the LAST text, and the prose was left with a
+  // double space where the lost mention had been stripped.
+  test('each paste records its own text', () => {
+    assert.ok(
+      SRC.includes('pastedClipboardTexts.push(String(text));'),
+      'the paste handler must capture its own payload',
+    );
+    assert.ok(
+      /pastedClipboardTexts = \[\]/.test(SRC),
+      'and the buffer must be declared and cleared',
+    );
+  });
+
+  test('payloads are capped at the number of surviving mentions', () => {
+    // Deleting a mention must drop its attachment, not silently attach more chips than
+    // the user asked for.
+    assert.ok(SRC.includes("match(/@clipboard\\\\b/gi) || []).length"), 'must count mentions');
+    assert.ok(
+      SRC.includes('pastedClipboardTexts.slice(0, mentionCount)'),
+      'must send at most one payload per mention',
+    );
+  });
+
+  test('the host emits one pill and one block PER payload', () => {
+    const at = SRC.indexOf('if (clipboardMentionResolves) {');
+    assert.ok(at > 0);
+    let i = SRC.indexOf('{', at);
+    let depth = 0;
+    let end = SRC.length;
+    for (; i < SRC.length; i++) {
+      if (SRC[i] === '{') {
+        depth++;
+      } else if (SRC[i] === '}') {
+        depth--;
+        if (depth === 0) {
+          end = i + 1;
+          break;
+        }
+      }
+    }
+    const body = SRC.slice(at, end);
+    assert.ok(body.includes('for (const clip of clips)'), 'must loop over payloads');
+    assert.ok(body.includes('attachedPills.push('), 'a pill per payload');
+    assert.ok(body.includes('contextBlocks.push(block)'), 'a block per payload');
+  });
+
+  test('a TYPED mention still falls back to reading the OS clipboard', () => {
+    // Someone who copies elsewhere and types @clipboard must keep working.
+    const at = SRC.indexOf('if (clips.length === 0) {');
+    assert.ok(at > 0, 'the fallback must exist');
+    const body = SRC.slice(at, at + 600);
+    assert.ok(body.includes('clipboard.readText()'), 'fallback reads the OS clipboard');
+    assert.ok(body.includes('await this.clipboardWriteChain'), 'and still respects the write ordering');
+  });
+
+  test('the buffer is cleared on send, so payloads cannot leak into the next message', () => {
+    const at = SRC.indexOf('var pastedTexts =');
+    assert.ok(at > 0);
+    const body = SRC.slice(at, at + 400);
+    assert.ok(body.includes('pastedClipboardTexts = [];'), 'must reset after capturing');
+  });
+});

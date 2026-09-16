@@ -1137,6 +1137,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             message.selections,
             // Set by the composer's paste handler; see the parameter's doc comment.
             message.clipboardPasted === true,
+            Array.isArray(message.pastedClipboardTexts) ? message.pastedClipboardTexts : undefined,
           );
           break;
         // Snapshot the clipboard for a message being QUEUED. Read now so the queued
@@ -2047,6 +2048,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
      * the sentence the user was writing.
      */
     clipboardPasted?: boolean,
+    /** One payload per surviving @clipboard mention, captured at paste time. */
+    clipboardPastedTexts?: string[],
   ): Promise<void> {
     // TEMP-DEBUG (cannot-send investigation): entry marker so we can tell
     // "webview never posted" apart from "host received but dropped".
@@ -2328,25 +2331,40 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       );
     }
     if (clipboardMentionResolves) {
-      let clip = '';
-      try {
-        // Same ordering hazard as resolveClipboardForQueue: a paste posts writeClipboard
-        // and this send can be dispatched before that write lands, reading an empty or
-        // stale clipboard. Wait for the outstanding write.
-        await this.clipboardWriteChain;
-        clip = await vscode.env.clipboard.readText();
-      } catch {        clip = '';
+      // Prefer the payloads the composer captured at paste time, one per surviving
+      // mention. Falling back to a single OS-clipboard read is what limited a message to
+      // ONE attachment: the clipboard holds one value, so a second paste overwrote the
+      // first and only the last text survived.
+      const pasted: string[] = Array.isArray(clipboardPastedTexts)
+        ? clipboardPastedTexts.map((t) => String(t ?? '')).filter((t) => t.trim())
+        : [];
+      let clips: string[] = pasted;
+      if (clips.length === 0) {
+        // A TYPED @clipboard, or a paste from before this feature: read the OS clipboard.
+        let clip = '';
+        try {
+          // Same ordering hazard as resolveClipboardForQueue: a paste posts writeClipboard
+          // and this send can be dispatched before that write lands, reading an empty or
+          // stale clipboard. Wait for the outstanding write.
+          await this.clipboardWriteChain;
+          clip = await vscode.env.clipboard.readText();
+        } catch {
+          clip = '';
+        }
+        clips = clip.trim() ? [clip] : [];
       }
       text = replaceMentionOutsideContext(text, /@clipboard\b/gi, '').trim();
       proseText = text;
-      if (clip.trim()) {
-        const clipLines = clip.split('\n').length;
-        attachedPills.push(`Clipboard: ${clipLines} ${clipLines === 1 ? 'line' : 'lines'}`);
-        const block = buildClipboardBlock(clip, supportsEmbedded);
-        if (block) {
-          contextBlocks.push(block);
-        } else {
-          text = `${wrapClipboardPayload(clip)}\n\n${text}`;
+      if (clips.length > 0) {
+        for (const clip of clips) {
+          const clipLines = clip.split('\n').length;
+          attachedPills.push(`Clipboard: ${clipLines} ${clipLines === 1 ? 'line' : 'lines'}`);
+          const block = buildClipboardBlock(clip, supportsEmbedded);
+          if (block) {
+            contextBlocks.push(block);
+          } else {
+            text = `${wrapClipboardPayload(clip)}\n\n${text}`;
+          }
         }
       } else {
         vscode.window.showWarningMessage(
@@ -6551,6 +6569,15 @@ let isCompacting = false;  // true while /compact is running
     // mention has. Declared at column 0 scope because both the paste handler and handleSend
     // touch it.
     let clipboardPastedPending = false;
+    // The text of EACH paste, in paste order.
+    //
+    // The OS clipboard cannot be the transport for more than one payload: a second paste
+    // overwrites the first, so two pastes in one message produced two @clipboard mentions
+    // but a single "Clipboard: 1 line" chip carrying only the LAST text — the first paste
+    // silently lost, and the prose left with a double space where its mention was stripped.
+    // The pasted text is already in hand here (clipboardData.getData), so keep it and send
+    // it with the message instead of asking the host to read it back.
+    let pastedClipboardTexts = [];
     const msgQueueEl = document.getElementById('msgQueue');
     const msgQueueLabelEl = document.getElementById('msgQueueLabel');
 
@@ -10305,8 +10332,13 @@ function handleSend() {
  // the host attaches it wherever it sits instead of requiring a line start. Only sent when
  // the mention actually survived editing — the user may have deleted it after pasting.
  var pastedNow = clipboardPastedPending && /@clipboard\\b/i.test(String(text || ''));
+ // Send at most one payload per surviving mention, in paste order, so deleting a mention
+ // drops its attachment instead of silently attaching more chips than the user asked for.
+ var mentionCount = (String(text || '').match(/@clipboard\\b/gi) || []).length;
+ var pastedTexts = pastedNow ? pastedClipboardTexts.slice(0, mentionCount) : [];
  clipboardPastedPending = false;
- vscode.postMessage({ type: 'sendPrompt', text: text || ' ', images, clipboardPasted: pastedNow });
+ pastedClipboardTexts = [];
+ vscode.postMessage({ type: 'sendPrompt', text: text || ' ', images, clipboardPasted: pastedNow, pastedClipboardTexts: pastedTexts });
 }
 
     function handleCancel() {
@@ -10397,6 +10429,10 @@ function handleSend() {
           const insert = '@clipboard ';
           promptInput.value = before + insert + after;
           clipboardPastedPending = true;
+          // Record THIS paste's text. The OS clipboard still gets it too, so a typed
+          // @clipboard in a later message keeps working, but the send no longer depends
+          // on reading it back — which is what collapsed multiple pastes into one.
+          pastedClipboardTexts.push(String(text));
           const caret = start + insert.length;
           promptInput.selectionStart = caret;
           promptInput.selectionEnd = caret;

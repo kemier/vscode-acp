@@ -32,7 +32,24 @@ suite('@clipboard context mention', () => {
   // is an attach request — mid-sentence "@clipboard" is literal text and must
   // not hijack the send (observed with a web-search query containing it).
   const at = src.indexOf('if (clipboardMentionResolves) {');
-  const block = src.slice(at, at + 1800);
+  const block = (() => {
+    // Brace-matched. `src.slice(at, at + 1800)` stopped covering the branch once the
+    // multi-payload paste support made it longer, and the empty-clipboard warning fell
+    // outside the window.
+    let i = src.indexOf('{', at);
+    let depth = 0;
+    for (; i < src.length; i++) {
+      if (src[i] === '{') {
+        depth++;
+      } else if (src[i] === '}') {
+        depth--;
+        if (depth === 0) {
+          return src.slice(at, i + 1);
+        }
+      }
+    }
+    return src.slice(at);
+  })();
 
   test('the mention is detected', () => {
     assert.ok(at > 0, '@clipboard branch not found');
@@ -193,7 +210,23 @@ suite('paste-to-clipboard (non-image text paste becomes @clipboard)', () => {
     for (const anchor of ["case 'resolveClipboardForQueue'", 'if (clipboardMentionResolves) {']) {
       const at = src.indexOf(anchor);
       assert.ok(at > 0, `${anchor} not found`);
-      const body = src.slice(at, at + 700);
+      // Brace-matched: my first version used a 700-char window, which stopped reaching the
+      // await once the multi-payload paste support moved it into a fallback branch.
+      let i = src.indexOf('{', at);
+      let depth = 0;
+      let end = src.length;
+      for (; i < src.length; i++) {
+        if (src[i] === '{') {
+          depth++;
+        } else if (src[i] === '}') {
+          depth--;
+          if (depth === 0) {
+            end = i + 1;
+            break;
+          }
+        }
+      }
+      const body = src.slice(at, end);
       assert.ok(
         body.includes('await this.clipboardWriteChain'),
         `${anchor} must wait for the pending clipboard write`,
