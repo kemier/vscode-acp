@@ -36,6 +36,8 @@ import {
   matchMentionsOutsideContext,
   replaceMentionOutsideContext,
   escapeForRegExp,
+  isBareContextMention,
+  BARE_CONTEXT_MENTION_SOURCE,
 } from '../core/MentionScan';
 import { StreamCoalescer } from '../core/StreamCoalescer';
 import { FollowCoalescer, pickFollowTarget, type ToolCallLocationLike } from '../core/FollowAgent';
@@ -2336,7 +2338,16 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // ONE attachment: the clipboard holds one value, so a second paste overwrote the
       // first and only the last text survived.
       const pasted: string[] = Array.isArray(clipboardPastedTexts)
-        ? clipboardPastedTexts.map((t) => String(t ?? '')).filter((t) => t.trim())
+        ? clipboardPastedTexts
+            .map((t) => String(t ?? ''))
+            .filter((t) => t.trim())
+            // Drop a payload that is nothing but a context mention. It produces
+            // <clipboard>@clipboard</clipboard> — a block with no information and a
+            // chip that misreports content. See isBareContextMention: this is the
+            // degenerate case of the payload-interior hazard this module exists for,
+            // and it is self-amplifying because the inserted mention is identical to
+            // the pasted text.
+            .filter((t) => !isBareContextMention(t))
         : [];
       let clips: string[] = pasted;
       if (clips.length === 0) {
@@ -2351,7 +2362,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         } catch {
           clip = '';
         }
-        clips = clip.trim() ? [clip] : [];
+        clips = clip.trim() && !isBareContextMention(clip) ? [clip] : [];
       }
       text = replaceMentionOutsideContext(text, /@clipboard\b/gi, '').trim();
       proseText = text;
@@ -2367,8 +2378,18 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           }
         }
       } else {
+        // Distinguish the two ways clips can end up empty. Saying "the clipboard is
+        // empty" when it actually held "@clipboard" sends the user off to re-copy
+        // text they already copied.
+        const hadBareMentionOnly =
+          (Array.isArray(clipboardPastedTexts) ? clipboardPastedTexts : [])
+            .map((t) => String(t ?? ''))
+            .some((t) => isBareContextMention(t));
         vscode.window.showWarningMessage(
-          '@clipboard: the clipboard is empty. Select the text (a Markdown preview works), press Ctrl+C, then send again.',
+          hadBareMentionOnly
+            ? '@clipboard: the clipboard held only the text "@clipboard", so there was nothing to attach. '
+              + 'Copy the content you want to send, then paste again.'
+            : '@clipboard: the clipboard is empty. Select the text (a Markdown preview works), press Ctrl+C, then send again.',
         );
       }
     }
@@ -10397,6 +10418,19 @@ function handleSend() {
       imagePreviewStrip.appendChild(thumb);
     }
 
+    // True when the pasted text carries no content of its own — it is just a
+    // context mention such as "@clipboard". Converting that into an attachment
+    // produces a block with no information and a chip that misreports content,
+    // and it is self-amplifying because the mention this handler inserts is
+    // byte-identical to the pasted text. Let it paste as ordinary text instead.
+    //
+    // The pattern comes from MentionScan.BARE_CONTEXT_MENTION_SOURCE (the host
+    // realm cannot be imported here), and bareContextMentionParity asserts the
+    // two never drift.
+    function isBarePastedMention(text) {
+      return new RegExp(${JSON.stringify(BARE_CONTEXT_MENTION_SOURCE)}, 'i').test(String(text || ''));
+    }
+
     // Paste handler
    promptInput.addEventListener('paste', (e) => {
      const items = e.clipboardData && e.clipboardData.items;
@@ -10421,7 +10455,7 @@ function handleSend() {
       // earlier "two copies" (clipboard block + raw text) cannot happen.
       if (!handled) {
         const text = e.clipboardData && e.clipboardData.getData('text/plain');
-        if (text && text.trim()) {
+        if (text && text.trim() && !isBarePastedMention(text)) {
           e.preventDefault();
           vscode.postMessage({ type: 'writeClipboard', text: text });
           // Insert '@clipboard ' at the cursor, replacing any selection.

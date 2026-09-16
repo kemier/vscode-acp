@@ -128,6 +128,46 @@ export function hasMentionOutsideContext(text: string, re: RegExp): boolean {
   });
 }
 
+/**
+ * Source of truth for "this text is nothing but a context mention".
+ *
+ * Kept as a string so the webview (a separate realm that cannot import this
+ * module) can build the identical regex inline; `bareContextMentionParity`
+ * asserts the two stay in step.
+ */
+export const BARE_CONTEXT_MENTION_SOURCE =
+  '^[\\s]*@(clipboard|terminal|problems|selection|open_files)[\\s:]*$';
+
+/**
+ * True when `text` carries no content of its own — it is just a context
+ * mention such as "@clipboard".
+ *
+ * This is the degenerate case of the hazard described at the top of this file.
+ * There, the clipboard held text that BEGAN with a mention and the scan ate the
+ * word out of the payload; the fix was to ignore payload interiors. But when the
+ * clipboard holds ONLY the mention, ignoring interiors is not enough:
+ *
+ *   paste "@clipboard"  ->  composer inserts "@clipboard " (identical to the
+ *                           pasted text) and records "@clipboard" as the payload
+ *   send                ->  <clipboard>@clipboard</clipboard>
+ *
+ * The block carries zero information, the chip claims "Clipboard: 1 line", and
+ * the user's literal intent (paste the word) is lost. Worse, it is
+ * self-amplifying: because the inserted mention is byte-identical to the
+ * content, copying the composer and pasting again reproduces it — which is how
+ * two identical empty blocks appeared in one message.
+ *
+ * `@file:` / `@folder:` are deliberately absent: those carry a path after the
+ * colon, so they are never contentless.
+ */
+export function isBareContextMention(text: string): boolean {
+  const src = String(text ?? '');
+  if (!src.trim()) {
+    return false; // empty is a different condition, handled by callers
+  }
+  return new RegExp(BARE_CONTEXT_MENTION_SOURCE, 'i').test(src);
+}
+
 /** Every match of the pattern that occurs in prose, in order. */
 export function matchMentionsOutsideContext(text: string, re: RegExp): string[] {
   const src = String(text || '');
