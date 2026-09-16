@@ -1498,6 +1498,19 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       );
     }
     if (update.sessionId !== activeId) {
+      // Deliberately dropped, not buffered. A background session's subagents keep running
+      // and their results become role:'tool' messages in state.messages, which
+      // persistSession writes per turn — so switching back replays the content from the
+      // session file. Buffering the frames as well would duplicate that recovery path and
+      // grow without bound while the panel is elsewhere. Logged so a "where did my
+      // subagent output go" question is answerable.
+      const droppedKind = (update as { update?: { sessionUpdate?: unknown } })?.update?.sessionUpdate;
+      if (droppedKind === 'tool_call' || droppedKind === 'tool_call_update') {
+        log(
+          `Dropped ${String(droppedKind)} for background session ${update.sessionId} ` +
+            `(active=${activeId}) — recovered from history on switch-back`,
+        );
+      }
       return;
     }
 
@@ -17232,6 +17245,41 @@ function commitCurrentTextSegment(opts) {
       }
     }
     var sessionInterrupted = sessionMarkedInterrupted();
+    // Stale-spinner sweep over the turns BEFORE the last user message.
+    //
+    // The main loop below deliberately starts at lastUserIdx so an interrupted later turn
+    // cannot retroactively red-cross subagents from earlier turns that really did finish.
+    // But that left every OLDER turn unvisited, so a stage still recorded as running kept
+    // spinning forever after a resume — and it cannot possibly still be running, because
+    // the process that owned it is gone.
+    //
+    // So clear those spinners without asserting failure. A completed parent means the
+    // spawn returned and the user moved on, so the stage almost certainly finished and
+    // merely missed its final update: mark it completed. Only when the parent itself never
+    // completed is failed the honest state. This is the narrow claim — the spinner is
+    // definitely wrong, the outcome is inferred from the parent.
+    for (var pi = 0; pi < (lastUserIdx >= 0 ? lastUserIdx : 0); pi++) {
+      var older = chatHistory[pi];
+      if (!older || older.kind !== 'toolCall' || !older.rawInput || typeof older.rawInput !== 'object') {
+        continue;
+      }
+      if (!Array.isArray(older.rawInput.stages) || older.rawInput.stages.length === 0) continue;
+      var olderStages = older.rawInput.stages.slice();
+      var olderChanged = false;
+      var settleTo = older.status === 'completed' ? 'completed' : 'failed';
+      for (var os = 0; os < olderStages.length; os++) {
+        var ost = olderStages[os];
+        if (!ost || typeof ost !== 'object') continue;
+        var ostStatus = ost.status;
+        if (ostStatus === 'running' || ostStatus === 'in_progress' || ostStatus === 'pending' || ostStatus === 'working') {
+          olderStages[os] = Object.assign({}, ost, { status: settleTo });
+          olderChanged = true;
+        }
+      }
+      if (olderChanged) {
+        older.rawInput = Object.assign({}, older.rawInput, { stages: olderStages });
+      }
+    }
     for (var i = (lastUserIdx >= 0 ? lastUserIdx + 1 : 0); i < chatHistory.length; i++) {
       var item = chatHistory[i];
       if (!item || item.kind !== 'toolCall' || !item.rawInput || typeof item.rawInput !== 'object') {
