@@ -195,6 +195,17 @@ const WEBVIEW_QUEUE_DEBUG_MARKERS = ['[WV-QUEUE]', '[WV-QUEUEVIS]'];
  */
 const WEBVIEW_RENDER_DEBUG_MARKERS = ['[WV-MDRENDER]'];
 
+/**
+ * Longest single-line paste that is still treated as prose rather than an
+ * attachment.
+ *
+ * Above this, or as soon as the text has a newline, a paste becomes a
+ * `@clipboard` attachment — the payload case the feature was built for. Below
+ * it, the text is inserted where the caret is, so pasting inside a sentence does
+ * not empty the sentence out into a pill.
+ */
+export const INLINE_PASTE_MAX_CHARS = 200;
+
 export function isAlwaysLoggedWebviewMessage(message: string): boolean {
   if (!message) {
     return false;
@@ -10497,6 +10508,30 @@ function handleSend() {
       return new RegExp(${JSON.stringify(BARE_CONTEXT_MENTION_SOURCE)}, 'i').test(String(text || ''));
     }
 
+    // A paste only becomes a @clipboard attachment when it is big enough to be a
+    // payload. Short single-line text is prose and stays where the caret is.
+    //
+    // Converting EVERY text paste cost the user their sentence: typing
+    //   i click + button ... but the '' msg showed in new chat
+    // and pasting between the quotes lifted the pasted words out into a
+    // [Clipboard: 2 lines] pill, leaving '' empty. The pasted text was
+    // "ACP connection closed" — 21 characters, nothing that needs an attachment.
+    //
+    // The feature exists to stop a large blob being dumped into the composer
+    // twice (raw text AND clipboard block); that reasoning does not apply to a
+    // short snippet. Judged on size and shape rather than caret context, because
+    // the caret's surroundings are invisible to the user and would make the same
+    // paste behave differently in ways that are hard to predict.
+    //
+    // Trailing newlines do not count: a copied line usually carries one, and
+    // "ACP connection closed\\r\\n\\n" is still one line of text.
+    function isPayloadSizedPaste(text) {
+      var t = String(text || '').trim();
+      if (!t) return false;
+      if (t.indexOf('\\n') >= 0) return true;
+      return t.length > ${INLINE_PASTE_MAX_CHARS};
+    }
+
     // Paste handler
    promptInput.addEventListener('paste', (e) => {
      const items = e.clipboardData && e.clipboardData.items;
@@ -10521,7 +10556,7 @@ function handleSend() {
       // earlier "two copies" (clipboard block + raw text) cannot happen.
       if (!handled) {
         const text = e.clipboardData && e.clipboardData.getData('text/plain');
-        if (text && text.trim() && !isBarePastedMention(text)) {
+        if (text && text.trim() && !isBarePastedMention(text) && isPayloadSizedPaste(text)) {
           e.preventDefault();
           vscode.postMessage({ type: 'writeClipboard', text: text });
           // Insert '@clipboard ' at the cursor, replacing any selection.
