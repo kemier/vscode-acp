@@ -8591,6 +8591,42 @@ const builtinCommands = [
      return kept.join(nl);
    }
 
+/**
+ * Strip the machine-written goal preamble from the front of a user message.
+ *
+ * ericli turns a /goal command into the prompt
+ * "Please start working toward this goal now:" followed by a blank line and the
+ * objective (acp-server pendingGoalPrompt), and persists THAT as the user
+ * message, so a resumed session renders the preamble in the bubble. It is
+ * machine context — the goal itself is already shown in the goal chip — so only
+ * the objective should show.
+ *
+ * Leading-only, exactly like the [User interjection]: stripper: a mid-sentence
+ * occurrence is real text. Asking "strip the goal prefix 'Please start working
+ * toward this goal now'" must survive untouched.
+ *
+ * Written with indexOf/slice rather than a regex: this lives inside the webview
+ * template literal, where backslash escapes have to be doubled and a regex is an
+ * easy way to get that silently wrong.
+ */
+ function stripLeadingGoalPrompt(text) {
+   var s = String(text == null ? '' : text);
+   var marker = 'Please start working toward this goal now:';
+   var start = 0;
+   while (start < s.length) {
+     var c = s.charCodeAt(start);
+     if (c === 32 || c === 10 || c === 13 || c === 9) { start++; } else break;
+   }
+   if (s.slice(start, start + marker.length) !== marker) return s;
+   var end = start + marker.length;
+   // Consume the blank line the preamble is followed by.
+   while (end < s.length) {
+     var t = s.charCodeAt(end);
+     if (t === 32 || t === 10 || t === 13 || t === 9) { end++; } else break;
+   }
+   return s.slice(0, start) + s.slice(end);
+ }
+
  function cleanUserMessage(rawText) {
     var displayText = rawText;
     // Debug: log cleanUserMessage entry
@@ -8854,6 +8890,9 @@ const builtinCommands = [
    if (displayText.charAt(ijEnd) === ' ') ijEnd++;
    displayText = displayText.slice(0, ijStart) + displayText.slice(ijEnd);
  }
+ // Now the goal preamble, after any interjection marker in front of it: a
+ // steered goal prompt arrives as "[User interjection]: Please start working…".
+ displayText = stripLeadingGoalPrompt(displayText);
  // Strip any remaining leading whitespace after stripping
  var leadEnd = 0;
  while (leadEnd < displayText.length) {
