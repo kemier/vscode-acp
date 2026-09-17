@@ -202,6 +202,33 @@ export function isAlwaysLoggedWebviewMessage(message: string): boolean {
   return WEBVIEW_ALWAYS_LOG_MARKERS.some((marker) => message.includes(marker));
 }
 
+/**
+ * True when a webview debugLog line carries ANY bracketed diagnostic marker.
+ *
+ * The gated lists above name the markers worth calling out, but they were
+ * hand-maintained and fell behind: an audit found 18 of the 31 markers actually
+ * emitted — including [WV-STATE], [WV-USER], [WV-PROMPTEND], [WV-DEDUP] and
+ * [STEER] — matched no list at all, so they only reached the log through the
+ * module-level `const DEBUG`/`DEBUG_LIVE = false`. Compile-time constants: no
+ * setting could turn them on.
+ *
+ * That wall has now cost three investigations. The header on
+ * WEBVIEW_RENDER_DEBUG_MARKERS describes the first two (raw markdown / empty
+ * bubble); the third was a phantom `fix` user bubble surviving a resume, where
+ * the deciding traces were [WV-USER] and the restoreState/saveState pair — all
+ * unreachable.
+ *
+ * So the catch-all no longer depends on a curated list. Any marked line is
+ * capturable under the diagnostic gate, which means a newly added marker cannot
+ * silently become unreachable. `webviewDebugMarkerCoverage` enforces it.
+ */
+export function hasWebviewDiagnosticMarker(message: string): boolean {
+  if (!message) {
+    return false;
+  }
+  return /^\s*\[[A-Z][A-Z0-9-]*\]/.test(message);
+}
+
 export function isQueueDebugWebviewMessage(message: string): boolean {
   if (!message) {
     return false;
@@ -1396,7 +1423,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             log('[DEBUG-WV] ' + wvMsg);
           } else if (DEBUG) {
             log('[DEBUG-WV] ' + wvMsg);
-          } else if (this.isDebugResume() && isResumeDiagWebviewMessage(wvMsg)) {
+          } else if (
+            this.isDebugResume() &&
+            (isResumeDiagWebviewMessage(wvMsg) || hasWebviewDiagnosticMarker(wvMsg))
+          ) {
             this.logResumeDiag('[DEBUG-WV] ' + wvMsg);
           }
           break;
@@ -8518,7 +8548,7 @@ const builtinCommands = [
     var displayText = rawText;
     // Debug: log cleanUserMessage entry
     var _dbgPreview = rawText.length > 200 ? rawText.substring(0, 200) + '...' : rawText;
-    vscode.postMessage({ type: 'debugLog', message: 'cleanUserMessage IN len=' + rawText.length + ' text="' + _dbgPreview + '"' });
+    vscode.postMessage({ type: 'debugLog', message: '[WV-USER] cleanUserMessage IN len=' + rawText.length + ' text="' + _dbgPreview + '"' });
     displayText = stripFlattenedContextMarkers(displayText);
     displayText = stripTag(displayText, 'open_files', function(b) { return contextTagPill('open_files', b); });
     displayText = stripTag(displayText, 'terminal', function(b) { return contextTagPill('terminal', b); });
@@ -8584,12 +8614,12 @@ const builtinCommands = [
     }
     if (!validScheme) break;
     // Debug: log each stripped link
-    vscode.postMessage({ type: 'debugLog', message: 'cleanUserMessage STRIP link uri="' + uriPart.substring(0, 80) + '"' });
+    vscode.postMessage({ type: 'debugLog', message: '[WV-USER] cleanUserMessage STRIP link uri="' + uriPart.substring(0, 80) + '"' });
     displayText = trimmed.substring(closeParen + 1);
   }
   // Debug: log result after link stripping
   var _dbgAfter = displayText.length > 200 ? displayText.substring(0, 200) + '...' : displayText;
-  vscode.postMessage({ type: 'debugLog', message: 'cleanUserMessage AFTER-LINKS len=' + displayText.length + ' text="' + _dbgAfter + '"' });
+  vscode.postMessage({ type: 'debugLog', message: '[WV-USER] cleanUserMessage AFTER-LINKS len=' + displayText.length + ' text="' + _dbgAfter + '"' });
 // Strip leading JSON-stringified resource_link blocks (Kiro format):
    // {"name":"...","uri":"file:///...","type":"resource_link"}
    // These are concatenated without separators before the real user text.
@@ -8823,7 +8853,7 @@ var end = displayText.length;
      }
      // Debug: log final result
      var _dbgFinal = displayText.length > 200 ? displayText.substring(0, 200) + '...' : displayText;
-     vscode.postMessage({ type: 'debugLog', message: 'cleanUserMessage OUT len=' + displayText.length + ' text="' + _dbgFinal + '"' });
+     vscode.postMessage({ type: 'debugLog', message: '[WV-USER] cleanUserMessage OUT len=' + displayText.length + ' text="' + _dbgFinal + '"' });
      return displayText;
    }
 
@@ -8963,7 +8993,7 @@ var end = displayText.length;
   for (var _si = 0; _si < capped.length; _si++) {
     if (capped[_si] && capped[_si].kind === 'message' && capped[_si].role === 'user') {
       var _dbgSaved = typeof capped[_si].text === 'string' ? (capped[_si].text.length > 100 ? capped[_si].text.substring(0, 100) + '...' : capped[_si].text) : '(non-string)';
-      vscode.postMessage({ type: 'debugLog', message: 'saveState user[' + _si + '] len=' + (typeof capped[_si].text === 'string' ? capped[_si].text.length : -1) + ' text="' + _dbgSaved + '"' });
+      vscode.postMessage({ type: 'debugLog', message: '[WV-STATE] saveState user[' + _si + '] len=' + (typeof capped[_si].text === 'string' ? capped[_si].text.length : -1) + ' text="' + _dbgSaved + '"' });
     }
   }
 }
@@ -8977,7 +9007,7 @@ var end = displayText.length;
       tokenUsageBySession = saved.tokenUsageBySession;
     }
     // Debug: log restoreState entry
-    vscode.postMessage({ type: 'debugLog', message: 'restoreState START: saved.chatHistory.length=' + (saved.chatHistory ? saved.chatHistory.length : 0) });
+    vscode.postMessage({ type: 'debugLog', message: '[WV-STATE] restoreState START: saved.chatHistory.length=' + (saved.chatHistory ? saved.chatHistory.length : 0) });
    // Restore the last connected agent so the welcome button can offer
    // "Resume <agent>" even after showNoSession cleared sessionState.
    // Only restore if there is chat history — on a new project with no
@@ -9003,7 +9033,7 @@ var end = displayText.length;
        // Debug: log each restored item
        if (riItem && riItem.kind === 'message' && riItem.role === 'user') {
          var _dbgRaw = typeof riItem.text === 'string' ? (riItem.text.length > 100 ? riItem.text.substring(0, 100) + '...' : riItem.text) : '(non-string)';
-         vscode.postMessage({ type: 'debugLog', message: 'restoreState item[' + ri + '] user textLen=' + (typeof riItem.text === 'string' ? riItem.text.length : -1) + ' text="' + _dbgRaw + '"' });
+         vscode.postMessage({ type: 'debugLog', message: '[WV-STATE] restoreState item[' + ri + '] user textLen=' + (typeof riItem.text === 'string' ? riItem.text.length : -1) + ' text="' + _dbgRaw + '"' });
        }
       // Skip error messages on restore -- they are transient and
       // should not persist across reloads (e.g. "Failed to load session
@@ -9149,7 +9179,7 @@ var end = displayText.length;
    // interrupted" + unfinished tool calls that disappears after load.
    var _skipRestoreRender = sessionMarkedInterrupted();
    if (_skipRestoreRender) {
-     vscode.postMessage({ type: 'debugLog', message: 'restoreState: skipping render — session was interrupted, waiting for session/load' });
+     vscode.postMessage({ type: 'debugLog', message: '[WV-STATE] restoreState: skipping render — session was interrupted, waiting for session/load' });
    }
    if (!_skipRestoreRender) {
      // Render chat history using compact turn-based inline layout
@@ -9166,9 +9196,9 @@ var end = displayText.length;
      failRunningSubagentStagesInDom();
      failCompletedCrewsInInterruptedTurn();
      if (assistantItems.length > 0) {
-        vscode.postMessage({ type: 'debugLog', message: 'restoreState: sending renderMarkdown for ' + assistantItems.length + ' assistant items' });
+        vscode.postMessage({ type: 'debugLog', message: '[WV-STATE] restoreState: sending renderMarkdown for ' + assistantItems.length + ' assistant items' });
         vscode.postMessage({ type: 'renderMarkdown', items: assistantItems });
-        vscode.postMessage({ type: 'debugLog', message: 'restoreState: renderMarkdown sent' });
+        vscode.postMessage({ type: 'debugLog', message: '[WV-STATE] restoreState: renderMarkdown sent' });
         // Retry mechanism: if the extension host doesn't respond within 2s,
         // re-send the renderMarkdown request. This handles a race condition
         // where the initial postMessage is lost during webview initialization.
@@ -9179,7 +9209,7 @@ var end = displayText.length;
      var _retryFn = function() {
        if (pendingRenderRetries[_retryKey] && _retryCount < 3) {
          _retryCount++;
-         vscode.postMessage({ type: 'debugLog', message: 'restoreState: RETRY ' + _retryCount + ' sending renderMarkdown for ' + _retryItems.length + ' items' });
+         vscode.postMessage({ type: 'debugLog', message: '[WV-STATE] restoreState: RETRY ' + _retryCount + ' sending renderMarkdown for ' + _retryItems.length + ' items' });
          vscode.postMessage({ type: 'renderMarkdown', items: _retryItems });
          setTimeout(_retryFn, 2000);
        }
@@ -11730,10 +11760,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
 
  function handleLoadSessionStart() {
    if (isLoadingSession) {
-     vscode.postMessage({ type: 'debugLog', message: 'handleLoadSessionStart: ignored duplicate (already loading)' });
+     vscode.postMessage({ type: 'debugLog', message: '[WV-DIAG] handleLoadSessionStart: ignored duplicate (already loading)' });
      return;
    }
-   vscode.postMessage({ type: 'debugLog', message: 'handleLoadSessionStart' });
+   vscode.postMessage({ type: 'debugLog', message: '[WV-DIAG] handleLoadSessionStart' });
    compactionBoundaryIndex = -1;
    // Cancel all pending render retries from restoreState — the DOM is
    // about to be wiped and rebuilt, so stale renderMarkdown requests
@@ -12396,7 +12426,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       var _lsRetryFn = function() {
         if (pendingRenderRetries[_lsRetryKey] && _lsRetryCount < 3) {
           _lsRetryCount++;
-          vscode.postMessage({ type: 'debugLog', message: 'handleLoadSessionEnd: RETRY ' + _lsRetryCount + ' sending renderMarkdown for ' + _lsRetryItems.length + ' items' });
+          vscode.postMessage({ type: 'debugLog', message: '[WV-DIAG] handleLoadSessionEnd: RETRY ' + _lsRetryCount + ' sending renderMarkdown for ' + _lsRetryItems.length + ' items' });
           vscode.postMessage({ type: 'renderMarkdown', items: _lsRetryItems });
           setTimeout(_lsRetryFn, 2000);
         }
@@ -13127,7 +13157,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
   function renderUserMessageContent(el, text) {
     // Debug: log renderUserMessageContent
     var _dbgRUMC = typeof text === 'string' ? (text.length > 100 ? text.substring(0, 100) + '...' : text) : '(non-string)';
-    vscode.postMessage({ type: 'debugLog', message: 'renderUserMessageContent IN len=' + (typeof text === 'string' ? text.length : -1) + ' text="' + _dbgRUMC + '"' });
+    vscode.postMessage({ type: 'debugLog', message: '[WV-USER] renderUserMessageContent IN len=' + (typeof text === 'string' ? text.length : -1) + ' text="' + _dbgRUMC + '"' });
     if (typeof text !== 'string') { el.textContent = text; return; }
     // Attached-context pills first: draw them as chips and continue with the rest,
     // so a short prompt stays on ONE line beside its chip.
@@ -16068,14 +16098,14 @@ function commitCurrentTextSegment(opts) {
          vscode.postMessage({ type: 'debugLog', message: '[WV-MDRENDER] commit: painted RAW text (never rendered) len=' + committedText.length + ' index=' + committedIndex });
        }
        var renderIndex = committedIndex;
-       vscode.postMessage({ type: 'debugLog', message: 'commitCurrentTextSegment: sending renderMarkdown index=' + renderIndex + ' textLen=' + committedText.length });
+       vscode.postMessage({ type: 'debugLog', message: '[WV-COMMIT] commitCurrentTextSegment: sending renderMarkdown index=' + renderIndex + ' textLen=' + committedText.length });
       vscode.postMessage({
         type: 'renderMarkdown',
         items: [{ index: renderIndex, text: committedText, hgen: historyRenderGen }]
       });
     }
     if (!currentAssistantEl) {
-       vscode.postMessage({ type: 'debugLog', message: 'commitCurrentTextSegment: WARNING currentAssistantEl is null, not sending renderMarkdown!' });
+       vscode.postMessage({ type: 'debugLog', message: '[WV-COMMIT] commitCurrentTextSegment: WARNING currentAssistantEl is null, not sending renderMarkdown!' });
      }
     // Mark the element as committed so promptStart can distinguish it
     // from orphaned slash-command responses.
@@ -18249,7 +18279,7 @@ if (_deduped) {
     }
    if (item.kind === 'message') {
       var _dbgText = typeof item.text === 'string' ? (item.text.length > 100 ? item.text.substring(0, 100) + '...' : item.text) : '(non-string)';
-      vscode.postMessage({ type: 'debugLog', message: 'renderChatHistory item[' + i + '] kind=' + item.kind + ' role=' + item.role + ' textLen=' + (typeof item.text === 'string' ? item.text.length : -1) + ' text="' + _dbgText + '"' });
+      vscode.postMessage({ type: 'debugLog', message: '[WV-STATE] renderChatHistory item[' + i + '] kind=' + item.kind + ' role=' + item.role + ' textLen=' + (typeof item.text === 'string' ? item.text.length : -1) + ' text="' + _dbgText + '"' });
     }
     trace('item[' + i + ']: kind=' + item.kind + (item.kind === 'message' ? ' role=' + item.role : '') + ' | turn exists before=' + !!currentTurnEl + ', turn children=' + (currentTurnEl ? currentTurnEl.children.length : '-'));
     switch (item.kind) {
