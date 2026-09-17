@@ -2197,7 +2197,22 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         }
       } catch (e: any) {
         logError('Slash command failed', e);
-        this.postMessage({ type: 'error', message: formatAcpErrorMessage(e, 'Command failed') });
+        const slashErr = formatAcpErrorMessage(e, 'Command failed');
+        // A deliberate teardown (new conversation, session switch, disconnect)
+        // kills the agent, so every dangling request on that connection rejects
+        // with "ACP connection closed". Reporting it puts an error in the panel
+        // the user has just switched TO, about a session they intentionally left.
+        //
+        // The prompt path suppressed this by comparing the active session id,
+        // but that is racy: the new session is only registered when session/new
+        // RESPONDS. Measured on a "+ during streaming" click — teardown
+        // 04:29:24.610, this rejection 04:29:24.639, new session active
+        // 04:29:26.628 — so the id still matched and the error surfaced.
+        if (this.isExpectedTeardownError(slashErr, activeId)) {
+          this.streamCoalescer.flush(activeId);
+          return;
+        }
+        this.postMessage({ type: 'error', message: slashErr });
       } finally {
         // Flush any buffered streaming text before sending promptEnd.
         // Without this, the coalescer's 8ms timer may still be holding
@@ -2643,7 +2658,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // Suppress the error if the connection was closed because the user
       // started a new conversation or switched sessions — the old session's
       // in-flight prompt is expected to fail during teardown.
-      if (/connection closed/i.test(errMsg) && this.sessionManager.getActiveSessionId() !== activeId) {
+      if (this.isExpectedTeardownError(errMsg, activeId)) {
         this.streamCoalescer.flush(activeId);
         // The session is no longer active (user switched agents), so the
         // webview is showing a different chat. Do NOT post promptEnd here —
@@ -2660,6 +2675,27 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       this.postMessage({ type: 'promptEnd', sessionId: activeId, stopReason: 'error' });
       this.onAgentTurnEnded(activeId);
     }
+  }
+
+  /**
+   * True when an error is the expected fallout of tearing a session down on
+   * purpose, rather than a fault worth showing the user.
+   *
+   * Killing an agent rejects every dangling request on its connection with
+   * "ACP connection closed". Two signals say the teardown was intentional:
+   * the session is no longer the active one, or SessionManager recorded it as
+   * deliberately torn down. The second is what covers the window before the
+   * replacement session is registered — session/new can take seconds to
+   * respond, and until it does the active id still matches the old session.
+   */
+  private isExpectedTeardownError(errMsg: string, sessionId: string): boolean {
+    if (!/connection closed/i.test(errMsg)) {
+      return false;
+    }
+    return (
+      this.sessionManager.getActiveSessionId() !== sessionId ||
+      this.sessionManager.wasDeliberatelyTornDown(sessionId)
+    );
   }
 
   /**

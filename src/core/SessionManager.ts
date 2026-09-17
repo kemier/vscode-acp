@@ -242,6 +242,54 @@ export class SessionManager extends EventEmitter {
   private inFlightPromptSessions: Set<string> = new Set();
 
   /**
+   * Sessions we tore down on purpose, with the time it happened.
+   *
+   * Killing an agent makes every dangling request on that connection reject
+   * with "ACP connection closed". That is expected during a deliberate teardown
+   * (new conversation, session switch, disconnect) and must not be reported as
+   * an error — but the caller cannot tell it apart by looking at the active
+   * session id, because the new session is only registered when session/new
+   * RESPONDS, roughly two seconds later. Measured: teardown at 04:29:24.610,
+   * rejection at 04:29:24.639, new session active at 04:29:26.628. Anything
+   * comparing against the active id in that window sees the OLD id and reports
+   * the error into the panel the user has just switched to.
+   *
+   * Time-bounded rather than permanent so a genuine later failure is still
+   * reported, and pruned on insert so the map cannot grow unbounded.
+   */
+  private deliberateTeardowns: Map<string, number> = new Map();
+
+  /** How long after a deliberate teardown a "connection closed" is expected. */
+  private static readonly DELIBERATE_TEARDOWN_WINDOW_MS = 60_000;
+
+  /** Record that `sessionId` is being torn down on purpose. */
+  private markDeliberateTeardown(sessionId: string): void {
+    const now = Date.now();
+    for (const [id, at] of this.deliberateTeardowns) {
+      if (now - at > SessionManager.DELIBERATE_TEARDOWN_WINDOW_MS) {
+        this.deliberateTeardowns.delete(id);
+      }
+    }
+    this.deliberateTeardowns.set(sessionId, now);
+  }
+
+  /**
+   * True when `sessionId` was torn down on purpose recently, so a
+   * "connection closed" rejection for it is expected rather than a fault.
+   */
+  wasDeliberatelyTornDown(sessionId: string): boolean {
+    const at = this.deliberateTeardowns.get(sessionId);
+    if (at === undefined) {
+      return false;
+    }
+    if (Date.now() - at > SessionManager.DELIBERATE_TEARDOWN_WINDOW_MS) {
+      this.deliberateTeardowns.delete(sessionId);
+      return false;
+    }
+    return true;
+  }
+
+  /**
    * Last memory/skills block TEXT injected per session (persona + scenes +
    * available_skills), keyed by sessionId. Populated in sendPrompt after a
    * successful memory recall. Used by forkToAgent to carry the SOURCE agent's
@@ -636,6 +684,12 @@ export class SessionManager extends EventEmitter {
     // reject with "ACP connection closed" when the agent process is killed.
     if (connInfo) {
       const sessionsToCancel = [sessionId, ...Array.from(this.inFlightPromptSessions).filter((id) => id !== sessionId)];
+      // Every session on this connection is about to see its requests reject
+      // with "ACP connection closed". Record that so the error paths can tell
+      // an expected teardown from a real fault.
+      for (const sid of sessionsToCancel) {
+        this.markDeliberateTeardown(sid);
+      }
       for (const sid of sessionsToCancel) {
         if (this.inFlightPromptSessions.has(sid)) {
           try {
@@ -2467,6 +2521,7 @@ export class SessionManager extends EventEmitter {
         // sendPrompt promise doesn't reject with "ACP connection closed"
         // later when the agent is disconnected or the session is deleted.
         if (this.inFlightPromptSessions.has(previouslyActive)) {
+          this.markDeliberateTeardown(previouslyActive);
           const prevConn = this.connectionManager.getConnection(prevSession.agentId);
           if (prevConn) {
             try {
