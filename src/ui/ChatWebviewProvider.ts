@@ -11674,6 +11674,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       // "thinking blocks are grouped at the bottom, right before the summary"
       // symptom (a Kiro resume re-added 24 duplicate thoughts that way).
       var loadedThoughtKeys = {};
+      // Loaded POSITION of each matched row, so a snapshot row the replay lacks
+      // can be placed next to its snapshot neighbour instead of at the end.
+      var loadedToolIdx = {};
+      var loadedAssistantIdx = {};
+      var loadedThoughtIdx = {};
       for (var k = loadedLastUserIdx + 1; k < chatHistory.length; k++) {
         var cur = chatHistory[k];
         if (!cur) continue;
@@ -11683,13 +11688,22 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         }
         if (cur.kind === 'toolCall') {
           loadedToolCount++;
-          if (cur.toolCallId) haveIds[cur.toolCallId] = true;
+          if (cur.toolCallId) {
+            haveIds[cur.toolCallId] = true;
+            if (!(cur.toolCallId in loadedToolIdx)) loadedToolIdx[cur.toolCallId] = k;
+          }
         }
         if (cur.kind === 'thought' && cur.text) {
           loadedThoughtKeys[thoughtPrefixKey(cur.text)] = true;
+          if (!(thoughtPrefixKey(cur.text) in loadedThoughtIdx)) {
+            loadedThoughtIdx[thoughtPrefixKey(cur.text)] = k;
+          }
         }
         if (cur.kind === 'message' && cur.role === 'assistant' && cur.text) {
           loadedAssistantTexts[String(cur.text).trim()] = true;
+          if (!(String(cur.text).trim() in loadedAssistantIdx)) {
+            loadedAssistantIdx[String(cur.text).trim()] = k;
+          }
         }
       }
 
@@ -11738,7 +11752,78 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           })) {
         return false;
       }
-      Array.prototype.splice.apply(chatHistory, [insertAt, 0].concat(missing));
+      // Place each missing row next to its snapshot neighbour instead of
+      // dumping the whole set at one position.
+      //
+      // The replay stays authoritative for the order of every row it CONTAINS
+      // (see mergeReplayOrderAuthority: re-imposing snapshot order over the
+      // replay produced "all tools first, then every reply"). This only decides
+      // where the rows the replay LACKS go. They were spliced at insertAt, which
+      // is chatHistory.length unless a later user message exists — so a mid-turn
+      // assistant segment landed after the final answer.
+      //
+      // Observed on a resumed ericli session: the turn ran
+      //   tool(ls) → "…让我看看这个入口文件" → tool(grep) → "…只有一处提到 kiro…"
+      //   → tool(read) → "找到了。…## 答案…"
+      // The replay was missing only the first assistant segment, so it was
+      // appended last and rendered as a stray preamble BELOW the final answer.
+      //
+      // Walk the snapshot turn in order, tracking the loaded index of the last
+      // row that matched. A run of missing rows is inserted directly after that
+      // anchor, preserving their snapshot order among themselves. Groups are
+      // applied highest-index-first so earlier positions stay valid.
+      function loadedIndexOfSnapItem(it) {
+        if (!it) return -1;
+        if (it.kind === 'toolCall') {
+          return it.toolCallId && (it.toolCallId in loadedToolIdx) ? loadedToolIdx[it.toolCallId] : -1;
+        }
+        if (it.kind === 'thought' && it.text) {
+          var tk = thoughtPrefixKey(it.text);
+          return (tk in loadedThoughtIdx) ? loadedThoughtIdx[tk] : -1;
+        }
+        if (it.kind === 'message' && it.role === 'assistant' && it.text) {
+          var at = String(it.text).trim();
+          return (at in loadedAssistantIdx) ? loadedAssistantIdx[at] : -1;
+        }
+        return -1;
+      }
+      var _missingSet = missing.slice();
+      function _isMissing(it) {
+        for (var mi = 0; mi < _missingSet.length; mi++) {
+          if (_missingSet[mi] === it) return true;
+        }
+        return false;
+      }
+      var _groups = [];
+      var _anchor = -1;
+      var _pending = [];
+      var _snapTurnOrdered = collectSnapTurn(false);
+      for (var si = 0; si < _snapTurnOrdered.length; si++) {
+        var _s = _snapTurnOrdered[si];
+        var _li = loadedIndexOfSnapItem(_s);
+        if (_li >= 0) {
+          if (_pending.length) { _groups.push({ at: _anchor, items: _pending }); _pending = []; }
+          _anchor = _li;
+        } else if (_isMissing(_s)) {
+          _pending.push(_s);
+        }
+      }
+      if (_pending.length) _groups.push({ at: _anchor, items: _pending });
+      // Only anchor when at least one snapshot row matched. With no anchor there
+      // is nothing to position against, and inserting the whole turn right after
+      // the user message would put snapshot rows AHEAD of the replay's.
+      var _canAnchor = _anchor >= 0 && _groups.length > 0 &&
+        _groups.every(function(g) { return g.at >= 0; });
+      if (_canAnchor) {
+        _groups.sort(function(a, b) { return b.at - a.at; });
+        for (var gi = 0; gi < _groups.length; gi++) {
+          Array.prototype.splice.apply(
+            chatHistory, [_groups[gi].at + 1, 0].concat(_groups[gi].items),
+          );
+        }
+      } else {
+        Array.prototype.splice.apply(chatHistory, [insertAt, 0].concat(missing));
+      }
       // Only mark interrupted if the merged items include an interrupted
       // assistant or running tools. Merging a completed assistant from
       // snapshot is NOT an interruption.
@@ -11753,6 +11838,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         type: 'debugLog',
         message: '[WV-MERGE] restored ' + missing.length + ' pre-load item(s) into turn (tools=' + missingTools.length +
           ' thoughts=' + missing.filter(function(x) { return x.kind === 'thought'; }).length +
+          ' anchored=' + _canAnchor + ' groups=' + _groups.length +
           ' interrupted=' + _mergeHasInterrupted + ')',
       });
       return true;
