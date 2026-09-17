@@ -121,4 +121,70 @@ suite('the paste handler consults the size gate', () => {
     const preventAt = body.indexOf('e.preventDefault()');
     assert.ok(preventAt > gateAt, 'preventDefault must be inside the gated branch');
   });
+
+  test('a paste into a slash command is never attached', () => {
+    const at = src.indexOf("const text = e.clipboardData && e.clipboardData.getData('text/plain');");
+    const body = src.slice(at, at + 500);
+    assert.ok(
+      body.includes('!composerHoldsSlashCommand()'),
+      'paste handler does not exclude slash commands',
+    );
+  });
+});
+
+/** The real composerHoldsSlashCommand, bound to a stubbed composer value. */
+function loadComposerHoldsSlashCommand(): (value: string) => boolean {
+  const src = fs.readFileSync(SOURCE, 'utf8');
+  const sig = 'function composerHoldsSlashCommand() {';
+  const at = src.indexOf(sig);
+  assert.ok(at > 0, 'composerHoldsSlashCommand not found');
+  const open = src.indexOf('{', at);
+  let depth = 0;
+  let end = -1;
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}' && --depth === 0) { end = i + 1; break; }
+  }
+  assert.ok(end > 0, 'could not brace-match composerHoldsSlashCommand');
+  const body = src.slice(at, end).replace(/\\\\/g, '\\');
+  // eslint-disable-next-line no-new-func
+  return new Function(
+    'value',
+    `const promptInput = { value: value };\n${body}\nreturn composerHoldsSlashCommand();`,
+  ) as (v: string) => boolean;
+}
+
+suite('a slash command argument stays literal', () => {
+  const holdsSlash = loadComposerHoldsSlashCommand();
+
+  test('the reported case: pasting an objective into /goal', () => {
+    // "/goal " + paste would otherwise become "/goal @clipboard", and the send
+    // path loses the objective — either a bare /goal (embeddedContext agents) or
+    // a payload prepended ahead of the slash so it stops being a command.
+    assert.strictEqual(holdsSlash('/goal '), true);
+    assert.strictEqual(holdsSlash('/goal check if missing '), true);
+  });
+
+  test('recognises a command with leading whitespace', () => {
+    assert.strictEqual(holdsSlash('  /compact'), true);
+    assert.strictEqual(holdsSlash('\n/goal '), true);
+  });
+
+  test('ordinary prose is not a command', () => {
+    for (const v of ['', 'hello', 'see the /goal command', 'a/b', ' path/to/file']) {
+      assert.strictEqual(holdsSlash(v), false, `should not be a command: ${JSON.stringify(v)}`);
+    }
+  });
+
+  test('a /$skill invocation is NOT treated as a slash command', () => {
+    // ericli passes /$name through to the LLM as a raw prompt, so attaching a
+    // payload there is legitimate.
+    assert.strictEqual(holdsSlash('/$imagegen '), false);
+    assert.strictEqual(holdsSlash('  /$imagegen a cat'), false);
+  });
+
+  test('a bare slash still counts', () => {
+    // "/" alone is the start of a command the user is still typing.
+    assert.strictEqual(holdsSlash('/'), true);
+  });
 });

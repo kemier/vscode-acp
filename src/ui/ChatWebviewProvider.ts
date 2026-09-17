@@ -10571,6 +10571,35 @@ function handleSend() {
       return t.length > ${INLINE_PASTE_MAX_CHARS};
     }
 
+    // A slash command's argument has to be literal text, so a paste into one
+    // must never become a @clipboard attachment.
+    //
+    // Typing "/goal " and pasting the objective turned the composer into
+    // "/goal @clipboard", and the send path then broke the command two different
+    // ways depending on the agent:
+    //   - with embeddedContext (ericli): the mention is stripped and the payload
+    //     travels as a separate context block, so the agent receives a bare
+    //     "/goal" with no objective;
+    //   - without it: the payload is PREPENDED to the text
+    //     ("<clipboard>…</clipboard>\\n\\n/goal"), so the slash is no longer
+    //     leading and ericli's guard (_lowerCmd.startsWith('/')) never fires —
+    //     the command is treated as an ordinary prompt.
+    //
+    // Either way the argument is lost. The size gate below already handles a
+    // short objective, but a long or multi-line one would still be attached.
+    //
+    // /$name skill invocations are excluded: ericli passes those through to the
+    // LLM as a raw prompt, so an attachment is legitimate there.
+    function composerHoldsSlashCommand() {
+      var v = String(promptInput.value || '');
+      var i = 0;
+      while (i < v.length) {
+        var c = v.charCodeAt(i);
+        if (c === 32 || c === 10 || c === 13 || c === 9) { i++; } else break;
+      }
+      return v.charAt(i) === '/' && v.charAt(i + 1) !== '$';
+    }
+
     // Paste handler
    promptInput.addEventListener('paste', (e) => {
      const items = e.clipboardData && e.clipboardData.items;
@@ -10595,7 +10624,8 @@ function handleSend() {
       // earlier "two copies" (clipboard block + raw text) cannot happen.
       if (!handled) {
         const text = e.clipboardData && e.clipboardData.getData('text/plain');
-        if (text && text.trim() && !isBarePastedMention(text) && isPayloadSizedPaste(text)) {
+        if (text && text.trim() && !isBarePastedMention(text) && isPayloadSizedPaste(text) &&
+            !composerHoldsSlashCommand()) {
           e.preventDefault();
           vscode.postMessage({ type: 'writeClipboard', text: text });
           // Insert '@clipboard ' at the cursor, replacing any selection.
