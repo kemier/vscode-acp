@@ -19448,6 +19448,15 @@ forceCollapseTurnFolds();
        return;
      }
 
+     // Gated trace (acp.debugResume). The unchecked-after-resume question could not
+     // be answered from the traffic log — the ACP output channel rotates and the
+     // relevant capture was gone twice — so record what the webview itself sees:
+     // which frames arrive, in what order, and the board each one produces.
+     resumeDiag('[WV-KIROTODO] cmd=' + cmd +
+       ' ids=' + JSON.stringify(rawInput.completed_task_ids || rawInput.remove_task_ids || null) +
+       ' entries=' + (kiroTodoState ? kiroTodoState.entries.length : 0) +
+       ' statuses=' + (kiroTodoState ? kiroTodoState.entries.map(function (e) { return e.status; }).join(',') : '-') +
+       ' loading=' + isLoadingSession);
      if (!kiroTodoState || kiroTodoState.entries.length === 0) return;
      addPlan({
        entries: kiroTodoState.entries.slice(),
@@ -19479,6 +19488,10 @@ forceCollapseTurnFolds();
        currentPlanEl.className = 'plan';
        planBar.appendChild(currentPlanEl);
      }
+      resumeDiag('[WV-PLANRENDER] title=' + planBarTitle(plan) +
+        ' entries=' + ((plan && plan.entries) ? plan.entries.length : 0) +
+        ' statuses=' + ((plan && plan.entries) ? plan.entries.map(function (e) { return e.status || 'pending'; }).join(',') : '-') +
+        ' loading=' + isLoadingSession);
       let html = '<div class="plan-title">' + escapeHtml(planBarTitle(plan)) + '</div>';
       if (plan.entries) {
         for (const entry of plan.entries) {

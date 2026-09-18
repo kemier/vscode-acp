@@ -52,12 +52,21 @@ function bodyOf(signature: string): string {
 function harness() {
   const code = bodyOf('function applyKiroTodoList(');
   let captured: any = null;
+  // The webview function also calls resumeDiag (a gated diagnostic) and reads
+  // isLoadingSession; both must be supplied or the extraction throws — the harness
+  // has to track the real dependencies, not a snapshot of them.
   const apply = new Function(
     'addPlan',
-    `var kiroTodoState = null; ${code}; return applyKiroTodoList;`,
-  )((p: any) => {
-    captured = p;
-  }) as (title: string, toolName: string, rawInput: unknown) => void;
+    'resumeDiag',
+    `var kiroTodoState = null; var isLoadingSession = false; ${code}; return applyKiroTodoList;`,
+  )(
+    (p: any) => {
+      captured = p;
+    },
+    () => {
+      /* diagnostic sink */
+    },
+  ) as (title: string, toolName: string, rawInput: unknown) => void;
   return { apply, get plan() { return captured; } };
 }
 
@@ -251,5 +260,44 @@ suite('kiro board lifecycle', () => {
     const h = harness();
     h.apply('todo_list', 'todo_list', { command: 'complete', completed_task_ids: ['1'] });
     assert.strictEqual(h.plan, null, 'a complete with no board emitted something');
+  });
+});
+
+suite('the diagnostic trace', () => {
+  test('both frames and renders are traced, gated on acp.debugResume', () => {
+    // The unchecked-after-resume question could not be answered from the traffic
+    // log: the ACP output channel rotates, and the relevant capture was gone twice
+    // (once pre-fix, once when the log root rotated on reload). Tracing what the
+    // WEBVIEW sees removes the dependency on a log that may not survive.
+    assert.ok(provider.includes('[WV-KIROTODO]'), 'frame trace missing');
+    assert.ok(provider.includes('[WV-PLANRENDER]'), 'render trace missing');
+    // resumeDiag is the existing gate (acp.debugResume) — not a new setting, and
+    // silent when the flag is off.
+    for (const marker of ['[WV-KIROTODO]', '[WV-PLANRENDER]']) {
+      const at = provider.indexOf(marker);
+      const before = provider.slice(Math.max(0, at - 120), at);
+      assert.ok(before.includes('resumeDiag('), `${marker} not behind resumeDiag`);
+    }
+  });
+
+  test('the frame trace records what actually decides the outcome', () => {
+    const at = provider.indexOf('[WV-KIROTODO]');
+    const line = provider.slice(at, provider.indexOf(');', at));
+    for (const field of ['cmd=', 'ids=', 'entries=', 'statuses=', 'loading=']) {
+      assert.ok(line.includes(field), `trace omits ${field}`);
+    }
+  });
+
+  test('the render trace shows the statuses that reached the DOM', () => {
+    // If the frames arrive correct but the bar renders stale, only this side shows it.
+    const at = provider.indexOf('[WV-PLANRENDER]');
+    const line = provider.slice(at, provider.indexOf(');', at));
+    assert.ok(line.includes('statuses='), 'render trace omits statuses');
+    assert.ok(line.includes('loading='), 'render trace omits the replay flag');
+  });
+
+  test('no raw backtick — it would terminate the webview literal', () => {
+    const at = provider.indexOf('[WV-KIROTODO]');
+    assert.ok(!provider.slice(at - 400, at + 600).includes('`'));
   });
 });
