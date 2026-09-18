@@ -12292,6 +12292,8 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
     if (tokenUsageRing) tokenUsageRing.classList.remove('visible');
     if (typeof clearCursorTodosPlan === 'function') clearCursorTodosPlan();
+    // Same reset for kiro's board; see clearKiroTodoList for why NOT per-turn.
+    if (typeof clearKiroTodoList === 'function') clearKiroTodoList();
       // Keep a copy of the restored webview history. Claude session/load for an
      // interrupted mid-turn often only replays the user prompt — without this
      // snapshot (and without saveState of the empty array) the collapse block
@@ -19365,6 +19367,24 @@ forceCollapseTurnFolds();
    var kiroTodoState = null;
 
    /**
+    * Drop kiro's board when the conversation it belongs to goes away.
+    *
+    * Deliberately NOT called on promptStart or on a plain re-render. Kiro sends a
+    * create in one turn and completes in LATER turns, referring to tasks by their
+    * position in that create — so clearing at a turn boundary would leave every
+    * later complete with nothing to apply to, and the board would sit permanently
+    * unchecked. Cursor can be cleared per turn because it re-sends its whole list
+    * each time; kiro cannot.
+    *
+    * Only a genuine conversation reset clears it: a new session load, an explicit
+    * clear, and compaction (whose comment already says plan state belongs to the
+    * compacted-away conversation).
+    */
+   function clearKiroTodoList() {
+     kiroTodoState = null;
+   }
+
+   /**
     * Build the plan bar from a kiro todo_list tool call.
     *
     * Kiro sends no plan frame and has no dedicated todo method — unlike cursor,
@@ -20624,6 +20644,8 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         currentPlanEl = null;
         if (planBar) { planBar.innerHTML = ''; }
         if (typeof clearCursorTodosPlan === 'function') clearCursorTodosPlan();
+        // Same reset for kiro's board; see clearKiroTodoList for why NOT per-turn.
+        if (typeof clearKiroTodoList === 'function') clearKiroTodoList();
         tokenUsage = null;
          if (tokenUsageRing) tokenUsageRing.classList.remove('visible');
          availableCommands = [];
@@ -21642,6 +21664,8 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
      currentPlanEl = null;
      if (planBar) { planBar.innerHTML = ''; }
      if (typeof clearCursorTodosPlan === 'function') clearCursorTodosPlan();
+     // Same reset for kiro's board; see clearKiroTodoList for why NOT per-turn.
+     if (typeof clearKiroTodoList === 'function') clearKiroTodoList();
      // Crew bookkeeping points at the destroyed card; clear it so the
      // re-render below builds a fresh crew (and later spawns extend THAT one
      // instead of a stale id). renderChatHistory does the same on rebuild.

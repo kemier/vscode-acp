@@ -199,3 +199,57 @@ suite('kiro todo_list feeds the plan bar', () => {
     assert.ok(!bodyOf('function applyKiroTodoList(').includes('`'));
   });
 });
+
+/**
+ * The board must be dropped with its conversation — but NOT at a turn boundary.
+ *
+ * kiro sends a create in one turn and completes in LATER turns, referring to tasks
+ * by their position in that create. So clearing the state per turn would leave every
+ * later complete with nothing to apply to and the board permanently unchecked.
+ * Cursor can be cleared per turn because it re-sends its whole list each time.
+ *
+ * Nothing cleared it at all before this: cursor's board is cleared in five
+ * lifecycle places, kiro's in zero, so a previous session's board could outlive it.
+ */
+suite('kiro board lifecycle', () => {
+  test('a reset helper exists next to the state it owns', () => {
+    assert.ok(provider.includes('function clearKiroTodoList()'), 'no reset helper');
+    const body = bodyOf('function clearKiroTodoList(');
+    assert.ok(body.includes('kiroTodoState = null'), 'helper does not reset');
+  });
+
+  test('it is called on load, clear and compaction', () => {
+    const calls = (provider.match(/clearKiroTodoList === 'function'\) clearKiroTodoList\(\)/g) ?? []).length;
+    assert.strictEqual(calls, 3, `expected 3 lifecycle resets, found ${calls}`);
+  });
+
+  test('it is NOT called on promptStart or a plain re-render', () => {
+    // These two are the cases that would break a create-then-complete-later flow.
+    for (const ctx of ["case 'promptStart':", 'function renderChatHistory()']) {
+      const at = provider.indexOf(ctx);
+      assert.ok(at > 0, `context not found: ${ctx}`);
+      // Scan to the next clearCursorTodosPlan in that block and check what follows.
+      const cursorAt = provider.indexOf('clearCursorTodosPlan();', at);
+      assert.ok(cursorAt > at, `no cursor clear after ${ctx}`);
+      const after = provider.slice(cursorAt, cursorAt + 240);
+      assert.ok(!after.includes('clearKiroTodoList()'), `kiro board cleared in ${ctx}`);
+    }
+  });
+
+  test('cursor merge:false does not wipe the kiro board', () => {
+    // That is cursor's own replace semantics, not a conversation reset.
+    const at = provider.indexOf('if (!params.merge) clearCursorTodosPlan();');
+    assert.ok(at > 0, 'cursor merge branch not found');
+    assert.ok(
+      !provider.slice(at, at + 200).includes('clearKiroTodoList()'),
+      'a cursor todo update clears kiro',
+    );
+  });
+
+  test('a reset makes later completes inert rather than throwing', () => {
+    // After a reset the next frame must be a create; a stray complete is ignored.
+    const h = harness();
+    h.apply('todo_list', 'todo_list', { command: 'complete', completed_task_ids: ['1'] });
+    assert.strictEqual(h.plan, null, 'a complete with no board emitted something');
+  });
+});
