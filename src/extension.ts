@@ -566,20 +566,71 @@ export function activate(context: vscode.ExtensionContext): void {
   ConnectionManager.askInChat = (p) => chatWebviewProvider.askQuestion(p);
   sessionManager.on('agent-ask-question', askUserQuestion);
   sessionManager.on('cursor-ask-question', askUserQuestion);
+  /**
+   * Plan approval. Adapter-neutral: cursor/create_plan is the only producer today,
+   * but the handler reads only generic fields.
+   *
+   * This used to be a modal showing "name: overview" and nothing else. The
+   * request's required `plan` field — the markdown body describing the whole plan —
+   * was read by nothing, so the user approved a plan they could not see, and the
+   * plan never entered the transcript even when accepted. `phases` was dropped the
+   * same way, flattening a grouped plan.
+   *
+   * Now the plan is rendered in the chat FIRST and the decision is asked in-chat,
+   * reusing askQuestion: it persists to the transcript, survives a resume, and
+   * already falls back to a QuickPick when the panel cannot ask. The modal is kept
+   * for the no-webview case, and now carries the plan body rather than just a name.
+   */
   sessionManager.on('cursor-create-plan', async (params: any, respond: (result: any) => void) => {
     try {
       const name = params?.name ? String(params.name) : 'Plan';
       const overview = params?.overview ? String(params.overview) : '';
-      const choice = await vscode.window.showInformationMessage(
-        overview ? `${name}: ${overview}` : `Approve plan: ${name}?`,
-        { modal: true },
-        'Accept',
-        'Reject',
-      );
-      if (choice === 'Accept') {
+      const planBody = params?.plan ? String(params.plan) : '';
+
+      // Show what is being approved before asking. Deliberately before the
+      // question so the plan is on screen when the buttons appear.
+      chatWebviewProvider.notifyPlanProposal(params);
+
+      const answer = await chatWebviewProvider.askQuestion({
+        title: name,
+        questions: [
+          {
+            id: 'plan-approval',
+            prompt: overview ? `Approve this plan? ${overview}` : 'Approve this plan?',
+            options: [
+              { id: 'accept', label: 'Accept' },
+              { id: 'reject', label: 'Reject' },
+            ],
+          },
+        ],
+      });
+
+      let decision: 'accept' | 'reject' | 'cancel' = 'cancel';
+      if (answer && answer.outcome === 'answered') {
+        const picked = answer.answers?.[0]?.selectedOptionIds?.[0];
+        decision = picked === 'accept' ? 'accept' : picked === 'reject' ? 'reject' : 'cancel';
+      } else if (answer === null) {
+        // No webview to ask in. Fall back to the modal, but include the plan body
+        // so the decision is still informed; modals are plain text, so a long plan
+        // is trimmed rather than allowed to overflow the dialog.
+        const detail = planBody || overview;
+        const trimmed = detail.length > 1200 ? `${detail.slice(0, 1200)}\n…` : detail;
+        const choice = await vscode.window.showInformationMessage(
+          `Approve plan: ${name}?`,
+          { modal: true, detail: trimmed || undefined },
+          'Accept',
+          'Reject',
+        );
+        decision = choice === 'Accept' ? 'accept' : choice === 'Reject' ? 'reject' : 'cancel';
+      }
+
+      if (decision === 'accept') {
+        // planUri is deliberately omitted. It is optional in the protocol and we
+        // have no document to point at — the plan lives in the transcript, not on
+        // disk. Returning a synthesised URI would be a claim we cannot honour.
         respond({ outcome: { outcome: 'accepted' } });
         chatWebviewProvider.notifyCursorCreatePlan(params);
-      } else if (choice === 'Reject') {
+      } else if (decision === 'reject') {
         respond({ outcome: { outcome: 'rejected', reason: 'User rejected' } });
       } else {
         respond({ outcome: { outcome: 'cancelled' } });

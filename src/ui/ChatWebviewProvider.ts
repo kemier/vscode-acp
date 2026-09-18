@@ -4714,6 +4714,37 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   }
 
   /**
+   * Show a plan the agent wants approved, BEFORE asking for the decision.
+   *
+   * The approval used to be a modal reading "name: overview", while the request's
+   * required `plan` field — a markdown body describing the whole plan — was never
+   * read by anything. The user was asked to approve a plan they could not see, and
+   * whichever way they answered, the plan itself was never written to the
+   * transcript, so an accepted plan left no record of what had been agreed.
+   *
+   * Adapter-neutral: cursor/create_plan is the only producer today, but nothing
+   * here is cursor-specific. Any agent that wants a plan approved can post this
+   * shape, and `phases` is honoured as a generic grouping so a grouped plan does
+   * not arrive flattened.
+   */
+  notifyPlanProposal(params: {
+    name?: string;
+    overview?: string;
+    plan?: string;
+    todos?: Array<{ id?: string; content?: string; status?: string }>;
+    phases?: Array<{ name?: string; todos?: Array<{ id?: string; content?: string; status?: string }> }>;
+  }): void {
+    this.postMessage({
+      type: 'planProposal',
+      name: params?.name ? String(params.name) : '',
+      overview: params?.overview ? String(params.overview) : '',
+      plan: params?.plan ? String(params.plan) : '',
+      todos: Array.isArray(params?.todos) ? params.todos : [],
+      phases: Array.isArray(params?.phases) ? params.phases : [],
+    });
+  }
+
+  /**
    * Notify webview that a `session/load` replay is starting. The webview
    * wipes any previously-displayed history, disables input, and shows a
    * loading overlay until {@link notifyLoadSessionEnd} fires.
@@ -21298,6 +21329,10 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         handleCursorCreatePlan(msg.params);
         break;
 
+      case 'planProposal':
+        handlePlanProposal(msg);
+        break;
+
       case 'kiroCompactDone':
         handleKiroCompactDone(msg);
         break;
@@ -24110,18 +24145,80 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
     }
   }
 
+  // Build the readable body of a plan proposal. Agent-neutral: it reads the
+  // generic fields (name, overview, plan, todos, phases) and does not care which
+  // method delivered them.
+  //
+  // phases is a grouping of the SAME todos, so rendering both would list every
+  // entry twice. When phases are present they win, because the grouping is the
+  // extra information; the flat list is what we already had.
+  function formatPlanProposal(msg) {
+    var lines = [];
+    var name = msg.name || 'Plan';
+    lines.push('**Plan proposed: ' + name + '**');
+    if (msg.overview) { lines.push(msg.overview); }
+    // The markdown body. This is the field the old modal never showed.
+    if (msg.plan) { lines.push(msg.plan); }
+    var statusMark = function (st) {
+      if (st === 'completed') { return '[x]'; }
+      if (st === 'in_progress') { return '[~]'; }
+      if (st === 'cancelled') { return '[-]'; }
+      return '[ ]';
+    };
+    var phases = Array.isArray(msg.phases) ? msg.phases : [];
+    var listed = 0;
+    if (phases.length) {
+      phases.forEach(function (ph) {
+        var items = Array.isArray(ph && ph.todos) ? ph.todos : [];
+        if (!items.length) { return; }
+        lines.push('**' + (ph.name || 'Phase') + '**');
+        items.forEach(function (t) {
+          lines.push('- ' + statusMark(t && t.status) + ' ' + ((t && t.content) || ''));
+          listed++;
+        });
+      });
+    }
+    if (!listed) {
+      var todos = Array.isArray(msg.todos) ? msg.todos : [];
+      todos.forEach(function (t) {
+        lines.push('- ' + statusMark(t && t.status) + ' ' + ((t && t.content) || ''));
+      });
+    }
+    return lines.join('\\n\\n');
+  }
+
+  function handlePlanProposal(msg) {
+    if (!msg) { return; }
+    if (compactMode) {
+      // Even collapsed, say what is being decided — the decision is the point.
+      addMessage('system', 'Plan proposed: ' + (msg.name || 'Plan'));
+      return;
+    }
+    addMessage('system', formatPlanProposal(msg));
+  }
+
   function handleCursorCreatePlan(params) {
     if (!params) return;
     var name = params.name || 'Plan';
-    var overview = params.overview || '';
     // Collapse: short system line only — don't paste the full plan outside the fold.
     if (compactMode) {
       addMessage('system', 'Plan accepted: ' + name);
       return;
     }
-    addMessage('system', '**Plan accepted: ' + name + '**' + (overview ? '\\n\\n' + overview : ''));
-    if (Array.isArray(params.todos) && params.todos.length) {
-      handleCursorUpdateTodos({ todos: params.todos, merge: false });
+    // The overview is deliberately NOT repeated here: the proposal message shown
+    // before the approval already carries it along with the full plan body, and
+    // printing it again made the accepted plan read as two separate plans.
+    addMessage('system', '**Plan accepted: ' + name + '**');
+    var flat = Array.isArray(params.todos) ? params.todos.slice() : [];
+    if (!flat.length && Array.isArray(params.phases)) {
+      // A grouped plan may carry its entries only under phases. Flatten them in
+      // phase order so the plan bar is not left empty.
+      params.phases.forEach(function (ph) {
+        if (ph && Array.isArray(ph.todos)) { flat = flat.concat(ph.todos); }
+      });
+    }
+    if (flat.length) {
+      handleCursorUpdateTodos({ todos: flat, merge: false });
     }
   }
 
