@@ -27,6 +27,14 @@ export interface MemorySettings {
   includeSkills: boolean;
   skillCharBudget: number;
   captureEnabled: boolean;
+  /**
+   * Persist finished subagents' findings as memory.
+   *
+   * Separate from `captureEnabled`, and default OFF: subagent output is verbose
+   * and unreviewed, and once L1/L2/L3 have absorbed a wrong memory it is hard to
+   * take back. Opt in per workspace.
+   */
+  captureSubagentFindings: boolean;
   timeoutMs: number;
   /** Retries after transient fetch failures (0 = disabled). */
   recallRetryCount: number;
@@ -73,6 +81,9 @@ export function readMemorySettings(): MemorySettings {
     includeSkills: cfg.get<boolean>('memory.includeSkills') !== false,
     skillCharBudget: Math.max(0, cfg.get<number>('memory.skillCharBudget') ?? 8000),
     captureEnabled: cfg.get<boolean>('memory.captureEnabled') !== false,
+    // Default off — `=== true` rather than `!== false`, so an absent setting
+    // writes nothing into shared memory.
+    captureSubagentFindings: cfg.get<boolean>('memory.captureSubagentFindings') === true,
     timeoutMs: Math.max(1000, cfg.get<number>('memory.timeoutMs') ?? 15_000),
     recallRetryCount: Math.max(0, cfg.get<number>('memory.recallRetryCount') ?? 2),
     recallRetryDelayMs: Math.max(0, cfg.get<number>('memory.recallRetryDelayMs') ?? 1000),

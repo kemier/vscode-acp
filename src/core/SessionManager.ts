@@ -2325,6 +2325,39 @@ export class SessionManager extends EventEmitter {
       }
     };
 
+    // A finished subagent reporting what it found. ericli cannot persist this
+    // itself — the memory API key and the tenancy isolation live here — and
+    // nothing else carries subagent work into memory.
+    connInfo.onEricliSubagentFindings = (params: any) => {
+      const targetSession = String(params?.sessionId || '');
+      if (!targetSession) {
+        // ericli always sends it; without one the finding cannot be filed
+        // against a conversation, and guessing the active session would attach
+        // it to whatever the user happens to be looking at.
+        return;
+      }
+      // `agentName` from the enclosing scope is the PARENT agent, which is the
+      // identity the finding must be stored under: recall is scoped by agent, so
+      // filing it elsewhere would hide it from the session that asked.
+      void this.memoryProvider
+        ?.captureSubagentFindings(targetSession, agentName, {
+          id: params?.id,
+          type: params?.type,
+          label: params?.label,
+          task: params?.task,
+          status: params?.status,
+          summary: params?.summary,
+          error: params?.error,
+          durationMs: params?.durationMs,
+          toolCallCount: params?.toolCallCount,
+          compactions: params?.compactions,
+          unresolvedSkills: Array.isArray(params?.unresolvedSkills) ? params.unresolvedSkills : undefined,
+        })
+        .catch((err) => {
+          log(`[subagent-findings] capture failed (non-fatal): ${(err as Error)?.message ?? err}`);
+        });
+    };
+
     connInfo.onSessionTerminate = (params: any) => {
       this.emit('session-terminate', params);
     };

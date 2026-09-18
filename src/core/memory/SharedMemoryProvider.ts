@@ -597,6 +597,124 @@ export class SharedMemoryProvider {
     }
   }
 
+  /**
+   * Persist what a finished subagent found.
+   *
+   * A subagent's work is otherwise unrecoverable. Its conversation never leaves
+   * ericli's process, its progress is deliberately not forwarded as
+   * agent_thought_chunk, and per-turn capture records only the main assistant
+   * text plus tool_call TITLES — so its findings never became L0, and therefore
+   * could never be promoted to L1/L2/L3 or feed skill extraction. Five parallel
+   * subagents produced nothing recallable.
+   *
+   * Written under the PARENT's memory agent id, not a synthetic one: recall is
+   * scoped by isolation(agentId), so a separate id would store the finding and
+   * then never surface it in the session that asked for it.
+   *
+   * The role is `assistant` because the memory core accepts nothing else — it
+   * skips any other role on ingest (`role !== "user" && role !== "assistant"`).
+   * Provenance therefore lives in the CONTENT, which is also where L1 extraction
+   * reads it from (`[id] [role] [timestamp]: content`).
+   *
+   * The task is kept alongside the summary deliberately: a finding without the
+   * question it answers is close to useless months later.
+   *
+   * Gated by its own setting, default off — a wrong memory is hard to undo once
+   * L1/L2/L3 have absorbed it. Best-effort: never throws into the caller.
+   */
+  async captureSubagentFindings(
+    sessionId: string,
+    agentName: string,
+    finding: {
+      id?: string;
+      type?: string;
+      label?: string;
+      task?: string;
+      status?: string;
+      summary?: string;
+      error?: string;
+      durationMs?: number;
+      toolCallCount?: number;
+      compactions?: number;
+      unresolvedSkills?: string[];
+    },
+  ): Promise<void> {
+    const settings = this.getSettings();
+    if (!isMemoryConfigured(settings) || !settings.captureEnabled) {
+      return;
+    }
+    if (!settings.captureSubagentFindings) {
+      return;
+    }
+    if (!sessionId || !agentName.trim()) {
+      return;
+    }
+
+    const task = sanitizeMemoryText(String(finding.task ?? '')).trim();
+    let body = sanitizeMemoryText(String(finding.summary ?? ''));
+    body = stripCodeBlocks(body);
+    if (finding.error) {
+      // A failed subagent is worth remembering too — it records that the
+      // question was asked and what stopped it, which prevents a later session
+      // repeating the same dead end.
+      body = `${body}\n\nFailed: ${sanitizeMemoryText(String(finding.error))}`.trim();
+    }
+    if (!task && !body.trim()) {
+      return;
+    }
+
+    const who = finding.label?.trim() || `${finding.type ?? 'subagent'}-${finding.id ?? '?'}`;
+    const caveats: string[] = [];
+    if (finding.compactions) {
+      // The subagent answered over a digested history, so its summary can look
+      // complete while missing detail. Worth carrying into recall.
+      caveats.push(`compacted its own context ${finding.compactions}x`);
+    }
+    if (finding.unresolvedSkills?.length) {
+      caveats.push(`could not load skill(s): ${finding.unresolvedSkills.join(', ')}`);
+    }
+
+    const content = truncateForCapture(
+      [
+        `[subagent ${who}${finding.status ? `, ${finding.status}` : ''}] delegated task: ${task || '(unrecorded)'}`,
+        '',
+        body.trim(),
+        caveats.length > 0 ? `\n(caveats: ${caveats.join('; ')})` : '',
+      ]
+        .join('\n')
+        .trim(),
+    );
+    if (!shouldCaptureL0(content)) {
+      return;
+    }
+
+    const messages: Array<{ role: 'user' | 'assistant'; content: string; timestamp: string }> = [
+      { role: 'assistant', content, timestamp: new Date().toISOString() },
+    ];
+    try {
+      const memoryAgentId = resolveMemoryAgentId(agentName, settings.agentIdMap);
+      const client = this.getClient(settings);
+      const iso = this.isolation(settings, memoryAgentId, sessionId);
+      const result = await client.addConversation(iso, { sessionId, messages });
+      log(
+        `Memory capture (subagent ${who}): ${content.length} bytes → total=${result.total_count} ` +
+          `(user=${iso.userId}, team=${iso.teamId}, agent=${memoryAgentId}, session=${sessionId})`,
+      );
+      try {
+        // Also feed skill extraction. Its buffer otherwise fills with bare tool
+        // TITLES — 84 of them in one observed turn — so a subagent's actual
+        // findings are the first substantive content it has had to work with.
+        const skillMessages = buildSkillConversationMessages(messages, []);
+        await client.skillConversationAdd(iso, { sessionId, messages: skillMessages });
+        log(`Skill conversation-add (subagent ${who}): ${skillMessages.length} msg(s) sent (session=${sessionId})`);
+      } catch (skillErr) {
+        log(`Skill conversation-add (subagent) failed (non-fatal): ${(skillErr as Error)?.message ?? skillErr}`);
+      }
+    } catch (e) {
+      logError('Memory capture (subagent findings) failed', e);
+    }
+  }
+
   /** Start accumulating assistant text for L0 capture after the turn ends. */
   beginTurn(sessionId: string, agentName: string, userText: string): void {
     const settings = this.getSettings();

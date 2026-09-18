@@ -30,6 +30,17 @@ export interface ConnectionInfo {
   /** `_session/terminate` — subagent session terminated. */
   onSessionTerminate?: (params: any) => void;
   /**
+   * `_ericli/subagent/findings` — a subagent finished; here is its task and
+   * result.
+   *
+   * ericli reports rather than persists: the memory API key lives on this side,
+   * along with tenancy isolation and the capture gate. Nothing else carries a
+   * subagent's work — its conversation never leaves ericli's process, its
+   * progress is deliberately not streamed, and memory capture otherwise records
+   * only tool_call titles plus the main assistant text.
+   */
+  onEricliSubagentFindings?: (params: any) => void;
+  /**
    * Cursor ACP extension methods (`cursor/*`). Notifications have no `id`;
    * blocking requests include `id` and must be answered via `respond`.
    * Return true if the frame was fully handled (do not forward to the SDK).
@@ -213,6 +224,14 @@ export class ConnectionManager {
             } else if (method === '_session/terminate' && info?.onSessionTerminate) {
               info.onSessionTerminate(params);
             }
+          } else if (method === '_ericli/subagent/findings' && info?.onEricliSubagentFindings) {
+            // Notification — a subagent finished and reported what it found.
+            // ericli cannot persist this itself (the memory API key lives here),
+            // and nothing else carries subagent work: its conversation never
+            // leaves ericli's process and the ACP stream shows only tool_call
+            // titles. Consuming it is what makes the finding recallable later.
+            info.onEricliSubagentFindings(params);
+            return; // consume
           } else if (params && method.startsWith('cursor/') && info?.onCursorMethod) {
             const handled = info.onCursorMethod({
               method,
