@@ -3354,13 +3354,30 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         // File not found — if we have a symbol name (linkText), fall back
         // to workspace symbol search (LSP / ripgrep) to find the definition
         // in any file, not just the (possibly hallucinated) path from the LLM.
-        const symFallback = this.symbolFallbackFromLinkText(linkText);
+        //
+        // NOT for an absolute path that points outside the workspace, though. That
+        // is what a correct sibling-repo reference looks like, and it is
+        // indistinguishable here from a hallucinated one — so the fallback would
+        // answer a question about ../llama.cpp with a same-named symbol from the
+        // open repo. A visible "not found" beats a confident wrong file.
+        const outsideWorkspace =
+          cleanPath.startsWith('/') &&
+          !(vscode.workspace.workspaceFolders ?? []).some((f) =>
+            cleanPath.startsWith(f.uri.fsPath + '/'),
+          );
+        const symFallback = outsideWorkspace ? null : this.symbolFallbackFromLinkText(linkText);
         if (symFallback) {
           getOutputChannel().appendLine(
             `[ACP-DEBUG] handleOpenFile: file not found, falling back to symbol search: "${symFallback}"`,
           );
           await this.handleOpenSymbol(symFallback);
           return;
+        }
+        if (outsideWorkspace) {
+          getOutputChannel().appendLine(
+            `[ACP-DEBUG] handleOpenFile: ${cleanPath} is outside the workspace and does not exist — ` +
+              'not falling back to a workspace symbol search',
+          );
         }
         throw new Error(`File not found: ${cleanPath}`);
       }
@@ -3715,6 +3732,20 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         return;
       }
       // Ripgrep found nothing either — fall back to Quick Open
+      //
+      // Quick Open's # search is scoped to the OPEN workspace, so on a miss it
+      // silently offers matches from the current repo for a symbol that lives in
+      // another one. That is what made this look like "it searches the wrong
+      // repository": the search had already given up, and the picker was the
+      // consolation prize. Say so, so the miss is legible.
+      getOutputChannel().appendLine(
+        `[ACP-DEBUG] handleOpenSymbol: "${symbolName}" not found by LSP or ripgrep in the ` +
+          'workspace or its sibling directories — falling back to Quick Open (workspace-scoped)',
+      );
+      vscode.window.showWarningMessage(
+        `Could not find ${symbolName} in this workspace or its sibling repositories. ` +
+          'Quick Open searches the current workspace only.',
+      );
       await vscode.commands.executeCommand('workbench.action.quickOpen', '#' + symbolName);
     } catch (e) {
       status.dispose();
@@ -3772,6 +3803,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
     // rg --word-regexp matches the symbol name as a whole word.
     // We then score candidates by how definition-like each line is.
+    //
+    // .cu / .cuh are here because their absence made this whole fallback useless
+    // for CUDA work: a click on ggml_cuda_op_silu (which exists ONLY in
+    // ggml-cuda/unary.cu and unary.cuh) matched nothing, so the search fell
+    // through to Quick Open, which is scoped to the open workspace — and reported
+    // "no symbol" from the wrong repository while the definition sat in a sibling
+    // one. Verified: with these globs the symbol is found; without them rg returns
+    // zero files for it.
     const srcGlobs = [
       '*.c',
       '*.cpp',
@@ -3781,6 +3820,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       '*.hpp',
       '*.hxx',
       '*.hh',
+      '*.cu',
+      '*.cuh',
       '*.rs',
       '*.go',
       '*.java',
