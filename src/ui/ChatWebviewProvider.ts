@@ -433,6 +433,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * Enrich from ~/.cursor/acp-sessions/<id>/store.db when needed.
    */
   private cursorToolEnrichers = new Map<string, CursorSessionToolEnricher>();
+  /**
+   * In-flight agent questions, keyed by askId.
+   *
+   * One resolver per question, removed on first settle: an agent that times out
+   * and a user who clicks late must not both settle the same request.
+   */
+  private pendingQuestions = new Map<string, (outcome: any) => void>();
   /** Deduplicate concurrent enrich polls for the same toolCallId. */
   private cursorToolEnrichInFlight = new Set<string>();
   /** toolCallIds that already have actionable args / enriched title on the wire. */
@@ -1316,6 +1323,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           break;
         case 'openFile':
           await this.handleOpenFile(message.filePath, message.lineNumber, message.lineEnd, message.linkText);
+          break;
+        case 'answerQuestion':
+          // The user clicked an option (or opted out). Settles the pending
+          // request; a second click cannot settle it twice.
+          this.resolveQuestion(String(message.askId || ''), message.outcome);
           break;
         case 'openSymbol':
           await this.handleOpenSymbol(message.symbolName);
@@ -4523,6 +4535,83 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     this.postMessage({ type: 'cursorGenerateImage', params });
   }
 
+  /**
+   * Put a multiple-choice question in the CHAT and wait for the user to click.
+   *
+   * Every agent question used to open a QuickPick: it floated over the editor,
+   * detached from the conversation that raised it, and once answered it left no
+   * trace — nothing in the transcript, nothing on resume, nothing for memory. The
+   * decision itself, which is usually the most valuable thing in the turn,
+   * vanished.
+   *
+   * Returns null when the panel cannot ask right now (no webview yet), so the
+   * caller falls back to a QuickPick rather than leaving the agent blocked. The
+   * fallback is deliberately kept: it is also what Zed and other clients do, and
+   * an unanswerable question is worse than an ugly one.
+   *
+   * The shape mirrors cursor/ask_question exactly, so that method maps onto this
+   * one without losing anything (including multi-select).
+   */
+  async askQuestion(params: {
+    title?: string;
+    questions: Array<{
+      id?: string;
+      prompt?: string;
+      options?: Array<{ id?: string; label?: string }>;
+      allowMultiple?: boolean;
+    }>;
+  }): Promise<
+    | { outcome: 'answered'; answers: Array<{ questionId: string; selectedOptionIds: string[]; text?: string }> }
+    | { outcome: 'cancelled' }
+    | null
+  > {
+    if (!this.view) {
+      return null;
+    }
+    const questions = (params.questions || []).filter(
+      (q) => Array.isArray(q?.options) && q.options.length > 0,
+    );
+    if (questions.length === 0) {
+      return null;
+    }
+    const askId = `ask-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    const payload = {
+      askId,
+      title: params.title || '',
+      questions: questions.map((q, qi) => ({
+        id: String(q.id ?? `q${qi}`),
+        prompt: String(q.prompt ?? ''),
+        allowMultiple: q.allowMultiple === true,
+        options: (q.options || []).map((o, oi) => ({
+          id: String(o?.id ?? `o${oi}`),
+          label: String(o?.label ?? o?.id ?? `Option ${oi + 1}`),
+        })),
+      })),
+    };
+    return new Promise((resolve) => {
+      // A single resolver per question, deleted on first use: an agent that gives
+      // up and a user who clicks late must not both settle the same request.
+      this.pendingQuestions.set(askId, (outcome) => resolve(outcome));
+      this.postMessage({ type: 'askQuestion', ...payload });
+    });
+  }
+
+  /**
+   * Settle a question the webview answered, and record it in the transcript.
+   *
+   * Persisted as an ordinary chat item so the exchange survives a resume — the
+   * QuickPick path could not do this, which is why past decisions were
+   * unrecoverable.
+   */
+  private resolveQuestion(askId: string, outcome: any): void {
+    const pending = this.pendingQuestions.get(askId);
+    if (!pending) {
+      return;
+    }
+    this.pendingQuestions.delete(askId);
+    pending(outcome);
+  }
+
   /** Notify webview that a Cursor plan was accepted. */
   notifyCursorCreatePlan(params: any): void {
     this.postMessage({ type: 'cursorCreatePlan', params });
@@ -5004,6 +5093,52 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       filter: brightness(1.08);
     }
 
+    /* An agent question, asked in the chat rather than in a QuickPick that
+       covers the editor and leaves no trace once answered. */
+    .agent-question {
+      margin: 8px 0;
+      padding: 10px 12px;
+      border: 1px solid var(--vscode-focusBorder);
+      border-radius: 8px;
+      background: var(--vscode-editorWidget-background);
+    }
+    .agent-question.answered { opacity: 0.75; border-color: var(--vscode-panel-border); }
+    .agent-question-title { font-weight: 600; margin-bottom: 6px; }
+    .agent-question-prompt { margin: 4px 0 8px; white-space: pre-wrap; }
+    .agent-question-option {
+      display: block;
+      width: 100%;
+      text-align: left;
+      margin: 4px 0;
+      padding: 7px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--vscode-button-border, var(--vscode-panel-border));
+      background: var(--vscode-button-secondaryBackground);
+      color: var(--vscode-button-secondaryForeground);
+      cursor: pointer;
+      /* Options can be full sentences; wrap instead of clipping the answer. */
+      white-space: normal;
+      word-break: break-word;
+    }
+    .agent-question-option:hover:not(:disabled) { background: var(--vscode-button-secondaryHoverBackground); }
+    .agent-question-option.selected {
+      background: var(--vscode-button-background);
+      color: var(--vscode-button-foreground);
+      border-color: var(--vscode-focusBorder);
+    }
+    .agent-question-option:disabled { cursor: default; }
+    .agent-question-submit, .agent-question-skip {
+      margin-top: 6px;
+      padding: 5px 10px;
+      border-radius: 6px;
+      border: 1px solid var(--vscode-panel-border);
+      background: transparent;
+      color: var(--vscode-descriptionForeground);
+      cursor: pointer;
+      font-size: 0.9em;
+    }
+    .agent-question-submit { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
+    .agent-question-skip:hover:not(:disabled) { color: var(--vscode-foreground); }
     .message {
       padding: 8px 12px;
       border-radius: var(--message-radius);
@@ -20591,6 +20726,10 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         handleKiroMetadata(msg.params);
         break;
 
+      case 'askQuestion':
+        renderAgentQuestion(msg);
+        break;
+
       case 'kiroSubagentListUpdate':
         handleKiroSubagentListUpdate(msg.params);
         break;
@@ -23123,6 +23262,123 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
   // Handle _kiro.dev/subagent/list_update notification (Kiro CLI specific).
   // params.subagents is an array of { sessionId, sessionName, status: { type, message } }.
   // We match each subagent to a stage element by sessionName and update its spinner.
+  /**
+   * Render an agent question as clickable buttons IN the chat.
+   *
+   * Questions used to open a VS Code QuickPick: it covered the editor, was
+   * detached from the message that raised it, and left no trace once answered — so
+   * a decision was invisible on resume and never reached memory. Rendering it as a
+   * chat row keeps the question, the options and the chosen answer together.
+   *
+   * Shift-click copies an option into the composer instead of answering, so a
+   * suggestion can be edited first (borrowed from Roo Code's FollowUpSuggest). Its
+   * auto-answer-after-timeout is deliberately NOT copied: picking for the user by
+   * option order is the opposite of asking.
+   */
+  function renderAgentQuestion(msg) {
+    var askId = msg && msg.askId;
+    var questions = (msg && msg.questions) || [];
+    if (!askId || questions.length === 0) return;
+
+    var wrap = document.createElement('div');
+    wrap.className = 'agent-question';
+    wrap.setAttribute('data-ask-id', String(askId));
+    if (msg.title) {
+      var t = document.createElement('div');
+      t.className = 'agent-question-title';
+      t.textContent = String(msg.title);
+      wrap.appendChild(t);
+    }
+
+    var picked = {};
+    var answered = false;
+
+    function settle(outcome) {
+      if (answered) return;
+      answered = true;
+      wrap.classList.add('answered');
+      var btns = wrap.querySelectorAll('button');
+      for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
+      vscode.postMessage({ type: 'answerQuestion', askId: String(askId), outcome: outcome });
+    }
+
+    function answerNow() {
+      var answers = [];
+      for (var k = 0; k < questions.length; k++) {
+        var qq = questions[k];
+        answers.push({ questionId: String(qq.id), selectedOptionIds: (picked[qq.id] || []).slice() });
+      }
+      settle({ outcome: 'answered', answers: answers });
+    }
+
+    for (var qi = 0; qi < questions.length; qi++) {
+      (function (q) {
+        var qEl = document.createElement('div');
+        qEl.className = 'agent-question-block';
+        if (q.prompt) {
+          var pEl = document.createElement('div');
+          pEl.className = 'agent-question-prompt';
+          pEl.textContent = String(q.prompt);
+          qEl.appendChild(pEl);
+        }
+        var opts = q.options || [];
+        for (var oi = 0; oi < opts.length; oi++) {
+          (function (o) {
+            var b = document.createElement('button');
+            b.className = 'agent-question-option';
+            b.type = 'button';
+            b.textContent = String(o.label);
+            b.setAttribute('aria-label', String(o.label));
+            b.title = 'Click to answer. Shift-click to edit it in the composer instead.';
+            b.addEventListener('click', function (ev) {
+              if (answered) return;
+              if (ev && ev.shiftKey) {
+                if (promptInput) {
+                  promptInput.value = promptInput.value
+                    ? promptInput.value + ' ' + String(o.label)
+                    : String(o.label);
+                  promptInput.dispatchEvent(new Event('input', { bubbles: true }));
+                  promptInput.focus();
+                }
+                return;
+              }
+              if (q.allowMultiple) {
+                var cur = picked[q.id] || (picked[q.id] = []);
+                var at = cur.indexOf(o.id);
+                if (at >= 0) { cur.splice(at, 1); b.classList.remove('selected'); }
+                else { cur.push(o.id); b.classList.add('selected'); }
+                return;
+              }
+              picked[q.id] = [o.id];
+              b.classList.add('selected');
+              answerNow();
+            });
+            qEl.appendChild(b);
+          })(opts[oi]);
+        }
+        if (q.allowMultiple) {
+          var done = document.createElement('button');
+          done.className = 'agent-question-submit';
+          done.type = 'button';
+          done.textContent = 'Send selected';
+          done.addEventListener('click', function () { answerNow(); });
+          qEl.appendChild(done);
+        }
+        wrap.appendChild(qEl);
+      })(questions[qi]);
+    }
+
+    var skip = document.createElement('button');
+    skip.className = 'agent-question-skip';
+    skip.type = 'button';
+    skip.textContent = 'Let the agent decide';
+    skip.addEventListener('click', function () { settle({ outcome: 'cancelled' }); });
+    wrap.appendChild(skip);
+
+    messagesEl.appendChild(wrap);
+    scrollToBottom();
+  }
+
   function handleKiroSubagentListUpdate(params) {
     if (!params || !Array.isArray(params.subagents)) return;
     // Prefer the live turn's stages only. Never fall back to the whole

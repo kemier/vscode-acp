@@ -506,9 +506,33 @@ export function activate(context: vscode.ExtensionContext): void {
   sessionManager.on('cursor-generate-image', (params: any) => {
     chatWebviewProvider.notifyCursorGenerateImage(params);
   });
-  sessionManager.on('cursor-ask-question', async (params: any, respond: (result: any) => void) => {
+  /**
+   * One implementation for every agent question.
+   *
+   * Tries the chat panel first, so the question sits with the conversation that
+   * raised it and the answer stays in the transcript. Falls back to a QuickPick
+   * when the panel cannot ask (not opened yet) — an ugly question beats one the
+   * agent waits on forever.
+   *
+   * `params` is cursor/ask_question's shape, which `_acp/ask_question` reuses
+   * verbatim, so cursor and ericli both land here without translation.
+   */
+  const askUserQuestion = async (params: any, respond: (result: any) => void): Promise<void> => {
     try {
       const questions: any[] = Array.isArray(params?.questions) ? params.questions : [];
+      if (questions.length === 0) {
+        respond({ outcome: { outcome: 'skipped', reason: 'no questions supplied' } });
+        return;
+      }
+      const inChat = await chatWebviewProvider.askQuestion({
+        title: params?.title,
+        questions,
+      });
+      if (inChat) {
+        respond({ outcome: inChat });
+        return;
+      }
+      // Fallback: one QuickPick per question.
       const answers: Array<{ questionId: string; selectedOptionIds: string[] }> = [];
       for (const q of questions) {
         const options: Array<{ id: string; label: string }> = Array.isArray(q?.options) ? q.options : [];
@@ -517,7 +541,7 @@ export function activate(context: vscode.ExtensionContext): void {
           continue;
         }
         const picked = await vscode.window.showQuickPick(items, {
-          title: params?.title || 'Cursor agent question',
+          title: params?.title || 'Agent question',
           placeHolder: q.prompt || 'Select an option',
           canPickMany: !!q.allowMultiple,
           ignoreFocusOut: true,
@@ -536,7 +560,12 @@ export function activate(context: vscode.ExtensionContext): void {
     } catch (e: any) {
       respond({ outcome: { outcome: 'skipped', reason: e?.message || 'ask_question failed' } });
     }
-  });
+  };
+  // Elicitations reach the chat by the same route. Registered on the class because
+  // connections are per-agent while the panel is a singleton.
+  ConnectionManager.askInChat = (p) => chatWebviewProvider.askQuestion(p);
+  sessionManager.on('agent-ask-question', askUserQuestion);
+  sessionManager.on('cursor-ask-question', askUserQuestion);
   sessionManager.on('cursor-create-plan', async (params: any, respond: (result: any) => void) => {
     try {
       const name = params?.name ? String(params.name) : 'Plan';

@@ -41,6 +41,12 @@ export interface ConnectionInfo {
    */
   onSubagentFindings?: (params: any) => void;
   /**
+   * `_acp/ask_question` — the agent asks the user a multiple-choice question and
+   * BLOCKS until answered. Adapter-neutral: the shape is cursor/ask_question's, so
+   * both route through the same UI.
+   */
+  onAskQuestion?: (params: any, respond: (result: unknown) => void) => void;
+  /**
    * Cursor ACP extension methods (`cursor/*`). Notifications have no `id`;
    * blocking requests include `id` and must be answered via `respond`.
    * Return true if the frame was fully handled (do not forward to the SDK).
@@ -58,6 +64,15 @@ export interface ConnectionInfo {
  * Creates ClientSideConnection instances from spawned child processes.
  */
 export class ConnectionManager {
+  /**
+   * Chat-panel question provider, shared by every connection.
+   *
+   * Static because connections are created per agent while the panel is a
+   * singleton, and an elicitation must not have to know which came first. Unset
+   * until the panel registers, so early elicitations still use QuickPick.
+   */
+  static askInChat: Parameters<ElicitationHandler['setAskInChat']>[0] | null = null;
+
   private connections: Map<string, ConnectionInfo> = new Map();
 
   constructor(private readonly sessionUpdateHandler: SessionUpdateHandler) {}
@@ -87,6 +102,11 @@ export class ConnectionManager {
     const terminalHandler = new TerminalHandler();
     const permissionHandler = new PermissionHandler();
     const elicitationHandler = new ElicitationHandler();
+    // Let elicitation enums render as chat buttons when a panel is listening.
+    // Optional: without a provider it keeps using QuickPick.
+    if (ConnectionManager.askInChat) {
+      elicitationHandler.setAskInChat(ConnectionManager.askInChat);
+    }
 
     // Create client implementation
     const client = new AcpClientImpl(
@@ -224,6 +244,14 @@ export class ConnectionManager {
             } else if (method === '_session/terminate' && info?.onSessionTerminate) {
               info.onSessionTerminate(params);
             }
+          } else if (method === '_acp/ask_question' && info?.onAskQuestion && id !== undefined && id !== null) {
+            // Blocking request: the agent waits for the user's answer. Neutral by
+            // design — cursor/ask_question maps onto the same shape, so one client
+            // implementation serves every agent instead of one per dialect.
+            info.onAskQuestion(params, (result: unknown) => {
+              writeAgentResponse(id!, result);
+            });
+            return; // consume
           } else if (
             (method === '_acp/subagent/findings' || method === '_ericli/subagent/findings') &&
             info?.onSubagentFindings

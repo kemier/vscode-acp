@@ -23,6 +23,33 @@ export class ElicitationHandler {
   /** Pending URL elicitations, keyed by elicitationId. */
   private pendingUrl: Map<string, vscode.Disposable | undefined> = new Map();
 
+  /**
+   * Ask in the chat panel instead of a QuickPick, when one is available.
+   *
+   * Injected rather than imported so this handler keeps no dependency on the
+   * webview: it must still work (via QuickPick) before the panel exists, and in
+   * tests. Returns null when the panel cannot ask, which selects the fallback.
+   */
+  private askInChat:
+    | ((params: {
+        title?: string;
+        questions: Array<{
+          id: string;
+          prompt: string;
+          options: Array<{ id: string; label: string }>;
+          allowMultiple?: boolean;
+        }>;
+      }) => Promise<
+        | { outcome: 'answered'; answers: Array<{ questionId: string; selectedOptionIds: string[] }> }
+        | { outcome: 'cancelled' }
+        | null
+      >)
+    | null = null;
+
+  setAskInChat(fn: NonNullable<ElicitationHandler['askInChat']>): void {
+    this.askInChat = fn;
+  }
+
   async createElicitation(params: CreateElicitationRequest): Promise<CreateElicitationResponse> {
     if (params.mode === 'url') {
       return this.handleUrlElicitation(params as Extract<CreateElicitationRequest, { mode: 'url' }>);
@@ -71,8 +98,34 @@ export class ElicitationHandler {
       const description = p?.description ? ` — ${p.description}` : '';
       const placeholder = p?.placeholder || `Enter ${title}`;
 
-      // Enum → QuickPick
+      // Enum → a choice. Rendered in the chat when possible (see askInChat), so
+      // codex-acp's elicitations read like the conversation they belong to instead
+      // of a QuickPick over the editor; QuickPick remains the fallback.
       if (Array.isArray(p?.enum) && p.enum.length > 0) {
+        const inChat = this.askInChat
+          ? await this.askInChat({
+              title: `${title}${description}`,
+              questions: [
+                {
+                  id: key,
+                  prompt: placeholder,
+                  options: p.enum.map((v: string) => ({ id: String(v), label: String(v) })),
+                  allowMultiple: false,
+                },
+              ],
+            })
+          : null;
+        if (inChat) {
+          if (inChat.outcome !== 'answered') {
+            return { action: 'cancel' as const };
+          }
+          const chosen = inChat.answers?.[0]?.selectedOptionIds?.[0];
+          if (chosen === undefined) {
+            return { action: 'cancel' as const };
+          }
+          content[key] = chosen;
+          continue;
+        }
         const items = p.enum.map((v: string) => ({ label: String(v), value: v }));
         const picked = await vscode.window.showQuickPick(items, {
           title: `${title}${description}`,

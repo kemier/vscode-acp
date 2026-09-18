@@ -163,6 +163,7 @@ export interface SessionManagerEvents {
   'cursor-update-todos': [params: any];
   'cursor-generate-image': [params: any];
   'cursor-ask-question': [params: any, respond: (result: any) => void];
+  'agent-ask-question': [params: any, respond: (result: any) => void];
   'cursor-create-plan': [params: any, respond: (result: any) => void];
 }
 
@@ -2328,6 +2329,13 @@ export class SessionManager extends EventEmitter {
     // A finished subagent reporting what it found. ericli cannot persist this
     // itself — the memory API key and the tenancy isolation live here — and
     // nothing else carries subagent work into memory.
+    // The agent asks the user a question and blocks. Forwarded to whoever owns the
+    // UI; cursor/ask_question is forwarded to the same listener below, so both
+    // dialects reach one implementation.
+    connInfo.onAskQuestion = (params: any, respond: (result: unknown) => void) => {
+      this.emit('agent-ask-question', params, respond);
+    };
+
     connInfo.onSubagentFindings = (params: any) => {
       const targetSession = String(params?.sessionId || '');
       if (!targetSession) {
