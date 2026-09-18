@@ -19354,6 +19354,89 @@ forceCollapseTurnFolds();
     *
     * Absent meta keeps "Plan", so every existing agent renders exactly as before.
     */
+   /**
+    * Kiro's task board, kept across its todo_list tool calls.
+    *
+    * Ids are POSITIONAL: a create carries tasks without ids, and a later complete
+    * refers to them as "1", "2" — so the numbering is the 1-based order of the
+    * create. Stored as a flat list and indexed on demand rather than trusting an
+    * id field that is not sent.
+    */
+   var kiroTodoState = null;
+
+   /**
+    * Build the plan bar from a kiro todo_list tool call.
+    *
+    * Kiro sends no plan frame and has no dedicated todo method — unlike cursor,
+    * which has cursor/update_todos. Its board travels inside an ordinary tool_call
+    * as rawInput, which the client already receives and previously used only for
+    * the row title. So nothing upstream was missing; the data was being dropped.
+    *
+    * Matched on the tool NAME (kiro's own _meta.kiro.toolName, or the title, which
+    * for this tool IS the name) plus the presence of a command — not on prose, so
+    * an ordinary shell command mentioning todos cannot trigger it.
+    */
+   function applyKiroTodoList(title, toolName, rawInput) {
+     var name = String(toolName || title || '').toLowerCase();
+     if (name !== 'todo_list') return;
+     if (!rawInput || typeof rawInput !== 'object') return;
+     var cmd = String(rawInput.command || '');
+     if (!cmd) return;
+
+     function toEntries(list) {
+       var out = [];
+       for (var i = 0; i < (list || []).length; i++) {
+         var t = list[i] || {};
+         var text = String(t.task_description || t.description || '').trim();
+         if (!text) continue;
+         out.push({ content: text, status: 'pending', priority: 'medium' });
+       }
+       return out;
+     }
+
+     if (cmd === 'create') {
+       kiroTodoState = {
+         title: String(rawInput.task_list_description || '').trim(),
+         entries: toEntries(rawInput.tasks),
+       };
+     } else if (cmd === 'add' && kiroTodoState) {
+       // Unverified on the wire (only create/complete observed), but the tool
+       // advertises it; appending keeps the positional ids stable.
+       kiroTodoState.entries = kiroTodoState.entries.concat(toEntries(rawInput.new_tasks));
+       if (rawInput.new_description) kiroTodoState.title = String(rawInput.new_description).trim();
+     } else if (cmd === 'remove' && kiroTodoState) {
+       var drop = {};
+       var rm = rawInput.remove_task_ids || [];
+       for (var r = 0; r < rm.length; r++) drop[String(rm[r])] = true;
+       var kept = [];
+       for (var k = 0; k < kiroTodoState.entries.length; k++) {
+         if (!drop[String(k + 1)]) kept.push(kiroTodoState.entries[k]);
+       }
+       kiroTodoState.entries = kept;
+       if (rawInput.new_description) kiroTodoState.title = String(rawInput.new_description).trim();
+     } else if (cmd === 'complete' && kiroTodoState) {
+       var ids = rawInput.completed_task_ids || [];
+       for (var c = 0; c < ids.length; c++) {
+         // Ids are 1-based positions into the created list.
+         var idx = Number(String(ids[c])) - 1;
+         if (Number.isInteger(idx) && idx >= 0 && idx < kiroTodoState.entries.length) {
+           kiroTodoState.entries[idx].status = 'completed';
+         }
+       }
+     } else {
+       // A list command changes nothing, and an unknown command must not wipe the board.
+       return;
+     }
+
+     if (!kiroTodoState || kiroTodoState.entries.length === 0) return;
+     addPlan({
+       entries: kiroTodoState.entries.slice(),
+       // Labelled like every other checklist on this bar. The board's own
+       // description is long prose, so it is NOT used as the heading.
+       _meta: { acp: { plan: { kind: 'todo', title: 'Todos' } } },
+     });
+   }
+
    function planBarTitle(plan) {
      var meta = plan && plan._meta && plan._meta.acp && plan._meta.acp.plan;
      if (meta) {
@@ -22688,6 +22771,15 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       if (isCursorUpdateTodosPlaceholder(update.title, update.rawInput)) {
         break;
       }
+      // Kiro's todo_list arrives as an ordinary tool_call with the whole board in
+      // rawInput — there is no dedicated method for it the way cursor has
+      // cursor/update_todos, and no sessionUpdate "plan" is ever sent. So the data
+      // was on the wire all along and simply nobody read it; the board is built
+      // from the same rawInput this row already receives.
+      //
+      // The row itself is left alone: it is a real tool call, and suppressing it
+      // would hide that the agent touched its task list.
+      applyKiroTodoList(update.title, _tcToolName, update.rawInput);
       // Non-compaction tool — agent is working again; clear compact status.
       // Keep the banner spinner alive on every tool call (Codex keeps it
       // spinning for the whole turn; Cursor/Kiro status flashes must not
