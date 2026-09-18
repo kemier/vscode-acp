@@ -2328,7 +2328,7 @@ export class SessionManager extends EventEmitter {
     // A finished subagent reporting what it found. ericli cannot persist this
     // itself — the memory API key and the tenancy isolation live here — and
     // nothing else carries subagent work into memory.
-    connInfo.onEricliSubagentFindings = (params: any) => {
+    connInfo.onSubagentFindings = (params: any) => {
       const targetSession = String(params?.sessionId || '');
       if (!targetSession) {
         // ericli always sends it; without one the finding cannot be filed
@@ -2367,6 +2367,35 @@ export class SessionManager extends EventEmitter {
       const { method, params, id, respond } = msg;
       if (method === 'cursor/task') {
         this.emit('cursor-task', params);
+        // Cursor's subagent delegation. `cursor/task` carries the full prompt,
+        // description and subagentType, but its outcome is only
+        // completed / rejected / cancelled — there is no summary, so this records
+        // the question asked, explicitly not an answer.
+        const task = typeof params?.prompt === 'string' ? params.prompt : '';
+        // CursorTaskRequest carries no sessionId (see the documented interface),
+        // so it has to be resolved. Prefer one if a future version sends it;
+        // otherwise use the active session, but ONLY when it belongs to this
+        // agent — filing a cursor delegation against another agent's session
+        // would put it under the wrong identity and hide it from recall.
+        const active = this.getActiveSessionId();
+        const fromParams = typeof params?.sessionId === 'string' ? params.sessionId : '';
+        const target =
+          fromParams ||
+          (active && this.sessions.get(active)?.agentName === agentName ? active : '');
+        if (task.trim() && target) {
+          const st = params?.subagentType;
+          void this.memoryProvider
+            ?.captureDelegatedTask(target, agentName, {
+              id: typeof params?.toolCallId === 'string' ? params.toolCallId : undefined,
+              type: typeof st === 'string' ? st : st?.custom,
+              label: typeof params?.description === 'string' ? params.description : undefined,
+              task,
+              durationMs: typeof params?.durationMs === 'number' ? params.durationMs : undefined,
+            })
+            .catch(() => {
+              /* best-effort, like every other capture */
+            });
+        }
         return true;
       }
       if (method === 'cursor/update_todos') {

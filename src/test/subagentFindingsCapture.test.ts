@@ -65,7 +65,7 @@ suite('subagent findings capture', () => {
     assert.ok(body.includes('resolveMemoryAgentId(agentName, settings.agentIdMap)'), 'not the parent identity');
     assert.ok(body.includes('this.isolation(settings, memoryAgentId, sessionId)'), 'isolation not applied');
     const wiring = read('src/core/SessionManager.ts');
-    const wat = wiring.indexOf('connInfo.onEricliSubagentFindings');
+    const wat = wiring.indexOf('connInfo.onSubagentFindings');
     assert.ok(wat > 0, 'notification not wired');
     const wbody = wiring.slice(wat, wiring.indexOf('};', wat));
     assert.ok(
@@ -118,7 +118,7 @@ suite('subagent findings capture', () => {
     const body = provider.slice(at, provider.indexOf('\n  }', at));
     assert.ok(body.includes("logError('Memory capture (subagent findings) failed'"), 'no outer catch');
     const wiring = read('src/core/SessionManager.ts');
-    const wat = wiring.indexOf('connInfo.onEricliSubagentFindings');
+    const wat = wiring.indexOf('connInfo.onSubagentFindings');
     const wbody = wiring.slice(wat, wiring.indexOf('};', wat));
     assert.ok(wbody.includes('.catch('), 'the wiring must swallow rejections');
   });
@@ -127,18 +127,24 @@ suite('subagent findings capture', () => {
     // Guessing the active session would attach it to whatever the user happens
     // to be looking at.
     const wiring = read('src/core/SessionManager.ts');
-    const wat = wiring.indexOf('connInfo.onEricliSubagentFindings');
+    const wat = wiring.indexOf('connInfo.onSubagentFindings');
     const wbody = wiring.slice(wat, wiring.indexOf('};', wat));
     assert.ok(wbody.includes('if (!targetSession)'), 'missing session not guarded');
   });
 
   test('the notification is routed and consumed', () => {
     const conn = read('src/core/ConnectionManager.ts');
-    assert.ok(conn.includes("method === '_ericli/subagent/findings'"), 'not routed');
-    const at = conn.indexOf("method === '_ericli/subagent/findings'");
-    const body = conn.slice(at, at + 700);
-    assert.ok(body.includes('return; // consume'), 'must be consumed like the other _ericli methods');
-    assert.ok(conn.includes('onEricliSubagentFindings?:'), 'callback not declared');
+    // Adapter-neutral name, plus the original so an agent binary older than this
+    // extension keeps working instead of silently dropping its findings.
+    assert.ok(conn.includes("method === '_acp/subagent/findings'"), 'neutral name not routed');
+    assert.ok(conn.includes("method === '_ericli/subagent/findings'"), 'legacy name not accepted');
+    const at = conn.indexOf("method === '_acp/subagent/findings'");
+    // Bounded by the next branch rather than a character count: the condition
+    // became multi-line when the second name was accepted, and a 700-char window
+    // stopped short of the statement being asserted on.
+    const body = conn.slice(at, conn.indexOf('} else if', at + 10));
+    assert.ok(body.includes('return; // consume'), 'must be consumed like the other extension methods');
+    assert.ok(conn.includes('onSubagentFindings?:'), 'callback not declared');
   });
 });
 
@@ -255,5 +261,88 @@ suite('subagent findings capture (executed)', () => {
       skillConversationAdd: async () => ({}),
     });
     await p.captureSubagentFindings('sess-1', 'EricCLI', finding);
+  });
+});
+
+/**
+ * Adapters that report the QUESTION but not the ANSWER.
+ *
+ * cursor's `cursor/task` carries prompt/description/subagentType, but its outcome
+ * is only completed / rejected / cancelled — no summary. codex-acp's collab tool
+ * call carries `prompt` in rawInput, and its subAgentActivity updates are markers
+ * with no content. Both are worth recording as "asked", never as "found".
+ *
+ * kiro-cli cannot participate: `_kiro.dev/subagent/list_update` is live status
+ * only (sessionName, status.type, sessionId) and kiro ships as a binary, so the
+ * payload cannot be enriched here. pi-acp has no subagents at all.
+ */
+suite('delegated-task capture (adapters with no result)', () => {
+  function harness(overrides: Record<string, unknown>) {
+    const sent: any[] = [];
+    const p: any = new SharedMemoryProvider({ addListener: () => {}, removeListener: () => {} } as any);
+    p.getSettings = () => ({
+      enabled: true, endpoint: 'http://127.0.0.1:1/x', apiKey: 'k', serviceId: 's',
+      teamId: 'default', userId: 'tester', captureEnabled: true,
+      captureSubagentFindings: false, agentIdMap: {}, timeoutMs: 1000, ...overrides,
+    });
+    p.getClient = () => ({
+      addConversation: async (_iso: any, payload: any) => { sent.push(payload); return { total_count: sent.length }; },
+      skillConversationAdd: async () => ({}),
+    });
+    return { p, sent };
+  }
+
+  const delegation = { id: 'call_126', type: 'explore', label: 'Explore codebase',
+    task: 'Find where authentication is handled and report the file paths.' };
+
+  test('is gated by the same setting', async () => {
+    const { p, sent } = harness({});
+    await p.captureDelegatedTask('s1', 'Cursor', delegation);
+    assert.deepStrictEqual(sent, []);
+  });
+
+  test('records the task and says the result is missing', async () => {
+    const { p, sent } = harness({ captureSubagentFindings: true });
+    await p.captureDelegatedTask('s1', 'Cursor', delegation);
+    assert.strictEqual(sent.length, 1);
+    const content = sent[0].messages[0].content;
+    assert.ok(content.includes('Explore codebase'), content);
+    assert.ok(content.includes('Find where authentication is handled'), content);
+    // Must NOT imply an answer it never received — L1 would extract it as fact.
+    assert.ok(content.includes('result not reported'), content);
+  });
+
+  test('the same delegation is not stored twice', async () => {
+    // codex re-sends its collab tool call as tool_call_update with identical
+    // rawInput, so the naive path would double-write.
+    const { p, sent } = harness({ captureSubagentFindings: true });
+    await p.captureDelegatedTask('s1', 'Codex CLI', delegation);
+    await p.captureDelegatedTask('s1', 'Codex CLI', delegation);
+    assert.strictEqual(sent.length, 1, 'duplicate delegation was stored');
+  });
+
+  test('a delegation with no task is not written', async () => {
+    const { p, sent } = harness({ captureSubagentFindings: true });
+    await p.captureDelegatedTask('s1', 'Cursor', { id: 'x', type: 'explore' });
+    assert.deepStrictEqual(sent, []);
+  });
+
+  test('codex collab tool calls are detected by their _meta, not by title', async () => {
+    const src = fs.readFileSync(path.join(SRC, 'src/core/memory/SharedMemoryProvider.ts'), 'utf8');
+    // Terminated, so a renamed property (collaborationX) cannot substring-match.
+    assert.ok(src.includes('?.codex?.collaboration;'), 'codex collab discriminator missing');
+    assert.ok(src.includes('if (collab && prompt.trim())'), 'collab hook not reached');
+    assert.ok(src.includes("typeof data.rawInput?.prompt === 'string'"), 'prompt not read from rawInput');
+  });
+
+  test('cursor delegations are filed against a session belonging to that agent', async () => {
+    // cursor/task carries no sessionId, so the active session is used — but only
+    // when it is this agent's, or the finding lands under the wrong identity.
+    const wiring = fs.readFileSync(path.join(SRC, 'src/core/SessionManager.ts'), 'utf8');
+    const at = wiring.indexOf("if (method === 'cursor/task')");
+    assert.ok(at > 0, 'cursor/task not handled');
+    const body = wiring.slice(at, wiring.indexOf('return true;', at));
+    assert.ok(body.includes('captureDelegatedTask('), 'not captured');
+    assert.ok(body.includes('?.agentName === agentName'), 'session ownership not checked');
   });
 });

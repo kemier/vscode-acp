@@ -39,7 +39,7 @@ export interface ConnectionInfo {
    * progress is deliberately not streamed, and memory capture otherwise records
    * only tool_call titles plus the main assistant text.
    */
-  onEricliSubagentFindings?: (params: any) => void;
+  onSubagentFindings?: (params: any) => void;
   /**
    * Cursor ACP extension methods (`cursor/*`). Notifications have no `id`;
    * blocking requests include `id` and must be answered via `respond`.
@@ -224,13 +224,21 @@ export class ConnectionManager {
             } else if (method === '_session/terminate' && info?.onSessionTerminate) {
               info.onSessionTerminate(params);
             }
-          } else if (method === '_ericli/subagent/findings' && info?.onEricliSubagentFindings) {
+          } else if (
+            (method === '_acp/subagent/findings' || method === '_ericli/subagent/findings') &&
+            info?.onSubagentFindings
+          ) {
             // Notification — a subagent finished and reported what it found.
-            // ericli cannot persist this itself (the memory API key lives here),
-            // and nothing else carries subagent work: its conversation never
-            // leaves ericli's process and the ACP stream shows only tool_call
-            // titles. Consuming it is what makes the finding recallable later.
-            info.onEricliSubagentFindings(params);
+            // The agent cannot persist this itself (the memory API key lives
+            // here), and nothing else carries subagent work: the subagent's
+            // conversation never reaches the client and the ACP stream shows only
+            // tool_call titles. Consuming it is what makes the finding recallable.
+            //
+            // Two names accepted. `_acp/subagent/findings` is the adapter-neutral
+            // one that ericli and claude-code-acp both send; the `_ericli/` name
+            // is the original and stays so an agent binary older than this
+            // extension keeps working instead of silently dropping its findings.
+            info.onSubagentFindings(params);
             return; // consume
           } else if (params && method.startsWith('cursor/') && info?.onCursorMethod) {
             const handled = info.onCursorMethod({

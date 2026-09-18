@@ -88,6 +88,14 @@ export interface L1StateStorage {
 export class SharedMemoryProvider {
   private readonly listener: (update: SessionNotification) => void;
   private readonly turns = new Map<string, PendingTurn>();
+  /**
+   * Delegations already recorded, so a re-sent tool call is not stored twice.
+   *
+   * codex-acp emits its collab tool call as both `tool_call` and
+   * `tool_call_update` with the same rawInput, and a session can repeat the same
+   * delegation. Bounded in captureDelegatedTask.
+   */
+  private readonly seenDelegations = new Set<string>();
   private readonly l1State = new Map<string, SessionL1State>();
   private client: MemoryHttpClient | null = null;
   private cachedSettingsKey = '';
@@ -715,6 +723,85 @@ export class SharedMemoryProvider {
     }
   }
 
+  /**
+   * Record that a subagent was delegated a task, when the adapter cannot report
+   * what it found.
+   *
+   * Two adapters supply the question but not the answer:
+   *   - cursor: `cursor/task` carries `prompt`, `description`, `subagentType`,
+   *     `model` and `durationMs`, but its response outcome is only
+   *     completed / rejected / cancelled — no summary text;
+   *   - codex-acp: the collab tool call carries `prompt` in rawInput, and its
+   *     subAgentActivity updates are activity markers with no content.
+   *
+   * Two others cannot supply anything usable:
+   *   - kiro-cli's `_kiro.dev/subagent/list_update` is live status only
+   *     (sessionName, status.type, sessionId) and kiro ships as a binary here, so
+   *     the payload cannot be enriched from our side;
+   *   - pi-acp has no subagent concept at all.
+   *
+   * Marked "result not reported" deliberately. A memory implying an answer that
+   * was never received is worse than no memory: L1 would extract it as fact. What
+   * this DOES preserve is that the question was asked and by whom, which is what
+   * makes "has this already been tried?" answerable later.
+   */
+  async captureDelegatedTask(
+    sessionId: string,
+    agentName: string,
+    delegation: { id?: string; type?: string; label?: string; task?: string; durationMs?: number },
+  ): Promise<void> {
+    const settings = this.getSettings();
+    if (!isMemoryConfigured(settings) || !settings.captureEnabled) {
+      return;
+    }
+    if (!settings.captureSubagentFindings) {
+      return;
+    }
+    if (!sessionId || !agentName.trim()) {
+      return;
+    }
+    const task = truncateForCapture(stripCodeBlocks(sanitizeMemoryText(String(delegation.task ?? ''))));
+    if (!task.trim()) {
+      return;
+    }
+    const who = delegation.label?.trim() || `${delegation.type ?? 'subagent'}-${delegation.id ?? '?'}`;
+    // Dedupe: codex re-sends the collab tool call as tool_call_update, and a
+    // repeated identical delegation would otherwise be stored twice.
+    const dedupeKey = `${sessionId}::${who}::${task.slice(0, 200)}`;
+    if (this.seenDelegations.has(dedupeKey)) {
+      return;
+    }
+    this.seenDelegations.add(dedupeKey);
+    if (this.seenDelegations.size > 500) {
+      // Bounded — a long session must not grow this without limit.
+      this.seenDelegations.clear();
+      this.seenDelegations.add(dedupeKey);
+    }
+
+    const content = truncateForCapture(
+      `[subagent ${who}] delegated task: ${task}\n\n(result not reported by this agent — ` +
+        'the task was recorded, the outcome was not)',
+    );
+    if (!shouldCaptureL0(content)) {
+      return;
+    }
+    const messages: Array<{ role: 'user' | 'assistant'; content: string; timestamp: string }> = [
+      { role: 'assistant', content, timestamp: new Date().toISOString() },
+    ];
+    try {
+      const memoryAgentId = resolveMemoryAgentId(agentName, settings.agentIdMap);
+      const client = this.getClient(settings);
+      const iso = this.isolation(settings, memoryAgentId, sessionId);
+      const result = await client.addConversation(iso, { sessionId, messages });
+      log(
+        `Memory capture (delegated task ${who}): ${content.length} bytes → total=${result.total_count} ` +
+          `(agent=${memoryAgentId}, session=${sessionId})`,
+      );
+    } catch (e) {
+      logError('Memory capture (delegated task) failed', e);
+    }
+  }
+
   /** Start accumulating assistant text for L0 capture after the turn ends. */
   beginTurn(sessionId: string, agentName: string, userText: string): void {
     const settings = this.getSettings();
@@ -828,7 +915,30 @@ export class SharedMemoryProvider {
       toolCallId?: string;
       title?: string;
       content?: { type?: string; text?: string };
+      rawInput?: Record<string, unknown>;
+      _meta?: Record<string, unknown>;
     };
+    // A subagent delegation from an adapter that reports the TASK but not the
+    // result. codex-acp's collab tool call carries the prompt in rawInput and is
+    // identified by _meta.codex.collaboration; cursor's is a dedicated
+    // `cursor/task` notification handled separately (see captureDelegatedTask).
+    //
+    // Recorded as "asked, result not reported" rather than as a finding — a memory
+    // that claimed an answer it never received would be worse than none.
+    if (data?.sessionUpdate === 'tool_call') {
+      const collab = (data._meta as { codex?: { collaboration?: { tool?: string } } } | undefined)
+        ?.codex?.collaboration;
+      const prompt = typeof data.rawInput?.prompt === 'string' ? data.rawInput.prompt : '';
+      if (collab && prompt.trim()) {
+        void this.captureDelegatedTask(update.sessionId, turn.agentName, {
+          id: data.toolCallId,
+          type: collab.tool || 'collab',
+          task: prompt,
+        }).catch(() => {
+          /* best-effort, like every other capture */
+        });
+      }
+    }
     // Tool calls feed the skill pipeline: the gateway archives a session
     // buffer once it holds ≥10 `tool_call`-role messages (or ≥40KB), and only
     // then runs LLM skill extraction. Without them the threshold is
