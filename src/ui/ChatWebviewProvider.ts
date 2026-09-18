@@ -6171,6 +6171,16 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     .picker-dropdown-item:hover {
       background: var(--vscode-list-hoverBackground);
     }
+    /* Capability parameters parsed out of the option value (thinking, effort,
+       context). Pushed to the right and dimmed: it is information, not the
+       label, and must not compete with the model name. */
+    .picker-dropdown-item .item-hint {
+      margin-left: auto;
+      padding-left: 12px;
+      opacity: 0.7;
+      font-size: calc(var(--vscode-font-size) - 2px);
+      white-space: nowrap;
+    }
     .picker-dropdown-item.selected {
       background: var(--vscode-list-activeSelectionBackground);
       color: var(--vscode-list-activeSelectionForeground);
@@ -13194,6 +13204,51 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       return opt.options.find(v => v && v.value === value) || null;
     }
 
+    // Some agents encode capability parameters inside the option VALUE rather
+    // than the name. Cursor is the case that prompted this: every model arrives
+    // as claude-opus-4-7[thinking=true,context=300k,effort=xhigh,fast=false]
+    // while the name is the bare claude-opus-4-7, so the picker rendered 38
+    // entries that looked interchangeable and hid the one distinction the user
+    // was asking for. The values are NOT composable — set_model rejects any
+    // string other than the advertised one, verified against the real binary —
+    // so this surfaces the parameters as information and never edits them.
+    //
+    // Agent-neutral: keyed on the name[k=v,...] shape, not on an agent name.
+    function optionValueParams(value) {
+      if (typeof value !== 'string') { return null; }
+      var open = value.indexOf('[');
+      if (open <= 0 || value.charAt(value.length - 1) !== ']') { return null; }
+      var inner = value.slice(open + 1, value.length - 1).trim();
+      if (!inner) { return null; }
+      var out = [];
+      inner.split(',').forEach(function (pair) {
+        var eq = pair.indexOf('=');
+        if (eq <= 0) { return; }
+        out.push({ key: pair.slice(0, eq).trim(), val: pair.slice(eq + 1).trim() });
+      });
+      return out.length ? out : null;
+    }
+
+    // The reasoning-effort family, which is what the parameters are wanted for.
+    // 'context' rides along because it is the other thing that distinguishes two
+    // otherwise identical entries. 'fast' is deliberately omitted as noise.
+    function optionParamSummary(value) {
+      var params = optionValueParams(value);
+      if (!params) { return ''; }
+      var bits = [];
+      params.forEach(function (p) {
+        var k = p.key.toLowerCase();
+        if (k === 'thinking') {
+          bits.push(p.val === 'false' ? 'no thinking' : 'thinking');
+        } else if (k === 'effort' || k === 'reasoning' || k === 'reasoning_effort') {
+          bits.push(p.val);
+        } else if (k === 'context') {
+          bits.push(p.val);
+        }
+      });
+      return bits.join(' · ');
+    }
+
     function pickerLabelFor(opt) {
       const v = findOptionValue(opt, opt.currentValue);
       return v && v.name ? v.name : (opt.name || 'Option');
@@ -13201,7 +13256,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
 
     function pickerTooltipFor(opt) {
       const v = findOptionValue(opt, opt.currentValue);
-      return (v && v.description) || opt.description || opt.name || '';
+      const base = (v && v.description) || opt.description || opt.name || '';
+      const hint = v ? optionParamSummary(v.value) : '';
+      return hint ? (base ? base + ' (' + hint + ')' : hint) : base;
     }
 
     function renderConfigPickers(opts) {
@@ -13264,10 +13321,13 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       item.className = 'picker-dropdown-item' + (selected ? ' selected' : '');
       item.dataset.value = v.value;
       item.dataset.desc = v.description || '';
+      var hint = optionParamSummary(v.value);
       item.innerHTML =
         '<span class="check">' + (selected ? '✓' : '') + '</span>' +
-        '<span class="item-label"></span>';
+        '<span class="item-label"></span>' +
+        (hint ? '<span class="item-hint"></span>' : '');
       item.querySelector('.item-label').textContent = v.name || v.value;
+      if (hint) { item.querySelector('.item-hint').textContent = hint; }
       return item;
     }
 
