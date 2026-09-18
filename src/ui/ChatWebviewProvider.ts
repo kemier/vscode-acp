@@ -19312,6 +19312,36 @@ forceCollapseTurnFolds();
     }
 
    let currentPlanEl = null;
+   /**
+    * What to call the plan bar.
+    *
+    * ACP has ONE channel for two different things: an ordered strategy (an agent's
+    * update_plan tool) and a task tracker. An agent with a task board reuses the
+    * plan channel because that is where the plan bar lives, and both arrived as a
+    * hardcoded "Plan" — so a todo list was labelled a plan.
+    *
+    * The frame carries no kind of its own, so an agent that wants the distinction
+    * says so in _meta.acp.plan: { kind: 'todo' | 'plan', title?: string }. Kept
+    * agent-agnostic on purpose — mapping by agent NAME would label by who sent it
+    * rather than what it is, and would need editing for every new adapter.
+    *
+    * Absent meta keeps "Plan", so every existing agent renders exactly as before.
+    */
+   function planBarTitle(plan) {
+     var meta = plan && plan._meta && plan._meta.acp && plan._meta.acp.plan;
+     if (meta) {
+       // An explicit title wins: the agent knows its own vocabulary ("Tasks",
+       // "Steps") better than a fixed mapping does.
+       if (typeof meta.title === 'string' && meta.title.trim()) {
+         return meta.title.trim();
+       }
+       if (meta.kind === 'todo') {
+         return 'Todos';
+       }
+     }
+     return 'Plan';
+   }
+
    function updatePlanDOM(plan) {
      hideEmpty();
      if (!currentPlanEl) {
@@ -19319,7 +19349,7 @@ forceCollapseTurnFolds();
        currentPlanEl.className = 'plan';
        planBar.appendChild(currentPlanEl);
      }
-      let html = '<div class="plan-title">Plan</div>';
+      let html = '<div class="plan-title">' + escapeHtml(planBarTitle(plan)) + '</div>';
       if (plan.entries) {
         for (const entry of plan.entries) {
           const icon = entry.status === 'completed' ? '✅'
