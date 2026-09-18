@@ -143,3 +143,72 @@ suite('sibling-repo symbol resolution', () => {
     assert.ok(before.includes('${symbolName}'), 'symbol name not in the message');
   });
 });
+
+/**
+ * A symbol that is the TAIL of a longer identifier must still be found.
+ *
+ * Reported live, after the earlier fixes were deployed: clicking
+ * rms_norm_mul_rope_fused reported "Could not find … in this workspace or its
+ * sibling repositories". The message was honest about what the search did, but the
+ * search was wrong — the symbol exists as
+ * ggml_cuda_op_rms_norm_mul_rope_fused in llama.cpp/ggml/src/ggml-cuda.
+ *
+ * Cause: --word-regexp treats `_` as a WORD character, so the tail of a snake_case
+ * identifier never word-matches inside it. Measured: 0 hits strict, 3 hits plain.
+ * And referring to a kernel by its meaningful tail, without the namespace prefix,
+ * is exactly how these names get written.
+ *
+ * The LSP path in the same file had this right all along — its boundary regex counts
+ * `_`, `::` and a capital letter as separators. The ripgrep path now agrees.
+ */
+suite('a symbol that is part of a longer identifier', () => {
+  /** The relaxed-pass filter, built exactly as the provider builds it. */
+  function bounded(symbolName: string): RegExp {
+    return new RegExp(
+      '(?:^|[^A-Za-z0-9])(?:[A-Za-z0-9_]*_)?' +
+        symbolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
+        '(?:_[A-Za-z0-9_]*)?(?![A-Za-z0-9])',
+    );
+  }
+
+  test('the reported case matches', () => {
+    assert.ok(
+      bounded('rms_norm_mul_rope_fused').test('void ggml_cuda_op_rms_norm_mul_rope_fused(ctx, dst);'),
+      'tail of a longer snake_case name still not matched',
+    );
+  });
+
+  test('prefix, infix and exact segments all match', () => {
+    assert.ok(bounded('rms_norm').test('static void rms_norm_f32_cuda(...)'), 'prefix');
+    assert.ok(bounded('rms_norm').test('ggml_cuda_op_rms_norm_fused_add(ctx);'), 'infix');
+    assert.ok(bounded('mul_mat').test('    ggml_cuda_op_mul_mat(ctx, dst);'), 'exact segment');
+  });
+
+  test('it does NOT match inside an unrelated word', () => {
+    // The whole point of the strict pass was avoiding this; the relaxed pass must
+    // not give it away.
+    assert.ok(!bounded('norm').test('my_enormous_buffer = 1;'), 'matched inside enormous');
+    assert.ok(!bounded('add').test('gladden(x);'), 'matched inside gladden');
+    assert.ok(!bounded('rope').test('europe_region();'), 'matched inside europe');
+  });
+
+  test('regex metacharacters in a symbol name are escaped', () => {
+    // A symbol is model-supplied; an unescaped one would throw or match wildly.
+    assert.doesNotThrow(() => bounded('foo.bar*baz').test('x'));
+    assert.ok(!bounded('a.c').test('abc'), 'dot behaved as a wildcard');
+  });
+
+  test('the provider tries strict FIRST, then relaxed', () => {
+    // Order matters: an exact match must win, so a precise name is not diluted by
+    // a longer accidental one.
+    const body = bodyOf(provider, 'private async findSymbolWithRipgrep');
+    const at = body.indexOf('const passes');
+    assert.ok(at > 0, 'two-pass search missing');
+    assert.ok(
+      body.indexOf("['--word-regexp', symbolName]") < body.indexOf('[symbolName]'),
+      'strict pass must come first',
+    );
+    // And the relaxed pass must be filtered, not taken raw.
+    assert.ok(body.includes('bounded.test(l)'), 'relaxed pass is unfiltered');
+  });
+});

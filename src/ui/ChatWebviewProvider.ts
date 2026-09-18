@@ -3832,23 +3832,50 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
     for (const root of searchRoots) {
       try {
-        const rgArgs = [
-          '--no-heading',
-          '--line-number',
-          '--with-filename',
-          '--max-count',
-          '20',
-          ...srcGlobs.flatMap((g) => ['-g', g]),
-          '--word-regexp',
-          symbolName,
-          root,
-        ];
-        const { stdout } = await execFileAsync('rg', rgArgs, { timeout: 10000, maxBuffer: 1024 * 1024 });
-
-        const lines = stdout
-          .trim()
-          .split('\n')
-          .filter((l) => l.length > 0);
+        // Two passes. The first is exact (--word-regexp). The second drops it and
+        // filters in JS, because --word-regexp cannot match a symbol that is a
+        // SUFFIX of a longer snake_case identifier: `_` is a word character, so
+        // rms_norm_mul_rope_fused does not word-match inside
+        // ggml_cuda_op_rms_norm_mul_rope_fused. Models refer to kernels exactly
+        // that way — by the meaningful tail, without the namespace prefix — and the
+        // strict pass reported "not found" for a symbol that was right there.
+        //
+        // The relaxed boundary is the same one the LSP path already uses above:
+        // `_` and `::` and a capital letter all count as separators.
+        const passes: Array<string[]> = [['--word-regexp', symbolName], [symbolName]];
+        let lines: string[] = [];
+        for (const pass of passes) {
+          const rgArgs = [
+            '--no-heading',
+            '--line-number',
+            '--with-filename',
+            '--max-count',
+            '20',
+            ...srcGlobs.flatMap((g) => ['-g', g]),
+            ...pass,
+            root,
+          ];
+          const { stdout } = await execFileAsync('rg', rgArgs, { timeout: 10000, maxBuffer: 1024 * 1024 });
+          const found = stdout
+            .trim()
+            .split('\n')
+            .filter((l) => l.length > 0);
+          if (pass.length === 1) {
+            // Relaxed pass: keep only separator-bounded occurrences, so a symbol
+            // is not matched inside an unrelated longer word.
+            const bounded = new RegExp(
+              '(?:^|[^A-Za-z0-9])(?:[A-Za-z0-9_]*_)?' +
+                symbolName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
+                '(?:_[A-Za-z0-9_]*)?(?![A-Za-z0-9])',
+            );
+            lines = found.filter((l) => bounded.test(l));
+          } else {
+            lines = found;
+          }
+          if (lines.length > 0) {
+            break;
+          }
+        }
         if (lines.length === 0) {
           continue;
         }
