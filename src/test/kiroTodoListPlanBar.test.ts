@@ -163,15 +163,16 @@ suite('kiro todo_list feeds the plan bar', () => {
     const h = harness();
     h.apply('shell', 'execute_bash', { command: 'grep -rn todo_list src/' });
     assert.strictEqual(h.plan, null);
-    // The sharper case: another tool whose rawInput happens to carry a command the
-    // mapper understands. Without the tool-name guard this would build a board out
-    // of an unrelated CLI invocation — and a weaker version of this test let a
-    // mutation that removed the guard pass.
-    h.apply('shell', 'execute_bash', {
-      command: 'create',
-      tasks: [{ task_description: 'not a todo at all' }],
-    });
-    assert.strictEqual(h.plan, null, 'a non-todo_list tool built a board');
+    // The discriminator is kiro's FIELD SCHEMA, not the tool name — because the
+    // title is rewritten in transit (cleanAgentToolTitle turned "todo_list" into
+    // "complete", which is what made every checkbox stay unticked). So an unrelated
+    // tool carrying command:"create" with a non-task array must not match.
+    h.apply('shell', 'execute_bash', { command: 'create', tasks: ['a', 'b'] });
+    assert.strictEqual(h.plan, null, 'a non-task array built a board');
+    h.apply('shell', 'execute_bash', { command: 'create', tasks: [] });
+    assert.strictEqual(h.plan, null, 'an empty array built a board');
+    h.apply('shell', 'execute_bash', { command: 'complete', completed_task_ids: 'nope' });
+    assert.strictEqual(h.plan, null, 'a non-array id list built a board');
     h.apply('todo_list', 'todo_list', { notACommand: true });
     assert.strictEqual(h.plan, null);
     h.apply('todo_list', 'todo_list', null);
@@ -299,5 +300,29 @@ suite('the diagnostic trace', () => {
   test('no raw backtick — it would terminate the webview literal', () => {
     const at = provider.indexOf('[WV-KIROTODO]');
     assert.ok(!provider.slice(at - 400, at + 600).includes('`'));
+  });
+});
+
+suite('the board survives a rewritten title', () => {
+  test('a complete frame titled "complete" still ticks the boxes', () => {
+    // The exact failure captured in the log: cleanAgentToolTitle rewrote
+    // title:"todo_list" to "complete" for the completion frames, so a name-based
+    // guard rejected all five of them and the board stayed fully unticked while the
+    // three creates worked. Replayed here with the titles as the webview saw them.
+    const h = harness();
+    h.apply('todo_list', 'todo_list', CREATE);
+    h.apply('complete', '', { command: 'complete', completed_task_ids: ['1', '2'] });
+    assert.deepStrictEqual(
+      h.plan.entries.map((e: any) => e.status),
+      ['completed', 'completed', 'pending'],
+      'a frame whose title was rewritten did not reach the board',
+    );
+  });
+
+  test('an empty title does not stop it either', () => {
+    const h = harness();
+    h.apply('', '', CREATE);
+    h.apply('', '', { command: 'complete', completed_task_ids: ['3'] });
+    assert.strictEqual(h.plan.entries[2].status, 'completed');
   });
 });

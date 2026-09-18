@@ -237,4 +237,33 @@ suite('tool-call title normalization', () => {
       );
     });
   });
+
+  test('a todo_list sub-verb never becomes the row title', () => {
+    // ROOT CAUSE of "kiro's todo checkboxes never tick". Kiro replays its task
+    // board as title:"todo_list" with the state in rawInput, and this function
+    // rewrites a bare tool name from rawInput.command. `create` was already in the
+    // sub-verb set so it survived as "todo_list"; `complete` was not, so those
+    // frames reached the client titled "complete" — a meaningless row, and
+    // unrecognisable to the board mapper. Measured in one replay: 3 frames posted
+    // as todo_list, 5 as "complete".
+    for (const cmd of ['complete', 'add', 'remove', 'list', 'create']) {
+      assert.strictEqual(
+        cleanAgentToolTitle('todo_list', undefined, { command: cmd }),
+        'todo_list',
+        `command:"${cmd}" leaked into the title`,
+      );
+    }
+  });
+
+  test('a real shell command still becomes the title', () => {
+    // The widened set must not swallow genuine commands.
+    assert.strictEqual(
+      cleanAgentToolTitle('shell', undefined, { command: 'npm test' }),
+      'npm test',
+    );
+    assert.strictEqual(
+      cleanAgentToolTitle('shell', undefined, { command: 'git add -A' }),
+      'git add -A',
+    );
+  });
 });

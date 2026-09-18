@@ -19397,11 +19397,40 @@ forceCollapseTurnFolds();
     * an ordinary shell command mentioning todos cannot trigger it.
     */
    function applyKiroTodoList(title, toolName, rawInput) {
-     var name = String(toolName || title || '').toLowerCase();
-     if (name !== 'todo_list') return;
      if (!rawInput || typeof rawInput !== 'object') return;
      var cmd = String(rawInput.command || '');
      if (!cmd) return;
+     // Identify the board by the SHAPE of rawInput, not by the title.
+     //
+     // The title is not trustworthy here: cleanAgentToolTitle rewrites a bare tool
+     // name from rawInput.command, so kiro's completions arrived titled "complete"
+     // rather than "todo_list" and a name check silently rejected all of them —
+     // every checkbox stayed unticked while the creates worked. The sub-verb set has
+     // been widened so the rewrite no longer happens, but matching on shape means a
+     // future title change cannot break this again.
+     //
+     // Each command is paired with a field only that command sends, so an unrelated
+     // tool with command:"create" or command:"list" cannot be mistaken for a board.
+     function isTaskArray(v) {
+       // kiro's own field name. Requiring it means an unrelated tool that happens
+       // to send command:"create" with some other array cannot be mistaken for a
+       // board — the schema is the discriminator, not the tool name.
+       if (!Array.isArray(v) || v.length === 0) return false;
+       for (var i = 0; i < v.length; i++) {
+         if (v[i] && typeof v[i] === 'object' &&
+             (typeof v[i].task_description === 'string' || typeof v[i].description === 'string')) {
+           return true;
+         }
+       }
+       return false;
+     }
+     var looksLikeBoard =
+       (cmd === 'create' && isTaskArray(rawInput.tasks)) ||
+       (cmd === 'add' && isTaskArray(rawInput.new_tasks)) ||
+       (cmd === 'remove' && Array.isArray(rawInput.remove_task_ids)) ||
+       (cmd === 'complete' && Array.isArray(rawInput.completed_task_ids)) ||
+       (cmd === 'list' && String(toolName || title || '').toLowerCase() === 'todo_list');
+     if (!looksLikeBoard) return;
 
      function toEntries(list) {
        var out = [];

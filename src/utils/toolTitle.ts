@@ -155,6 +155,24 @@ function baseName(p: string): string {
 const WRITE_SUB_VERBS = /^(create|strreplace|insert|append|write|edit|delete|remove)$/i;
 
 /**
+ * Every `rawInput.command` value that is a tool SUB-VERB rather than a shell
+ * command, and so must never become a row title.
+ *
+ * A superset of WRITE_SUB_VERBS, which stays narrow because it also decides
+ * whether to label a row "Editing X" — and `complete` or `list` is not an edit.
+ *
+ * The todo-list verbs are here because their absence had a second, invisible
+ * effect. Kiro replays its task board as `title: "todo_list"` with the state in
+ * rawInput, and cleanAgentToolTitle rewrote a bare tool name using
+ * rawInput.command. `create` was already listed so it survived as "todo_list";
+ * `complete` was not, so those frames reached the client titled "complete".
+ * Measured in one replay: 3 frames posted as todo_list, 5 as "complete". That
+ * both produced a meaningless row AND made the completions unrecognisable to the
+ * board mapper, so every checkbox stayed unticked.
+ */
+const TOOL_SUB_VERBS = /^(create|strreplace|insert|append|write|edit|delete|remove|complete|add|list|view|update)$/i;
+
+/**
  * Describe a read/write tool call from its rawInput.
  *
  * Kiro CLI labels tool calls richly while streaming (`Reading foo.ts:10-40`,
@@ -232,9 +250,12 @@ export function cleanAgentToolTitle(title: string | null | undefined, cwd?: stri
   // Bare tool name → recover a description from rawInput.
   if (isBareToolName(raw)) {
     const cmd = commandFromRawInput(rawInput);
-    // `command: "strReplace"` is a write sub-verb, not a shell command; using it
-    // as the title produced the "create" / "strReplace" stub rows on resume.
-    if (cmd && !WRITE_SUB_VERBS.test(cmd)) {
+    // `command: "strReplace"` is a sub-verb, not a shell command; using it as the
+    // title produced the "create" / "strReplace" stub rows on resume — and, for
+    // kiro's todo_list, a row titled "complete" whose board updates then went
+    // unrecognised. TOOL_SUB_VERBS is the full set; WRITE_SUB_VERBS stays narrow
+    // because it also decides the "Editing X" label.
+    if (cmd && !TOOL_SUB_VERBS.test(cmd)) {
       const fromRaw = stripShellPrefix(cmd, cwd);
       return fromRaw.trim() ? fromRaw : cmd;
     }
