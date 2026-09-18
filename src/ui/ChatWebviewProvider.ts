@@ -1573,6 +1573,23 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       return;
     }
 
+    // Pre-compaction replay: kiro replays its whole rollout, so drop everything
+    // that predates its own Compaction / Clear before it costs a webview post and
+    // a DOM render. Buffered rather than discarded — if the anchor never shows up
+    // the buffer is flushed at load end, so a mismatch cannot empty the panel.
+    //
+    // This sits ABOVE the coalescer deliberately. It used to sit below, and the
+    // coalescer returns early for agent_message_chunk / agent_thought_chunk — so
+    // those two never reached the gate. Measured on one resume: 6723 updates
+    // correctly withheld, and 1002 message + 826 thought chunks rendered anyway,
+    // which is pre-compaction prose and thinking appearing above the divider that
+    // says the conversation was compacted. The original change claimed "the gate
+    // sits before the webview post so a skipped frame costs no render"; that was
+    // true for every path except the one carrying the text.
+    if (this.shouldWithholdPrecompactionUpdate(update)) {
+      return;
+    }
+
     // Coalesce per-token streaming chunks. Codex emits agent_message_chunk /
     // agent_thought_chunk once per LLM delta — typically dozens per second.
     // Buffer the text for a few milliseconds and ship one combined chunk to
@@ -1713,14 +1730,6 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           isLoading: this.sessionManager.isLoading(update.sessionId),
         });
       });
-      return;
-    }
-
-    // Pre-compaction replay: kiro replays its whole rollout, so drop everything
-    // that predates its own Compaction / Clear before it costs a webview post and
-    // a DOM render. Buffered rather than discarded — if the anchor never shows up
-    // the buffer is flushed at load end, so a mismatch cannot empty the panel.
-    if (this.shouldWithholdPrecompactionUpdate(update)) {
       return;
     }
 

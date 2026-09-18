@@ -49,6 +49,28 @@ function compaction(summary: string): string {
 const SURVIVOR = 'now check why the resumed session is slow after compaction';
 const MEMORY_BLOB = '<agent-memory>\n- [work_fact] something recalled from earlier\n</agent-memory>';
 
+
+/** Brace-matched body of a host-side method, so ordering is compared within it. */
+function methodBody(src: string, signature: string): string | null {
+  const at = src.indexOf(signature);
+  if (at < 0) {
+    return null;
+  }
+  const open = src.indexOf('{', src.indexOf(')', at));
+  let depth = 0;
+  for (let i = open; i < src.length; i++) {
+    if (src[i] === '{') {
+      depth++;
+    } else if (src[i] === '}') {
+      depth--;
+      if (depth === 0) {
+        return src.slice(at, i + 1);
+      }
+    }
+  }
+  return null;
+}
+
 suite('kiro compaction boundary (recovered from the transcript)', () => {
   test('finds the boundary, its summary, and what it drops', () => {
     const jsonl = [
@@ -190,6 +212,53 @@ suite('the replay gate is wired into the host', () => {
     assert.ok(at > 0, 'gate not called');
     const post = src.indexOf("type: 'sessionUpdate',", at);
     assert.ok(post > at, 'the gate must run before the sessionUpdate post');
+  });
+
+  test('the gate also precedes the COALESCER, which posts on its own path', () => {
+    // This assertion was missing, and its absence hid a live bug for eight days.
+    // The gate used to sit below the stream coalescer, which returns early for
+    // agent_message_chunk / agent_thought_chunk — so those two kinds never reached
+    // it. Measured on one resume: 6723 updates correctly withheld, and 1002 message
+    // + 826 thought chunks rendered anyway, i.e. pre-compaction prose and thinking
+    // shown above the divider that says the conversation was compacted.
+    //
+    // The old test passed throughout, because it only compared the gate against the
+    // sessionUpdate post and the coalescer is a SECOND way text reaches the webview.
+    const at = src.indexOf('if (this.shouldWithholdPrecompactionUpdate(update)) {');
+    assert.ok(at > 0, 'gate not called');
+    // The invariant that matters: the gate precedes EVERY path that reaches the
+    // webview. Not "no early returns in between" — several legitimate ones exist
+    // (the commandOutput passthrough, the duplicate-Killed drop), and they are fine
+    // BECAUSE they sit after the gate.
+    const method = methodBody(src, 'private handleSessionUpdate(') || src;
+    const gateInMethod = method.indexOf('if (this.shouldWithholdPrecompactionUpdate(update)) {');
+    assert.ok(gateInMethod > 0, 'gate not inside the session-update method');
+    for (const sink of ['this.streamCoalescer.append(', "this.postMessage({\n      type: 'sessionUpdate'"]) {
+      let from = 0;
+      for (;;) {
+        const at2 = method.indexOf(sink, from);
+        if (at2 < 0) {
+          break;
+        }
+        assert.ok(at2 > gateInMethod, `a webview sink precedes the gate: ${sink.slice(0, 32)}`);
+        from = at2 + sink.length;
+      }
+    }
+  });
+
+  test('the gate is the FIRST thing after the active-session check', () => {
+    // Stated as an ordering invariant rather than a list of known paths, so a new
+    // early return added above it fails here instead of silently leaking a kind.
+    const active = src.indexOf('if (update.sessionId !== activeId) {');
+    const gate = src.indexOf('if (this.shouldWithholdPrecompactionUpdate(update)) {');
+    assert.ok(active > 0 && gate > active, 'gate must follow the active-session drop');
+    const between = src.slice(active, gate);
+    // Only the active-session block's own return may appear in between.
+    assert.strictEqual(
+      (between.match(/\breturn;/g) ?? []).length,
+      1,
+      'another early return was added between the active-session check and the gate',
+    );
   });
 
   test('held, not dropped — a missed anchor cannot empty the panel', () => {
