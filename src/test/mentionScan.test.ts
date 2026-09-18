@@ -146,8 +146,11 @@ suite('the send path uses prose-only scanning for every mention', () => {
 
   test('all five mentions go through the prose-only helpers', () => {
     for (const mention of ['@terminal', '@problems']) {
+      // The argument list is deliberately not matched: pastedLiteralTexts was added
+      // as a third parameter (pasted-mention provenance), and pinning the exact call
+      // text made this fail on a change that kept the property it is testing.
       assert.ok(
-        resolver.includes(`hasMentionOutsideContext(text, /${mention}\\b/i)`),
+        resolver.includes(`hasMentionOutsideContext(text, /${mention}\\b/i`),
         `${mention} must be scanned in prose only`,
       );
     }

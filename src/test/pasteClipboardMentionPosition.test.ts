@@ -115,8 +115,11 @@ suite('paste-to-clipboard inserts an inline mention', () => {
       'the resolver must accept either a leading mention or a pasted one',
     );
     // And the warning must not fire for a paste — it resolves fine.
+    // Matched on the two conditions rather than one formatted line: the call was
+    // wrapped across lines when pastedLiteralTexts was added, and the property being
+    // tested (the warning is gated on the same condition) did not change.
     assert.ok(
-      SRC.includes('if (!clipboardMentionResolves && hasMentionOutsideContext('),
+      /if \(\s*!clipboardMentionResolves\s*&&\s*hasMentionOutsideContext\(/.test(SRC),
       'the mid-sentence warning must be gated on the same condition',
     );
   });
@@ -192,9 +195,14 @@ suite('two pastes carry two payloads', () => {
   });
 
   test('the buffer is cleared on send, so payloads cannot leak into the next message', () => {
+    // Bounded by the postMessage that ends the block rather than a fixed character
+    // count: a 400-char window broke the moment pastedLiteralTexts was added between
+    // the two statements, which is the fixed-slice trap this repo keeps hitting.
     const at = SRC.indexOf('var pastedTexts =');
     assert.ok(at > 0);
-    const body = SRC.slice(at, at + 400);
+    const end = SRC.indexOf("vscode.postMessage({ type: 'sendPrompt'", at);
+    assert.ok(end > at, 'the send must follow the capture');
+    const body = SRC.slice(at, end);
     assert.ok(body.includes('pastedClipboardTexts = [];'), 'must reset after capturing');
   });
 });

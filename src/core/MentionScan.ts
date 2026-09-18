@@ -95,6 +95,78 @@ export function contextBlockRanges(text: string): Range[] {
   return merge(ranges);
 }
 
+/**
+ * Spans occupied by text the user PASTED, which is quoted content rather than
+ * prose they authored.
+ *
+ * A mention only counts when it lies outside every context block — but that rule
+ * assumes the payload is already wrapped in a tag. Text pasted inline is not:
+ * a short paste deliberately falls through to the caret as raw characters (see
+ * isPayloadSizedPaste), so a mention inside it sits in plain prose position and
+ * is indistinguishable from one the user typed to request an attachment.
+ *
+ * Observed 2026-09-18T07:50, ACP Traffic line 65685. The clipboard held a sentence
+ * that began with the literal word "@clipboard" (a quote of the warning about where
+ * mentions attach). Pasting it put that word at offset 0, the leading-mention rule
+ * fired, and the send stripped the word and attached the clipboard — whose content
+ * was the same sentence:
+ *
+ *   <clipboard>
+ *   @clipboard only attaches at the start of a line. Put it on its own line …
+ *   </clipboard>
+ *
+ *   only attaches at the start of a line. Put it on its own line …
+ *   ^ subject eaten; the sentence no longer says what it is about
+ *
+ * The position rule cannot separate these, because position is exactly what the
+ * paste changed. Provenance can: the webview knows which strings arrived by paste
+ * and sends them along, so a mention inside one is read as the quote it is.
+ *
+ * Matched by exact occurrence rather than remembered offsets: if the user edits
+ * inside the pasted text the match lapses and the mention becomes a request again,
+ * which is the right outcome — they have since made it their own words.
+ */
+export function pastedLiteralRanges(text: string, pastedTexts?: readonly string[]): Range[] {
+  const src = String(text || '');
+  if (!Array.isArray(pastedTexts) || pastedTexts.length === 0) {
+    return [];
+  }
+  const ranges: Range[] = [];
+  for (const raw of pastedTexts) {
+    const needle = String(raw ?? '');
+    // A short needle (or one that is only whitespace) would match everywhere and
+    // silently disable mention resolution; require something substantive.
+    if (needle.trim().length < 2) {
+      continue;
+    }
+    let i = 0;
+    for (;;) {
+      const at = src.indexOf(needle, i);
+      if (at < 0) {
+        break;
+      }
+      ranges.push({ start: at, end: at + needle.length });
+      // Progress must be monotonic, and indexOf does not guarantee it: for an empty
+      // needle it CLAMPS the start index, so indexOf('', 99) returns src.length and
+      // `at` sticks there while `i` climbs — an infinite loop that appends a range per
+      // iteration until the process dies. Verified: with the length guard above
+      // relaxed, this OOM-killed the whole test run (4 GB) instead of failing an
+      // assertion. The guard makes it unreachable; this makes it impossible.
+      const next = at + needle.length;
+      if (next <= i) {
+        break;
+      }
+      i = next;
+    }
+  }
+  return merge(ranges);
+}
+
+/** True when `index` falls inside any of `ranges`. */
+export function indexInRanges(index: number, ranges: readonly Range[]): boolean {
+  return ranges.some((r) => index >= r.start && index < r.end);
+}
+
 /** The complement of {@link contextBlockRanges}: the parts that are user prose. */
 export function proseRanges(text: string): Range[] {
   const src = String(text || '');
@@ -118,13 +190,33 @@ function withFlags(re: RegExp, flags: string): RegExp {
   return new RegExp(re.source, merged);
 }
 
-/** True when the pattern occurs in prose — inside a payload does not count. */
-export function hasMentionOutsideContext(text: string, re: RegExp): boolean {
+/**
+ * True when the pattern occurs in prose — inside a payload does not count, and
+ * neither does inside text the user pasted (see {@link pastedLiteralRanges}).
+ */
+export function hasMentionOutsideContext(
+  text: string,
+  re: RegExp,
+  pastedTexts?: readonly string[],
+): boolean {
   const src = String(text || '');
   const probe = withFlags(re, 'g');
+  const pasted = pastedLiteralRanges(src, pastedTexts);
   return proseRanges(src).some((r) => {
     probe.lastIndex = 0;
-    return probe.test(src.slice(r.start, r.end));
+    const slice = src.slice(r.start, r.end);
+    for (;;) {
+      const m = probe.exec(slice);
+      if (m === null) {
+        return false;
+      }
+      if (!indexInRanges(r.start + m.index, pasted)) {
+        return true;
+      }
+      if (m[0] === '') {
+        probe.lastIndex++;
+      }
+    }
   });
 }
 

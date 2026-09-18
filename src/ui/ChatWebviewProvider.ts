@@ -38,6 +38,8 @@ import {
   escapeForRegExp,
   isBareContextMention,
   BARE_CONTEXT_MENTION_SOURCE,
+  pastedLiteralRanges,
+  indexInRanges,
 } from '../core/MentionScan';
 import { StreamCoalescer } from '../core/StreamCoalescer';
 import { FollowCoalescer, pickFollowTarget, type ToolCallLocationLike } from '../core/FollowAgent';
@@ -1178,6 +1180,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             // Set by the composer's paste handler; see the parameter's doc comment.
             message.clipboardPasted === true,
             Array.isArray(message.pastedClipboardTexts) ? message.pastedClipboardTexts : undefined,
+            Array.isArray(message.pastedLiteralTexts) ? message.pastedLiteralTexts : undefined,
           );
           break;
         // Snapshot the clipboard for a message being QUEUED. Read now so the queued
@@ -2093,6 +2096,15 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     clipboardPasted?: boolean,
     /** One payload per surviving @clipboard mention, captured at paste time. */
     clipboardPastedTexts?: string[],
+    /**
+     * Strings that arrived by paste and were inserted inline as raw characters.
+     *
+     * A mention inside one of these is quoted content, not a request — the paste is
+     * what put it where it sits. Without this, pasting a sentence that begins with
+     * the word "@clipboard" stripped that word and attached the clipboard; see
+     * pastedLiteralRanges for the captured case.
+     */
+    pastedLiteralTexts?: string[],
   ): Promise<void> {
     // TEMP-DEBUG (cannot-send investigation): entry marker so we can tell
     // "webview never posted" apart from "host received but dropped".
@@ -2313,8 +2325,17 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     function hasLeadingClipboardMention(t: string): boolean {
       const src = String(t || '');
       const re = /@clipboard\b/gi;
+      const pasted = pastedLiteralRanges(src, pastedLiteralTexts);
       let m: RegExpExecArray | null;
       while ((m = re.exec(src)) !== null) {
+        // A mention that arrived as pasted content is a quote, not a request —
+        // the paste is what put it at a line start. See pastedLiteralRanges.
+        if (indexInRanges(m.index, pasted)) {
+          if (m[0] === '') {
+            re.lastIndex++;
+          }
+          continue;
+        }
         const before = src.slice(0, m.index);
         if (before.trim().length === 0 || /(?:\r?\n)\s*$/.test(before)) {
           return true;
@@ -2335,7 +2356,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // snapshot, or the <terminal>/<problems> fallback — and a mention quoted inside
     // that payload is not a request. Scanning it as one attached the context twice
     // and edited the payload; see MentionScan's header for the observed case.
-    if (hasMentionOutsideContext(text, /@terminal\b/i)) {
+    if (hasMentionOutsideContext(text, /@terminal\b/i, pastedLiteralTexts)) {
       const { text: termOutput, name } = this.terminalContext.getLastOutput();
       if (termOutput) {
         text = replaceMentionOutsideContext(text, /@terminal\b/gi, '').trim();
@@ -2381,8 +2402,16 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // @terminal and @problems resolvers use.
     // A pasted mention is honoured wherever it sits, so only a TYPED one can be
     // mid-sentence and unresolvable — that is the case worth warning about.
+    //
+    // pastedLiteralTexts is passed for the same reason: a mention inside pasted text
+    // is a quote, and warning that it "only attaches at the start of a line" would be
+    // both wrong and self-perpetuating — copying the warning and pasting it back is
+    // exactly how this was reported.
     const clipboardMentionResolves = hasLeadingClipboardMention(text) || !!clipboardPasted;
-    if (!clipboardMentionResolves && hasMentionOutsideContext(text, /@clipboard\b/i)) {
+    if (
+      !clipboardMentionResolves &&
+      hasMentionOutsideContext(text, /@clipboard\b/i, pastedLiteralTexts)
+    ) {
       vscode.window.showWarningMessage(
         '@clipboard only attaches at the start of a line. Put it on its own line (or at the ' +
           'very start of the message) — mid-sentence it is treated as ordinary text.',
@@ -2452,7 +2481,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
     // Detect @problems — workspace diagnostics. Same embedded-or-inline
     // fallback as @terminal.
-    if (hasMentionOutsideContext(text, /@problems\b/i)) {
+    if (hasMentionOutsideContext(text, /@problems\b/i, pastedLiteralTexts)) {
       const diags = vscode.languages.getDiagnostics();
       const lines: string[] = [];
       for (const [uri, issues] of diags) {
@@ -6691,6 +6720,10 @@ let isCompacting = false;  // true while /compact is running
     // The pasted text is already in hand here (clipboardData.getData), so keep it and send
     // it with the message instead of asking the host to read it back.
     let pastedClipboardTexts = [];
+    // Text pasted inline (raw characters at the caret, no attachment) that happens to
+    // contain a context mention. The mention is quoted content — the paste is what
+    // gave it its position — so the send tells the host to read it as prose.
+    let pastedLiteralTexts = [];
     const msgQueueEl = document.getElementById('msgQueue');
     const msgQueueLabelEl = document.getElementById('msgQueueLabel');
 
@@ -10488,9 +10521,14 @@ function handleSend() {
  // drops its attachment instead of silently attaching more chips than the user asked for.
  var mentionCount = (String(text || '').match(/@clipboard\\b/gi) || []).length;
  var pastedTexts = pastedNow ? pastedClipboardTexts.slice(0, mentionCount) : [];
+ // Strings pasted inline as raw characters. A mention inside one is quoted content,
+ // not a request — the paste is what put it at a line start. Only pastes that
+ // actually contain a mention are recorded, so this stays empty for normal text.
+ var literalTexts = pastedLiteralTexts.slice();
  clipboardPastedPending = false;
  pastedClipboardTexts = [];
- vscode.postMessage({ type: 'sendPrompt', text: text || ' ', images, clipboardPasted: pastedNow, pastedClipboardTexts: pastedTexts });
+ pastedLiteralTexts = [];
+ vscode.postMessage({ type: 'sendPrompt', text: text || ' ', images, clipboardPasted: pastedNow, pastedClipboardTexts: pastedTexts, pastedLiteralTexts: literalTexts });
 }
 
     function handleCancel() {
@@ -10657,6 +10695,16 @@ function handleSend() {
           promptInput.selectionEnd = caret;
           promptInput.dispatchEvent(new Event('input', { bubbles: true }));
           promptInput.focus();
+        } else if (text && /@(clipboard|terminal|problems|selection|open_files)\\b/i.test(String(text))) {
+          // NOT converted to an attachment (short paste, a bare mention, or a slash
+          // command) — the browser will insert these characters at the caret as-is.
+          //
+          // If that text carries a mention, the paste is about to give it a position it
+          // did not earn. Pasting a sentence that began with the word "@clipboard" put
+          // it at offset 0, and the leading-mention rule then stripped the word and
+          // attached the clipboard, so the sentence lost its subject. Record the string
+          // so the send can tell the host this mention is a quote.
+          pastedLiteralTexts.push(String(text));
         }
       }
     });
