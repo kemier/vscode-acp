@@ -1547,6 +1547,20 @@ export class SessionManager extends EventEmitter {
         }
         await this.sendSlashCommand(sessionId, `/effort ${value}`);
         session.kiroEffort = value;
+      } else if (configId === 'mode') {
+        // The synthesized agent/mode option. Kiro advertises its agents in the
+        // legacy `modes` field and has no set_config_option, so route the choice
+        // to the legacy RPC — without this the picker would appear and silently
+        // do nothing, which is worse than not offering it.
+        try {
+          await connInfo.connection.request('session/set_mode', { sessionId, modeId: value });
+          log(`setConfigOption: session/set_mode succeeded for session ${sessionId}`);
+        } catch (e2: any) {
+          log(`setConfigOption: session/set_mode also failed: ${e2?.message ?? e2}`);
+        }
+        if (session.modes) {
+          session.modes.currentModeId = value;
+        }
       }
       // Update local configOptions state
       if (session.configOptions) {
@@ -2004,6 +2018,37 @@ export class SessionManager extends EventEmitter {
           { value: 'xhigh', name: 'xhigh' },
           { value: 'max', name: 'max' },
         ],
+      } as any);
+    }
+
+    // Mode/agent configOption from the legacy `modes` field.
+    //
+    // Without this the agent picker disappeared entirely. The webview hides the
+    // legacy mode picker as soon as ANY configOption exists ("spec requires
+    // configOptions to be used exclusively"), and this synthesiser produced model
+    // and thinking options only — so for Kiro, which advertises its agents in
+    // legacy `modes` while model/effort come from here, the three agents
+    // (kiro_default / kiro_planner / kiro_guide, i.e. Plan mode) became
+    // unreachable: the composer showed a model and a thinking picker and nothing
+    // else.
+    //
+    // Synthesising it here rather than teaching the webview to hide pickers
+    // individually keeps one rule ("configOptions are the whole truth") instead of
+    // two that can disagree. setSessionConfigOption already routes a `mode`
+    // configId back to session/set_mode for synthesized options.
+    if (session.modes?.availableModes && session.modes.availableModes.length > 1) {
+      synthesized.push({
+        id: 'mode',
+        category: 'mode',
+        name: 'Agent',
+        description: 'Select the agent / mode',
+        type: 'select',
+        currentValue: session.modes.currentModeId || '',
+        options: session.modes.availableModes.map((m) => ({
+          value: m.id,
+          name: m.name || m.id,
+          description: m.description,
+        })),
       } as any);
     }
 
