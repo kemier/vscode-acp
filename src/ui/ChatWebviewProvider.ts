@@ -515,6 +515,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * Pre-compaction replay gate for a kiro session/load (see armPrecompactionSkip).
    * `held` exists only for the fail-safe flush when the anchor never matches.
    */
+  /** Host-side processing time summed across session updates (acp.debugResume only). */
+  private replayHostMs = 0;
+  private replayHostCount = 0;
   private precompactionSkip: {
     sessionId: string;
     boundary: KiroCompactionBoundary;
@@ -777,7 +780,23 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
     // Register as a session update listener
     this.updateListener = (update: SessionNotification) => {
-      this.handleSessionUpdate(update);
+      // Attribution for resume duration: is the wall time our processing or the
+      // agent's send pacing? Measured wall time was 86.2s for 2978 forwarded
+      // updates (median gap 19ms, no spikes). The traffic log could not answer it
+      // — its ring buffer had evicted two thirds of the window — so sum the host
+      // work here instead. If this total approaches the wall time the cost is
+      // ours; if it stays far below, the host is idle waiting on the agent.
+      if (!this.isDebugResume()) {
+        this.handleSessionUpdate(update);
+        return;
+      }
+      const t0 = Date.now();
+      try {
+        this.handleSessionUpdate(update);
+      } finally {
+        this.replayHostMs += Date.now() - t0;
+        this.replayHostCount++;
+      }
     };
     this.sessionUpdateHandler.addListener(this.updateListener);
 
@@ -4855,6 +4874,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // Before loadSessionEnd: a fail-safe flush must land while the webview is
       // still in replay mode, or the withheld updates would be treated as live.
       this.flushPrecompactionHold();
+      if (this.isDebugResume()) {
+        log(
+          `resume cost: host processed ${this.replayHostCount} update(s) in ${this.replayHostMs}ms ` +
+            `of host CPU — compare against the anchor-to-load-end wall time to attribute the rest`,
+        );
+        this.replayHostMs = 0;
+        this.replayHostCount = 0;
+      }
       this.postMessage({ type: 'loadSessionEnd', ok });
     }, LOAD_END_TAIL_FLUSH_MS);    // Cursor batch enrich is requested by the webview after snapshot-merge +
     // renderChatHistory (handleLoadSessionEnd). Scheduling here races ahead of
@@ -11196,6 +11223,8 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     // True while a session/load replay is in progress. Used to suppress
     // per-chunk markdown rendering until the replay finishes.
     let isLoadingSession = false;
+    let _replayUpdateMs = 0;
+    let _replayUpdateCount = 0;
     // Monotonic counter for the [WV-ORDER] replay arrival trace. Reset at each
     // handleLoadSessionStart so the numbering matches one replay.
     let replayRecvSeq = 0;
@@ -12884,9 +12913,23 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     // Rebuild from chatHistory. Keep interrupted-turn assistants folded the
     // same way as webview crash restore — otherwise resume promotes them into
     // the main chat and a completed summary looks like it "showed again".
+    if (resumeDiag) {
+      vscode.postMessage({ type: 'debugLog', message:
+        '[WV-LOADCOST] replay update processing: ' + _replayUpdateMs + 'ms across ' +
+        _replayUpdateCount + ' update(s) — all of it discarded by the rebuild below' });
+    }
+    var _rbT0 = Date.now();
+    var _rbNodes = messagesEl ? messagesEl.childElementCount : -1;
+    var _rbItems = chatHistory.length;
     foldInterruptedAssistantsOnPromote = true;
     var assistantItems = renderChatHistory();
     foldInterruptedAssistantsOnPromote = false;
+    if (resumeDiag) {
+      vscode.postMessage({ type: 'debugLog', message:
+        '[WV-REBUILD] loadSessionEnd teardown+rebuild: ' + (Date.now() - _rbT0) + 'ms  ' +
+        _rbItems + ' history item(s)  discarded ' + _rbNodes + ' node(s)  now ' +
+        (messagesEl ? messagesEl.childElementCount : -1) + ' node(s)' });
+    }
     // Codex/Claude: crew stages can still render as running after rebuild —
     // force any leftover spinners to failed and mark crews stale.
     failRunningSubagentStagesInDom();
@@ -20950,6 +20993,16 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           // isLoadingSession hasn't been set yet by loadSessionStart.
           if (msg.isLoading !== undefined) {
             isLoadingSession = !!msg.isLoading;
+          }
+          // Cumulative cost of processing replay updates. Every node built here
+          // is torn down by the rebuild at loadSessionEnd, so this total is the
+          // budget available to an "accumulate history, render once" change.
+          if (resumeDiag && isLoadingSession) {
+            var _luT0 = Date.now();
+            handleUpdate(msg.update);
+            _replayUpdateMs += Date.now() - _luT0;
+            _replayUpdateCount++;
+            break;
           }
           handleUpdate(msg.update);
           break;

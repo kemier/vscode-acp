@@ -226,7 +226,25 @@ suite('replay tail after load end', () => {
 
     const idx = src.indexOf('notifyLoadSessionEnd(ok: boolean): void {');
     assert.ok(idx > 0, 'notifyLoadSessionEnd not found');
-    const body = src.slice(idx, idx + 2400);
+    // Brace-matched, not a fixed character window. A 2400-char slice used to sit
+    // here and it broke the moment the method grew — the assertions below are
+    // about ORDER inside the method, so the bound must be the method itself.
+    const body = (() => {
+      const open = src.indexOf('{', idx);
+      let depth = 0;
+      for (let i = open; i < src.length; i++) {
+        if (src[i] === '{') {
+          depth++;
+        } else if (src[i] === '}') {
+          depth--;
+          if (depth === 0) {
+            return src.slice(idx, i + 1);
+          }
+        }
+      }
+      return '';
+    })();
+    assert.ok(body.length > 0, 'could not brace-match notifyLoadSessionEnd');
     assert.ok(
       body.indexOf('setTimeout(() => {') > 0 && body.indexOf('LOAD_END_TAIL_FLUSH_MS') > 0,
       'loadSessionEnd must be posted from the deferred callback',
