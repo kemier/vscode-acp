@@ -11139,6 +11139,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
   var turnStartedAt = 0;
   var lastAgentUpdateAt = 0;
   var turnTicker = null;
+  // Set when a session/load replay finishes. The first turn(s) right after a
+  // reload/resume re-prefill the whole transcript on a cold server slot — a
+  // multi-minute silence that looks exactly like a hang. The turn status label
+  // reads this to name the cause (see formatTurnStatusLabel).
+  var lastSessionLoadAt = 0;
 
   /**
    * Status label for a running turn: elapsed time, plus how long the agent has
@@ -11166,6 +11171,21 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     var label = human(elapsedMs);
     if (idleMs >= 20000) {
       label += ' \u00b7 no output for ' + human(idleMs);
+    }
+    // Long silence: name the likely cause so the user waits instead of
+    // re-sending — a re-send queues another full turn and makes it worse.
+    // The first turn after a reload/resume re-prefills the whole transcript
+    // on a cold server slot; a steer can do the same. Both are normal and
+    // produce zero frames until the prefill finishes.
+    if (idleMs >= 60000) {
+      var justLoaded = lastSessionLoadAt > 0 && (Date.now() - lastSessionLoadAt) < 180000;
+      if (justLoaded) {
+        label += ' · likely re-prefilling after reload/resume — don’t re-send';
+      } else if (hasSteeredThisTurn) {
+        label += ' · steer may trigger re-prefill — don’t re-send';
+      } else {
+        label += ' · long silent model call — don’t re-send';
+      }
     }
     return label;
   }
@@ -12523,6 +12543,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     if (loadOverlay) loadOverlay.classList.remove('visible');
     if (inputArea) inputArea.classList.remove('disabled');
     updateSendButton();
+    lastSessionLoadAt = Date.now();
     messagesEl.innerHTML = '';
     if (_unanswered.length) {
       // Re-render the surviving prompt(s) so the bubble stays visible instead
@@ -12982,6 +13003,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     if (loadOverlay) loadOverlay.classList.remove('visible');
     if (inputArea) inputArea.classList.remove('disabled');
     updateSendButton();
+    lastSessionLoadAt = Date.now();
     // The replay is on screen. Keep taking a straggling reply chunk for a short
     // window — an agent can emit its last text after the session/load response,
     // and dropping it loses the turn's whole summary (see loadTailGraceUntil).
