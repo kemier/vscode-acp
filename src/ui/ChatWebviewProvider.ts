@@ -20601,6 +20601,18 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        // Interrupted turns: keep the partial reply inside the fold so resume
        // / restore do not promote it into the main chat.
        var _wasCancelled = msg.stopReason === 'cancelled';
+       // Post-cancel process sweep. "Send Now" and Stop kill the turn's
+       // spawned processes BEFORE session/cancel (killTurnProcesses-before-
+       // cancel design), but a tool spawned in the race between that sweep
+       // and the agent acknowledging the cancel escapes it — the orphan then
+       // runs for hours (a sleep/ssh poll outlived its turn by 2.5h in the
+       // field). promptEnd(cancelled) only fires once the host has
+       // acknowledged the cancel and the turn's child has closed, so a second
+       // sweep here reaps exactly those late stragglers. suppressNotice:
+       // this is the interrupt side effect, not an explicit /stop.
+       if (_wasCancelled && !isLoadingSession) {
+         vscode.postMessage({ type: 'stopProcesses', suppressNotice: true });
+       }
        // ── Premature end_turn detection ──────────────────────────────────
        // When an agent sends end_turn but there are still in-flight (running/
        // pending/in_progress) tool calls, the turn likely ended prematurely
