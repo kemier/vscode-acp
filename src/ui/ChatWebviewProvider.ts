@@ -5238,6 +5238,17 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       background: var(--vscode-editorWidget-background);
     }
     .agent-question.answered { opacity: 0.75; border-color: var(--vscode-panel-border); }
+    /* An answered question is a record, not a prompt: no option list, no accent,
+       and it reads as ordinary transcript rather than something still actionable. */
+    .agent-question.agent-question-record {
+      opacity: 1;
+      background: transparent;
+      border-style: dashed;
+    }
+    .agent-question.agent-question-record .agent-question-prompt {
+      margin: 0;
+      opacity: 0.85;
+    }
     .agent-question-title { font-weight: 600; margin-bottom: 6px; }
     .agent-question-prompt { margin: 4px 0 8px; white-space: pre-wrap; }
     .agent-question-option {
@@ -23728,13 +23739,97 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
     var picked = {};
     var answered = false;
 
+    /**
+     * Turn the answered card into a record of the decision.
+     *
+     * Three things were wrong before. The card was DOM-only — renderAgentQuestion
+     * never touched chatHistory or saveState, despite askQuestion's own comment
+     * promising the exchange "survives a resume" — so any of the eight
+     * messagesEl.innerHTML = '' sites destroyed it and the decision, which is
+     * usually the most valuable thing in the turn, was never persisted, never
+     * restored and never visible to memory capture. It also kept every option
+     * listed after being answered, and being appended to messagesEl it sat AFTER
+     * the whole turn container, so it stayed pinned at the bottom below replies
+     * that came later.
+     *
+     * Pending stays pinned at the bottom deliberately: a question the user cannot
+     * see is a hung agent. Once answered it is history, so it is recorded, reduced
+     * to one line, and filed into the turn it belongs to.
+     */
+    function recordDecision(outcome) {
+      var chosenLines = [];
+      var plainLines = [];
+      for (var qi = 0; qi < questions.length; qi++) {
+        var q = questions[qi] || {};
+        var opts = q.options || [];
+        var labels = [];
+        if (outcome && outcome.outcome === 'answered') {
+          var ans = (outcome.answers || []).filter(function (a) {
+            return a && String(a.questionId) === String(q.id);
+          })[0];
+          var ids = (ans && ans.selectedOptionIds) || [];
+          for (var oi = 0; oi < opts.length; oi++) {
+            if (ids.indexOf(String(opts[oi].id)) >= 0) { labels.push(opts[oi].label); }
+          }
+          // An option the agent did not advertise (free text, or a label-only
+          // answer) must still be recorded rather than silently dropped.
+          if (!labels.length && ids.length) { labels = ids.slice(); }
+          if (!labels.length && ans && ans.text) { labels = [String(ans.text)]; }
+        }
+        var verdict = labels.length
+          ? labels.join(', ')
+          : outcome && outcome.outcome === 'cancelled'
+            ? '(cancelled)'
+            : '(left to the agent)';
+        chosenLines.push('**Q:** ' + String(q.prompt || '') + '  \\n**A:** ' + verdict);
+        plainLines.push('Q: ' + String(q.prompt || '') + '\\nA: ' + verdict);
+      }
+      var text = chosenLines.join('\\n\\n');
+
+      // Persist FIRST: the transcript is what survives a rebuild and a resume,
+      // and what memory capture reads. The DOM below is only the live view.
+      var item = { kind: 'message', role: 'system', text: text };
+      chatHistory.push(item);
+      saveState();
+
+      // Collapse the card in place: drop the option buttons, keep the record.
+      // textContent, not markdown: system rows are added as plain text here and
+      // the batch markdown pass renders them from chatHistory on rebuild, so the
+      // asterisks belong in the persisted copy and not in the live node.
+      wrap.innerHTML = '';
+      wrap.classList.add('answered', 'agent-question-record');
+      wrap.setAttribute('data-history-index', String(chatHistory.length - 1));
+      var rec = document.createElement('div');
+      rec.className = 'agent-question-prompt';
+      rec.textContent = plainLines.join('\\n\\n');
+      wrap.appendChild(rec);
+
+      // File it into the turn it was asked during, so it stops sitting below the
+      // whole turn. In collapsed mode that means it joins the fold, which is
+      // where the rest of the turn's history lives.
+      var body = typeof getTurnFoldBody === 'function' && currentTurnEl
+        ? getTurnFoldBody(currentTurnEl)
+        : null;
+      if (body) {
+        body.appendChild(wrap);
+      } else if (currentTurnEl && currentTurnEl.parentNode === messagesEl) {
+        currentTurnEl.appendChild(wrap);
+      }
+    }
+
     function settle(outcome) {
       if (answered) return;
       answered = true;
-      wrap.classList.add('answered');
       var btns = wrap.querySelectorAll('button');
       for (var i = 0; i < btns.length; i++) btns[i].disabled = true;
       vscode.postMessage({ type: 'answerQuestion', askId: String(askId), outcome: outcome });
+      try {
+        recordDecision(outcome);
+      } catch (e) {
+        // Never let a rendering slip swallow the answer — the agent is blocked on
+        // the postMessage above, which has already gone out.
+        wrap.classList.add('answered');
+      }
     }
 
     function answerNow() {
