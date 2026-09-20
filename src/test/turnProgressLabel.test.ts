@@ -38,7 +38,15 @@ function extractFn(name: string): string {
 
 function loadLabelFn(): (elapsedMs: number, idleMs: number) => string {
   const body = extractFn('formatTurnStatusLabel');
-  const factory = new Function(`${body}; return formatTurnStatusLabel;`);
+  // The label reads two outer-scope vars to name a long silence: whether a
+  // session/load replay just finished (lastSessionLoadAt) and whether the
+  // user steered this turn (hasSteeredThisTurn). extractFn isolates the
+  // function body, so supply cold-session defaults — not just-loaded, not
+  // steered — which route the 60s+ branch to its "long silent model call"
+  // fallback.
+  const factory = new Function(
+    `var lastSessionLoadAt = 0; var hasSteeredThisTurn = false; ${body}; return formatTurnStatusLabel;`
+  );
   return factory() as (elapsedMs: number, idleMs: number) => string;
 }
 
@@ -56,13 +64,13 @@ suite('turn progress label', () => {
     // Frames arriving steadily: no idle noise.
     assert.strictEqual(f(30_000, 5_000), '30s');
     assert.strictEqual(f(30_000, 19_999), '30s');
-    // The 120s silent model call from the measured turn.
-    assert.ok(f(266_000, 120_000).indexOf('4m 26s') === 0);
-    // Names what it measures — time since the last ACP frame — instead of "waiting on
-    // agent", which collided with "subagent" and was read as "a subagent has not come
-    // back" on a turn whose subagent_wait rows were all completed.
-    assert.ok(/no output for 2m 0s$/.test(f(266_000, 120_000)), f(266_000, 120_000));
-    assert.ok(!/waiting on agent/.test(f(266_000, 120_000)), 'the ambiguous wording must be gone');
+    // The 120s silent model call from the measured turn: idle figure first, then
+    // (once past 60s) the cause suffix that names the silence.
+    const out = f(266_000, 120_000);
+    assert.ok(out.indexOf('4m 26s') === 0);
+    assert.ok(out.includes('no output for 2m 0s'), out);
+    assert.ok(out.includes('long silent model call'), out);
+    assert.ok(!/waiting on agent/.test(out), 'the ambiguous wording must be gone');
   });
 
   test('never renders negative or NaN-ish values', () => {
