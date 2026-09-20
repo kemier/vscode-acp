@@ -63,7 +63,12 @@ import { cleanSessionTitle } from '../utils/TitleCleaner';
 import { createMathExtension } from '../utils/markdownMath';
 import { balanceMarkdownForPartialRender } from '../utils/markdownBalance';
 import { cleanAgentToolTitle } from '../utils/toolTitle';
-import { orderedLinkRoots, symbolFallbackFromLinkText } from '../utils/codeLink';
+import {
+  fileSearchRoots,
+  orderedLinkRoots,
+  pickBestFileMatch,
+  symbolFallbackFromLinkText,
+} from '../utils/codeLink';
 import { readSessionSummarySettings } from '../core/SessionSummaryConfig';
 import { summarizeSession } from '../core/SessionSummarizer';
 import { VoiceInputManager, VoiceEvent } from '../voice/VoiceInputManager';
@@ -3219,6 +3224,54 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     return symbolFallbackFromLinkText(linkText);
   }
 
+  /**
+   * Locate a file on disk when neither joining its relative path onto a known
+   * root nor the workspace index could resolve it.
+   *
+   * `vscode.workspace.findFiles` is scoped to the OPEN workspace, so with
+   * vepg/epg open and the session running in vepg, the agent's
+   * `icr_worker.c:513-521` (the file lives in vepg/ssr/…) was unresolvable and
+   * the click reported "File not found: icr_worker.c". Ripgrep's file list
+   * reaches the session cwd and the directories beside it — the same widening
+   * findSymbolWithRipgrep already applies to symbols.
+   */
+  private async findFileOnDisk(relPath: string): Promise<vscode.Uri | undefined> {
+    const rel = relPath.replace(/\\/g, '/').replace(/^\.\//, '').replace(/^\/+/, '');
+    if (!rel) {
+      return undefined;
+    }
+    // A glob without a slash matches the basename at any depth; one with a slash
+    // keeps the trailing segments, so `src/foo.c` is not answered by any foo.c.
+    const glob = rel.includes('/') ? '**/' + rel : rel;
+    for (const root of fileSearchRoots(this.linkResolutionRoots())) {
+      let stdout = '';
+      try {
+        const res = await execFileAsync('rg', ['--files', '--no-messages', '--glob', glob, root], {
+          timeout: 10000,
+          maxBuffer: 1024 * 1024,
+        });
+        stdout = res.stdout;
+      } catch (e) {
+        // rg exits 1 when nothing matched, and may not be installed at all.
+        stdout = (e as { stdout?: string }).stdout || '';
+      }
+      const candidates = stdout
+        .split('\n')
+        .map((l) => l.trim())
+        .filter((l) => l.length > 0)
+        .slice(0, 200);
+      const best = pickBestFileMatch(candidates, rel);
+      if (best) {
+        getOutputChannel().appendLine(
+          `[ACP-DEBUG] findFileOnDisk: "${rel}" → ${best} (root=${root}, ${candidates.length} candidate(s))`,
+        );
+        return vscode.Uri.file(best);
+      }
+    }
+    getOutputChannel().appendLine(`[ACP-DEBUG] findFileOnDisk: "${rel}" not found under any search root`);
+    return undefined;
+  }
+
   private async handleOpenFile(
     filePath: string,
     lineNumber?: number,
@@ -3352,29 +3405,39 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         // Workspace-wide search by filename only
         const fileName = cleanPath.split('/').pop() || cleanPath;
         const foundFiles = await vscode.workspace.findFiles('**/' + fileName, '**/node_modules/**', 10);
-        if (foundFiles.length === 0) {
-          throw new Error(`File not found: ${cleanPath}`);
-        }
-        // Prefer the match whose path contains the original relative path
-        const relPath = cleanPath.replace(/^\.\//, '');
-        let best = foundFiles[0];
-        let bestScore = -1;
-        for (const f of foundFiles) {
-          const fPath = f.fsPath.replace(/\\/g, '/');
-          let score = 0;
-          if (fPath.endsWith(relPath)) {
-            score = relPath.length;
-          } else if (fPath.includes(relPath)) {
-            score = relPath.length - 10;
-          } else {
-            score = -fPath.length;
+        if (foundFiles.length > 0) {
+          // Prefer the match whose path contains the original relative path
+          const relPath = cleanPath.replace(/^\.\//, '');
+          let best = foundFiles[0];
+          let bestScore = -1;
+          for (const f of foundFiles) {
+            const fPath = f.fsPath.replace(/\\/g, '/');
+            let score = 0;
+            if (fPath.endsWith(relPath)) {
+              score = relPath.length;
+            } else if (fPath.includes(relPath)) {
+              score = relPath.length - 10;
+            } else {
+              score = -fPath.length;
+            }
+            if (score > bestScore) {
+              bestScore = score;
+              best = f;
+            }
           }
-          if (score > bestScore) {
-            bestScore = score;
-            best = f;
+          uri = best;
+        } else {
+          // findFiles only sees the OPEN workspace. When the window has a
+          // subdirectory of the agent's cwd open (workspace vepg/epg, session
+          // cwd vepg), a bare `icr_worker.c` from vepg/ssr/… is invisible to it
+          // and the click failed with "File not found". Widen to disk before
+          // giving up, the same way the symbol fallback already does.
+          const onDisk = await this.findFileOnDisk(cleanPath);
+          if (!onDisk) {
+            throw new Error(`File not found: ${cleanPath}`);
           }
+          uri = onDisk;
         }
-        uri = best;
         doc = await vscode.workspace.openTextDocument(uri);
       }
 
