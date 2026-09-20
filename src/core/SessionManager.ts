@@ -187,16 +187,34 @@ function stripSkillsSection(text: string): string {
  * Replace the agent_id in <memory_skill_tools> curl recipes so a forked
  * session's target agent can immediately use the memory API without
  * waiting for its own first full-injection turn.
+ *
+ * Measured on a live fork between two agents: the carried block held five
+ * `"agent_id"` recipes still naming the SOURCE agent, and ALL FIVE survived, so
+ * the target was told to read and write the source's memory namespace. Two
+ * causes, both fixed here and in recallMemoryForAgent:
+ *
+ *  - the old pattern was /(<memory_skill_tools>[\s\S]*?)"agent_id":"[^"]*"/g,
+ *    which requires the opening tag as part of EVERY match. With one block in
+ *    the blob the /g scan cannot re-match after the first hit, so exactly one
+ *    id was rewritten and the rest kept the source agent's value;
+ *  - the fresh-recall branch of recallMemoryForAgent never called this at all,
+ *    which is the branch the live fork took (all five ids were untouched).
+ *
+ * Now every id inside each block is rewritten. The scan is bounded to the block
+ * so an agent_id appearing elsewhere in the conversation is left alone, and an
+ * unclosed block still gets handled rather than silently skipped.
  */
 function remapSkillToolsForAgent(text: string, agentName: string): string {
   if (!text || !text.includes('<memory_skill_tools>')) {
     return text;
   }
   const memoryAgentId = resolveMemoryAgentId(agentName, readMemorySettings().agentIdMap);
-  // Replace agent_id values in the curl -d JSON payloads.
-  return text.replace(
-    /(<memory_skill_tools>[\s\S]*?)"agent_id":"[^"]*"/g,
-    (match, prefix) => prefix + `"agent_id":"${memoryAgentId}"`,
+  // Tolerate a missing closing tag: the block then runs to the end of the text.
+  // Anchoring on the closing tag alone is what let a truncated blob through.
+  const blocks = /<memory_skill_tools>[\s\S]*?(?:<\/memory_skill_tools>|$)/g;
+  return text.replace(blocks, (block) =>
+    // Spacing after the colon varies between producers, so allow it.
+    block.replace(/"agent_id"\s*:\s*"[^"]*"/g, `"agent_id":"${memoryAgentId}"`),
   );
 }
 
@@ -353,7 +371,11 @@ export class SessionManager extends EventEmitter {
         .filter(Boolean)
         .join('\n\n');
       joined = stripSkillsSection(joined);
-      return joined;
+      // The cache branch above remaps the memory-API agent_id; this one did not,
+      // so a fork whose source cache had been dropped (any VS Code reload — the
+      // cache is not persisted) handed the target curl recipes still pointing at
+      // the SOURCE agent's namespace. Verified on a live cross-agent fork.
+      return remapSkillToolsForAgent(joined, agentName);
     } catch (e) {
       logError('recallMemoryForAgent failed', e);
       return '';
