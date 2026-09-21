@@ -74,6 +74,63 @@ export function isResourceLinkJsonOnly(text: string): boolean {
 }
 
 /**
+ * Strip machine-injected context blocks from a conversation export text.
+ *
+ * A fork/export must NOT carry the raw payload of an attached clipboard or
+ * terminal block into the new agent. The payload can be huge (a screenshot's
+ * base64 data URI is ~30KB), and re-embedding it inflates the target's token
+ * usage far beyond its context window. Collapse each block to its pill label
+ * instead — the same pill the webview renders in the user bubble.
+ *
+ * Handles the two shapes the agent can produce on session/load replay:
+ *   1. Standalone: <clipboard>…payload…</clipboard>
+ *   2. Nested:     <context ref="…">…<clipboard>…payload…</clipboard>…</context>
+ *
+ * The nested case is the one that leaks: the <context> handler in
+ * cleanUserMessage checks splitLeadingContextPills first, which does not match
+ * a <clipboard> tag, so the raw body survives into the export.
+ */
+export function stripMachineContextBlocks(text: string): string {
+  let t = String(text ?? '');
+
+  // Collapse standalone <clipboard>…</clipboard> to a pill.
+  for (let guard = 0; guard < 20; guard++) {
+    const open = t.indexOf('<clipboard>');
+    if (open < 0) break;
+    const close = t.indexOf('</clipboard>', open);
+    if (close < 0) break;
+    const body = t.substring(open + '<clipboard>'.length, close);
+    const lines = body.split('\n').length;
+    const pill = '[Clipboard: ' + lines + (lines === 1 ? ' line]' : ' lines]');
+    t = t.substring(0, open) + pill + t.substring(close + '</clipboard>'.length);
+  }
+
+  // Collapse <context ref="…">…<clipboard>…</clipboard>…</context> to a pill.
+  // The <context> block may also wrap other content (memory, skills) — only
+  // collapse when the body CONTAINS a <clipboard> tag; otherwise leave it
+  // alone (the memory/skills blocks are handled by other filters).
+  for (let guard = 0; guard < 20; guard++) {
+    const open = t.indexOf('<context');
+    if (open < 0) break;
+    const gt = t.indexOf('>', open);
+    if (gt < 0) break;
+    const close = t.indexOf('</context>', gt);
+    if (close < 0) break;
+    const block = t.substring(open, close + '</context>'.length);
+    const clipOpen = block.indexOf('<clipboard>');
+    if (clipOpen < 0) break; // no clipboard inside — not our shape
+    const clipClose = block.indexOf('</clipboard>', clipOpen);
+    if (clipClose < 0) break;
+    const clipBody = block.substring(clipOpen + '<clipboard>'.length, clipClose);
+    const lines = clipBody.split('\n').length;
+    const pill = '[Clipboard: ' + lines + (lines === 1 ? ' line]' : ' lines]');
+    t = t.substring(0, open) + pill + t.substring(close + '</context>'.length);
+  }
+
+  return t;
+}
+
+/**
  * Convert a single chatHistory item into its export line(s), or null if the
  * item should be skipped (empty, slash-command-only, subagent-result markers).
  */
@@ -99,7 +156,8 @@ export function exportConversationItem(item: ConversationExportItem): string | n
       if (isResourceLinkJsonOnly(text)) {
         return null;
       }
-      return 'User: ' + text;
+      const cleaned = stripMachineContextBlocks(text);
+      return 'User: ' + cleaned;
     }
     if (item.role === 'assistant') {
       const text = typeof item.text === 'string' ? item.text : '';
@@ -109,7 +167,8 @@ export function exportConversationItem(item: ConversationExportItem): string | n
       if (isResourceLinkJsonOnly(text)) {
         return null;
       }
-      return 'Assistant: ' + text;
+      const cleaned = stripMachineContextBlocks(text);
+      return 'Assistant: ' + cleaned;
     }
     return null;
   }

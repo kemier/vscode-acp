@@ -44,12 +44,12 @@ suite('fork uses the archived history of a non-rendered session', () => {
     // lastIndexOf: the first occurrence is the HOST's message switch; the webview
     // script (inside the template literal) comes later in the file.
     const at = src.lastIndexOf("case 'requestConversationExport'");
-    const body = src.slice(at, at + 6000);
+    const body = src.slice(at, at + 12000);
     // The compaction-boundary scan and the emit loop must agree on the source,
     // or a fork would trim the archive against the visible chat's boundary.
     assert.ok(body.includes('for (var _cei = 0; _cei < _exportItems.length; _cei++)'), body.slice(0, 400));
     assert.ok(body.includes('var _ceItem = _exportItems[_cei];'));
-    assert.ok(body.includes('for (var _ei = _exportStart; _ei < _exportItems.length; _ei++)'));
+    assert.ok(body.includes('for (var _ei = _exportStart; _ei < _exportItems.length; _ei++)'), body.slice(0, 800));
     assert.ok(body.includes('var _item = _exportItems[_ei];'));
   });
 

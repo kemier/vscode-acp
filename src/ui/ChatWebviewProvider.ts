@@ -9111,6 +9111,16 @@ const builtinCommands = [
    var ref = contextBlockAttr(block, 'ref');
    if (ref.indexOf('vscode-acp:///memory/') === 0) return '';
    var body = contextBlockBody(block, 'context');
+   // If the body contains a <clipboard> tag (the agent flattened the resource
+   // into the context block), collapse it to a pill using the clipboard body.
+   var clipIdx = body.indexOf('<clipboard>');
+   if (clipIdx >= 0) {
+     var clipEnd = body.indexOf('</clipboard>', clipIdx);
+     if (clipEnd > clipIdx) {
+       var clipBody = body.substring(clipIdx + '<clipboard>'.length, clipEnd);
+       return clipboardPillLabel(clipBody) + nl2;
+     }
+   }
    var already = splitLeadingContextPills(body);
    if (already.pills.length > 0 && !already.rest) {
      var out = '';
@@ -21325,6 +21335,41 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         // summary, and the summarizer caps per-message length — so it needs
         // discrete messages, not one giant blob).
         var _exportMsgs = [];
+        // Strip machine-injected context blocks (clipboard payloads, nested
+        // <context> wrappers) from export text. A fork must NOT carry the raw
+        // base64 payload of an attached image/clipboard into the new agent —
+        // it inflates the target's token usage and renders as garbled text.
+        function _stripMachineCtx(t) {
+          var s = String(t == null ? '' : t);
+          for (var g1 = 0; g1 < 20; g1++) {
+            var o1 = s.indexOf('<clipboard>');
+            if (o1 < 0) break;
+            var c1 = s.indexOf('</clipboard>', o1);
+            if (c1 < 0) break;
+            var b1 = s.substring(o1 + 11, c1);
+            var l1 = b1.split(String.fromCharCode(10)).length;
+            var p1 = '[Clipboard: ' + l1 + (l1 === 1 ? ' line]' : ' lines]');
+            s = s.substring(0, o1) + p1 + s.substring(c1 + 12);
+          }
+          for (var g2 = 0; g2 < 20; g2++) {
+            var o2 = s.indexOf('<context');
+            if (o2 < 0) break;
+            var gt2 = s.indexOf('>', o2);
+            if (gt2 < 0) break;
+            var c2 = s.indexOf('</context>', gt2);
+            if (c2 < 0) break;
+            var blk2 = s.substring(o2, c2 + 10);
+            var co2 = blk2.indexOf('<clipboard>');
+            if (co2 < 0) break;
+            var cc2 = blk2.indexOf('</clipboard>', co2);
+            if (cc2 < 0) break;
+            var cb2 = blk2.substring(co2 + 11, cc2);
+            var l2 = cb2.split(String.fromCharCode(10)).length;
+            var p2 = '[Clipboard: ' + l2 + (l2 === 1 ? ' line]' : ' lines]');
+            s = s.substring(0, o2) + p2 + s.substring(c2 + 10);
+          }
+          return s;
+        }
         for (var _ei = _exportStart; _ei < _exportItems.length; _ei++) {
           var _item = _exportItems[_ei];
           if (!_item) continue;
@@ -21360,14 +21405,16 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
               // put the raw JSON into the NEW conversation as a User: line,
               // and the fork's own resume then replayed it again.
               if (!stripLeadingResourceLinkJson(_utext).trim()) continue;
-              _exportParts.push('User: ' + _utext);
-              _exportMsgs.push({ role: 'user', content: 'User: ' + _utext });
+              var _utextClean = _stripMachineCtx(_utext);
+              _exportParts.push('User: ' + _utextClean);
+              _exportMsgs.push({ role: 'user', content: 'User: ' + _utextClean });
             } else if (_item.role === 'assistant') {
               var _atext = typeof _item.text === 'string' ? _item.text : '';
               if (!_atext.trim()) continue;
               if (!stripLeadingResourceLinkJson(_atext).trim()) continue;
-              _exportParts.push('Assistant: ' + _atext);
-              _exportMsgs.push({ role: 'assistant', content: 'Assistant: ' + _atext });
+              var _atextClean = _stripMachineCtx(_atext);
+              _exportParts.push('Assistant: ' + _atextClean);
+              _exportMsgs.push({ role: 'assistant', content: 'Assistant: ' + _atextClean });
             }
           } else if (_item.kind === 'thought') {
             var _ttext = typeof _item.text === 'string' ? _item.text : '';
