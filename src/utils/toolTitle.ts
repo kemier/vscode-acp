@@ -226,7 +226,7 @@ export function describeToolFromRawInput(rawInput: unknown): string {
     const name = baseName(pathish);
     const verb = typeof ri.command === 'string' ? ri.command.trim().toLowerCase() : '';
     if (verb === 'create') {
-      return `Creating ${name}`;
+      return `Writing ${name}`;
     }
     return WRITE_SUB_VERBS.test(verb) ? `Editing ${name}` : name;
   }
