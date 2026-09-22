@@ -56,11 +56,150 @@ function fenceRuns(text: string): string[] {
   return out;
 }
 
+/**
+ * Compute the leading indent needed for a fenced block to stay INSIDE a list
+ * item. A fenced block on the same line column as a list item's marker
+ * (e.g. 0-2 spaces for "1. ") ends the item and escapes into the document
+ * body, which collapses the surrounding list. A fence indented to the item's
+ * CONTENT column renders as a code block inside the <li> and the list
+ * continues. Returns 0 when the line is not a list item (no indent needed).
+ *
+ * lineBefore is the text on the current line up to (not including) the point
+ * where the fence would open. For "2. User bubble:" the marker is "2." and the
+ * content column is 3; we use the larger of the content column and
+ * (lead + marker + 1) — the minimum indent CommonMark needs to keep the block
+ * attached to the item.
+ */
+function listContentIndent(lineBefore: string): number {
+  const m = lineBefore.match(/^(\s*)(\d+\.|\-|\*|\+)(\s+)(.*)$/);
+  if (!m) return 0;
+  const lead = m[1].length;
+  const marker = m[2].length;
+  const space = m[3].length;
+  const contentCol = lead + marker + space;
+  return Math.max(contentCol, lead + marker + 1);
+}
+
+/**
+ * Repair single-backtick inline code spans that CONTAIN A NEWLINE.
+ *
+ * A CommonMark inline code span CANNOT hold a line break. When the model
+ * writes a list item like:
+ *
+ *     2. User bubble: `<newline><local-command-caveat>...</local-command-caveat>`
+ *
+ * the backtick opens, the span content starts on the next line, and marked
+ * breaks the span at the newline. The consequences, in a numbered/bulleted
+ * list:
+ *   - the item's stray backtick renders literally,
+ *   - the list is terminated at that newline (a list item cannot span a blank
+ *     line), so every FOLLOWING item is demoted out of the <ol>/<ul> into a
+ *     <p> paragraph,
+ *   - the remaining backticks pair up into wrong inline <code> capsules.
+ *
+ * This is the "bullets not aligned" bug: item 1 stays a list item, item 2
+ * ends in a stray backtick, and items 3+ become a mis-indented paragraph with
+ * their numbers rendered as code pills.
+ *
+ * The model's INTENT was to show the snippet as code. Two repairs, chosen by
+ * how many spans share the item line:
+ *   - TIER 1 (sole span on the line): convert to a FENCED block, indented to
+ *     the list content column so it stays inside the <li>. Full fidelity — the
+ *     multi-line snippet renders as a code block and the list stays aligned.
+ *   - TIER 2 (multiple spans on the line, or not in a list): collapse the
+ *     newlines inside the span to spaces, making it a valid single-line
+ *     inline <code>. It no longer breaks the list.
+ *
+ * A balanced single-line span (`code`) and any fenced block (```) are left
+ * untouched — this only fires on the malformed newline-in-span case.
+ */
+export function repairMultiLineInlineCode(text: string): string {
+  let out = '';
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    if (text[i] !== '`') {
+      out += text[i];
+      i++;
+      continue;
+    }
+    // Count the backtick run that opens here.
+    let run = 0;
+    while (i + run < n && text[i + run] === '`') run++;
+    const openLen = run;
+    // Find the matching closing run of the SAME length. A longer run is a
+    // fence (handled by the fence balancer) or a different span — not our
+    // closer, so skip past it.
+    let j = i + openLen;
+    let closeIdx = -1;
+    while (j < n) {
+      if (text[j] === '`') {
+        let r = 0;
+        while (j + r < n && text[j + r] === '`') r++;
+        if (r === openLen) {
+          closeIdx = j;
+          break;
+        }
+        j += r;
+      } else {
+        j++;
+      }
+    }
+    if (closeIdx < 0) {
+      // No matching closer — emit the run and let the rest be scanned.
+      out += '`'.repeat(openLen);
+      i += openLen;
+      continue;
+    }
+    const content = text.slice(i + openLen, closeIdx);
+    const isMultiLineSpan = openLen === 1 && content.includes('\n');
+    if (isMultiLineSpan) {
+      // Is this span the ONLY backtick span on its line?
+      const lineStart = text.lastIndexOf('\n', i) + 1;
+      const eolAfter = text.indexOf('\n', closeIdx);
+      const lineEnd = eolAfter < 0 ? n : eolAfter;
+      const lineText = text.slice(lineStart, lineEnd);
+      const backticksOnLine = (lineText.match(/`/g) || []).length;
+      const soleOnLine = backticksOnLine === 2; // exactly this open + close
+      if (soleOnLine) {
+        // TIER 1: fenced block, indented to the list content column.
+        const lineBefore = text.slice(lineStart, i);
+        const indent = listContentIndent(lineBefore);
+        const pad = indent > 0 ? ' '.repeat(indent) : '';
+        let body = content;
+        if (body.startsWith('\n')) body = body.slice(1);
+        if (body.endsWith('\n')) body = body.slice(0, -1);
+        out += '\n' + pad + '```\n';
+        for (const l of body.split('\n')) out += pad + l + '\n';
+        out += pad + '```';
+      } else {
+        // TIER 2: collapse newlines so it is a valid single-line inline span.
+        out += '`' + content.replace(/\n+/g, ' ') + '`';
+      }
+      i = closeIdx + openLen;
+      continue;
+    }
+    // Not a multi-line single-backtick span: emit open run + content + close
+    // run verbatim.
+    out += text.slice(i, closeIdx + openLen);
+    i = closeIdx + openLen;
+  }
+  return out;
+}
+
 export function balanceMarkdownForPartialRender(text: string): string {
+  // --- Inline code spans that contain a newline ---
+  // A single-backtick span cannot hold a line break (CommonMark). When the
+  // model writes one inside a list item, the newline breaks the span AND
+  // terminates the list, demoting the following items into a paragraph —
+  // the "bullets not aligned" artifact. Repair these FIRST, so any fenced
+  // block the repair introduces is counted by the fence pairing below.
+  const repaired = repairMultiLineInlineCode(text);
+
   // --- Fenced code blocks (``` or longer runs) ---
   // Pair up fences of length >= 3. If one is left open, close it with a
   // matching-length run so marked ends the <pre><code> block.
-  const fenceMatches = fenceRuns(text);
+  const fenceMatches = fenceRuns(repaired);
   if (fenceMatches.length > 0) {
     let openFenceLen = 0;
     for (const f of fenceMatches) {
@@ -74,11 +213,11 @@ export function balanceMarkdownForPartialRender(text: string): string {
       }
     }
     if (openFenceLen > 0) {
-      return text + '\n' + '`'.repeat(openFenceLen);
+      return repaired + '\n' + '`'.repeat(openFenceLen);
     }
   }
 
-  return text;
+  return repaired;
 }
 
 /**
@@ -99,7 +238,12 @@ export function balanceMarkdownForPartialRender(text: string): string {
  * the model or balanced for the final render.
  */
 export function hasOpenFence(text: string): boolean {
-  const fenceMatches = fenceRuns(text);
+  // Run the same inline-span repair the balancer uses, so the fence pairing
+  // here matches what balanceMarkdownForPartialRender will actually render.
+  // Without this, a segment whose multi-line span the repair converts to a
+  // (still-open, partial) fence could be interim-committed as if it had no
+  // open fence.
+  const fenceMatches = fenceRuns(repairMultiLineInlineCode(text));
   if (fenceMatches.length === 0) { return false; }
   let openFenceLen = 0;
   for (const f of fenceMatches) {

@@ -91,6 +91,84 @@ suite('markdownBalance', () => {
     });
   });
 
+  suite('multi-line inline code span repair (bullets not aligned)', () => {
+    // A single-backtick code span CANNOT contain a newline (CommonMark). When
+    // the model writes one inside a list item, marked breaks the span at the
+    // newline AND terminates the list, demoting the following items into a
+    // paragraph. These tests pin the repair: sole span -> fenced block (list
+    // stays aligned); multiple spans on a line -> newlines collapsed.
+
+    test('a sole multi-line span in a list item becomes an indented fenced block', () => {
+      // The exact shape from the reported bug: item 2 quotes a tag that the
+      // model put on the next line after the opening backtick.
+      const md =
+        'The screenshot shows:\n' +
+        '1. Assistant message: "Done."\n' +
+        '2. User bubble: `' + '\n' + '<local-command-caveat>...</local-command-caveat>`' + '\n' +
+        '3. next item\n';
+      const out = balanceMarkdownForPartialRender(md);
+      // The span must be converted to a fence, indented so it stays in the item.
+      assert.ok(out.includes('\n   ```\n'), `expected indented fence opener: ${JSON.stringify(out)}`);
+      // Render it and confirm the list stays a single <ol> with item 2 holding a code block.
+      const html = parse(out);
+      assert.ok(html.includes('<ol'), `expected a list: ${html}`);
+      // Item 2 must contain a <pre><code> INSIDE its <li>, and item 3 must
+      // still be a <li> of the same list (not demoted into a <p>).
+      assert.ok(/<li>User bubble: <pre><code>/.test(html), `item 2 should hold a code block: ${html}`);
+      assert.ok(/<li>next item<\/li>/.test(html), `item 3 should stay a list item: ${html}`);
+      // The stray-backtick collapse (item 3 in a <p>) must NOT happen.
+      const listCount = (html.match(/<li>/g) || []).length;
+      assert.strictEqual(listCount, 3, `expected all 3 items to stay list items: ${html}`);
+    });
+
+    test('multiple multi-line spans on one list item collapse to inline code', () => {
+      // Item with three spans separated by " + " — the sole-span fence rule
+      // does not apply, so newlines collapse and the list stays aligned.
+      const md =
+        '1. a\n' +
+        '2. User bubble: `' + '\n' + '<command-name>x</command-name>` + `' + '\n' + '<command-message>` + `' + '\n' + '<command-args>`\n' +
+        '3. c\n';
+      const out = balanceMarkdownForPartialRender(md);
+      const html = parse(out);
+      // No fence should be introduced (multi-span), and all items stay in the list.
+      assert.ok(!out.includes('```'), `no fence for multi-span item: ${JSON.stringify(out)}`);
+      const listCount = (html.match(/<li>/g) || []).length;
+      assert.strictEqual(listCount, 3, `all 3 items stay list items: ${html}`);
+    });
+
+    test('a multi-line span outside a list becomes a standalone fenced block', () => {
+      const md = 'Here is the tag: `' + '\n' + '<foo>bar</foo>`' + '\nAfter.';
+      const out = balanceMarkdownForPartialRender(md);
+      const html = parse(out);
+      assert.ok(html.includes('<pre><code>'), `expected a code block: ${html}`);
+      assert.ok(html.includes('After.'), `trailing text preserved: ${html}`);
+    });
+
+    test('a balanced single-line span is left unchanged', () => {
+      const md = 'Use `code` and `more` here.';
+      assert.strictEqual(balanceMarkdownForPartialRender(md), md);
+    });
+
+    test('complete message with a sole multi-line span renders as one aligned list', () => {
+      // The full reported message (session 01d25a08, line 5567), trimmed to the
+      // list. Items 2-5 quote snippets; item 2 is a sole span, item 3 has three.
+      const md =
+        'The screenshot shows:\n' +
+        '1. Assistant message: "Done."\n' +
+        '2. User bubble: `' + '\n' + '<local-command-caveat>...</local-command-caveat>`\n' +
+        '3. User bubble: `' + '\n' + '<command-name>/list-agents</command-name>` + `' + '\n' + '<command-message>` + `' + '\n' + '<command-args>`\n' +
+        '4. User bubble: `Clipboard: 5 lines` + `//what this...`\n' +
+        '5. User bubble: `is acp model...`\n';
+      const html = parse(balanceMarkdownForPartialRender(md));
+      // All 5 items must remain list items of a single ordered list.
+      const listCount = (html.match(/<li>/g) || []).length;
+      assert.strictEqual(listCount, 5, `all 5 items stay in the list: ${html}`);
+      // Item 2 (sole span) holds a code block; item 3 (multi-span) holds inline code.
+      assert.ok(/<li>User bubble: <pre><code>/.test(html), `item 2 code block: ${html}`);
+      assert.ok(/<li>User bubble: <code>/.test(html), `item 3 inline code: ${html}`);
+    });
+  });
+
   suite('end-to-end: marked.parse on balanced partial text', () => {
     test('open fence no longer swallows trailing prose as a code block', () => {
       // Before the fix, marked parses this partial text and treats everything
