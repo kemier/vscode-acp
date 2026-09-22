@@ -10674,11 +10674,19 @@ function handleLocalSlashCommand(cmdText) {
  // /ps is turn-safe (slashCommandRunsDuringTurn), so it is sent immediately
  // even mid-turn and its output lands as a normal chat message.
  //
+ // EXCEPTION: claude-code-acp's /ps is a stub — it returns a hardcoded
+ // "No background terminals running." without tracking any processes. Its
+ // in-progress tools DO appear in chatHistory (as tool_call updates with
+ // status:"in_progress"), so the local panel gives the SAME answer faster,
+ // without the ACP round-trip through the spawned CLI. Serve locally for
+ // claude-code-acp; defer to the agent for codex-acp/ericli (whose /ps
+ // reports A2A tasks and background terminals invisible to chatHistory).
+ //
  // The local panel stays as the fallback for agents with no /ps of their own —
  // pi-acp advertises compact/autocompact/export/session/name/steering/follow-up
  // and nothing else.
  if (text === '/ps') {
-    if (commandListHasCommand(availableCommands, 'ps')) { return false; }
+    if (commandListHasCommand(availableCommands, 'ps') && !isClaudeAgent()) { return false; }
     promptInput.value = '';
     updateSendButton();
     pendingImages.splice(0);
