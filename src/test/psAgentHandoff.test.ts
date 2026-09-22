@@ -129,8 +129,15 @@ suite('/ps defers to the agent when the agent implements it', () => {
   test('the agent path returns false so the command falls through as a prompt', () => {
     const at = src.indexOf("if (text === '/ps') {");
     const body = src.slice(at, at + 400);
+    // The guard defers to the agent when it advertises /ps. The !isClaudeAgent()
+    // carve-out (cd6f3ab) keeps claude-code-acp on the local panel because its
+    // /ps is a local stub, but the commandListHasCommand + return false shape
+    // that lets handleSend forward the command is unchanged.
     assert.ok(
-      /commandListHasCommand\(availableCommands, 'ps'\)\) \{ return false; \}/.test(body),
+      /commandListHasCommand\(availableCommands, 'ps'\)\) \{ return false; \}/.test(body) ||
+        /commandListHasCommand\(availableCommands, 'ps'\) && !isClaudeAgent\(\)\) \{ return false; \}/.test(
+          body,
+        ),
       'returning false is what lets handleSend forward /ps to the agent',
     );
   });

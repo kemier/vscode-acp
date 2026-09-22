@@ -219,10 +219,10 @@ suite('tool-call title normalization', () => {
       );
     });
 
-    test('write create becomes Creating <file>', () => {
+    test('write create becomes Writing <file>', () => {
       assert.strictEqual(
         cleanAgentToolTitle('write', CWD, { command: 'create', path: '/w/src/New.ts' }),
-        'Creating New.ts',
+        'Writing New.ts',
       );
     });
 
