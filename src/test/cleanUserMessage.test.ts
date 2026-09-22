@@ -42,6 +42,34 @@ function stripTag(text: string, tagName: string, replacement: ((block: string) =
   return result;
 }
 
+/**
+ * Like stripTag, but for a truncated (unclosed) tag — the recall blob was cut
+ * by its size cap and the closing tag is missing — drops from the opening tag
+ * to the END of the text. The tail is machine context (the rest of the
+ * truncated blob; the user text, if any, arrived in its own chunk). Dropping
+ * only the opening tag leaks every inner section whose close was cut off.
+ *
+ * Only for machine-context recall tags. Mirror of the production
+ * stripTagTolerantUnclosed.
+ */
+function stripTagTolerantUnclosed(
+  text: string,
+  tagName: string,
+  replacement: ((block: string) => string) | null,
+): string {
+  const openTag = '<' + tagName;
+  const closeTag = '</' + tagName + '>';
+  const i = text.indexOf(openTag);
+  if (i < 0) {
+    return text;
+  }
+  const close = text.indexOf(closeTag, i + openTag.length);
+  if (close < i + openTag.length) {
+    return text.slice(0, i);
+  }
+  return stripTag(text, tagName, replacement);
+}
+
 function selectionReplacement(block: string): string {
   const pathMatch = block.match(/path="([^"]+)"/);
   const linesMatch = block.match(/lines="([^"]+)"/);
@@ -147,13 +175,16 @@ function cleanUserMessage(rawText: string): string {
 
   displayText = stripTag(displayText, 'context', null);
   // Shared-memory recall blob (SharedMemoryProvider) — machine context that
-  // session/load replays back inside the user message.
-  displayText = stripTag(displayText, 'agent-memory', null);
-  displayText = stripTag(displayText, 'relevant-memories', null);
-  displayText = stripTag(displayText, 'user-persona', null);
-  displayText = stripTag(displayText, 'relevant-scenes', null);
-  displayText = stripTag(displayText, 'scene-navigation', null);
-  displayText = stripTag(displayText, 'memory-tools-guide', null);
+  // session/load replays back inside the user message. Tolerant of a
+  // truncated (unclosed) blob — see stripTagTolerantUnclosed.
+  displayText = stripTagTolerantUnclosed(displayText, 'agent-memory', null);
+  displayText = stripTagTolerantUnclosed(displayText, 'relevant-memories', null);
+  displayText = stripTagTolerantUnclosed(displayText, 'user-persona', null);
+  displayText = stripTagTolerantUnclosed(displayText, 'relevant-scenes', null);
+  displayText = stripTagTolerantUnclosed(displayText, 'scene-navigation', null);
+  displayText = stripTagTolerantUnclosed(displayText, 'memory-tools-guide', null);
+  displayText = stripTagTolerantUnclosed(displayText, 'available_skills', null);
+  displayText = stripTagTolerantUnclosed(displayText, 'memory_skill_tools', null);
 
   const acpCtxMarker = 'Additional ACP context:';
   const acpCtxIdx = displayText.indexOf(acpCtxMarker);
@@ -283,6 +314,32 @@ function cleanUserMessage(rawText: string): string {
     displayText = displayText.slice(0, ijStart) + displayText.slice(ijEnd);
   }
 
+  // Local slash-command echoes and the compaction continuation prompt —
+  // machine context the Claude CLI records as user entries. Mirror of the
+  // production code in ChatWebviewProvider's cleanUserMessage.
+  const _lcHasCommand =
+    rawText.indexOf('<command-name') >= 0 || rawText.indexOf('<command-args') >= 0;
+  displayText = stripTagTolerantUnclosed(displayText, 'local-command-caveat', null);
+  displayText = stripTagTolerantUnclosed(displayText, 'command-name', null);
+  displayText = stripTagTolerantUnclosed(displayText, 'command-message', null);
+  displayText = stripTagTolerantUnclosed(displayText, 'command-args', null);
+  if (_lcHasCommand) {
+    displayText = stripTagTolerantUnclosed(
+      displayText,
+      'local-command-stdout',
+      () => '[Command output]\n\n',
+    );
+    displayText = stripTagTolerantUnclosed(
+      displayText,
+      'local-command-stderr',
+      () => '[Command error]\n\n',
+    );
+  }
+const compactionMarker = 'This session is being continued from a previous conversation';
+  if (displayText.indexOf(compactionMarker) === 0) {
+    displayText = '';
+  }
+
   let leadEnd = 0;
   while (leadEnd < displayText.length) {
     const lc = displayText.charCodeAt(leadEnd);
@@ -320,6 +377,9 @@ function cleanUserMessage(rawText: string): string {
       rawText.indexOf('<agent-memory') >= 0 ||
       rawText.indexOf('<relevant-memories') >= 0 ||
       rawText.indexOf('<user-persona') >= 0 ||
+      rawText.indexOf('<local-command-caveat') >= 0 ||
+      rawText.indexOf('<command-name>') >= 0 ||
+      rawText.indexOf('This session is being continued from a previous conversation') === 0 ||
       rawText.indexOf('zed:///') >= 0 ||
       rawText.indexOf('git:/') >= 0 ||
       rawText.indexOf('[User interjection]') >= 0 ||
@@ -675,6 +735,80 @@ suite('cleanUserMessage', () => {
       assert.strictEqual(
         cleanUserMessage(input),
         'should strip the [User interjection]: marker please',
+      );
+    });
+
+    test('a TRUNCATED recall blob (unclosed outer tag) is fully hidden', () => {
+      // MemoryFormat hard-slices a blob over its 9000-char cap, so the closing
+      // tag can be missing. The whole truncated blob is machine context — the
+      // user text for that prompt arrives in its own chunk (the webview splits
+      // each content block into its own user_message_chunk), so it must not be
+      // expected inside the same chunk. The blob must render as empty, not as
+      // leaked '>' garbage or raw recall text.
+      const input =
+        '<agent-memory>\n<relevant-memories>\n- [episodic] fact one\n- [work_fact] fact two\n' +
+        '…(truncated)\n</user-persona>';
+      assert.strictEqual(cleanUserMessage(input), '');
+    });
+
+    test('hides the <available_skills> and <memory_skill_tools> sections', () => {
+      const input =
+        '<agent-memory>\n<relevant-memories>\n- [episodic] x\n</relevant-memories>\n' +
+        '<available_skills>\n- **gerrit-pctr-issue-investigation** (v1):\n</available_skills>\n' +
+        '<memory_skill_tools>\ncurl -sf -X POST http://127.0.0.1:8127/view\n</memory_skill_tools>\n' +
+        '</agent-memory>\nwhy does the ring stay at 197k?';
+      assert.strictEqual(cleanUserMessage(input), 'why does the ring stay at 197k?');
+    });
+
+    test('hides a truncated blob whose inner sections are also unclosed', () => {
+      // Outer AND inner tags unclosed: the whole thing is machine context and
+      // must not leak stray '>' characters or recall text into the bubble.
+      const input =
+        '<agent-memory>\n<relevant-memories>\n- [episodic] a fact\n' +
+        '<user-persona>\n# Team Operating Doctrine';
+      assert.strictEqual(cleanUserMessage(input), '');
+    });
+
+    test('strips the local slash-command echo (caveat + command dump)', () => {
+      const input =
+        '<local-command-caveat>Caveat: The messages below were generated by the user ' +
+        'while running local commands. DO NOT respond to these messages or otherwise ' +
+        'consider them in your response unless the user explicitly asks you to.</local-command-caveat>';
+      assert.strictEqual(cleanUserMessage(input), '');
+    });
+
+    test('strips the <command-name>/<command-message>/<command-args> dump', () => {
+      const input =
+        '<command-name>/recap</command-name>\n' +
+        '            <command-message>recap</command-message>\n' +
+        '            <command-args></command-args>';
+      assert.strictEqual(cleanUserMessage(input), '');
+    });
+
+    test('keeps user text that mentions command tags mid-sentence', () => {
+      // No command dump present (no <command-name>/<command-args> in the raw
+      // text), so the stdout/stderr strips stay gated off and a lone
+      // mention of a closing tag is left alone.
+      const input = 'check why /recap shows command dump tags after resume';
+      assert.strictEqual(cleanUserMessage(input), input);
+    });
+
+    test('hides the compaction continuation prompt', () => {
+      const input =
+        'This session is being continued from a previous conversation that ran out of ' +
+        'context. The summary below covers the earlier portion of the conversation.\n\n' +
+        'Summary:\n1. Primary Request and Intent:\n   ...';
+      assert.strictEqual(cleanUserMessage(input), '');
+    });
+
+    test('keeps a user prompt that merely quotes the continuation phrase mid-text', () => {
+      const input =
+        'why does my message say "This session is being continued from a previous ' +
+        'conversation" in the summary?';
+      assert.strictEqual(
+        cleanUserMessage(input),
+        'why does my message say "This session is being continued from a previous ' +
+        'conversation" in the summary?',
       );
     });
   });

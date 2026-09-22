@@ -8803,6 +8803,33 @@ const builtinCommands = [
      * Uses string indexOf/slice instead of RegExp with backslash escapes
      * to avoid webpack mangling inside the HTML template literal.
      */
+    /**
+     * Like stripTag, but for a truncated (unclosed) tag — the recall blob was
+     * cut by its size cap and the closing tag is missing — it drops from the
+     * opening tag to the END of the text instead of eating only the tag. The
+     * tail is machine context (the rest of the truncated blob; the user text,
+     * if any, arrived in its own chunk). Dropping only the opening tag leaks
+     * every inner section whose close was cut off: "…(truncated)\n
+     * </user-persona>" leaves the opening tag behind, which the inner strips
+     * then cannot close, so they eat to the end and stray '>' characters
+     * survive as garbage.
+     *
+     * Only for machine-context recall tags. Never use it for tags that can
+     * appear in user prose (e.g. file/folder/selection): an unclosed tag
+     * would delete the prose that follows it.
+     */
+    function stripTagTolerantUnclosed(text, tagName, replacement) {
+      var openTag = '<' + tagName;
+      var closeTag = '</' + tagName + '>';
+      var i = text.indexOf(openTag);
+      if (i < 0) return text;
+      var close = text.indexOf(closeTag, i + openTag.length);
+      if (close < i + openTag.length) {
+        return text.slice(0, i);
+      }
+      return stripTag(text, tagName, replacement);
+    }
+
     function stripTag(text, tagName, replacement) {
       var openTag = '<' + tagName;
       var closeTag = '</' + tagName + '>';
@@ -9136,13 +9163,22 @@ const builtinCommands = [
  // the prompt (as a resource, or as plain text for agents without embedded
  // context), so session/load replay hands it back as part of the user
  // message. It is machine context, never something the user typed.
- displayText = stripTag(displayText, 'agent-memory', null);
+ // Tolerant of a TRUNCATED blob: the 9000-char cap hard-slices the tail, so
+ // the closing tag can be missing — a plain stripTag would then eat the real
+ // user text that follows the blob in the same chunk.
+ displayText = stripTagTolerantUnclosed(displayText, 'agent-memory', null);
  // Older / partial recall payloads arrive without the <agent-memory> wrapper.
- displayText = stripTag(displayText, 'relevant-memories', null);
- displayText = stripTag(displayText, 'user-persona', null);
- displayText = stripTag(displayText, 'relevant-scenes', null);
- displayText = stripTag(displayText, 'scene-navigation', null);
- displayText = stripTag(displayText, 'memory-tools-guide', null);
+ // All of these are machine-context recall tags: tolerant of a truncated
+ // (unclosed) blob, so a size-capped recall cannot eat the user text that
+ // follows it. See the stripTagTolerantUnclosed note above.
+ displayText = stripTagTolerantUnclosed(displayText, 'relevant-memories', null);
+ displayText = stripTagTolerantUnclosed(displayText, 'user-persona', null);
+ displayText = stripTagTolerantUnclosed(displayText, 'relevant-scenes', null);
+ displayText = stripTagTolerantUnclosed(displayText, 'scene-navigation', null);
+ displayText = stripTagTolerantUnclosed(displayText, 'memory-tools-guide', null);
+ // Skill list + curl recipes that ride inside the <agent-memory> blob.
+ displayText = stripTagTolerantUnclosed(displayText, 'available_skills', null);
+ displayText = stripTagTolerantUnclosed(displayText, 'memory_skill_tools', null);
  // Second pass: the tag strips above may have UNCOVERED resource_link JSON
  // that was sitting behind a <context> / <agent-memory> block. That is the
  // usual layout — memory blob first, then the links, then the typed text — so
@@ -9290,6 +9326,36 @@ const builtinCommands = [
  // Now the goal preamble, after any interjection marker in front of it: a
  // steered goal prompt arrives as "[User interjection]: Please start working…".
  displayText = stripLeadingGoalPrompt(displayText);
+ // Local slash-command echoes: the Claude CLI records a local command (/recap,
+ // /status, …) as two user entries — a <local-command-caveat> notice plus a
+ // <command-name>/<command-message>/<command-args> dump. session/load replay
+ // re-emits both as user turns, so the resumed panel shows raw XML bubbles
+ // the user never typed. All five tags are machine context — strip them.
+ // (String-based, matching the rest of this function: regex backslashes get
+ // mangled by the HTML template literal / webpack double-processing.)
+ var _lcHasCommand = rawText.indexOf('<command-name') >= 0 || rawText.indexOf('<command-args') >= 0;
+ displayText = stripTagTolerantUnclosed(displayText, 'local-command-caveat', null);
+ displayText = stripTagTolerantUnclosed(displayText, 'command-name', null);
+ displayText = stripTagTolerantUnclosed(displayText, 'command-message', null);
+ displayText = stripTagTolerantUnclosed(displayText, 'command-args', null);
+ // The dump's output/error tags map to a pill (mirroring how the live panel
+ // shows a local command's output as a transient row, not raw text in the
+ // bubble). Only when a command dump is present, so prose mentioning the tag
+ // mid-sentence is never touched.
+ if (_lcHasCommand) {
+   displayText = stripTagTolerantUnclosed(displayText, 'local-command-stdout', function() { return '[Command output]' + String.fromCharCode(10) + String.fromCharCode(10); });
+   displayText = stripTagTolerantUnclosed(displayText, 'local-command-stderr', function() { return '[Command error]' + String.fromCharCode(10) + String.fromCharCode(10); });
+ }
+ // Compaction continuation prompt: when the Claude CLI's context overflows it
+ // resumes with a machine-generated "This session is being continued from a
+ // previous conversation… Summary: …" user message. Replay re-emits it as a
+ // user turn (a 14 KB wall of summary text rendered as if the user typed it).
+ // Match only when it leads the chunk — the user could legitimately quote
+ // the phrase mid-sentence, and that is real text.
+ var compactionMarker = 'This session is being continued from a previous conversation';
+ if (displayText.indexOf(compactionMarker) === 0) {
+   displayText = '';
+ }
  // Strip any remaining leading whitespace after stripping
  var leadEnd = 0;
  while (leadEnd < displayText.length) {

@@ -60,7 +60,7 @@ function loadWebviewFns(): Webview {
       cut('function clipboardPillLabel(clip) {', '/**\n     * The text a queued entry SENDS'),
       cut('function queueEntryPromptText(entry) {', 'function renderQueue() {'),
       cut(
-        'function stripTag(text, tagName, replacement) {',
+        'function stripTagTolerantUnclosed(text, tagName, replacement) {',
         '/**\n     * True when a user message is nothing but injected machine context',
       ),
       cut('function isMachineContextOnly(rawText) {', '/**\n    * Truncate a session title for display in the banner.'),
