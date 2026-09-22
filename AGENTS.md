@@ -182,6 +182,27 @@ grep -n "Spawning\|ConnectionManager\|initialized\|exited" "$LOGDIR/1-ACP Client
 grep -n "session/prompt\|session/update\|session/load" "$LOGDIR/2-ACP Traffic.log"
 ```
 
+### Code search: prefer tgrep when indexed
+
+`tgrep` (trigram-indexed grep) is a ripgrep drop-in that is dramatically faster on large repos. Use it **only when a live index exists** — otherwise it is no faster than `rg`.
+
+```bash
+# Probe for a live index first. If it prints a path/size, tgrep is ready.
+tgrep status
+# No index found at .../.tgrep  →  not indexed, fall back to rg
+
+# One-time setup (index + watching server) for this repo:
+tgrep index .
+tgrep serve .        # keeps the index fresh as files change
+
+# Search (same flags/exit codes as rg; -i, -w, -F, -e, --line-number, etc.)
+tgrep "pattern" .
+tgrep -n "pattern" src/
+```
+
+- If `tgrep status` shows no index, use `rg` — do not build an index for a one-off search.
+- The rest of this doc's `grep`/`grep -n` examples remain valid; `tgrep -n` is a faster substitute only when indexed.
+
 ### Traffic log rotation
 
 The traffic log is an in-memory `OutputChannel` that auto-rotates after `acp.logTrafficMaxEntries` entries (default 1000). To keep more history, increase this in settings:
