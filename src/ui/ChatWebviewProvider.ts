@@ -11592,11 +11592,22 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
 
       var mergedThoughtKeys = {};
       var mergedAsstKeys = {};
+      // Turn-boundary user prompts present in the loaded (agent) replay. Used
+      // to reject snapshot rows whose turn was compacted away (see the loop
+      // below) — a snapshot tool/assistant/thought whose preceding user prompt
+      // is not here belongs to a pre-compaction turn and must not be
+      // resurrected.
+      var loadedUserTextSet = {};
       for (var mi = 0; mi < merged.length; mi++) {
         var m = merged[mi];
         if (m && m.kind === 'thought') mergedThoughtKeys[thoughtPrefixKey(m.text)] = true;
         if (m && m.kind === 'message' && m.role === 'assistant') {
           mergedAsstKeys[String(m.text || '').trim()] = true;
+        }
+        if (m && m.kind === 'message' && m.role === 'user' &&
+            !isSessionInterruptNotice(m.text)) {
+          var _luText = String(m.text || '').trim();
+          if (_luText) loadedUserTextSet[_luText] = true;
         }
       }
 
@@ -11924,6 +11935,35 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
             isSessionInterruptNotice(snapItem.text)) {
           continue;
         }
+        // When the agent replayed a COMPACTED (truncated) timeline, the loaded
+        // history ends at the post-compaction conversation and the snapshot's
+        // pre-compaction turns are gone from the loaded history. Their tool
+        // calls, assistant replies, and thoughts would otherwise be resurrected
+        // by insertSnapshotItem and appended as orphan rows with no user prompt
+        // (claude-code-acp's replay emits no "compacted" system row, so the
+        // boundary slice in handleLoadSessionEnd never fires). Skip any
+        // snapshot row whose turn boundary — the user prompt immediately
+        // preceding it — is not itself in the loaded timeline. Post-compaction
+        // rows keep their user boundary and are unaffected.
+        if (snapItem.kind === 'toolCall' || snapItem.kind === 'thought' ||
+            (snapItem.kind === 'message' && snapItem.role === 'assistant')) {
+          var _rowTurnUser = -1;
+          for (var _rb = ti - 1; _rb >= 0; _rb--) {
+            var _prevR = snapshot[_rb];
+            if (!_prevR) continue;
+            if (_prevR.kind === 'message' && _prevR.role === 'user' &&
+                !isSessionInterruptNotice(_prevR.text)) {
+              _rowTurnUser = _rb;
+              break;
+            }
+          }
+          if (_rowTurnUser >= 0) {
+            var _ruText = String(snapshot[_rowTurnUser].text || '').trim();
+            if (_ruText && !loadedUserTextSet[_ruText]) {
+              continue;
+            }
+          }
+        }
         if (snapItem.kind === 'thought') {
           var tk = thoughtPrefixKey(snapItem.text);
           if (!tk || mergedThoughtKeys[tk]) continue;
@@ -12171,6 +12211,40 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         if (isSessionInterruptNotice(su.item.text)) continue;
         if (isMachineContextOnly(String(su.item.text || ''))) continue;
         if (mergedUserKeys[userKey]) continue;
+
+        // A snapshot user whose turn NO LONGER EXISTS in the loaded (agent
+        // replay) timeline — i.e. none of the tool/assistant rows that followed
+        // it in the snapshot are present — was compacted away agent-side and is
+        // therefore NOT a real unanswered prompt. Re-injecting it appends an
+        // orphan user bubble with no assistant reply at the END of the chat.
+        //
+        // This is exactly what happens when claude-code-acp's session/load
+        // replays only the post-compaction conversation: its transcript
+        // contains a compaction banner (isCompactSummary) the adapter truncates
+        // on, so the loaded history holds only post-compact turns while the
+        // webview snapshot (saved before the load) still holds the full
+        // pre-compaction history. The compaction-boundary slice above is keyed
+        // on a "compacted" system row that claude-code-acp's replay does NOT
+        // emit, so it never fires; without this guard every pre-compaction user
+        // prompt is resurrected as a stray orphan.
+        //
+        // A genuinely dropped mid-turn reply still gets injected here: that
+        // user's turn (its tools / partial assistant) IS in the loaded replay,
+        // so at least one following snapshot row anchors it.
+        var _hasMergedTurnAnchor = false;
+        for (var _au = su.index + 1; _au < snapshot.length; _au++) {
+          var _afterU = snapshot[_au];
+          if (!_afterU) continue;
+          if (_afterU.kind === 'message' && _afterU.role === 'user' &&
+              !isSessionInterruptNotice(_afterU.text)) {
+            break;
+          }
+          if (findMergedHistoryAnchor(merged, _afterU) >= 0) {
+            _hasMergedTurnAnchor = true;
+            break;
+          }
+        }
+        if (!_hasMergedTurnAnchor) continue;
 
         // Anchor: insert before the first snapshot row AFTER this user that is
         // present in the merged history (its own turn's tool/assistant). If none
