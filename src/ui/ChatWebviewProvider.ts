@@ -9300,6 +9300,35 @@ const builtinCommands = [
    }
    gitIdx = displayText.indexOf(gitProto, gitIdx + gitProto.length);
  }
+ // Strip the steer follow-up framing the adapter prepends to a mid-turn
+ // message: the marker "[Follow-up instruction from user]" followed by a
+ // newline and the prompt text (claude-code-acp steerPrompt). The adapter's
+ // REPLAY path strips this framing (stripReplayPromptFraming) but the LIVE
+ // addMessage path does not, so the same prompt lands in chatHistory as
+ // "deploy a2a" (live) while the transcript carries the marker-framed
+ // "deploy a2a" (replay). userMessageKey — and therefore the resume dedup —
+ // keys on the cleaned text, so the two mismatch and the prompt shows TWICE
+ // after a resume (one clean, one still carrying its memory/recall
+ // enrichment). Stripping the framing in the shared normalizer makes both
+ // normalize to the same key. Only strip it when LEADING (possibly
+ // repeated) — a mid-sentence mention is real text.
+ var followUpMarker = '[Follow-up instruction from user]';
+ var followUpLen = followUpMarker.length;
+ while (true) {
+   var fuStart = 0;
+   while (fuStart < displayText.length) {
+     var fuc = displayText.charCodeAt(fuStart);
+     if (fuc === 32 || fuc === 10 || fuc === 13 || fuc === 9) { fuStart++; } else break;
+   }
+   if (displayText.slice(fuStart, fuStart + followUpLen) !== followUpMarker) break;
+   var fuEnd = fuStart + followUpLen;
+   // Consume the marker plus the single newline / spaces that follow it.
+   while (fuEnd < displayText.length) {
+     var fec = displayText.charCodeAt(fuEnd);
+     if (fec === 10 || fec === 13 || fec === 32 || fec === 9) { fuEnd++; } else break;
+   }
+   displayText = displayText.slice(0, fuStart) + displayText.slice(fuEnd);
+ }
  // Strip leading "[User interjection]: " markers that ericli prepends to a
  // mid-turn user message (acp-server buildSteerDrainMessages / cli.ts
  // onIterationStart). On session/load replay the marker survives into the

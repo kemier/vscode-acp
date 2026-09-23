@@ -289,6 +289,36 @@ function cleanUserMessage(rawText: string): string {
     gitIdx = displayText.indexOf(gitProto, gitIdx + gitProto.length);
   }
 
+  // Strip the steer follow-up framing the adapter prepends to a mid-turn
+  // message: "[Follow-up instruction from user]\n<text>". Mirror of the
+  // production code in ChatWebviewProvider's cleanUserMessage.
+  const followUpMarker = '[Follow-up instruction from user]';
+  const followUpLen = followUpMarker.length;
+  for (;;) {
+    let fuStart = 0;
+    while (fuStart < displayText.length) {
+      const fuc = displayText.charCodeAt(fuStart);
+      if (fuc === 32 || fuc === 10 || fuc === 13 || fuc === 9) {
+        fuStart++;
+      } else {
+        break;
+      }
+    }
+    if (displayText.slice(fuStart, fuStart + followUpLen) !== followUpMarker) {
+      break;
+    }
+    let fuEnd = fuStart + followUpLen;
+    while (fuEnd < displayText.length) {
+      const fec = displayText.charCodeAt(fuEnd);
+      if (fec === 10 || fec === 13 || fec === 32 || fec === 9) {
+        fuEnd++;
+      } else {
+        break;
+      }
+    }
+    displayText = displayText.slice(0, fuStart) + displayText.slice(fuEnd);
+  }
+
   // Strip leading "[User interjection]: " markers that ericli prepends to a
   // mid-turn user message. Mirror of the production code in
   // ChatWebviewProvider's cleanUserMessage.
@@ -736,6 +766,30 @@ suite('cleanUserMessage', () => {
         cleanUserMessage(input),
         'should strip the [User interjection]: marker please',
       );
+    });
+
+    test('strips the leading [Follow-up instruction from user] steer framing', () => {
+      const input = '[Follow-up instruction from user]\ndeploy a2a';
+      assert.strictEqual(cleanUserMessage(input), 'deploy a2a');
+    });
+
+    test('a memory-enriched follow-up prompt normalizes to its plain prompt (resume dedup)', () => {
+      // The live addMessage path stored "deploy a2a"; the transcript carried the
+      // enriched "<agent-memory>…recall…</agent-memory>[Follow-up instruction
+      // from user]\ndeploy a2a". Both must clean to the SAME key so resume
+      // dedups them.
+      const input =
+        '<agent-memory>\n<relevant-memories>\n- [work_fact] x\n</relevant-memories>\n' +
+        '</agent-memory>\n' +
+        '[Follow-up instruction from user]\ndeploy a2a';
+      assert.strictEqual(cleanUserMessage(input), 'deploy a2a');
+      const plain = cleanUserMessage('deploy a2a');
+      assert.strictEqual(cleanUserMessage(input), plain, 'enriched and plain must share a key');
+    });
+
+    test('keeps a mid-sentence [Follow-up instruction from user] reference (real user text)', () => {
+      const input = 'should strip the [Follow-up instruction from user] marker please';
+      assert.strictEqual(cleanUserMessage(input), 'should strip the [Follow-up instruction from user] marker please');
     });
 
     test('a TRUNCATED recall blob (unclosed outer tag) is fully hidden', () => {
