@@ -8559,6 +8559,29 @@ function agentSupportsSteering(agentName) {
 
 function drainQueue() {
  if (messageQueue.length === 0) return false;
+ // A head-of-line entry that was already STEERED into the turn that just ended
+ // and never got acked out by the agent's echo was delivered ONCE — it rode the
+ // running turn (the model saw it between tool calls). claude-code-acp defers a
+ // steer to a FOLLOW-UP turn, so when the turn ends before that echo lands,
+ // ackSteeredQueueEntry never spliced the entry out of the queue. Re-sending it
+ // here as a fresh session/prompt duplicates the round (the "in-turn msg shown
+ // after the completed round, then a duplicate" symptom). DROP it: it is no
+ // longer pending delivery. We do NOT re-queue it at the tail — that would only
+ // re-send the same text on the NEXT turn's drain, a second duplicate. (The
+ // agent's echo, if it ever arrives late, is a no-op confirmation on an already
+ // delivered message.) Preserve at-least-once WITHOUT same-text double-send.
+ const _head = messageQueue[0];
+ if (_head && _head.steered) {
+   messageQueue.shift();
+   renderQueue();
+   vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drainQueue: head entry already steered into the ended turn and unacked — dropping (delivered once), remaining=' + messageQueue.length });
+   wvQueueLog('DRAIN-DROP-STEERED', 'entry was steered into the prior turn; delivered once, not re-sent');
+   // Let the NEXT undelivered entry drain this turn if one is behind it.
+   if (messageQueue.length > 0 && !isProcessing) {
+     setTimeout(function() { if (!isProcessing && messageQueue.length > 0) { drainQueue(); } }, 0);
+   }
+   return true;
+ }
  vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drainQueue: dequeuing, remaining=' + (messageQueue.length - 1) + ' isProcessing=' + isProcessing });
 const entry = messageQueue.shift();
 renderQueue();
@@ -21048,6 +21071,15 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       pendingSendAfterCancel = null;
       setTimeout(() => {
         if (!isProcessing) {
+          // A steered entry that was already delivered into the cancelled turn
+          // and never acked out must NOT be re-sent here either — same double
+          // round as the drainQueue path. Drop it (the agent's echo, if it
+          // arrives, is the confirmation; it already rode this turn).
+          if (entry.steered) {
+            vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] pendingSendAfterCancel: entry already steered into the cancelled turn — not re-sent' });
+            wvQueueLog('DRAIN-SKIP-STEERED', 'send-now-after-cancel entry was steered; not re-sent');
+            return;
+          }
           // Route slash commands through handleLocalSlashCommand so local UI
           // is triggered. The bubble is added HERE, after the cancelled turn
           // has closed, so the message lands below the prior turn's content.
