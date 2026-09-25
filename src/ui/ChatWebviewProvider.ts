@@ -7029,6 +7029,10 @@ let isCompacting = false;  // true while /compact is running
  // AFTER the wipe so they render cleanly in the fresh panel. See the
  // agent_message_chunk handler's compactionFlushTimer gate.
  let pendingPostCompactChunks = [];
+ // A plan frame that arrived while the compaction flush was pending (armed or
+ // isCompacting). Held back from addPlan so the flush's planBar wipe doesn't
+ // destroy it; re-applied from flushCompactionMessages right after the wipe.
+ let pendingPostCompactPlan = null;
  // Drain buffered post-compact chunks into currentAssistantText and render them.
  // Used by flushCompactionMessages (after the wipe, so they land in the fresh
  // panel) and by the agent_message_chunk gate when the flush timer is no longer
@@ -22270,6 +22274,17 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       toolCallDiffs = {};
       isCompacting = false;
       manualCompacting = false;
+      // Re-apply a plan frame that was deferred while the flush was pending
+      // (see case 'plan'). The planBar wipe above (planBar.innerHTML = '') has
+      // already run, so this is the moment the bar is empty and ready to be
+      // repopulated. addPlan re-pushes it into chatHistory + DOM. Without this
+      // the server's post-compaction re-push would land in the 400ms window and
+      // be destroyed by the wipe.
+      if (pendingPostCompactPlan) {
+        var _deferredPlan = pendingPostCompactPlan;
+        pendingPostCompactPlan = null;
+        addPlan(_deferredPlan);
+      }
       hideEmpty();
       // Swallow late agent boilerplate (Codex Heads-up, Claude AbortError, …).
       suppressPostCompactNoiseUntil = Date.now() + 2500;
@@ -22541,6 +22556,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           compactedNoticeText = '';
           if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
           pendingPostCompactChunks = [];
+          pendingPostCompactPlan = null;
           showCompactionProgress('Compacting conversation...', null);
           setProcessing(true, 'contextCompaction-in_progress');
         }
@@ -22553,6 +22569,9 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         compactedNoticeText = '';
         if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
         pendingPostCompactChunks = [];
+        // A failed compaction never flushes, so a plan deferred for it would be
+        // stranded — drop it rather than let it leak into a later flush.
+        pendingPostCompactPlan = null;
         hideCompactionProgress();
         if (statusEl) statusEl.innerHTML = '';
         setProcessing(false, 'contextCompaction-failed');
@@ -22567,6 +22586,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         compactedNoticeText = '';
         if (compactionFlushTimer) { clearTimeout(compactionFlushTimer); compactionFlushTimer = null; }
         pendingPostCompactChunks = [];
+        pendingPostCompactPlan = null;
         hideCompactionProgress();
         if (statusEl) statusEl.innerHTML = '';
         setProcessing(false, 'contextCompaction-cancelled');
@@ -23488,6 +23508,17 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
      }
 
         case 'plan': {
+          // Defer while a compaction flush is pending. A plan frame arriving in
+          // the post-"completed"/pre-flush window (e.g. the server re-pushing the
+          // todo board right after the compaction lifecycle) would otherwise be
+          // painted by addPlan and then wiped by flushCompactionMessages'
+          // planBar.innerHTML = ''. Buffer it (like post-compact text chunks) and
+          // re-apply it from the flush, AFTER the wipe, so the board survives.
+          if (compactionFlushTimer || isCompacting) {
+            pendingPostCompactPlan = update;
+            if ((update.entries || []).length > 0) sawPlanThisTurn = true;
+            break;
+          }
           addPlan(update);
           if ((update.entries || []).length > 0) sawPlanThisTurn = true;
           break;
