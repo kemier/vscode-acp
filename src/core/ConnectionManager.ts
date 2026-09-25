@@ -165,6 +165,15 @@ export class ConnectionManager {
         session: {
           compaction: {},
         } as import('@agentclientprotocol/sdk').ClientSessionCapabilities,
+        // Cursor ACP extension (not in the core ACP schema): advertise support
+        // for parameterized model pickers so Cursor returns separate config
+        // options (fast / thought_level / Max) instead of one default variant
+        // per model. Non-Cursor agents ignore unknown `_meta` keys.
+        // See: https://agentclientprotocol.com/protocol/extensibility
+        // Forum: https://forum.cursor.com/t/cant-select-thinking-level-or-variant-in-cursor-acp/161317
+        _meta: {
+          parameterizedModelPicker: true,
+        },
       },
     });
 
