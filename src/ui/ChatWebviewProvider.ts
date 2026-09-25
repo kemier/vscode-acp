@@ -24216,19 +24216,29 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         var opts = q.options || [];
         for (var oi = 0; oi < opts.length; oi++) {
           (function (o) {
+            // The extension already coerces the label to a string, but an adapter
+            // that ships a non-string option (an object) would String() to
+            // "[object Object]" here. Guard for a string/number label; fall back to
+            // the option id, then a placeholder, so a malformed option degrades to
+            // readable text instead of an object literal.
+            var oLabel = String(
+              typeof o.label === 'string' || typeof o.label === 'number'
+                ? o.label
+                : (typeof o.id === 'string' || typeof o.id === 'number') ? o.id : ('Option ' + (oi + 1))
+            );
             var b = document.createElement('button');
             b.className = 'agent-question-option';
             b.type = 'button';
-            b.textContent = String(o.label);
-            b.setAttribute('aria-label', String(o.label));
+            b.textContent = oLabel;
+            b.setAttribute('aria-label', oLabel);
             b.title = 'Click to answer. Shift-click to edit it in the composer instead.';
             b.addEventListener('click', function (ev) {
               if (answered) return;
               if (ev && ev.shiftKey) {
                 if (promptInput) {
                   promptInput.value = promptInput.value
-                    ? promptInput.value + ' ' + String(o.label)
-                    : String(o.label);
+                    ? promptInput.value + ' ' + oLabel
+                    : oLabel;
                   promptInput.dispatchEvent(new Event('input', { bubbles: true }));
                   promptInput.focus();
                 }
