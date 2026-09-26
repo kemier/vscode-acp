@@ -402,7 +402,45 @@ Jev is a **decision classifier**, not a **context analyzer**. Its highest-value 
 3. **Should OpenJev also serve as an LLM backend via ericai-proxy?** It does serve `/v1/chat/completions` with `diffusiongemma-26b`. Could be added as a proxy backend for text generation, but that's a separate feature.
 4. **Template system:** `jev-acp` supports saved question templates. Should vscode-acp expose a template picker in the Jev session? Nice-to-have, not Phase 1.
 
-## 11. References
+## 11. Implementation Status (2026-09-25)
+
+**Phase 3 variant shipped: `jev_judge` native tool in vscode-acp.**
+
+ACP v1 has no client→agent tool-registration method (checked against
+`@agentclientprotocol/sdk` v1.4.0 `ClientCapabilities` and the protocol
+initialization spec), so the native tool is delivered over the one
+agent→client request channel that already exists: `unstable_createElicitation`
+carrying `_meta.tool === "jev_judge"`. The client intercepts it in
+`AcpClientImpl.unstable_createElicitation`, runs the judgement against
+`POST {baseUrl}/v1/systemone`, and answers with `action: "accept"` and the
+verdicts in `content.result` — the user is never prompted for a machine
+judgment. Fail-open everywhere: disabled / no key / timeout / bad body →
+text telling the agent to fall back to its own reasoning.
+
+| File | Role |
+|---|---|
+| `src/jev/JevClient.ts` | HTTP client (`POST /v1/systemone`, 429/529 one-retry, `AbortSignal.timeout`), settings loader (`acp.jev.*` + `TYPESAFE_API_KEY`/`JEV_BASE_URL` env fallback), wire types |
+| `src/jev/JevJudgeTool.ts` | The tool: request validation (choice ≥2 ≤255 options, score 2–10 levels, unique ids), judgement→question mapping, verdict extraction, confidence-flagged rendering |
+| `src/core/AcpClientImpl.ts` | `_meta.tool === "jev_judge"` dispatch + lazily-built client |
+| `package.json` | `acp.jev.enabled/baseUrl/apiKey/model/timeoutMs` settings; test registered in `test:unit` |
+| `src/test/jevJudgeTool.test.ts` | 11 unit tests (shim harness, stubbed client) — all passing |
+
+Judgement kinds map 1:1 to the AGENTS.md audit battery: `noul` for
+URL-liveness/anchor/pointer integrity questions, `choice` for classification
+and routing (risk level, covered-vs-gap, BARE/PARTIAL/BACKTICK/NESTED link
+defect kinds), `score` for severity/currency rubrics. One call fans out all
+questions in parallel against one `state`; sub-0.5 confidence answers are
+flagged `LOW-CONFIDENCE — escalate`.
+
+Verified against live docs 2026-09-25: `POST https://api.typesafe.ai/v1/systemone`,
+`model: "jev-latest"` (→ `jev-1.13.0`), $0.042/M input tokens (output free),
+64k context, errors 401/422/429/529 — docs.typesafe.ai/api.
+
+Not yet implemented (earlier phases of this spec): standalone `jev-acp` agent
+registration (Phase 1), `jev_decide` inside ericli (Phase 2), the permission-flow
+confidence gate (Phase 3 original), OpenJev docker-compose (Phase 4).
+
+## 12. References
 
 - [Jev — TypeSafe AI](https://typesafe.ai/blog/introducing-system-one-models-and-jev)
 - [Jev API docs](https://docs.typesafe.ai/models)
