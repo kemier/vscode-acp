@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as path from 'node:path';
 
 import {
   validateJudgeRequest,
@@ -231,15 +232,19 @@ suite('jev-mcp server registration (Claude Code gate)', () => {
     model: 'jev-latest',
     timeoutMs: 5000,
   };
+  const claudeCmd = '/x/claude-code-acp/bin/claude-code-acp.js';
 
   test('returns a jev-mcp stdio server for Claude Code when enabled', () => {
-    const servers = buildJevMcpServers('ClaudeCode CLI', enabled, '/x/claude-code-acp/bin/claude-code-acp.js');
+    const servers = buildJevMcpServers('ClaudeCode CLI', enabled, claudeCmd);
     assert.strictEqual(servers.length, 1);
     const s = servers[0] as any;
     assert.strictEqual(s.name, 'jev-mcp');
     assert.strictEqual(s.command, 'node');
     // Path derived as the sibling dist/jev-mcp-stdio.js of the deployed command.
-    assert.strictEqual(s.args[0], '/x/claude-code-acp/dist/jev-mcp-stdio.js');
+    assert.strictEqual(
+      s.args[0],
+      path.join('/x/claude-code-acp/bin', '..', 'dist', 'jev-mcp-stdio.js'),
+    );
     // env is the ACP wire shape: an array of {name, value}.
     const env: Record<string, string> = {};
     for (const v of s.env) env[v.name] = v.value;
@@ -249,26 +254,43 @@ suite('jev-mcp server registration (Claude Code gate)', () => {
     assert.strictEqual(env.JEV_TIMEOUT_MS, '5000');
   });
 
+  test('matches package.json default key "Claude Code" via command, not a hardcoded name', () => {
+    const servers = buildJevMcpServers('Claude Code', enabled, claudeCmd);
+    assert.strictEqual(servers.length, 1);
+    assert.strictEqual((servers[0] as any).name, 'jev-mcp');
+  });
+
+  test('matches any settings key when command is claude-code-acp', () => {
+    const servers = buildJevMcpServers('My Claude ACP', enabled, '/opt/claude-code-acp/bin/claude-code-acp.js');
+    assert.strictEqual(servers.length, 1);
+  });
+
   test('returns [] for a non-Claude agent even when Jev is enabled', () => {
     assert.deepStrictEqual(buildJevMcpServers('EricCLI', enabled, '/x/bin/ericli.js'), []);
     assert.deepStrictEqual(buildJevMcpServers('Codex CLI', enabled, '/x/bin/codex-acp.js'), []);
+    // Name looks Claude-ish but command is not claude-code-acp → reject.
+    assert.deepStrictEqual(
+      buildJevMcpServers('Claude Code', enabled, '/x/bin/something-else.js'),
+      [],
+    );
   });
 
   test('returns [] when Jev is disabled', () => {
     assert.deepStrictEqual(
-      buildJevMcpServers('ClaudeCode CLI', { ...enabled, enabled: false }),
+      buildJevMcpServers('Claude Code', { ...enabled, enabled: false }, claudeCmd),
       [],
     );
   });
 
   test('returns [] when no API key is set', () => {
     assert.deepStrictEqual(
-      buildJevMcpServers('ClaudeCode CLI', { ...enabled, apiKey: '' }),
+      buildJevMcpServers('Claude Code', { ...enabled, apiKey: '' }, claudeCmd),
       [],
     );
   });
 
   test('path falls back to a default when no command is supplied', () => {
+    // Name-only fallback (no command / no live acp.agents entry in the shim).
     const servers = buildJevMcpServers('ClaudeCode CLI', enabled, undefined);
     assert.strictEqual(servers.length, 1);
     assert.strictEqual((servers[0] as any).args[0], 'claude-code-acp/dist/jev-mcp-stdio.js');

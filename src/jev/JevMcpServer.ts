@@ -1,6 +1,7 @@
 import * as path from 'node:path';
 
 import type { McpServer, EnvVariable } from '@agentclientprotocol/sdk';
+import { getAgentConfig } from '../config/AgentConfig';
 import { readJevSettings, type JevSettings } from './JevClient';
 
 /**
@@ -20,11 +21,32 @@ import { readJevSettings, type JevSettings } from './JevClient';
  * that flat shape (see claude-code-acp agent.ts newSession).
  */
 
-/** The `acp.agents` key for the Claude Code CLI.
+/**
+ * True when this `acp.agents` entry is the Claude Code ACP binary.
  *
- * NOTE: the runtime agentName passed by SessionManager is the config key from
- * `acp.agents`. In the deployed setup this is "ClaudeCode CLI" (Machine-scope),
- * not "Claude Code" (the package.json default / User-scope displayName).
+ * Prefer matching the configured `command` (inherits whatever key the user
+ * gave the agent in settings — "Claude Code", "ClaudeCode CLI", …). Fall back
+ * to known key spellings only when no command is available (unit tests).
+ */
+export function isClaudeCodeAgent(agentName: string, command?: string): boolean {
+  let cmd = command;
+  if (cmd === undefined) {
+    try {
+      cmd = getAgentConfig(agentName)?.command;
+    } catch {
+      cmd = undefined;
+    }
+  }
+  if (cmd) {
+    return /claude-code-acp/i.test(cmd);
+  }
+  // Name-only fallback when command cannot be resolved (tests / missing config).
+  return /^(Claude\s*Code|ClaudeCode(\s*CLI)?)$/i.test(agentName.trim());
+}
+
+/**
+ * @deprecated Use {@link isClaudeCodeAgent}. Kept for call sites / docs that
+ * still refer to the Machine-scope key spelling.
  */
 export const CLAUDE_AGENT_NAME = 'ClaudeCode CLI';
 
@@ -51,15 +73,25 @@ export function resolveJevMcpServerPath(claudeCommand?: string): string {
  * callers can splice the result in place of the literal `mcpServers: []` with no
  * further branching.
  *
- * `settings` and `claudeCommand` are injected for unit-testability; the
- * no-arg form resolves them from live config.
+ * `settings` and `claudeCommand` are injected for unit-testability; when
+ * `claudeCommand` is omitted, it is resolved from `acp.agents` via
+ * {@link getAgentConfig}.
  */
 export function buildJevMcpServers(
   agentName: string,
   settings?: JevSettings,
   claudeCommand?: string,
 ): McpServer[] {
-  if (agentName !== CLAUDE_AGENT_NAME) {
+  const command =
+    claudeCommand ??
+    (() => {
+      try {
+        return getAgentConfig(agentName)?.command;
+      } catch {
+        return undefined;
+      }
+    })();
+  if (!isClaudeCodeAgent(agentName, command)) {
     return [];
   }
   const jev = settings ?? readJevSettings();
@@ -76,7 +108,7 @@ export function buildJevMcpServers(
     {
       name: 'jev-mcp',
       command: 'node',
-      args: [resolveJevMcpServerPath(claudeCommand)],
+      args: [resolveJevMcpServerPath(command)],
       env,
     },
   ];
