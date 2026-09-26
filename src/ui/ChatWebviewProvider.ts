@@ -21126,14 +21126,29 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         // Use current isCompacting (not _wasCompacting) — flushCompactionMessages
         // may have already cleared it during this promptEnd, meaning compaction
         // truly finished and queued messages should be drained now.
+        //
+        // Guard: a drainQueue() that just posted a sendPrompt sets isSendingPrompt
+        // true, but that sendPrompt does NOT synchronously flip isProcessing — the
+        // webview waits for the host's promptStart. So a rapid second Stop whose
+        // promptEnd(cancelled) lands in that window would see isProcessing=false
+        // and drain AGAIN, posting the next queued message even though the first
+        // drain already did. The user then sees "click stop twice, each drained one
+        // but only the last was dealt with." The in-flight send IS the current turn
+        // (it will hit promptStart → isProcessing=true → its own promptEnd drains
+        // the rest), so a duplicate drain here is redundant — skip it. Symmetric to
+        // the steered-and-delivered drop branch in drainQueue.
+        if (isSendingPrompt) {
+          vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] SKIPPED drain: isSendingPrompt=true — a drain already posted sendPrompt; its promptStart will set isProcessing and its own promptEnd will continue the queue' });
+        } else {
         vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] scheduling drain: _wasCompacting=' + _wasCompacting + ' isCompacting=' + isCompacting + ' messageQueue.length=' + messageQueue.length + ' isProcessing=' + isProcessing });
         setTimeout(() => {
-          vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drain setTimeout fired: isProcessing=' + isProcessing + ' messageQueue.length=' + messageQueue.length });
-          if (!isProcessing && messageQueue.length > 0) {
+          vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drain setTimeout fired: isProcessing=' + isProcessing + ' isSendingPrompt=' + isSendingPrompt + ' messageQueue.length=' + messageQueue.length });
+          if (!isProcessing && !isSendingPrompt && messageQueue.length > 0) {
             vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] calling drainQueue()' });
             drainQueue();
           }
         }, 0);
+        }
       }
       if (isCompacting && messageQueue.length > 0) {
         vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] SKIPPED drain because isCompacting=true, messageQueue.length=' + messageQueue.length });
