@@ -566,6 +566,12 @@
           "default": false,
           "description": "Send the message immediately after the voice transcript is inserted into the composer. Off = transcript is inserted for review first."
         },
+        "acp.voice.keepTakes": {
+          "type": "string",
+          "enum": ["none", "failed", "all"],
+          "default": "failed",
+          "description": "Which voice takes are copied to the debug folder for later review. 'failed' keeps only takes the STT server refused (the audio is the only evidence of why); 'all' keeps every take next to its transcript (useful when a transcript is wrong but non-empty); 'none' deletes all takes after transcription."
+        },
         "acp.voice.corrections": {
           "type": "object",
           "default": {},
