@@ -369,13 +369,40 @@ In a session with 20–50 micro-decisions, Jev saves **2–10 minutes of wall-cl
 
 Jev is a **decision classifier**, not a **context analyzer**. Its highest-value use case is **permission gating** (Phase 3), where the state is just a command string and no code context is needed. That's also the feature that saves the user the most time.
 
+### 7.5 Input-size limits (what `state` can carry)
+
+Jev's `state` is bounded by the backend model's context window. Requests over the limit are **rejected with HTTP 400** (not timed out) — `JevClient.decide()` treats that as "Jev unavailable" and **fails open**, so an oversized `state` silently degrades to "no verdict" rather than erroring.
+
+**Officially documented caps** (OpenJev README):
+
+| Backend / model | `state` limit | Notes |
+|---|---|---|
+| **Laya** encoder | **1,024 tokens** | small model |
+| **Verdict** encoder | **512 tokens** | small model |
+| **MLX** backend (Apple) | **32,768 tokens** | `OPENJEV_MLX_MAX_PROMPT`; "longest request, before a 400" |
+| **DiffusionGemma 26B** (vLLM, hosted) | **not stated** | ceiling = the model's own context window |
+
+Question-shape caps: **choice** ≤ 255 options, **score** ≤ 10 levels (exceeding → 400). The server reads questions in chunks of ~12 per read.
+
+**Measured ceiling (2026-09-26, hosted `api.codiv.ai`, DiffusionGemma 26B via vLLM):**
+
+| `state` size | input tokens | result |
+|---|---|---|
+| ~200k realistic chars | ~57,838 | ✅ 3.7 s, under 5 s timeout |
+| ~250k+ chars | ~70k+ | ❌ rejected (400), <1.1 s |
+
+The vLLM-26B ceiling is therefore **~58k–70k input tokens per call** — undocumented, effectively the model's max context. The 5 s `timeoutMs` is rarely the binding constraint (calls complete in <4 s at this size); the **token cap is**.
+
+**Practical rule:** keep a single `state` **under ~50k tokens**. For a bulk triage job (e.g. thousands of items against a large corpus), **chunk** — batch ~50–100 items per call, each carrying only its own relevant context rather than the whole corpus. The diagnose-style workflows stay well within this (a few hundred tokens per candidate); only a naive "dump the entire corpus in one `state`" would breach the cap and fail open.
+
 ## 8. Risk Assessment
 
 | Risk | Mitigation |
 |---|---|
-| Jev API down / slow | Fail-open: gate skipped, normal prompt appears. 2 s timeout. |
+| Jev API down / slow | Fail-open: gate skipped, normal prompt appears. `acp.jev.timeoutMs` default 5 s. |
 | OpenJev quality < TypeSafe Jev | Configurable: user picks baseUrl. Hosted API for production, OpenJev for dev. |
-| Extra latency on permission flow | Jev is 70–500 ms. Gate timeout 2 s. Only called when no auto-approve rule matches. |
+| Extra latency on permission flow | Jev is 70–500 ms. `timeoutMs` default 5 s. Only called when no auto-approve rule matches. |
+| `state` exceeds the input-token cap (~58k–70k) | HTTP 400 → `decide()` returns null → fail-open (no verdict, not an error). Keep `state` < ~50k tokens; chunk bulk triage. See §7.5. |
 | API key leakage | Key in VS Code settings (not in code). `acp.jev.apiKey` is a secret field. |
 | Jev misjudges risk | Thresholds are conservative by default (0.95 / 0.05). Badge is advisory. User always has final say. |
 | Jev judges without full context | Jev is a second opinion, not a replacement. The LLM retains final authority. For code review, Jev's P(breaks_pattern) is a flag, not a verdict. |
