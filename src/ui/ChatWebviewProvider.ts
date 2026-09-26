@@ -2367,6 +2367,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // contain "@clipboard" ("Web search: AI assistant @clipboard mention …") and the
     // old /@clipboard\b/i scan hijacked it — stripping the literal token and attaching
     // the clipboard, which produced two copies (a <clipboard> block plus the raw text).
+    //
+    // A PASTED mention is a different case and does not go through this position rule:
+    // the paste handler sets clipboardPasted, and the host resolves it wherever it sits
+    // (hasLeadingClipboardMention(text) || !!clipboardPasted). Position governs only
+    // TYPED mentions, where position is the only intent signal available.
     function hasLeadingClipboardMention(t: string): boolean {
       const src = String(t || '');
       const re = /@clipboard\b/gi;
