@@ -1,4 +1,7 @@
 import * as vscode from 'vscode';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 
 /**
  * Jev (TypeSafe System One) decision client.
@@ -64,17 +67,75 @@ const DEFAULTS: JevSettings = {
   timeoutMs: 5000,
 };
 
+/**
+ * Read the raw `acp.jev.*` block from a VS Code settings JSON file, or null when
+ * the file is absent/unreadable/malformed. Used as a fallback so Machine-scope
+ * settings (data/Machine/settings.json) are visible — `workspace.getConfiguration`
+ * only merges default + User + Workspace for application-scope keys and does NOT
+ * include Machine settings, which is where a shared-server operator places
+ * per-machine keys. Returns the value of the full key (e.g. 'acp.jev.enabled').
+ */
+function readSettingsFileValue(file: string, key: string): unknown {
+  try {
+    const raw = fs.readFileSync(file, 'utf8');
+    const obj = JSON.parse(raw);
+    return obj && typeof obj === 'object' ? (obj as Record<string, unknown>)[key] : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Candidate Machine settings file paths (remote-server + desktop layouts). */
+function machineSettingsCandidates(): string[] {
+  const home = os.homedir();
+  return [
+    // VS Code Server (remote / this deployment): data/Machine/settings.json
+    path.join(home, '.vscode-server', 'data', 'Machine', 'settings.json'),
+    // Code - OSS / insiders server variants
+    path.join(home, '.vscode-oss-server', 'data', 'Machine', 'settings.json'),
+    // Desktop Linux (less likely but harmless to check)
+    path.join(home, '.config', 'Code', 'Machine', 'settings.json'),
+  ];
+}
+
+/**
+ * Resolve a single `acp.<key>` setting. Prefers the effective (User/Workspace)
+ * value from `getConfiguration`; when that is still at the default, falls back
+ * to the Machine settings file so Machine-only settings (the shared-server case)
+ * are honored. `def` is the declared default.
+ */
+function resolveAcpSetting<T>(cfg: vscode.WorkspaceConfiguration, key: string, def: T): T {
+  const eff = cfg.get<T>(key, def);
+  if (eff !== def) {
+    return eff;
+  }
+  // In the unit-test shim, __acpTestJevSettings fully controls acp.jev.* values
+  // (a test may explicitly set enabled:false, which equals the default and would
+  // otherwise be clobbered by the Machine-file fallback). When the hook is
+  // active, trust it and skip the file read.
+  if ((globalThis as { __acpTestJevSettings?: unknown }).__acpTestJevSettings) {
+    return eff;
+  }
+  for (const file of machineSettingsCandidates()) {
+    const v = readSettingsFileValue(file, `acp.${key}`);
+    if (v !== undefined) {
+      return v as T;
+    }
+  }
+  return def;
+}
+
 /** Read acp.jev.* settings, falling back to env (JEV_BASE_URL / TYPESAFE_API_KEY). */
 export function readJevSettings(): JevSettings {
   const cfg = vscode.workspace.getConfiguration('acp');
   const envKey = typeof process !== 'undefined' ? process.env.TYPESAFE_API_KEY || process.env.JEV_API_KEY || '' : '';
   const envUrl = typeof process !== 'undefined' ? process.env.JEV_BASE_URL || '' : '';
   return {
-    enabled: cfg.get<boolean>('jev.enabled', DEFAULTS.enabled),
-    baseUrl: (cfg.get<string>('jev.baseUrl', DEFAULTS.baseUrl) || envUrl || DEFAULTS.baseUrl).replace(/\/+$/, ''),
-    apiKey: cfg.get<string>('jev.apiKey', '') || envKey,
-    model: cfg.get<string>('jev.model', DEFAULTS.model),
-    timeoutMs: cfg.get<number>('jev.timeoutMs', DEFAULTS.timeoutMs),
+    enabled: resolveAcpSetting<boolean>(cfg, 'jev.enabled', DEFAULTS.enabled),
+    baseUrl: (resolveAcpSetting<string>(cfg, 'jev.baseUrl', DEFAULTS.baseUrl) || envUrl || DEFAULTS.baseUrl).replace(/\/+$/, ''),
+    apiKey: resolveAcpSetting<string>(cfg, 'jev.apiKey', '') || envKey,
+    model: resolveAcpSetting<string>(cfg, 'jev.model', DEFAULTS.model),
+    timeoutMs: resolveAcpSetting<number>(cfg, 'jev.timeoutMs', DEFAULTS.timeoutMs),
   };
 }
 
