@@ -40,6 +40,7 @@ import { ConnectionManager, ConnectionInfo } from './ConnectionManager';
 import { SessionUpdateHandler } from '../handlers/SessionUpdateHandler';
 import { SessionHistoryStore } from './SessionHistoryStore';
 import { getAgentConfig, getAgentConfigs, resolveAgentConfigKey } from '../config/AgentConfig';
+import { buildJevMcpServers } from '../jev/JevMcpServer';
 
 // TEMP-DEBUG master switch for the Kiro-resume "Send button stuck" fix
 // instrumentation (sendPrompt/sendSlashCommand IN-FLIGHT ADD/DELETE traces).
@@ -811,7 +812,7 @@ export class SessionManager extends EventEmitter {
     try {
       sessionResponse = await connInfo.connection.newSession({
         cwd,
-        mcpServers: [],
+        mcpServers: this.jevMcpServersFor(agentName),
       });
     } catch (e: any) {
       if (!this.isAuthRequiredError(e)) {
@@ -824,7 +825,7 @@ export class SessionManager extends EventEmitter {
       try {
         sessionResponse = await connInfo.connection.newSession({
           cwd,
-          mcpServers: [],
+          mcpServers: this.jevMcpServersFor(agentName),
         });
       } catch (retryErr) {
         logError('Failed to create session after authentication', retryErr);
@@ -2724,7 +2725,7 @@ export class SessionManager extends EventEmitter {
       const response = await conn.connection.loadSession({
         sessionId,
         cwd,
-        mcpServers: [],
+        mcpServers: this.jevMcpServersFor(agentName),
       });
       if (this.wasSessionLoadCancelled(sessionId)) {
         this.clearSessionLoadCancelled(sessionId);
@@ -2910,7 +2911,7 @@ export class SessionManager extends EventEmitter {
     try {
       response = await conn.connection.resumeSession({
         sessionId,
-        mcpServers: [],
+        mcpServers: this.jevMcpServersFor(agentName),
         cwd,
       });
     } catch (e: any) {
@@ -3128,6 +3129,22 @@ export class SessionManager extends EventEmitter {
   }
 
   // --- Cleanup ---
+
+  /**
+   * Build the `mcpServers` list for an ACP session call. Registers the `jev-mcp`
+   * stdio server for the Claude Code agent (so the Claude CLI can call `jev_judge`
+   * mid-turn) when `acp.jev.enabled` and an API key are set; returns `[]` for every
+   * other agent. See src/jev/JevMcpServer.ts.
+   */
+  private jevMcpServersFor(agentName: string): ReturnType<typeof buildJevMcpServers> {
+    try {
+      return buildJevMcpServers(agentName, undefined, getAgentConfig(agentName)?.command);
+    } catch {
+      // Jev registration must never block session creation — fall back to no
+      // MCP servers on any resolution error.
+      return [];
+    }
+  }
 
   private displayNameFor(agentName: string, initResponse: InitializeResponse): string {
     return resolveAgentDisplayName(agentName, {

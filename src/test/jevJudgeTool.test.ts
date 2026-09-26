@@ -13,9 +13,11 @@ import {
   parseJevResponse,
   noulValue,
   choiceValue,
+  type JevSettings,
   type JevResponse,
 } from '../jev/JevClient';
 import type { JevClient } from '../jev/JevClient';
+import { buildJevMcpServers } from '../jev/JevMcpServer';
 
 /**
  * jev_judge native tool — request validation, wire mapping, and verdict
@@ -218,5 +220,57 @@ suite('jev_judge native tool', () => {
     assert.ok(out.includes('P(yes)=0.02 → no'));
     assert.ok(out.includes('risk_level: low confidence=0.94'));
     assert.ok(!out.includes('LOW-CONFIDENCE'));
+  });
+});
+
+suite('jev-mcp server registration (Claude Code gate)', () => {
+  const enabled: JevSettings = {
+    enabled: true,
+    baseUrl: 'https://api.codiv.ai',
+    apiKey: 'sk-test',
+    model: 'jev-latest',
+    timeoutMs: 5000,
+  };
+
+  test('returns a jev-mcp stdio server for Claude Code when enabled', () => {
+    const servers = buildJevMcpServers('ClaudeCode CLI', enabled, '/x/claude-code-acp/bin/claude-code-acp.js');
+    assert.strictEqual(servers.length, 1);
+    const s = servers[0] as any;
+    assert.strictEqual(s.name, 'jev-mcp');
+    assert.strictEqual(s.command, 'node');
+    // Path derived as the sibling dist/jev-mcp-stdio.js of the deployed command.
+    assert.strictEqual(s.args[0], '/x/claude-code-acp/dist/jev-mcp-stdio.js');
+    // env is the ACP wire shape: an array of {name, value}.
+    const env: Record<string, string> = {};
+    for (const v of s.env) env[v.name] = v.value;
+    assert.strictEqual(env.JEV_API_KEY, 'sk-test');
+    assert.strictEqual(env.JEV_BASE_URL, 'https://api.codiv.ai');
+    assert.strictEqual(env.JEV_MODEL, 'jev-latest');
+    assert.strictEqual(env.JEV_TIMEOUT_MS, '5000');
+  });
+
+  test('returns [] for a non-Claude agent even when Jev is enabled', () => {
+    assert.deepStrictEqual(buildJevMcpServers('EricCLI', enabled, '/x/bin/ericli.js'), []);
+    assert.deepStrictEqual(buildJevMcpServers('Codex CLI', enabled, '/x/bin/codex-acp.js'), []);
+  });
+
+  test('returns [] when Jev is disabled', () => {
+    assert.deepStrictEqual(
+      buildJevMcpServers('ClaudeCode CLI', { ...enabled, enabled: false }),
+      [],
+    );
+  });
+
+  test('returns [] when no API key is set', () => {
+    assert.deepStrictEqual(
+      buildJevMcpServers('ClaudeCode CLI', { ...enabled, apiKey: '' }),
+      [],
+    );
+  });
+
+  test('path falls back to a default when no command is supplied', () => {
+    const servers = buildJevMcpServers('ClaudeCode CLI', enabled, undefined);
+    assert.strictEqual(servers.length, 1);
+    assert.strictEqual((servers[0] as any).args[0], 'claude-code-acp/dist/jev-mcp-stdio.js');
   });
 });
