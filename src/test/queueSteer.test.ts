@@ -354,49 +354,84 @@ suite('Send Now cannot re-send a message already taken', () => {
 suite('a steered message is not re-sent when its echo never matched', () => {
   /**
    * The duplicate this guards: a mid-turn message is auto-steered into the
-   * running turn (entry.steered = true, sent once). The turn then ENDS before
-   * the agent delivers the steer's follow-up echo — claude-code-acp defers a
-   * steer to a follow-up turn, so no user_message_chunk echo lands in THIS
-   * turn. With no echo, ackSteeredQueueEntry never splices the entry out of
-   * the queue, and promptEnd's drainQueue() shifts it and sends the SAME text
-   * again as a fresh session/prompt → the user sees the in-turn message after
-   * the completed round, then a duplicated round.
+   * running turn (entry.steered = true, sent once via session/steer). "Steered"
+   * is NOT the same as delivered — claude-code-acp defers a steer to a follow-up
+   * drain that only runs when the turn ENDS, and it is the stage-2 echo
+   * (user_message_chunk) that proves delivery and sets entry.bubbleShown.
    *
-   * The fix: drainQueue must treat an entry that was already steered into the
-   * just-ended turn (and never acked out) as delivered — drop it and move on,
-   * not re-send it. The entry stays available for the agent's genuine
-   * follow-up echo to confirm; if the echo truly never comes, the next turn's
-   * drain still surfaces it once (at-least-once, not twice-per-turn).
+   * Two different just-ended turns, two correct outcomes:
+   *
+   *   Turn ENDED NORMALLY, echo landed (bubbleShown)  -> DROP. The model already
+   *     consumed the steer; re-sending it duplicates the round (the "in-turn msg
+   *     shown after the completed round, then a duplicate" symptom).
+   *
+   *   Turn was CANCELLED, no echo (bubbleShown falsy) -> DO NOT DROP. Every cancel
+   *     path in claude-code-acp returns stopReason=cancelled WITHOUT running
+   *     drainSteerQueue, so the steer was never delivered and its echo never fires.
+   *     Dropping it "as delivered once" silently loses a message the model never
+   *     saw — the in-turn msg that vanished after a mid-stream Stop. It must fall
+   *     through to the normal sendPrompt below (at-least-once, not lost).
+   *
+   * The fix keys the drop on CONFIRMED delivery (steered && bubbleShown), not on
+   * "sent once" (steered) alone.
    */
   function loadDrain(): string {
     return extractFn('drainQueue');
   }
 
-  test('drainQueue drops an already-steered, unacked entry instead of re-sending it', () => {
+  test('drainQueue drops a steered entry only when its echo confirmed delivery', () => {
     const drain = loadDrain();
-    // The guard inspects the head entry's sent-ever `steered` flag BEFORE the
-    // sendPrompt postMessage, so a steered entry is not turned into a second
-    // prompt. (The head is read into `_head`; the flag checked is `.steered`.)
-    const steerCheck = drain.indexOf('.steered');
+    // The guard must require BOTH flags: steered (sent once) AND bubbleShown
+    // (stage-2 echo landed = actually delivered). Checking `steered` alone is the
+    // bug — it drops a steer whose turn was cancelled and never delivered.
+    assert.ok(
+      drain.includes('_head.steered && _head.bubbleShown'),
+      'the drop must be gated on steered AND bubbleShown (confirmed delivered), not steered alone: ' + drain,
+    );
+    assert.ok(!/if \(_head && _head\.steered\)/.test(drain), 'must not drop on `steered` alone: ' + drain);
+    // The sendPrompt postMessage is still present for the (undelivered) entries that
+    // fall through the guard — that is the recovery path for a cancelled steer.
     const sendPrompt = drain.indexOf("type: 'sendPrompt'");
-    assert.ok(steerCheck > 0, 'drainQueue must inspect the entry steered flag');
     assert.ok(sendPrompt > 0, 'drainQueue still sends undelivered entries as prompts');
-    assert.ok(steerCheck < sendPrompt, 'the steered check must gate BEFORE the sendPrompt postMessage: ' + drain);
-    // A steered head was delivered ONCE (it rode the running turn), so it is
-    // dropped — NOT re-queued at the tail (that would re-send the same text on
-    // the next turn's drain, a second duplicate) and NOT spliced-with-bubble.
+    // A dropped entry is NOT re-queued at the tail (that would re-send the same
+    // text on the next turn's drain, a second duplicate).
     assert.ok(!drain.includes('messageQueue.push(_head)'), 'steered entry must be dropped, not re-queued at the tail');
   });
 
-  test('the pendingSendAfterCancel branch also skips an already-steered entry', () => {
+  test('a steered entry with no delivered echo is re-sent, not dropped (regression: cancelled turn)', () => {
+    // The exact lost-message scenario: entry was auto-steered (steered=true) but the
+    // turn it rode was cancelled, so drainSteerQueue never ran and no stage-2 echo
+    // landed (bubbleShown falsy). The OLD guard (steered alone) dropped it here; it
+    // must now fall through to sendPrompt so the model actually receives it.
+    const drain = loadDrain();
+    // The guard is the only place a head is shifted+dropped before the normal send.
+    // With bubbleShown falsy the guard's condition is false, so the head is NOT
+    // shifted by the guard — it reaches the `const entry = messageQueue.shift()` +
+    // sendPrompt path below.
+    const guardShift = drain.indexOf('if (_head && _head.steered && _head.bubbleShown) {');
+    const normalShift = drain.indexOf('const entry = messageQueue.shift();');
+    assert.ok(guardShift > 0, 'the drop guard must exist');
+    assert.ok(normalShift > guardShift, 'the normal send path must follow the guard');
+    // And the guard's drop branch does not unconditionally send (it returns after
+    // shifting), so a delivered steer is genuinely dropped, not double-sent.
+    const guardBody = drain.slice(guardShift, normalShift);
+    assert.ok(guardBody.includes('return true'), 'a confirmed-delivered head must be dropped (return) before the send path');
+  });
+
+  test('the pendingSendAfterCancel branch also gates the skip on confirmed delivery', () => {
     const src = fs.readFileSync(SOURCE, 'utf8');
-    // The "Send Now after cancel" path sends pendingSendAfterCancel as a prompt
-    // at promptEnd. If that entry was already steered into the cancelled turn,
-    // re-sending it duplicates the round. Guard it the same way.
+    // The "Send Now after cancel" path sends pendingSendAfterCancel as a prompt at
+    // promptEnd. A steered entry must be skipped ONLY if its echo confirmed
+    // delivery (steered && bubbleShown); a cancelled-turn steer (no echo) must fall
+    // through and be sent, not silently skipped.
     const branch = src.indexOf('if (pendingSendAfterCancel) {');
     assert.ok(branch > 0, 'pendingSendAfterCancel branch must exist');
     const seg = src.slice(branch, branch + 1500);
-    assert.ok(seg.includes('entry.steered'), 'the Send-Now-after-cancel path must check entry.steered before re-sending: ' + seg);
+    assert.ok(
+      seg.includes('entry.steered && entry.bubbleShown'),
+      'the Send-Now-after-cancel path must skip only on steered AND bubbleShown (confirmed delivered): ' + seg,
+    );
+    assert.ok(!/if \(entry\.steered\) \{/.test(seg), 'must not skip on `steered` alone: ' + seg);
   });
 
   test('a steered entry that DID get acked is gone from the queue (regression: no double-ack)', () => {

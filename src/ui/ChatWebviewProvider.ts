@@ -8568,23 +8568,29 @@ function agentSupportsSteering(agentName) {
 
 function drainQueue() {
  if (messageQueue.length === 0) return false;
- // A head-of-line entry that was already STEERED into the turn that just ended
- // and never got acked out by the agent's echo was delivered ONCE — it rode the
- // running turn (the model saw it between tool calls). claude-code-acp defers a
- // steer to a FOLLOW-UP turn, so when the turn ends before that echo lands,
- // ackSteeredQueueEntry never spliced the entry out of the queue. Re-sending it
- // here as a fresh session/prompt duplicates the round (the "in-turn msg shown
- // after the completed round, then a duplicate" symptom). DROP it: it is no
- // longer pending delivery. We do NOT re-queue it at the tail — that would only
- // re-send the same text on the NEXT turn's drain, a second duplicate. (The
- // agent's echo, if it ever arrives late, is a no-op confirmation on an already
- // delivered message.) Preserve at-least-once WITHOUT same-text double-send.
+ // A head-of-line entry that was STEERED into the turn that just ended is DROPped only
+ // when it was actually DELIVERED — i.e. its stage-2 echo (user_message_chunk, the
+ // "delivered" ack) already landed and set entry.bubbleShown. The echo is the ONLY
+ // signal the model received it: claude-code-acp defers a steer to a FOLLOW-UP drain,
+ // so "steered" (sent via session/steer once) is NOT the same as delivered.
+ //
+ // A steered entry WITHOUT a delivered echo was NOT delivered — the turn it rode was
+ // CANCELLED. Every cancel path in claude-code-acp returns stopReason=cancelled without
+ // running drainSteerQueue, so the stage-2 echo never fires for a steer aimed at a
+ // cancelled turn. Dropping it here "as delivered once" silently loses a message the
+ // model never saw (the in-turn msg that vanished after a mid-stream Stop). Such an
+ // entry must fall through to the normal send below — that is the recovery path.
+ //
+ // The drop itself (the delivered case) exists to prevent a double round: re-sending a
+ // message the model already consumed duplicates it. We do NOT re-queue a dropped entry
+ // at the tail — that would only re-send the same text on the NEXT turn's drain. (A
+ // late echo on an already-delivered message is a no-op confirmation.)
  const _head = messageQueue[0];
- if (_head && _head.steered) {
+ if (_head && _head.steered && _head.bubbleShown) {
    messageQueue.shift();
    renderQueue();
-   vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drainQueue: head entry already steered into the ended turn and unacked — dropping (delivered once), remaining=' + messageQueue.length });
-   wvQueueLog('DRAIN-DROP-STEERED', 'entry was steered into the prior turn; delivered once, not re-sent');
+   vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drainQueue: head entry steered AND delivered (echo landed) — dropping (no double round), remaining=' + messageQueue.length });
+   wvQueueLog('DRAIN-DROP-STEERED', 'entry was steered and confirmed delivered; not re-sent');
    // Let the NEXT undelivered entry drain this turn if one is behind it.
    if (messageQueue.length > 0 && !isProcessing) {
      setTimeout(function() { if (!isProcessing && messageQueue.length > 0) { drainQueue(); } }, 0);
@@ -21080,13 +21086,19 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       pendingSendAfterCancel = null;
       setTimeout(() => {
         if (!isProcessing) {
-          // A steered entry that was already delivered into the cancelled turn
-          // and never acked out must NOT be re-sent here either — same double
-          // round as the drainQueue path. Drop it (the agent's echo, if it
-          // arrives, is the confirmation; it already rode this turn).
-          if (entry.steered) {
-            vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] pendingSendAfterCancel: entry already steered into the cancelled turn — not re-sent' });
-            wvQueueLog('DRAIN-SKIP-STEERED', 'send-now-after-cancel entry was steered; not re-sent');
+          // A "Send Now" entry that was steered AND confirmed delivered (echo
+          // landed, bubbleShown) must NOT be re-sent here either — same double
+          // round as the drainQueue path. Drop it.
+          //
+          // A steered entry WITHOUT a delivered echo was NOT delivered: the
+          // cancelled turn it was aimed at skipped its steer drain, so the
+          // stage-2 echo never fired. Do not drop it — fall through and send it
+          // as a normal prompt below (the bubble is shown at line ~21100 since
+          // bubbleShown is false). This is the same recovery as the drainQueue
+          // fix, for the post-cancel path.
+          if (entry.steered && entry.bubbleShown) {
+            vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] pendingSendAfterCancel: entry steered AND delivered (echo landed) — not re-sent' });
+            wvQueueLog('DRAIN-SKIP-STEERED', 'send-now-after-cancel entry was steered and confirmed delivered; not re-sent');
             return;
           }
           // Route slash commands through handleLocalSlashCommand so local UI
