@@ -3132,13 +3132,17 @@ export class SessionManager extends EventEmitter {
 
   /**
    * Build the `mcpServers` list for an ACP session call. Registers the `jev-mcp`
-   * stdio server for the Claude Code agent (so the Claude CLI can call `jev_judge`
-   * mid-turn) when `acp.jev.enabled` and an API key are set; returns `[]` for every
-   * other agent. See src/jev/JevMcpServer.ts.
+   * stdio server for Claude Code and Cursor (so they can call `jev_judge`
+   * mid-turn) when `acp.jev.enabled` and an API key are set; returns `[]` for
+   * every other agent. See src/jev/JevMcpServer.ts.
    */
   private jevMcpServersFor(agentName: string): ReturnType<typeof buildJevMcpServers> {
     try {
-      return buildJevMcpServers(agentName, undefined, getAgentConfig(agentName)?.command);
+      const cfg = getAgentConfig(agentName);
+      return buildJevMcpServers(agentName, undefined, {
+        command: cfg?.command,
+        args: cfg?.args,
+      });
     } catch {
       // Jev registration must never block session creation — fall back to no
       // MCP servers on any resolution error.

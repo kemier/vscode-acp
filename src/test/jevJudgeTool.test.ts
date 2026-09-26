@@ -224,7 +224,7 @@ suite('jev_judge native tool', () => {
   });
 });
 
-suite('jev-mcp server registration (Claude Code gate)', () => {
+suite('jev-mcp server registration (Claude Code + Cursor)', () => {
   const enabled: JevSettings = {
     enabled: true,
     baseUrl: 'https://api.codiv.ai',
@@ -260,12 +260,36 @@ suite('jev-mcp server registration (Claude Code gate)', () => {
     assert.strictEqual((servers[0] as any).name, 'jev-mcp');
   });
 
+  test('matches node + args style Claude settings (command is node, script in args)', () => {
+    const servers = buildJevMcpServers('Claude Code', enabled, {
+      command: 'node',
+      args: ['C:\\Users\\zengn\\projects\\claude-code-acp\\bin\\claude-code-acp.js'],
+    });
+    assert.strictEqual(servers.length, 1);
+    assert.ok(
+      /jev-mcp-stdio\.js$/.test((servers[0] as any).args[0].replace(/\\/g, '/')),
+      (servers[0] as any).args[0],
+    );
+  });
+
   test('matches any settings key when command is claude-code-acp', () => {
     const servers = buildJevMcpServers('My Claude ACP', enabled, '/opt/claude-code-acp/bin/claude-code-acp.js');
     assert.strictEqual(servers.length, 1);
   });
 
-  test('returns [] for a non-Claude agent even when Jev is enabled', () => {
+  test('injects jev-mcp for Cursor (same ACP stdio mcpServers shape)', () => {
+    const servers = buildJevMcpServers('Cursor', enabled, {
+      command: 'cursor-agent',
+      args: ['acp'],
+    });
+    assert.strictEqual(servers.length, 1);
+    assert.strictEqual((servers[0] as any).name, 'jev-mcp');
+    // Cursor binary does not ship jev-mcp; path falls back to the default
+    // (or a Claude Code entry from settings when present).
+    assert.ok(/jev-mcp-stdio\.js/.test((servers[0] as any).args[0]));
+  });
+
+  test('returns [] for a non-eligible agent even when Jev is enabled', () => {
     assert.deepStrictEqual(buildJevMcpServers('EricCLI', enabled, '/x/bin/ericli.js'), []);
     assert.deepStrictEqual(buildJevMcpServers('Codex CLI', enabled, '/x/bin/codex-acp.js'), []);
     // Name looks Claude-ish but command is not claude-code-acp → reject.
@@ -278,6 +302,10 @@ suite('jev-mcp server registration (Claude Code gate)', () => {
   test('returns [] when Jev is disabled', () => {
     assert.deepStrictEqual(
       buildJevMcpServers('Claude Code', { ...enabled, enabled: false }, claudeCmd),
+      [],
+    );
+    assert.deepStrictEqual(
+      buildJevMcpServers('Cursor', { ...enabled, enabled: false }, { command: 'cursor-agent', args: ['acp'] }),
       [],
     );
   });
