@@ -3132,7 +3132,8 @@ export class SessionManager extends EventEmitter {
 
   /**
    * Build the `mcpServers` list for an ACP session call. Registers the `jev-mcp`
-   * stdio server for Claude Code and Cursor (so they can call `jev_judge`
+   * stdio server for Claude Code, Cursor, and Codex CLI (so they can call
+   * `jev_judge`
    * mid-turn) when `acp.jev.enabled` and an API key are set; returns `[]` for
    * every other agent. See src/jev/JevMcpServer.ts.
    */

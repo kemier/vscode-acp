@@ -224,7 +224,7 @@ suite('jev_judge native tool', () => {
   });
 });
 
-suite('jev-mcp server registration (Claude Code + Cursor)', () => {
+suite('jev-mcp server registration (Claude Code + Cursor + Codex CLI)', () => {
   const enabled: JevSettings = {
     enabled: true,
     baseUrl: 'https://api.codiv.ai',
@@ -289,9 +289,20 @@ suite('jev-mcp server registration (Claude Code + Cursor)', () => {
     assert.ok(/jev-mcp-stdio\.js/.test((servers[0] as any).args[0]));
   });
 
+  test('injects jev-mcp for Codex CLI (flat McpServerStdio, same shape)', () => {
+    const servers = buildJevMcpServers('Codex CLI', enabled, '/x/bin/codex-acp.js');
+    assert.strictEqual(servers.length, 1);
+    const s = servers[0] as any;
+    assert.strictEqual(s.name, 'jev-mcp');
+    assert.strictEqual(s.command, 'node');
+    // codex-acp does not ship jev-mcp; path falls back to a Claude Code entry
+    // from settings, or the relative default. env is still the ACP wire shape.
+    assert.ok(/jev-mcp-stdio\.js/.test(s.args[0]));
+    assert.ok(Array.isArray(s.env));
+  });
+
   test('returns [] for a non-eligible agent even when Jev is enabled', () => {
     assert.deepStrictEqual(buildJevMcpServers('EricCLI', enabled, '/x/bin/ericli.js'), []);
-    assert.deepStrictEqual(buildJevMcpServers('Codex CLI', enabled, '/x/bin/codex-acp.js'), []);
     // Name looks Claude-ish but command is not claude-code-acp → reject.
     assert.deepStrictEqual(
       buildJevMcpServers('Claude Code', enabled, '/x/bin/something-else.js'),

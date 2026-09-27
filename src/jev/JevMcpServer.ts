@@ -6,16 +6,18 @@ import { readJevSettings, type JevSettings } from './JevClient';
 
 /**
  * Jev MCP server registration for agents that discover tools via ACP
- * `mcpServers` (Claude Code + Cursor).
+ * `mcpServers` (Claude Code + Cursor + Codex CLI).
  *
  * vscode-acp injects the `jev-mcp` stdio server (claude-code-acp's
  * `dist/jev-mcp-stdio.js`) into session/new|load|resume when
  * `acp.jev.enabled` is true. The child agent then sees a real `jev_judge`
- * tool mid-turn. Ericli has a native `jev_decide`; Codex has neither path.
+ * tool mid-turn. Ericli has a native `jev_decide` (env-gated), so it is
+ * NOT covered here.
  *
- * Cursor's ACP session-resources parser accepts the flat ACP wire shape
- * `{name, command, args, env: [{name,value}]}` and maps entries with
- * `command` to stdio MCP — same shape Claude Code uses.
+ * All three consumers (claude-code-acp, cursor-agent, codex-acp) accept the
+ * flat ACP wire shape `{name, command, args, env: [{name,value}]}`. The
+ * claude-code-acp `normalizeMcpServers` layer accepts both the flat shape and
+ * the legacy `{transport}` wrapper, so the flat shape is safe for all three.
  *
  * The emitted shape is the ACP *wire* type (`McpServerStdio`).
  */
@@ -84,9 +86,29 @@ export function isCursorAgent(agentName: string, hint?: AgentCommandHint | strin
   return /cursor/i.test(agentName) && !/claude-code-acp|codex-acp|kiro|ericli/i.test(blob);
 }
 
+/**
+ * True when this `acp.agents` entry is the Codex CLI ACP agent.
+ * codex-acp reads the flat ACP `McpServerStdio` and forwards it to the Codex
+ * app-server `mcp_servers` (the ACP SDK's zod layer silently drops a
+ * non-matching `transport` wrapper, so the flat shape is required here — which
+ * is the same shape this module already emits for Claude Code / Cursor).
+ */
+export function isCodexAgent(agentName: string, hint?: AgentCommandHint | string): boolean {
+  const { command, args } = resolveHint(agentName, hint);
+  const blob = commandBlob(command, args);
+  if (blob && /codex-acp/i.test(blob)) {
+    return true;
+  }
+  if (!blob) {
+    return /codex/i.test(agentName.trim());
+  }
+  // Name contains codex and command isn't another known agent binary.
+  return /codex/i.test(agentName) && !/claude-code-acp|cursor|kiro|ericli/i.test(blob);
+}
+
 /** Agents that receive the jev-mcp stdio injection. */
 export function isJevMcpEligibleAgent(agentName: string, hint?: AgentCommandHint | string): boolean {
-  return isClaudeCodeAgent(agentName, hint) || isCursorAgent(agentName, hint);
+  return isClaudeCodeAgent(agentName, hint) || isCursorAgent(agentName, hint) || isCodexAgent(agentName, hint);
 }
 
 /**
@@ -143,8 +165,9 @@ export function resolveJevMcpServerPath(hint?: AgentCommandHint | string): strin
 }
 
 /**
- * Build the `mcpServers` entry that registers `jev-mcp` for Claude Code or
- * Cursor. Returns `[]` for any other agent or when Jev is disabled / keyless.
+ * Build the `mcpServers` entry that registers `jev-mcp` for Claude Code,
+ * Cursor, or Codex CLI. Returns `[]` for any other agent or when Jev is
+ * disabled / keyless.
  *
  * `settings` and `hint` are injected for unit-testability; when `hint` is
  * omitted, command/args come from `acp.agents` via {@link getAgentConfig}.
