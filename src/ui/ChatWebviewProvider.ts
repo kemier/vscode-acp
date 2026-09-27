@@ -23255,6 +23255,19 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           if (/^\\s*<task-notification[\\s>]/i.test(content.text)) {
             break;
           }
+          // Fork-to-agent handoff prompt: the extension sends the source
+          // conversation summary as the first user message of the forked
+          // session. It is context for the target agent, not a real user
+          // prompt — the live session hides it via suppressNextUserBubble,
+          // but on resume the agent replays it as a user_message_chunk and
+          // the panel would render the entire summary as a large user bubble.
+          // Skip it the same way we skip task-notifications: no bubble, no
+          // chatHistory entry. The target agent's first REAL reply (the
+          // assistant message that follows) still renders normally.
+          if (/^The following is a (summary of|conversation from) another agent/i.test(content.text)) {
+            resumeDiag('UMC: skipping fork handoff prompt (len=' + content.text.length + ')');
+            break;
+          }
           // Claude interrupt notice — keep in history for fold heuristics, but
           // never coalesce onto the real user prompt and never show as a bubble.
           if (isSessionInterruptNotice(content.text)) {
