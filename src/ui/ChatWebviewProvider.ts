@@ -9753,7 +9753,7 @@ var end = displayText.length;
        // filtered on restore too, or the large summary reappears at the top.
        if (riItem && riItem.kind === 'message' && riItem.role === 'user' &&
            typeof riItem.text === 'string' &&
-           /^The following is a (summary of|conversation from) another agent/i.test(riItem.text)) {
+           /^The following is a (?:summary of a conversation from|conversation from) another agent/i.test(riItem.text)) {
          vscode.postMessage({ type: 'debugLog', message: '[WV-STATE] restoreState: skipping fork handoff prompt (len=' + riItem.text.length + ')' });
          continue;
        }
@@ -23277,7 +23277,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           // Skip it the same way we skip task-notifications: no bubble, no
           // chatHistory entry. The target agent's first REAL reply (the
           // assistant message that follows) still renders normally.
-          if (/^The following is a (summary of|conversation from) another agent/i.test(content.text)) {
+          if (/^The following is a (?:summary of a conversation from|conversation from) another agent/i.test(content.text)) {
             resumeDiag('UMC: skipping fork handoff prompt (len=' + content.text.length + ')');
             break;
           }
