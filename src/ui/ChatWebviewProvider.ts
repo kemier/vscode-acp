@@ -9744,6 +9744,19 @@ var end = displayText.length;
            isSessionInterruptNotice(riItem.text)) {
          continue;
        }
+       // Skip the fork-to-agent handoff prompt on restore. An earlier (pre-fix)
+       // resume committed the source-conversation summary into chatHistory via
+       // saveState(); it is agent context, not a real user prompt, and the live
+       // session hides it via suppressNextUserBubble. The user_message_chunk
+       // replay guard covers the session/load path, but a VS Code reload
+       // restores the saved bubble through here instead — so it must be
+       // filtered on restore too, or the large summary reappears at the top.
+       if (riItem && riItem.kind === 'message' && riItem.role === 'user' &&
+           typeof riItem.text === 'string' &&
+           /^The following is a (summary of|conversation from) another agent/i.test(riItem.text)) {
+         vscode.postMessage({ type: 'debugLog', message: '[WV-STATE] restoreState: skipping fork handoff prompt (len=' + riItem.text.length + ')' });
+         continue;
+       }
        // Clean user messages so restored state does not show raw
         // <open_files>/<selection>/etc. blocks from before the fix.
         if (riItem && riItem.kind === 'message' && riItem.role === 'user' && typeof riItem.text === 'string') {
