@@ -1312,6 +1312,32 @@ export class SessionManager extends EventEmitter {
   }
 
   /**
+   * Retract a steer the agent queued but the user deleted from the queue.
+   * `session/steer` is a notification with no retract, so a deleted queue chip
+   * would otherwise be delivered as a follow-up turn at the end of the current
+   * one (claude-code-acp drains its steer queue on promptEnd). This sends a
+   * `session/steer-remove` notification the agent matches by (collapsed) text
+   * and drops from its queue. Non-fatal for agents that don't implement it —
+   * they ignore unknown ext notifications, which is the pre-fix behavior.
+   */
+  async steerPromptRemove(sessionId: string, text: string): Promise<void> {
+    const session = this.sessions.get(sessionId);
+    if (!session) {
+      return;
+    }
+    const connInfo = this.connectionManager.getConnection(session.agentId);
+    if (!connInfo) {
+      return;
+    }
+    try {
+      await connInfo.connection.notify('session/steer-remove', { sessionId, text });
+      log(`Retracted steer for session ${sessionId}: ${text.substring(0, 80)}...`);
+    } catch (e: any) {
+      log(`steerPromptRemove: agent does not support session/steer-remove (non-fatal): ${e?.message || e}`);
+    }
+  }
+
+  /**
    * Kill all running background processes spawned in this session.
    * Sends a custom `session/stop` notification that Codex and Codex-ACP
    * handle to terminate spawned processes without interrupting the active

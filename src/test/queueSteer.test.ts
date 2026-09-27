@@ -100,6 +100,60 @@ suite('mid-turn steering of a queued message', () => {
   });
 });
 
+suite('deleting a queued message retracts a steer already sent', () => {
+  /**
+   * A message typed during a Claude Code turn is auto-steered into the running
+   * turn (maybeAutoSteerNext → session/steer), so claude-code-acp holds a copy in
+   * its private steer queue and would deliver it as a follow-up at promptEnd. The
+   * user can then delete the queue chip. session/steer is a notification with no
+   * retract, so the delete must send session/steer-remove or the model answers a
+   * message the user removed.
+   */
+  test('removeQueuedMessage posts steerPromptRemove for a steered entry while a turn runs', () => {
+    const fn = extractFn('removeQueuedMessage');
+    // The entry is captured BEFORE it is spliced (the old code spliced first).
+    const capture = fn.indexOf('messageQueue[index]');
+    const splice = fn.indexOf('messageQueue.splice(index, 1)');
+    assert.ok(capture > 0 && capture < splice, 'capture the entry before splicing: ' + fn);
+    // Only a steered entry, only while a turn is in flight.
+    assert.ok(fn.includes('entry.steered && isProcessing'), fn);
+    assert.ok(fn.includes("type: 'steerPromptRemove'"), fn);
+    // The retract carries the text that was actually sent (expanded clipboard),
+    // matching what the agent queued — not the display text.
+    assert.ok(fn.includes('queueEntryPromptText(entry)'), fn);
+  });
+
+  test('the host forwards it as the session/steer-remove notification', () => {
+    const provider = fs.readFileSync(SOURCE, 'utf8');
+    assert.ok(provider.includes("case 'steerPromptRemove':"));
+    assert.ok(provider.includes('handleSteerPromptRemove'));
+    const sm = fs.readFileSync(path.resolve(__dirname, '../../src/core/SessionManager.ts'), 'utf8');
+    assert.ok(sm.includes("connInfo.connection.notify('session/steer-remove', { sessionId, text })"));
+  });
+
+  test('a retracted steer\'s early bubble is removed on user_message_removed', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    assert.ok(src.includes("case 'user_message_removed':"), 'the webview must handle the retract echo');
+    assert.ok(src.includes('removeSteeredEarlyBubble'), 'the helper must exist');
+    // It drops the chatHistory row AND the rendered bubble.
+    const helper = extractFn('removeSteeredEarlyBubble');
+    assert.ok(helper.includes('chatHistory.splice'), helper);
+    assert.ok(helper.includes('el.remove()'), helper);
+    assert.ok(helper.includes('querySelectorAll(\'.message.user\')'), helper);
+  });
+
+  test('the retract is a no-op for an entry that was never steered', () => {
+    const fn = extractFn('removeQueuedMessage');
+    // A plain queued message (no steer) is just spliced — no notification, since
+    // the agent never received it.
+    const guard = fn.indexOf('entry.steered');
+    assert.ok(guard > 0, 'must branch on entry.steered: ' + fn);
+    // And no steerPromptRemove for a non-steered or idle-turn entry.
+    const post = fn.indexOf("type: 'steerPromptRemove'");
+    assert.ok(post > guard, 'the notification must be inside the steered guard');
+  });
+});
+
 suite('automatic steering of a mid-turn message', () => {
   function loadFn(name: string) {
     const body = extractFn(name);

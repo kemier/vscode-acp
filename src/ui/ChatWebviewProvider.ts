@@ -1291,6 +1291,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         case 'steerPrompt':
           await this.handleSteerPrompt(message.text);
           break;
+        case 'steerPromptRemove':
+          await this.handleSteerPromptRemove(message.text);
+          break;
         case 'stopProcesses':
           await this.handleStopProcesses(message.suppressNotice);
           break;
@@ -2893,6 +2896,24 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       await this.sessionManager.steerPrompt(activeId, text);
     } catch (e) {
       logError('Steer failed', e);
+    }
+  }
+
+  /**
+   * Retract a steer the user deleted from the queue. Mirrors
+   * {@link handleSteerPrompt} but sends `session/steer-remove` so claude-code-acp
+   * drops the queued steer instead of delivering it at the end of the current
+   * turn. No voice feedback — the message is being removed, not sent.
+   */
+  private async handleSteerPromptRemove(text: string): Promise<void> {
+    const activeId = this.sessionManager.getActiveSessionId();
+    if (!activeId) {
+      return;
+    }
+    try {
+      await this.sessionManager.steerPromptRemove(activeId, text);
+    } catch (e) {
+      logError('Steer retract failed', e);
     }
   }
 
@@ -7711,6 +7732,45 @@ let isCompacting = false;  // true while /compact is running
    }
 
    /**
+    * Steer retract (user_message_removed): the user deleted a queued entry that
+    * was auto-steered into the running turn, and the agent dropped its copy.
+    * Remove the stage-1 bubble addUserBubbleEarly rendered for it (and its
+    * chatHistory row) so the transcript matches what the model will actually see.
+    * The queue entry itself was already spliced by removeQueuedMessage, so this
+    * only cleans up the bubble. Match on collapsed text, newest first — the last
+    * early bubble is the one just removed.
+    */
+   function removeSteeredEarlyBubble(text) {
+     var _display = collapseWhitespaceChars(text || '');
+     if (!_display) return;
+     // Remove the matching chatHistory row (last occurrence = the early bubble).
+     for (var hi = chatHistory.length - 1; hi >= 0; hi--) {
+       var row = chatHistory[hi];
+       if (row && row.kind === 'message' && row.role === 'user' &&
+           collapseWhitespaceChars(row.text || '') === _display) {
+         chatHistory.splice(hi, 1);
+         saveState();
+         break;
+       }
+     }
+     // Remove the rendered user bubble (last matching .message.user element).
+     // User bubbles render their text directly into the .message.user div
+     // (addUserBubbleEarly → renderUserMessageContent(el, …)), so match the
+     // element's own collapsed text.
+     if (typeof messagesEl !== 'undefined') {
+       var userEls = messagesEl.querySelectorAll('.message.user');
+       for (var ui = userEls.length - 1; ui >= 0; ui--) {
+         var el = userEls[ui];
+         if (collapseWhitespaceChars(el.textContent || '') === _display) {
+           el.remove();
+           break;
+         }
+       }
+     }
+     vscode.postMessage({ type: 'debugLog', message: '[STEER] retracted steered message; early bubble removed' });
+   }
+
+   /**
     * Early (stage-1 accepted) user bubble: render the steered message as a user
     * bubble immediately, inserted BEFORE the current streaming turn so the chat
     * reads user-message-then-agent-output. Unlike addUserBubbleForQueuedEntry it
@@ -7767,7 +7827,17 @@ let isCompacting = false;  // true while /compact is running
 
    // Remove a message from the queue by index
    function removeQueuedMessage(index) {
+     var entry = messageQueue[index];
      messageQueue.splice(index, 1);
+     // If this entry was auto-steered into the RUNNING turn (maybeAutoSteerNext),
+     // the agent already holds a copy in its private steer queue. session/steer is
+     // a notification with no retract, so without this the deleted message would be
+     // delivered as a follow-up turn at promptEnd (claude-code-acp drains its steer
+     // queue on turn end). Retract it now; no-op once the agent has already
+     // delivered it. Only meaningful while a turn is in flight.
+     if (entry && entry.steered && isProcessing) {
+       vscode.postMessage({ type: 'steerPromptRemove', text: queueEntryPromptText(entry) || '' });
+     }
      renderQueue();
    }
 
@@ -23135,6 +23205,19 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           typeof ackSteeredQueueEntry === 'function'
         ) {
           markSteeredEntryBubbleShown(accContent.text);
+        }
+        break;
+      }
+
+      case 'user_message_removed': {
+        // Steer retract: the agent dropped a queued steer the user deleted from
+        // the queue. Remove the stage-1 bubble addUserBubbleEarly rendered for it
+        // (and its chatHistory row) so the transcript matches what the model will
+        // actually see. The queue entry itself was already spliced by
+        // removeQueuedMessage; this is purely the visual cleanup.
+        const rmContent = update.content;
+        if (!isLoadingSession && rmContent && rmContent.type === 'text' && typeof rmContent.text === 'string') {
+          removeSteeredEarlyBubble(rmContent.text);
         }
         break;
       }
