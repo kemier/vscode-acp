@@ -8,3 +8,4 @@ out/
 .kiro/*
 .npmrc
 pnpm-lock.yaml
+.dcg
