@@ -416,22 +416,22 @@
         "acp.jev.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Enable the jev_judge native tool. When on, judgement requests arriving via elicitation with _meta.tool=\"jev_judge\" are answered by the Jev (TypeSafe System One) decision model instead of prompting the user. Requires an API key (acp.jev.apiKey or TYPESAFE_API_KEY) for the hosted API, or a self-hosted OpenJev endpoint via acp.jev.baseUrl."
+          "description": "Enable the jev_judge native tool. When on, judgement requests arriving via elicitation with _meta.tool=\"jev_judge\" are answered by the Laya decision model (served via the EricAI proxy) instead of prompting the user."
         },
         "acp.jev.baseUrl": {
           "type": "string",
-          "default": "https://api.typesafe.ai",
-          "description": "Jev API base URL. Hosted: https://api.typesafe.ai. Self-hosted OpenJev: e.g. http://127.0.0.1:8080. The client POSTs to {baseUrl}/v1/systemone."
+          "default": "http://127.0.0.1:8317",
+          "description": "System One decision-model base URL. Default points at the local EricAI proxy, which forwards to the backend Laya deployment. Self-hosted Laya: e.g. http://127.0.0.1:8000. The client POSTs to {baseUrl}/v1/systemone."
         },
         "acp.jev.apiKey": {
           "type": "string",
           "default": "",
-          "description": "TypeSafe API key for the hosted Jev API (console.typesafe.ai/keys). Falls back to the TYPESAFE_API_KEY / JEV_API_KEY environment variable. Leave empty for self-hosted OpenJev (no auth)."
+          "description": "API key for the System One endpoint. Leave empty when using the EricAI proxy (it handles upstream auth). For a direct Laya/OpenJev server with LAYA_API_KEY set, provide the key here. Falls back to the TYPESAFE_API_KEY / JEV_API_KEY environment variable."
         },
         "acp.jev.model": {
           "type": "string",
-          "default": "jev-latest",
-          "description": "Jev model id or alias sent in the model field (jev-latest, jev-preview, or a pinned version like jev-1.13.0)."
+          "default": "laya",
+          "description": "System One model id or alias sent in the model field (laya, english, multilingual, typed-decisions, or a pinned Laya version)."
         },
         "acp.jev.timeoutMs": {
           "type": "number",

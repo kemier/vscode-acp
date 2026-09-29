@@ -61,9 +61,9 @@ export interface JevSettings {
 
 const DEFAULTS: JevSettings = {
   enabled: false,
-  baseUrl: 'https://api.typesafe.ai',
+  baseUrl: 'http://127.0.0.1:8317',
   apiKey: '',
-  model: 'jev-latest',
+  model: 'laya',
   timeoutMs: 5000,
 };
 
