@@ -520,7 +520,7 @@
         "acp.voice.recordCommand": {
           "type": "string",
           "default": "",
-          "description": "Recorder command template overriding the platform default (macOS/Windows: SoX `rec`; Linux: `arecord`). Must contain {file}, e.g. `ffmpeg -y -f avfoundation -i :0 -ar 16000 -ac 1 {file}`. The process is stopped with SIGINT and must finalize a 16 kHz mono WAV."
+          "description": "Recorder command template overriding the platform default (macOS/Windows: SoX `rec`/`sox`; Linux: `arecord`). Must contain {file}, e.g. `ffmpeg -y -f avfoundation -i :0 -ar 16000 -ac 1 {file}`. The process is stopped with SIGINT and must finalize a 16 kHz mono WAV. Windows SoX default: `sox -q -t waveaudio default -c 1 -b 16 {file} rate 16000` — the `rate 16000` effect is a software resampler (required for the `silence` endpointer's 3% threshold to behave correctly at 16 kHz); do NOT replace it with `-r 16000` (device-rate request, ignored by the waveaudio driver). If you override this on Windows, keep `rate 16000` in the effect chain."
         },
         "acp.voice.captureMode": {
           "type": "string",

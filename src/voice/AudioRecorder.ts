@@ -54,6 +54,20 @@ function platformDefault(): RecorderCommand {
       // NB: Windows SoX ships `sox.exe` (no `rec` alias); `-d` fails with
       // "no default audio device configured", so use the waveaudio driver
       // explicitly: `-t waveaudio default`.
+      //
+      // The `rate 16000` effect is a SOFTWARE resampler (runs after capture),
+      // not a device-rate request — the waveaudio driver captures at the
+      // device's native rate (typically 48 kHz), then SoX resamples the PCM
+      // stream to 16 kHz before writing the file. This is required for two
+      // reasons:
+      //   1. The `silence` effect's percentage threshold (3%) is calibrated
+      //      for 16 kHz; at 48 kHz the same noise floor reads higher and the
+      //      endpointer fires prematurely (take ends ~0.1 s after speech
+      //      onset instead of after 2.5 s of trailing silence).
+      //   2. whisper.cpp expects 16 kHz input; resampling here avoids a
+      //      second resample in the STT server.
+      // Do NOT use `-r 16000` (device-rate request) — the Windows waveaudio
+      // driver does not honour it and SoX falls back to the native rate.
       return { command: 'sox', args: ['-q', '-t', 'waveaudio', 'default', '-c', '1', '-b', '16', '{file}', 'rate', '16000'] };
     default:
       throw new Error(`Voice input: unsupported platform "${process.platform}". Set acp.voice.recordCommand.`);
