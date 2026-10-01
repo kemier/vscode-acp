@@ -5,7 +5,7 @@ import { log, logError } from '../utils/Logger';
 import { RecorderStartOptions, VoiceRecorder } from './VoiceRecorder';
 
 /**
- * Bridge to the "ACP Voice (Local Mic)" companion extension.
+ * Bridge to the "ACP Local Capture (Mic + Screen)" companion extension.
  *
  * Why this exists: in a Remote SSH / WSL / Dev Container window this extension
  * runs in the REMOTE extension host, so `arecord`/`rec` spawned here records
@@ -20,8 +20,8 @@ import { RecorderStartOptions, VoiceRecorder } from './VoiceRecorder';
  * extension host land in the same main-thread `CommandsRegistry`, so the two
  * hosts can call each other by command id — that is the transport used here:
  *
- *   remote →  acpVoiceLocal.start / .stop / .cancel / .probe   (client)
- *   client →  acp.voice.localRecorderEvent                     (remote)
+ *   remote →  acpLocalCapture.start / .stop / .cancel / .probe   (client)
+ *   client →  acp.capture.localRecorderEvent                     (remote)
  *
  * `stop` returns the WAV as base64 (16 kHz mono 16-bit ≈ 32 KB/s, so a normal
  * take is a few hundred KB); it is written to the remote temp path the caller
@@ -29,22 +29,22 @@ import { RecorderStartOptions, VoiceRecorder } from './VoiceRecorder';
  * transcription stays on the remote host.
  */
 
-export const COMPANION_PROBE = 'acpVoiceLocal.probe';
-export const COMPANION_START = 'acpVoiceLocal.start';
-export const COMPANION_STOP = 'acpVoiceLocal.stop';
-export const COMPANION_CANCEL = 'acpVoiceLocal.cancel';
+export const COMPANION_PROBE = 'acpLocalCapture.probe';
+export const COMPANION_START = 'acpLocalCapture.start';
+export const COMPANION_STOP = 'acpLocalCapture.stop';
+export const COMPANION_CANCEL = 'acpLocalCapture.cancel';
 /** Registered in THIS host; the companion calls it to push recorder events. */
-export const COMPANION_EVENT_SINK = 'acp.voice.localRecorderEvent';
+export const COMPANION_EVENT_SINK = 'acp.capture.localRecorderEvent';
 /** Bumped when the command payloads change incompatibly. */
 export const COMPANION_PROTOCOL = 1;
 
-export const COMPANION_EXTENSION_ID = 'formulahendry.acp-voice-local';
+export const COMPANION_EXTENSION_ID = 'formulahendry.acp-local-capture';
 
 export const COMPANION_INSTALL_HINT =
   'This is a remote window (Remote SSH/WSL/Container): the extension host — and ' +
   'therefore the recorder — runs on the remote machine, which has no access to your ' +
-  'laptop\'s microphone. Install the "ACP Voice (Local Mic)" companion extension ' +
-  '(acp-voice-local-*.vsix, Extensions view → … → Install from VSIX…). It declares ' +
+  'laptop\'s microphone. Install the "ACP Local Capture (Mic + Screen)" companion extension ' +
+  '(acp-local-capture-*.vsix, Extensions view → … → Install from VSIX…). It declares ' +
   'extensionKind "ui", so VS Code installs it on your local machine and dictation ' +
   'records there while transcription stays remote. See docs/voice-remote-ssh.md.';
 
@@ -199,7 +199,7 @@ export class CompanionRecorder implements VoiceRecorder {
     if (!res?.takeId) {
       throw new Error(
         'Voice input: local companion did not return a take id. ' +
-          'Update the "ACP Voice (Local Mic)" extension on your local machine.',
+          'Update the "ACP Local Capture" extension on your local machine.',
       );
     }
     if (typeof res.protocol === 'number' && res.protocol !== COMPANION_PROTOCOL) {

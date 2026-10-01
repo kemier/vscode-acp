@@ -40,7 +40,7 @@ function wav(sampleBytes: number): Buffer {
 function clearCommands(): void {
   const reg: Map<string, unknown> = ((globalThis as any).__acpTestCommands ||= new Map());
   for (const id of [...reg.keys()]) {
-    if (id.startsWith('acpVoiceLocal.')) {
+    if (id.startsWith('acpLocalCapture.')) {
       reg.delete(id);
     }
   }
@@ -80,19 +80,19 @@ suite('CompanionRecorder (remote-SSH local mic bridge)', () => {
     );
   });
 
-  test('companionAvailable reflects registration of acpVoiceLocal.start', async () => {
+  test('companionAvailable reflects registration of acpLocalCapture.start', async () => {
     assert.strictEqual(await companionAvailable(), false);
-    vscode.commands.registerCommand('acpVoiceLocal.start', async () => ({ takeId: '1' }));
+    vscode.commands.registerCommand('acpLocalCapture.start', async () => ({ takeId: '1' }));
     assert.strictEqual(await companionAvailable(), true);
   });
 
   test('start/stop round-trip: client records, remote gets the WAV at the requested path', async () => {
     const started: any[] = [];
-    vscode.commands.registerCommand('acpVoiceLocal.start', async (args: any) => {
+    vscode.commands.registerCommand('acpLocalCapture.start', async (args: any) => {
       started.push(args);
       return { takeId: 'take-1', protocol: COMPANION_PROTOCOL };
     });
-    vscode.commands.registerCommand('acpVoiceLocal.stop', async (args: any) => {
+    vscode.commands.registerCommand('acpLocalCapture.stop', async (args: any) => {
       assert.strictEqual(args.takeId, 'take-1');
       return { base64: wav(1600).toString('base64'), bytes: 44 + 1600 };
     });
@@ -115,7 +115,7 @@ suite('CompanionRecorder (remote-SSH local mic bridge)', () => {
   });
 
   test('client-side events reach the remote callbacks through the shared registry', async () => {
-    vscode.commands.registerCommand('acpVoiceLocal.start', async () => ({ takeId: 'take-2' }));
+    vscode.commands.registerCommand('acpLocalCapture.start', async () => ({ takeId: 'take-2' }));
     const flowing: number[] = [];
     let natural = 0;
 
@@ -150,8 +150,8 @@ suite('CompanionRecorder (remote-SSH local mic bridge)', () => {
   });
 
   test('a companion-side stop error surfaces as a voice error, not a silent empty take', async () => {
-    vscode.commands.registerCommand('acpVoiceLocal.start', async () => ({ takeId: 'take-3' }));
-    vscode.commands.registerCommand('acpVoiceLocal.stop', async () => ({
+    vscode.commands.registerCommand('acpLocalCapture.start', async () => ({ takeId: 'take-3' }));
+    vscode.commands.registerCommand('acpLocalCapture.stop', async () => ({
       error: 'recorder binary "rec" not found on PATH',
     }));
     const rec = new CompanionRecorder();

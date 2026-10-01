@@ -5,7 +5,7 @@
  * machine as the extension host:
  *  - `AudioRecorder` — spawns a recorder binary in THIS process (local window,
  *    or a remote host that really does have a sound card).
- *  - `CompanionRecorder` — drives the "ACP Voice (Local Mic)" companion
+ *  - `CompanionRecorder` — drives the "ACP Local Capture" companion
  *    extension, which runs in the UI extension host on the client machine
  *    (Remote SSH / WSL / Dev Container), and ships the WAV back over the
  *    extension-host RPC. Capture is local, transcription stays remote.

@@ -98,6 +98,7 @@ return handleQueue;
     'isCompacting',
     'isClearing',
     'messageQueue',
+    'pendingVideoAttached',
     harness,
   );
   fn(
@@ -118,6 +119,7 @@ return handleQueue;
     false,
     false,
     [],
+    false,
   )();
   return run;
 }

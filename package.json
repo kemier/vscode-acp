@@ -568,7 +568,11 @@
         },
         "acp.voice.keepTakes": {
           "type": "string",
-          "enum": ["none", "failed", "all"],
+          "enum": [
+            "none",
+            "failed",
+            "all"
+          ],
           "default": "failed",
           "description": "Which voice takes are copied to the debug folder for later review. 'failed' keeps only takes the STT server refused (the audio is the only evidence of why); 'all' keeps every take next to its transcript (useful when a transcript is wrong but non-empty); 'none' deletes all takes after transcription."
         },
@@ -610,6 +614,71 @@
           "type": "string",
           "default": "",
           "description": "Path to the voice memory rules file read by the corrector and revised by the ACP: Review Voice Memory command. Empty = ~/.vscode-acp/voice-memory.md (feedback log lives alongside it as voice-feedback.jsonl)."
+        },
+        "acp.vision.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the screen/window recording button in the chat composer. Recordings are analyzed by a video API (StepFun-style video_url) or, if no endpoint is set, converted to image frames for agents that support images. See docs/vision-models.md."
+        },
+        "acp.vision.endpoint": {
+          "type": "string",
+          "default": "https://api.stepfun.com/v1",
+          "description": "OpenAI-compatible API base for video understanding (e.g. https://api.stepfun.com/v1 or a Qwen/OpenRouter base). Empty disables the video bridge and falls back to frame extraction when the agent supports images."
+        },
+        "acp.vision.apiKey": {
+          "type": "string",
+          "default": "",
+          "description": "Bearer token for the vision endpoint (e.g. StepFun API key)."
+        },
+        "acp.vision.model": {
+          "type": "string",
+          "default": "step-5-preview",
+          "description": "Model id sent in the chat/completions body (step-5-preview, step-3.7-flash, qwen3-vl-plus, …)."
+        },
+        "acp.vision.provider": {
+          "type": "string",
+          "enum": [
+            "openai-compat",
+            "gemini"
+          ],
+          "default": "openai-compat",
+          "description": "Vision client adapter. openai-compat uses video_url (StepFun/Qwen/OpenRouter). gemini is reserved and not implemented yet."
+        },
+        "acp.vision.prompt": {
+          "type": "string",
+          "default": "Summarize what is happening on screen. Call out UI text, errors, and any actionable details relevant to a coding assistant.",
+          "description": "Instruction sent with the recorded video to the vision model."
+        },
+        "acp.vision.timeoutMs": {
+          "type": "number",
+          "default": 180000,
+          "minimum": 5000,
+          "description": "Vision API request timeout in milliseconds."
+        },
+        "acp.vision.inlineMaxBytes": {
+          "type": "number",
+          "default": 15728640,
+          "minimum": 1048576,
+          "description": "Above this size, StepFun endpoints upload via Files API (stepfile://) instead of base64 data URIs. Default 15 MiB."
+        },
+        "acp.vision.maxDurationSec": {
+          "type": "number",
+          "default": 90,
+          "minimum": 5,
+          "maximum": 300,
+          "description": "Maximum screen recording length in seconds before auto-stop."
+        },
+        "acp.vision.ffmpegPath": {
+          "type": "string",
+          "default": "",
+          "description": "Absolute path to ffmpeg. Empty = resolve from PATH (plus common Homebrew locations on macOS)."
+        },
+        "acp.vision.maxFrames": {
+          "type": "number",
+          "default": 8,
+          "minimum": 1,
+          "maximum": 30,
+          "description": "When no vision endpoint is configured, max JPEG frames extracted from the recording for image-capable agents."
         },
         "acp.sessionSummary.endpoint": {
           "type": "string",
@@ -725,7 +794,7 @@
         "acp.memory.captureSubagentFindings": {
           "type": "boolean",
           "default": false,
-          "description": "Also persist what finished subagents found. A subagent's work is otherwise unrecoverable \u2014 its conversation never leaves the agent process and turn capture records only tool-call titles \u2014 so its findings never become memory and can never be promoted or turned into a skill. Off by default: subagent output is verbose and unreviewed, and a wrong memory is hard to undo once it has been absorbed. Requires acp.memory.captureEnabled."
+          "description": "Also persist what finished subagents found. A subagent's work is otherwise unrecoverable — its conversation never leaves the agent process and turn capture records only tool-call titles — so its findings never become memory and can never be promoted or turned into a skill. Off by default: subagent output is verbose and unreviewed, and a wrong memory is hard to undo once it has been absorbed. Requires acp.memory.captureEnabled."
         },
         "acp.memory.timeoutMs": {
           "type": "number",
@@ -763,7 +832,7 @@
     "lint": "eslint src --max-warnings 0",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "test": "vscode-test",
-    "test:unit": "npm run compile-tests && mocha --require src/test/vscode-shim.cjs --ui tdd 'out/test/forkMemoryAgentIdRemap.test.js' 'out/test/agentQuestionRecord.test.js' 'out/test/planProposal.test.js' 'out/test/pickerOptionParams.test.js' 'out/test/fileLinkPercentDecode.test.js' 'out/test/subagentLifecycleResume.test.js' 'out/test/supersededTurnFilter.test.js' 'out/test/typedefSubscript.test.js' 'out/test/autoSteerFifo.test.js' 'out/test/agentSpawnMemoryEnv.test.js' 'out/test/audioRecorder.test.js' 'out/test/companionRecorder.test.js' 'out/test/mciRecorder.test.js' 'out/test/spectrum.test.js' 'out/test/wavInfo.test.js' 'out/test/voiceMemory.test.js' 'out/test/voiceDiagnostics.test.js' 'out/test/sttErrors.test.js' 'out/test/sttWarmup.test.js' 'out/test/markdownMath.test.js' 'out/test/markdownBalance.test.js' 'out/test/webviewFenceParity.test.js' 'out/test/linkifier.test.js' 'out/test/titleCleaner.test.js' 'out/test/markdownLinkifyKeywords.test.js' 'out/test/toolCallTitleCleaner.test.js' 'out/test/toolTitle.test.js' 'out/test/webSearchClassification.test.js' 'out/test/streamCoalescer.test.js' 'out/test/webviewScriptParse.test.js' 'out/test/foldOrdering.test.js' 'out/test/planModeHandoff.test.js' 'out/test/resumeLossyReplay.test.js' 'out/test/codeLink.test.js' 'out/test/unansweredPrompts.test.js' 'out/test/sideChannelResumeGrouping.test.js' 'out/test/selectionVisibleEditorFallback.test.js' 'out/test/clipboardContext.test.js' 'out/test/queuedClipboardSnapshot.test.js' 'out/test/queuedSelectionSnapshot.test.js' 'out/test/pasteClipboardMentionPosition.test.js' 'out/test/clipboardResumeStrip.test.js' 'out/test/mentionScan.test.js' 'out/test/resourceLinkStrip.test.js' 'out/test/cleanUserMessage.test.js' 'out/test/followAgent.test.js' 'out/test/memory.test.js' 'out/test/memorySkillTools.test.js' 'out/test/memoryDedup.test.js' 'out/test/failedTurnNoCapture.test.js' 'out/test/messageQueue.test.js' 'out/test/queueChipVisibility.test.js' 'out/test/handleQueueExecutes.test.js' 'out/test/subagentFalseSpawnTitle.test.js' 'out/test/psAgentHandoff.test.js' 'out/test/commandOutputRow.test.js' 'out/test/lateSubagentClientTurn.test.js' 'out/test/subcommandAutocomplete.test.js' 'out/test/sendNowOrdering.test.js' 'out/test/postCancelProcessSweep.test.js' 'out/test/toolIdTurnScope.test.js' 'out/test/turnProgressLabel.test.js' 'out/test/idleThoughtDrop.test.js' 'out/test/subagentCrewReason.test.js' 'out/test/modelIdFromConfigOptions.test.js' 'out/test/forkDispatchPrompt.test.js' 'out/test/cancelFallbackOwnership.test.js' 'out/test/sideChannelPrompt.test.js' 'out/test/stopEndsTurn.test.js' 'out/test/mergeInterruptedOrder.test.js' 'out/test/mergeDuplicateToolInterleave.test.js' 'out/test/mergeTrailingReplyPlacement.test.js' 'out/test/mergeReplayOrderAuthority.test.js' 'out/test/compactionSnapshotResurrection.test.js' 'out/test/mergeMissingRowPlacement.test.js' 'out/test/teardownErrorSuppression.test.js' 'out/test/inlineShortPaste.test.js' 'out/test/goalPreambleStrip.test.js' 'out/test/sessionCaptureRestore.test.js' 'out/test/sessionSummaryFallback.test.js' 'out/test/memoryCacheStability.test.js' 'out/test/compactionSummaryCapture.test.js' 'out/test/kiroAutoCompactProcessing.test.js' 'out/test/bareClipboardMention.test.js' 'out/test/webviewDebugMarkerCoverage.test.js' 'out/test/crewStageLabel.test.js' 'out/test/detachedSpawnStages.test.js' 'out/test/resumedCrewStageStatus.test.js' 'out/test/stageHoverPersistence.test.js' 'out/test/rawInputDirectoryTooltip.test.js' 'out/test/fallbackMessageId.test.js' 'out/test/retryBoundaryNotice.test.js' 'out/test/diffPathsTooltip.test.js' 'out/test/agentDisplayName.test.js' 'out/test/conversationExport.test.js' 'out/test/formatAcpErrorMessage.test.js' 'out/test/cursorToolEnricher.test.js' 'out/test/compactionHookWatcher.test.js' 'out/test/permissionQueueAutoApprove.test.js' 'out/test/sessionSummarizer.test.js' 'out/test/modelSwitchHint.test.js' 'out/test/queueSteer.test.js' 'out/test/steerAwaitsSnapshot.test.js' 'out/test/forkFromArchive.test.js' 'out/test/kiroTranscriptReader.test.js' 'out/test/kiroPrecompactionSkip.test.js' 'out/test/tokenUsageRingPersistence.test.js' 'out/test/pastedMentionIsLiteral.test.js' 'out/test/subagentFindingsCapture.test.js' 'out/test/agentAskQuestion.test.js' 'out/test/siblingRepoSymbolResolution.test.js' 'out/test/planBarTitle.test.js' 'out/test/kiroTodoListPlanBar.test.js' 'out/test/synthesizedModePicker.test.js' 'out/test/jevJudgeTool.test.js'",
+    "test:unit": "npm run compile-tests && mocha --require src/test/vscode-shim.cjs --ui tdd 'out/test/forkMemoryAgentIdRemap.test.js' 'out/test/agentQuestionRecord.test.js' 'out/test/planProposal.test.js' 'out/test/pickerOptionParams.test.js' 'out/test/fileLinkPercentDecode.test.js' 'out/test/subagentLifecycleResume.test.js' 'out/test/supersededTurnFilter.test.js' 'out/test/typedefSubscript.test.js' 'out/test/autoSteerFifo.test.js' 'out/test/agentSpawnMemoryEnv.test.js' 'out/test/audioRecorder.test.js' 'out/test/companionRecorder.test.js' 'out/test/mciRecorder.test.js' 'out/test/spectrum.test.js' 'out/test/wavInfo.test.js' 'out/test/voiceMemory.test.js' 'out/test/voiceDiagnostics.test.js' 'out/test/sttErrors.test.js' 'out/test/sttWarmup.test.js' 'out/test/visionClient.test.js' 'out/test/markdownMath.test.js' 'out/test/markdownBalance.test.js' 'out/test/webviewFenceParity.test.js' 'out/test/linkifier.test.js' 'out/test/titleCleaner.test.js' 'out/test/markdownLinkifyKeywords.test.js' 'out/test/toolCallTitleCleaner.test.js' 'out/test/toolTitle.test.js' 'out/test/webSearchClassification.test.js' 'out/test/streamCoalescer.test.js' 'out/test/webviewScriptParse.test.js' 'out/test/foldOrdering.test.js' 'out/test/planModeHandoff.test.js' 'out/test/resumeLossyReplay.test.js' 'out/test/codeLink.test.js' 'out/test/unansweredPrompts.test.js' 'out/test/sideChannelResumeGrouping.test.js' 'out/test/selectionVisibleEditorFallback.test.js' 'out/test/clipboardContext.test.js' 'out/test/queuedClipboardSnapshot.test.js' 'out/test/queuedSelectionSnapshot.test.js' 'out/test/pasteClipboardMentionPosition.test.js' 'out/test/clipboardResumeStrip.test.js' 'out/test/mentionScan.test.js' 'out/test/resourceLinkStrip.test.js' 'out/test/cleanUserMessage.test.js' 'out/test/followAgent.test.js' 'out/test/memory.test.js' 'out/test/memorySkillTools.test.js' 'out/test/memoryDedup.test.js' 'out/test/failedTurnNoCapture.test.js' 'out/test/messageQueue.test.js' 'out/test/queueChipVisibility.test.js' 'out/test/handleQueueExecutes.test.js' 'out/test/subagentFalseSpawnTitle.test.js' 'out/test/psAgentHandoff.test.js' 'out/test/commandOutputRow.test.js' 'out/test/lateSubagentClientTurn.test.js' 'out/test/subcommandAutocomplete.test.js' 'out/test/sendNowOrdering.test.js' 'out/test/postCancelProcessSweep.test.js' 'out/test/toolIdTurnScope.test.js' 'out/test/turnProgressLabel.test.js' 'out/test/idleThoughtDrop.test.js' 'out/test/subagentCrewReason.test.js' 'out/test/modelIdFromConfigOptions.test.js' 'out/test/forkDispatchPrompt.test.js' 'out/test/cancelFallbackOwnership.test.js' 'out/test/sideChannelPrompt.test.js' 'out/test/stopEndsTurn.test.js' 'out/test/mergeInterruptedOrder.test.js' 'out/test/mergeDuplicateToolInterleave.test.js' 'out/test/mergeTrailingReplyPlacement.test.js' 'out/test/mergeReplayOrderAuthority.test.js' 'out/test/compactionSnapshotResurrection.test.js' 'out/test/mergeMissingRowPlacement.test.js' 'out/test/teardownErrorSuppression.test.js' 'out/test/inlineShortPaste.test.js' 'out/test/goalPreambleStrip.test.js' 'out/test/sessionCaptureRestore.test.js' 'out/test/sessionSummaryFallback.test.js' 'out/test/memoryCacheStability.test.js' 'out/test/compactionSummaryCapture.test.js' 'out/test/kiroAutoCompactProcessing.test.js' 'out/test/bareClipboardMention.test.js' 'out/test/webviewDebugMarkerCoverage.test.js' 'out/test/crewStageLabel.test.js' 'out/test/detachedSpawnStages.test.js' 'out/test/resumedCrewStageStatus.test.js' 'out/test/stageHoverPersistence.test.js' 'out/test/rawInputDirectoryTooltip.test.js' 'out/test/fallbackMessageId.test.js' 'out/test/retryBoundaryNotice.test.js' 'out/test/diffPathsTooltip.test.js' 'out/test/agentDisplayName.test.js' 'out/test/conversationExport.test.js' 'out/test/formatAcpErrorMessage.test.js' 'out/test/cursorToolEnricher.test.js' 'out/test/compactionHookWatcher.test.js' 'out/test/permissionQueueAutoApprove.test.js' 'out/test/sessionSummarizer.test.js' 'out/test/modelSwitchHint.test.js' 'out/test/queueSteer.test.js' 'out/test/steerAwaitsSnapshot.test.js' 'out/test/forkFromArchive.test.js' 'out/test/kiroTranscriptReader.test.js' 'out/test/kiroPrecompactionSkip.test.js' 'out/test/tokenUsageRingPersistence.test.js' 'out/test/pastedMentionIsLiteral.test.js' 'out/test/subagentFindingsCapture.test.js' 'out/test/agentAskQuestion.test.js' 'out/test/siblingRepoSymbolResolution.test.js' 'out/test/planBarTitle.test.js' 'out/test/kiroTodoListPlanBar.test.js' 'out/test/synthesizedModePicker.test.js' 'out/test/jevJudgeTool.test.js'",
     "deploy": "node scripts/deploy-all.js",
     "deploy:fast": "node scripts/deploy-all.js",
     "install:local": "node scripts/install-local.js",

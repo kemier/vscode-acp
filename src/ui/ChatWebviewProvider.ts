@@ -72,6 +72,7 @@ import {
 import { readSessionSummarySettings } from '../core/SessionSummaryConfig';
 import { summarizeSession } from '../core/SessionSummarizer';
 import { VoiceInputManager, VoiceEvent } from '../voice/VoiceInputManager';
+import { WindowRecordManager, ScreenRecordEvent } from '../vision/WindowRecordManager';
 
 const execFileAsync = promisify(execFile);
 
@@ -328,6 +329,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   private pendingMessages: any[] = [];
   private updateListener: SessionUpdateListener;
   private readonly voiceInput: VoiceInputManager;
+  private readonly screenRecord: WindowRecordManager;
   /** When true, suppress webview notifications (used during background session capture). */
   /** When true, suppress webview notifications (used during background session capture or reconnect). */
   suppressWebviewUpdates = false;
@@ -813,6 +815,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       (evt: VoiceEvent) => this.handleVoiceEvent(evt),
       () => this.sessionManager.getActiveSessionId() ?? undefined,
     );
+    this.screenRecord = new WindowRecordManager(
+      (evt: ScreenRecordEvent) => this.handleScreenRecordEvent(evt),
+      () => this.sessionManager.getActiveSessionId() ?? undefined,
+    );
   }
 
   /** Command entry point: re-transcribe the newest take the STT server refused. */
@@ -837,6 +843,27 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         break;
       case 'error':
         this.postMessage({ type: 'voiceError', message: evt.message });
+        break;
+    }
+  }
+
+  private handleScreenRecordEvent(evt: ScreenRecordEvent): void {
+    switch (evt.type) {
+      case 'state':
+        this.postMessage({ type: 'screenRecordState', state: evt.state });
+        break;
+      case 'pending':
+        this.postMessage({
+          type: 'screenRecordPending',
+          label: evt.label,
+          bytes: evt.bytes,
+        });
+        break;
+      case 'cleared':
+        this.postMessage({ type: 'screenRecordCleared' });
+        break;
+      case 'error':
+        this.postMessage({ type: 'screenRecordError', message: evt.message });
         break;
     }
   }
@@ -1189,12 +1216,21 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         }
         this.postMessage({ type: 'voiceEnabled', enabled });
       }
+      if (e.affectsConfiguration('acp.vision.enabled')) {
+        const enabled = vscode.workspace.getConfiguration('acp.vision').get<boolean>('enabled', true);
+        if (!enabled) {
+          void this.screenRecord.cancel();
+          this.screenRecord.clearPending();
+        }
+        this.postMessage({ type: 'screenRecordEnabled', enabled });
+      }
     });
     webviewView.onDidDispose(() => {
       debugResumeConfigSub.dispose();
       // A disposed webview can never receive the transcript — kill any
       // in-flight recording so the recorder process doesn't leak.
       this.voiceInput.cancel();
+      void this.screenRecord.cancel();
     });
 
     // Handle messages from the webview
@@ -1287,6 +1323,17 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           break;
         case 'voiceToggle':
           await this.voiceInput.toggle();
+          break;
+        case 'screenRecordToggle':
+          await this.screenRecord.toggle();
+          break;
+        case 'screenRecordClear':
+          this.screenRecord.clearPending();
+          break;
+        case 'attachVideoFile':
+          if (typeof message.path === 'string' && message.path.trim()) {
+            await this.screenRecord.attachVideoFile(message.path.trim());
+          }
           break;
         case 'steerPrompt':
           await this.handleSteerPrompt(message.text);
@@ -2172,6 +2219,43 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // (verbatim or hand-edited), record the outcome for the review command.
     this.voiceInput.captureFeedback(text, activeId);
 
+    // Snapshot the text the USER typed before screen-recording / context
+    // augmentation rewrites the wire payload.
+    const promptDisplayText = text;
+
+    // Screen recording attachment: analyze via vision API (or extract frames)
+    // before the prompt hits the agent. ACP has no video ContentBlock.
+    // Skip for slash commands — those are agent side-channels, not multimodal turns.
+    let imagesForPrompt = images ? [...images] : undefined;
+    if (this.screenRecord.pendingVideo && !text.trimStart().startsWith('/')) {
+      try {
+        const caps = this.sessionManager.getPromptCapabilities(activeId);
+        const consumed = await this.screenRecord.consumeForPrompt({
+          agentSupportsImage: !!caps?.image,
+        });
+        if (consumed.text) {
+          text = text.trim() ? `${consumed.text}\n\n${text}` : consumed.text;
+        }
+        if (consumed.images && consumed.images.length > 0) {
+          imagesForPrompt = [...(imagesForPrompt || []), ...consumed.images];
+        }
+        if (consumed.pill) {
+          this.postMessage({
+            type: 'videoContextAttached',
+            pills: [consumed.pill],
+            rawText: promptDisplayText,
+            text: promptDisplayText,
+          });
+        }
+      } catch (err: any) {
+        this.postMessage({
+          type: 'screenRecordError',
+          message: String(err?.message || err),
+        });
+        return;
+      }
+    }
+
     // Capture whether the session was still loading (resume replay in
     // progress) when this prompt arrived. The webview's handleSend() adds a
     // user bubble for normal prompts, but when a prompt is sent while
@@ -2183,16 +2267,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // in-progress assistant stream (addMessage('user') resets
     // currentAssistantEl), producing an empty assistant bubble.
     const promptSentWhileLoading = this.sessionManager.isLoading(activeId);
-    // Snapshot the text the USER typed, before the context-block processing
-    // below rewrites it (@terminal / @problems are stripped and the resolved
-    // output is prepended as <terminal>/<problems> XML, file references are
-    // removed). The userBubble must show what was typed, not the augmented
-    // payload sent to the model — and the webview dedups the bubble by
-    // comparing against the most recent user message, which handleSend()
-    // rendered from the raw text. Posting the rewritten text made that
-    // comparison miss, so a resume-phase prompt using any context token got a
-    // SECOND bubble containing the machine-facing XML.
-    const promptDisplayText = text;
+    // Note: promptDisplayText was snapshotted above (before vision/context
+    // rewrite). Context-block processing below may still rewrite `text`
+    // (@terminal / @problems / file references).
 
     sendEvent(
       'chat/messageSent',
@@ -2651,7 +2728,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       const response = await this.sessionManager.sendPrompt(
         activeId,
         text,
-        images,
+        imagesForPrompt,
         undefined,
         selections,
         contextBlocks,
@@ -5057,6 +5134,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     );
     const buildStamp = Date.now();
     const voiceEnabled = vscode.workspace.getConfiguration('acp.voice').get<boolean>('enabled', true);
+    const visionEnabled = vscode.workspace.getConfiguration('acp.vision').get<boolean>('enabled', true);
 
     return /*html*/ `<!DOCTYPE html>
 <html lang="en">
@@ -6449,6 +6527,46 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       50% { transform: scale(1.25); }
     }
 
+    /* Screen / window record button — same row as mic. */
+    .screen-btn {
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 16px;
+      padding: 4px 6px;
+      border-radius: 4px;
+      opacity: 0.7;
+      line-height: 1;
+    }
+    .screen-btn:hover { opacity: 1; background: var(--vscode-toolbar-hoverBackground); }
+    .screen-btn.recording {
+      opacity: 1;
+      color: var(--vscode-inputValidation-errorForeground, #f48771);
+      animation: mic-pulse 1.2s ease-in-out infinite;
+    }
+    .screen-btn.processing { opacity: 1; cursor: wait; }
+
+    .video-preview-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      padding: 2px 8px;
+      border-radius: 10px;
+      background: var(--vscode-badge-background);
+      color: var(--vscode-badge-foreground);
+      margin: 2px 4px;
+    }
+    .video-preview-chip button {
+      background: none;
+      border: none;
+      cursor: pointer;
+      color: inherit;
+      opacity: 0.8;
+      padding: 0 2px;
+      font-size: 12px;
+    }
+
     .image-preview-strip {
       display: flex;
       gap: 4px;
@@ -6826,6 +6944,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    <div class="msg-queue" id="msgQueue"></div>
    <div class="input-editor-wrap">
      <div class="image-preview-strip" id="imagePreviewStrip"></div>
+     <div class="image-preview-strip" id="videoPreviewStrip"></div>
      <textarea
        id="promptInput"
        placeholder="Type a message..."
@@ -6834,6 +6953,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    </div>
 <div class="input-send-row">
   <button class="mic-btn" id="micBtn" title="Dictate: click to start recording, click again to transcribe (local STT)" ${voiceEnabled ? '' : 'style="display:none;"'}>🎙</button>
+  <button class="screen-btn" id="screenBtn" title="Record a window or display (incl. extended screens), then send for video understanding" ${visionEnabled ? '' : 'style="display:none;"'}>🖥</button>
    <button class="attach-btn" id="attachBtn" title="Attach image (or paste)" style="display:none;">📎</button>
   <button class="send-stop-btn send" id="sendStopBtn" disabled>Send</button>
 </div>
@@ -6888,7 +7008,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     const sendStopBtn = document.getElementById('sendStopBtn');
     const attachBtn = document.getElementById('attachBtn');
     const micBtn = document.getElementById('micBtn');
+    const screenBtn = document.getElementById('screenBtn');
     const imagePreviewStrip = document.getElementById('imagePreviewStrip');
+    const videoPreviewStrip = document.getElementById('videoPreviewStrip');
     const statusEl = document.getElementById('status');
     const sessionBanner = document.getElementById('sessionBanner');
   const bannerAgent = document.getElementById('bannerAgent');
@@ -10186,8 +10308,9 @@ var end = displayText.length;
    function updateSendButton() {
      if (isProcessing) return; // Stop button is always enabled
      const hasText = promptInput.value.trim().length > 0;
-     sendStopBtn.disabled = !hasText || !hasActiveSession;
-     wvProbe('updateSendButton', 'hasText=' + hasText + ' disabled=' + sendStopBtn.disabled + ' btnText=' + sendStopBtn.textContent);
+     const hasAttach = pendingImages.length > 0 || pendingVideoAttached;
+     sendStopBtn.disabled = (!hasText && !hasAttach) || !hasActiveSession;
+     wvProbe('updateSendButton', 'hasText=' + hasText + ' hasAttach=' + hasAttach + ' disabled=' + sendStopBtn.disabled + ' btnText=' + sendStopBtn.textContent);
    }
 
     promptInput.addEventListener('input', () => {
@@ -10596,7 +10719,7 @@ var end = displayText.length;
     function handleQueue() {
     const text = promptInput.value.trim();
     wvProbe('handleQueue ENTER', 'text=' + (text || '(empty)').substring(0, 40));
-    if (!text && pendingImages.length === 0) {
+    if (!text && pendingImages.length === 0 && !pendingVideoAttached) {
       wvQueueLog('handleQueue:DROP-empty', 'nothing to queue');
       return;
     }
@@ -10968,7 +11091,7 @@ function handleSend() {
   const text = promptInput.value.trim();
   wvProbe('handleSend ENTER', 'textLen=' + text.length + ' hasImages=' + (pendingImages.length > 0));
   wvQueueLog('send:ENTER', 'len=' + text.length);
-  if (!text && pendingImages.length === 0) return;
+  if (!text && pendingImages.length === 0 && !pendingVideoAttached) return;
   // Guard: don't send if there's no active agent session (e.g. after reload
   // before reconnecting). The Send button is also disabled via
   // updateSendButton, but this catches edge cases like Enter key.
@@ -11077,6 +11200,11 @@ function handleSend() {
    promptInput.value = '';
    const images = pendingImages.splice(0);
    imagePreviewStrip.innerHTML = '';
+   // Host consumes the pending take on sendPrompt; clear the chip optimistically.
+   if (pendingVideoAttached) {
+     pendingVideoAttached = false;
+     if (videoPreviewStrip) videoPreviewStrip.innerHTML = '';
+   }
    updateSendButton();
  hasSentPrompt = true;
  lastPromptWasSlash = !!(text && text.startsWith('/') && !text.startsWith('/rename') && !text.startsWith('/session'));
@@ -11241,6 +11369,16 @@ function handleSend() {
           const reader = new FileReader();
           reader.onload = () => addPendingImage(reader.result);
           reader.readAsDataURL(file);
+        } else if (item.type.startsWith('video/')) {
+          e.preventDefault();
+          handled = true;
+          const file = item.getAsFile();
+          const filePath = file && file.path ? file.path : '';
+          if (filePath) {
+            vscode.postMessage({ type: 'attachVideoFile', path: filePath });
+          } else {
+            showVoiceNotice('⚠️ Pasted video has no file path; use the 📎 picker or 🖥 record button.');
+          }
         }
       }
       // Paste-to-clipboard: pasting TEXT (not an image) becomes a clipboard
@@ -11297,18 +11435,29 @@ function handleSend() {
       }
     });
 
-    // Attach button — opens file picker
+    // Attach button — opens file picker (images, or video for vision analysis)
    attachBtn.addEventListener('click', () => {
      if (!isImageInputSupported()) return;
      const input = document.createElement('input');
       input.type = 'file';
-      input.accept = 'image/*';
+      input.accept = 'image/*,video/*';
       input.multiple = true;
       input.addEventListener('change', () => {
         for (const file of input.files) {
-          const reader = new FileReader();
-          reader.onload = () => addPendingImage(reader.result);
-          reader.readAsDataURL(file);
+          if (file.type && file.type.startsWith('video/')) {
+            // Route through the host: vision API or frame extraction.
+            // Prefer the real path when the browser exposes it (Electron).
+            const filePath = file.path || '';
+            if (filePath) {
+              vscode.postMessage({ type: 'attachVideoFile', path: filePath });
+            } else {
+              showVoiceNotice('⚠️ Video attach needs a file path; use the 🖥 record button or drag the file into the workspace first.');
+            }
+          } else {
+            const reader = new FileReader();
+            reader.onload = () => addPendingImage(reader.result);
+            reader.readAsDataURL(file);
+          }
         }
       });
       input.click();
@@ -11358,6 +11507,45 @@ function handleSend() {
   if (micBtn) {
     micBtn.addEventListener('click', () => {
       vscode.postMessage({ type: 'voiceToggle' });
+    });
+  }
+  var screenRecordState = 'idle';
+  var pendingVideoAttached = false;
+  function setScreenRecordState(next) {
+    screenRecordState = next;
+    if (!screenBtn) return;
+    screenBtn.classList.toggle('recording', next === 'recording');
+    screenBtn.classList.toggle('processing', next === 'processing');
+    screenBtn.textContent = next === 'recording' ? '⏺' : next === 'processing' ? '⏳' : '🖥';
+    screenBtn.title = next === 'recording'
+      ? 'Recording screen — click again to stop and attach'
+      : next === 'processing'
+        ? 'Processing screen recording…'
+        : 'Record a window or display (incl. extended screens), then send for video understanding';
+  }
+  function renderVideoPreview(label, bytes) {
+    if (!videoPreviewStrip) return;
+    videoPreviewStrip.innerHTML = '';
+    pendingVideoAttached = !!label;
+    if (!label) return;
+    var chip = document.createElement('span');
+    chip.className = 'video-preview-chip';
+    var sizeKb = typeof bytes === 'number' ? Math.max(1, Math.round(bytes / 1024)) : '?';
+    chip.textContent = '🎬 ' + label + ' (' + sizeKb + ' KB) ';
+    var clearBtn = document.createElement('button');
+    clearBtn.type = 'button';
+    clearBtn.title = 'Remove recording';
+    clearBtn.textContent = '×';
+    clearBtn.addEventListener('click', function () {
+      vscode.postMessage({ type: 'screenRecordClear' });
+    });
+    chip.appendChild(clearBtn);
+    videoPreviewStrip.appendChild(chip);
+    if (typeof updateSendButton === 'function') updateSendButton();
+  }
+  if (screenBtn) {
+    screenBtn.addEventListener('click', function () {
+      vscode.postMessage({ type: 'screenRecordToggle' });
     });
   }
   function insertVoiceTranscript(text, autoSend) {
@@ -20596,6 +20784,28 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           if (micBtn) micBtn.style.display = msg.enabled === false ? 'none' : '';
           break;
 
+        case 'screenRecordState':
+          setScreenRecordState(msg.state);
+          break;
+
+        case 'screenRecordPending':
+          setScreenRecordState('idle');
+          renderVideoPreview(typeof msg.label === 'string' ? msg.label : 'Screen recording', msg.bytes);
+          break;
+
+        case 'screenRecordCleared':
+          renderVideoPreview('', 0);
+          break;
+
+        case 'screenRecordError':
+          setScreenRecordState('idle');
+          showVoiceNotice('⚠️ ' + (typeof msg.message === 'string' ? msg.message : 'Screen recording failed'));
+          break;
+
+        case 'screenRecordEnabled':
+          if (screenBtn) screenBtn.style.display = msg.enabled === false ? 'none' : '';
+          break;
+
       // Host-initiated prompt (fork-to-agent). dispatchPrompt() posts the
       // exported conversation text here; before this case existed the
       // inbound switch had no 'sendPrompt' handler, so the entire fork
@@ -20604,7 +20814,9 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       // path a typed+Enter send uses: drop the text into the input and let
       // handleSend() post it to the host (preserving queueing, compaction
       // guards, and the user bubble).
+      case 'videoContextAttached':
       case 'contextAttached': {
+        // videoContextAttached (screen pill) shares this rewrite path.
         // The host resolved @mentions AFTER the webview had already rendered the raw
         // prompt, so the live bubble said "@terminal fix this" while the resumed one
         // said "[Terminal: 40 lines] fix this". Rewrite it to the resumed form —

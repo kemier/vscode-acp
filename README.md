@@ -18,6 +18,9 @@ A [Visual Studio Code extension](https://marketplace.visualstudio.com/items?item
 - **Terminal Execution**: Agents can run commands with terminal output display
 - **Permission Management**: Configurable auto-approve policies for agent actions
 - **Protocol Traffic Logging**: Inspect all ACP JSON-RPC messages with request/response/notification labels
+- **Voice Dictation**: Click the mic in the composer to dictate a prompt. Transcription runs against any OpenAI-style STT endpoint (`acp.voice.stt.endpoint`) — Whisper, a local whisper.cpp server, etc. Silence auto-stop and a Bluetooth "audio flowing" probe included; on Windows the built-in MCI recorder works with nothing to install.
+- **Screen Recording → Video Vision**: Click 🖥 in the composer to record a display or window (extended screens included) as MP4. On send, the take is analyzed by a video-capable endpoint (StepFun-style `video_url`, `acp.vision.endpoint`) and the summary is injected into the prompt; with no endpoint configured, frames are extracted and attached as images for image-capable agents. See [docs/vision-models.md](docs/vision-models.md) for the provider matrix.
+- **Remote SSH / WSL / Containers**: Voice and screen capture run on the **client** machine via the `acp-local-capture` companion extension (`extensionKind: ["ui"]`), so both work when the extension host is a headless remote server. See [docs/voice-remote-ssh.md](docs/voice-remote-ssh.md) and [docs/vision-remote-ssh.md](docs/vision-remote-ssh.md).
 - **Agent Registry**: Browse and discover available ACP agents
 - **Chat Persistence**: Conversations are preserved when switching panels
 
@@ -65,6 +68,49 @@ You can add custom agent configurations in settings.
 | `acp.defaultWorkingDirectory` | `""` | Default working directory for agent sessions. Empty uses current workspace. |
 | `acp.logTraffic` | `true` | Log all ACP protocol traffic to the ACP Traffic output channel. |
 | `acp.logTrafficMaxEntries` | `1000` | Maximum entries kept in the ACP Traffic output channel before it is cleared. Bounds memory in long sessions. |
+
+### Voice dictation
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `acp.voice.enabled` | `true` | Master switch for the mic button. |
+| `acp.voice.stt.endpoint` | `""` | OpenAI-style STT endpoint (`POST /v1/audio/transcriptions`). Empty disables dictation. |
+| `acp.voice.stt.apiKey` | `""` | API key for the STT endpoint. |
+| `acp.voice.stt.model` | `""` | Model name sent to the STT endpoint. |
+| `acp.voice.stt.language` | `""` | Language hint passed to the STT endpoint. |
+| `acp.voice.stt.prompt` | `""` | Prompt/context passed to the STT endpoint. |
+| `acp.voice.stt.timeoutMs` | `60000` | STT request timeout. |
+| `acp.voice.captureMode` | `auto` | `auto` uses the companion in remote windows, the extension host locally. `localCompanion` forces the companion, `extensionHost` forces local. |
+| `acp.voice.recordCommand` | `""` | Override the recorder binary (resolved on the machine that captures). |
+| `acp.voice.windowsRecorder` | `auto` | Windows backend: `auto` picks MCI when no recorder binary is on PATH, `mci` forces the built-in recorder, `binary` forces SoX/ffmpeg. |
+| `acp.voice.maxDurationSec` | `120` | Dictation take length cap. |
+| `acp.voice.silenceAutoStopSec` | `2.5` | Stop the take after this many seconds of silence (SoX backend only; 0 disables). |
+| `acp.voice.silenceThresholdPct` | `3` | Silence threshold for auto-stop, percent of full scale. |
+| `acp.voice.autoSend` | `false` | Send the transcribed prompt immediately instead of leaving it in the composer. |
+| `acp.voice.keepTakes` | `failed` | Which WAV takes to keep on disk: `all`, `failed`, or `none`. |
+| `acp.voice.corrections` | `{}` | Voice Memory corrections applied to transcripts (e.g. homophone fixes). |
+| `acp.voice.corrector.enabled` | `false` | Run an LLM pass over the transcript before it lands in the composer. |
+| `acp.voice.corrector.endpoint` | `http://127.0.0.1:11434/v1/chat/completions` | OpenAI-compatible endpoint for the corrector pass (defaults to a local Ollama). |
+| `acp.voice.corrector.model` | `qwen2.5:7b` | Corrector model name. |
+| `acp.voice.corrector.apiKey` | `""` | Corrector API key. |
+| `acp.voice.corrector.timeoutMs` | `15000` | Corrector request timeout. |
+| `acp.voice.memoryFile` | `""` | Path to the Voice Memory file (learned corrections). |
+
+### Screen recording / video vision
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| `acp.vision.enabled` | `true` | Master switch for the 🖥 screen-record button. |
+| `acp.vision.endpoint` | `https://api.stepfun.com/v1` | OpenAI-compatible video-vision endpoint. Empty falls back to frame extraction for image-capable agents. |
+| `acp.vision.apiKey` | `""` | API key for the vision endpoint. |
+| `acp.vision.model` | `step-5-preview` | Video model name. |
+| `acp.vision.provider` | `openai-compat` | Provider hint controlling payload shape (`openai-compat`, `stepfun`, …). |
+| `acp.vision.prompt` | *(summary prompt)* | Instruction sent with the video. |
+| `acp.vision.timeoutMs` | `180000` | Vision API timeout. |
+| `acp.vision.inlineMaxBytes` | `15728640` | MP4s larger than this go through the provider's Files API instead of a base64 data URI. |
+| `acp.vision.maxDurationSec` | `90` | Screen take length cap. |
+| `acp.vision.ffmpegPath` | `""` | ffmpeg binary when it is not on PATH (resolved on the machine that captures). |
+| `acp.vision.maxFrames` | `8` | Frames extracted in the no-endpoint fallback. |
 
 ## Commands
 

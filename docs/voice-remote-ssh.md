@@ -27,14 +27,14 @@ Policy, no matter what the extension does.
 
 ## The fix: a UI-kind companion extension
 
-`companion/acp-voice-local` declares `"extensionKind": ["ui"]`, so VS Code runs
+`companion/acp-local-capture` declares `"extensionKind": ["ui"]`, so VS Code runs
 it in the **local** extension host, on the machine with the microphone. Commands
 registered by any extension host land in the same main-thread `CommandsRegistry`,
 so the remote ACP Client can drive the local recorder by command id:
 
 ```
-remote host  ──  acpVoiceLocal.start / .stop / .cancel / .probe  ──▶  client
-client       ──  acp.voice.localRecorderEvent (audioFlowing / naturalExit) ──▶  remote
+remote host  ──  acpLocalCapture.start / .stop / .cancel / .probe  ──▶  client
+client       ──  acp.capture.localRecorderEvent (audioFlowing / naturalExit) ──▶  remote
 ```
 
 `stop` returns the WAV as base64; the remote host writes it to its temp dir and
@@ -52,7 +52,7 @@ Two capture backends run on the client, both shared with the main extension:
 
    ```bash
    npm run package:companion
-   # → companion/acp-voice-local/acp-voice-local-0.1.0.vsix
+   # → companion/acp-local-capture/acp-local-capture-0.2.0.vsix
    ```
 
 2. **Install it from the remote window**: Extensions view → `…` →
@@ -101,7 +101,7 @@ Two capture backends run on the client, both shared with the main extension:
 
    The dialog offers *Test Local Microphone*: it records 3 s on the client and
    reports the captured byte count, isolating mic problems from ACP. Details land
-   in the client-side output channel **ACP Voice (Local Mic)**.
+   in the client-side output channel **ACP Local Capture**.
 
    Windows mic permission lives in Settings → Privacy & security → Microphone →
    *Let desktop apps access your microphone* (VS Code is a desktop app).

@@ -40,7 +40,7 @@ const extensionConfig = {
  * Built from the same AudioRecorder source as the main extension; its own
  * tsconfig widens rootDir so the shared import resolves.
  */
-const companionRoot = path.resolve(__dirname, 'companion/acp-voice-local');
+const companionRoot = path.resolve(__dirname, 'companion/acp-local-capture');
 
 /** @type {import('webpack').Configuration} */
 const companionConfig = {

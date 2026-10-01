@@ -14,7 +14,7 @@ dist/test/**
 dist/ui/**
 dist/utils/**
 
-# Companion extension (packaged separately as acp-voice-local-*.vsix and
+# Companion extension (packaged separately as acp-local-capture-*.vsix and
 # installed on the UI/client side — must never ship inside this VSIX)
 companion/**
 

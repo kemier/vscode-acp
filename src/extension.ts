@@ -1101,10 +1101,10 @@ export function activate(context: vscode.ExtensionContext): void {
       await vscode.env.clipboard.writeText(report + '\n');
     } else if (choice === 'Test Local Microphone') {
       try {
-        await vscode.commands.executeCommand('acpVoiceLocal.testMicrophone');
+        await vscode.commands.executeCommand('acpLocalCapture.testMicrophone');
       } catch (e: any) {
         vscode.window.showErrorMessage(
-          `ACP Voice: Test Local Microphone failed — ${e?.message ?? e}`,
+          `ACP Local Capture: Test Local Microphone failed — ${e?.message ?? e}`,
         );
       }
     }

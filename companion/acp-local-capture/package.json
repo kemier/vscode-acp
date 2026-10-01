@@ -1,8 +1,8 @@
 {
-  "name": "acp-voice-local",
-  "displayName": "ACP Voice (Local Mic)",
-  "description": "Local microphone capture for the ACP Client extension. Runs on the client machine so dictation works in Remote SSH, WSL and Dev Container windows.",
-  "version": "0.1.3",
+  "name": "acp-local-capture",
+  "displayName": "ACP Local Capture (Mic + Screen)",
+  "description": "Local microphone and screen capture for the ACP Client extension. Runs on the client machine so dictation and screen recording work in Remote SSH, WSL and Dev Container windows.",
+  "version": "0.2.0",
   "publisher": "formulahendry",
   "license": "MIT",
   "engines": {
@@ -19,6 +19,8 @@
     "acp",
     "voice",
     "dictation",
+    "screen",
+    "recording",
     "remote"
   ],
   "activationEvents": [
@@ -37,9 +39,9 @@
   "contributes": {
     "commands": [
       {
-        "command": "acpVoiceLocal.testMicrophone",
+        "command": "acpLocalCapture.testMicrophone",
         "title": "Test Local Microphone",
-        "category": "ACP Voice"
+        "category": "ACP Local Capture"
       }
     ]
   }
