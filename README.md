@@ -2,7 +2,7 @@
 
 A [Visual Studio Code extension](https://marketplace.visualstudio.com/items?itemName=formulahendry.acp-client) that provides a client for the [Agent Client Protocol (ACP)](https://agentclientprotocol.com/) — connect to any ACP-compatible AI coding agent directly from your editor.
 
-![ACP Client Screenshot](resources/screenshot.png)
+![ACP Client Screenshot](screenshot.png)
 
 ## Features
 
