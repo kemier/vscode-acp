@@ -6,7 +6,7 @@ A [Visual Studio Code extension](https://marketplace.visualstudio.com/items?item
 
 ## Features
 
-- **Multi-Agent Support**: Connect to 11 pre-configured ACP agents or add your own
+- **Multi-Agent Support**: Connect to 3 pre-configured ACP agents or add your own
 - **Single-Agent Focus**: One agent active at a time — seamlessly switch between agents
 - **Per-Agent Session List**: Each agent in the Agents view is expandable into its previous sessions. Click a session to restore its history in the chat. Backed by `session/list` when the agent supports it, or by a local per-workspace cache otherwise.
 - **Session Config Options**: Dynamic per-session selectors (mode, model, reasoning level, …) advertised by the agent are rendered automatically in the composer toolbar.
@@ -39,23 +39,27 @@ A [Visual Studio Code extension](https://marketplace.visualstudio.com/items?item
 
 ## Pre-configured Agents
 
-The extension comes with default configurations for:
+The extension ships with these defaults (agent binaries must be on your `PATH`):
+
+| Agent | Command |
+|-------|---------|
+| Claude Code | `claude-code-acp` |
+| Codex CLI | `codex-acp` |
+| Cursor | `cursor-agent acp` |
+
+Add any other ACP-compatible agent under `acp.agents` in settings, or use **ACP: Browse Agent Registry**. Examples people commonly add:
 
 | Agent | Command |
 |-------|---------|
 | GitHub Copilot | `npx @github/copilot-language-server@latest --acp` |
-| Claude Code | `npx @agentclientprotocol/claude-agent-acp@latest` |
 | Gemini CLI | `npx @google/gemini-cli@latest --experimental-acp` |
 | Qwen Code | `npx @qwen-code/qwen-code@latest --acp --experimental-skills` |
 | Auggie CLI | `npx @augmentcode/auggie@latest --acp` |
 | Qoder CLI | `npx @qoder-ai/qodercli@latest --acp` |
-| Codex CLI | `npx @zed-industries/codex-acp@latest` |
 | OpenCode | `npx opencode-ai@latest acp` |
 | OpenClaw | `npx openclaw acp` |
 | [Kiro CLI](https://kiro.dev/docs/cli/acp/) | `kiro-cli acp` |
 | [Hermes Agent](https://hermes-agent.nousresearch.com/docs/user-guide/features/acp) | `hermes acp` |
-
-You can add custom agent configurations in settings.
 
 > **Note on Hermes Agent**: Hermes is a Python package, not an npm package. Install it via the [Hermes Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart) (Linux/macOS/WSL2 only — Windows requires [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install)). Make sure `hermes` is on your `PATH` and launch VS Code from the same shell/venv. Configure credentials with `hermes model`.
 
@@ -63,7 +67,7 @@ You can add custom agent configurations in settings.
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `acp.agents` | *(11 agents)* | Agent configurations. Each key is the agent name, value has `command`, `args`, and `env`. |
+| `acp.agents` | *(3 agents)* | Agent configurations. Each key is the agent name, value has `command`, `args`, and `env`. |
 | `acp.autoApprovePermissions` | `ask` | How agent permission requests are handled: `ask` or `allowAll`. |
 | `acp.defaultWorkingDirectory` | `""` | Default working directory for agent sessions. Empty uses current workspace. |
 | `acp.logTraffic` | `true` | Log all ACP protocol traffic to the ACP Traffic output channel. |
