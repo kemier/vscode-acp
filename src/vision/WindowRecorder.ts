@@ -274,7 +274,11 @@ export class WindowRecorder {
     this.stopping = false;
 
     await new Promise<void>((resolve, reject) => {
-      const child = spawn(ffmpeg, args, { stdio: ['ignore', 'ignore', 'pipe'] });
+      // stdin MUST be a pipe: we stop ffmpeg by writing `q` (its graceful-quit
+      // key), which finalizes the MP4 moov atom. On Windows `child.kill()` is
+      // TerminateProcess — a hard kill that skips finalize and leaves a
+      // moov-less, unreadable MP4. See stop().
+      const child = spawn(ffmpeg, args, { stdio: ['pipe', 'ignore', 'pipe'] });
       this.child = child;
       let stderr = '';
       child.stderr?.on('data', (buf: Buffer) => {
@@ -371,16 +375,26 @@ export class WindowRecorder {
         resolve();
       };
       child.once('exit', () => done());
-      // ffmpeg finalizes MP4 on SIGINT (q)
+      // Stop ffmpeg GRACEFULLY by writing `q` to its stdin — ffmpeg reads `q`
+      // as "quit" on every platform and finalizes the MP4 (writes the moov
+      // atom) before exiting. Do NOT use child.kill() here: on Windows that is
+      // TerminateProcess, an immediate hard kill that skips finalize and leaves
+      // a moov-less file the host frame extractor rejects ("moov atom not
+      // found"). SIGINT is the Unix equivalent but `q` works uniformly.
       try {
-        if (process.platform === 'win32') {
-          child.kill();
+        if (child.stdin && !child.stdin.destroyed) {
+          child.stdin.write('q');
+          child.stdin.end();
         } else {
-          child.kill('SIGINT');
+          // No stdin (should not happen) — fall back to a signal.
+          child.kill(process.platform === 'win32' ? undefined : 'SIGINT');
         }
       } catch {
         done();
       }
+      // If ffmpeg is stuck (slow disk flush after a long take), SIGKILL after
+      // 5s so the UI never hangs — the take then surfaces a clear truncation
+      // error instead of a silent hang.
       setTimeout(() => {
         try {
           child.kill('SIGKILL');

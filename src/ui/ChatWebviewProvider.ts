@@ -1248,6 +1248,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             message.clipboardPasted === true,
             Array.isArray(message.pastedClipboardTexts) ? message.pastedClipboardTexts : undefined,
             Array.isArray(message.pastedLiteralTexts) ? message.pastedLiteralTexts : undefined,
+            // True only for the send that owns the pending screen-recording take.
+            message.includeVideo === true,
           );
           break;
         // Snapshot the clipboard for a message being QUEUED. Read now so the queued
@@ -1328,6 +1330,11 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           await this.screenRecord.toggle();
           break;
         case 'screenRecordClear':
+          this.screenRecord.clearPending();
+          break;
+        case 'discardPendingVideo':
+          // A queued entry that owned the pending take was deleted. Release it so
+          // it cannot attach to a later, unrelated send.
           this.screenRecord.clearPending();
           break;
         case 'attachVideoFile':
@@ -2200,6 +2207,17 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
      * pastedLiteralRanges for the captured case.
      */
     pastedLiteralTexts?: string[],
+    /**
+     * True when THIS prompt owns the pending screen-recording take.
+     *
+     * The take lives in a single host slot (WindowRecordManager.pending). The
+     * webview sets this only for the send that actually carries the video — a
+     * direct send with the chip attached, or the drain of a queue entry that
+     * claimed it. Without it, a take left pending by a queued message would be
+     * consumed by whatever prompt happened to arrive next, attaching the video
+     * to the wrong turn.
+     */
+    includeVideo?: boolean,
   ): Promise<void> {
     // TEMP-DEBUG (cannot-send investigation): entry marker so we can tell
     // "webview never posted" apart from "host received but dropped".
@@ -2227,7 +2245,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // before the prompt hits the agent. ACP has no video ContentBlock.
     // Skip for slash commands — those are agent side-channels, not multimodal turns.
     let imagesForPrompt = images ? [...images] : undefined;
-    if (this.screenRecord.pendingVideo && !text.trimStart().startsWith('/')) {
+    if (includeVideo && this.screenRecord.pendingVideo && !text.trimStart().startsWith('/')) {
       try {
         const caps = this.sessionManager.getPromptCapabilities(activeId);
         const consumed = await this.screenRecord.consumeForPrompt({
@@ -7444,6 +7462,10 @@ let isCompacting = false;  // true while /compact is running
       // only the pill tells the user the attachment is still on this queued message.
       var imgPill = imagePillLabel(entry.images && entry.images.length);
       if (imgPill) pills.push(imgPill);
+      // A screen recording rides the host's pending-video slot, not the text, so
+      // like images only a pill tells the user the take is still bound to this
+      // queued message.
+      if (entry.videoAttached) pills.push('🎬 Video');
       if (pills.length === 0) return typed;
       return typed ? pills.join(' ') + ' ' + typed : pills.join(' ');
     }
@@ -7721,8 +7743,8 @@ let isCompacting = false;  // true while /compact is running
      });
    }
 
-   function queueMessage(text, images) {
-     const entry = { text, images: images || [] };
+   function queueMessage(text, images, videoAttached) {
+     const entry = { text, images: images || [], videoAttached: !!videoAttached };
      messageQueue.push(entry);
      // Snapshot @clipboard NOW, not when this drains.
      //
@@ -7951,6 +7973,12 @@ let isCompacting = false;  // true while /compact is running
    function removeQueuedMessage(index) {
      var entry = messageQueue[index];
      messageQueue.splice(index, 1);
+     // If this entry owned the pending screen recording, releasing it here keeps
+     // the take from attaching to an unrelated send. (The host take is a single
+     // slot; nothing else will claim it once this entry is gone.)
+     if (entry && entry.videoAttached) {
+       vscode.postMessage({ type: 'discardPendingVideo' });
+     }
      // If this entry was auto-steered into the RUNNING turn (maybeAutoSteerNext),
      // the agent already holds a copy in its private steer queue. session/steer is
      // a notification with no retract, so without this the deleted message would be
@@ -8127,6 +8155,9 @@ let isCompacting = false;  // true while /compact is running
      // Optimistically set processing=true so the Stop button shows immediately.
      setProcessing(true, 'drainQueue-localslash-notprocessing');
      vscode.postMessage({ type: 'sendPrompt', text: queueEntryPromptText(entry) || ' ', images: entry.images,
+       // Carry the queue entry's video claim: the host consumes the pending
+       // screen-recording take only for the entry that actually owns it.
+       includeVideo: !!entry.videoAttached,
        // Always pass the array, even when empty: it tells the host to use this
        // entry's snapshot and NOT re-read the editor. Without it the host would
        // capture whatever is selected at drain time and attach it on top of the
@@ -8291,6 +8322,12 @@ function nextAutoSteerIndex(queue) {
     // From here on, e is the head of the undelivered queue. Ineligible => steer
     // nothing this round rather than reaching past it.
     if (e.images && e.images.length) return -1;
+    // A video-owning entry is never steerable either, for the same reason as
+    // images: the steer path (handleSteerPrompt) carries text only, so steering
+    // it would deliver the message WITHOUT its screen recording. The take is
+    // consumed by the drain's sendPrompt (includeVideo), so the entry must wait
+    // for its own turn.
+    if (e.videoAttached) return -1;
     if (String(e.text || '').trim().indexOf('/') === 0) return -1;
     // Snapshot still in flight — steering NOW would send the entry without it.
     //
@@ -10730,6 +10767,16 @@ var end = displayText.length;
     // message typed mid-turn vanished with no chip, no bubble and no queue entry.
     const images = pendingImages.splice(0);
     imagePreviewStrip.innerHTML = '';
+    // Claim the pending screen recording for THIS queue entry, exactly like
+    // images. The host holds the take in a single slot; without recording which
+    // entry owns it, the take floats and lands on whatever drains first (or is
+    // lost). Clear the chip so the user sees it has been attached to the queued
+    // message, and pass the flag through queueMessage so the drain sends it.
+    const videoAttached = pendingVideoAttached;
+    if (videoAttached) {
+      pendingVideoAttached = false;
+      if (videoPreviewStrip) videoPreviewStrip.innerHTML = '';
+    }
     promptInput.value = '';
     updateSendButton();
     // Every message typed while a turn is processing is queued here —
@@ -10747,7 +10794,7 @@ if (_isMutatingCmd) {
    // prompt — they are NOT shown as a chat bubble until they drain. The
    // queue chip stays visible so the user knows the command is pending.
    vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] handleQueue: QUEUED mutating cmd, messageQueue.length=' + (messageQueue.length + 1) });
-   queueMessage(text, images);
+   queueMessage(text, images, videoAttached);
  } else {
    // Option B (all agents): do NOT show the message as a user bubble yet —
    // only the queue chip. Showing the bubble immediately is misleading during
@@ -10755,7 +10802,7 @@ if (_isMutatingCmd) {
    // being processed, when it is actually still queued. drainQueue() adds the
    // bubble at the moment the message is actually sent to the agent.
    vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] handleQueue: QUEUED msg, isProcessing=' + isProcessing + ' isSendingPrompt=' + isSendingPrompt + ' messageQueue.length=' + (messageQueue.length + 1) });
-   queueMessage(text, images);
+   queueMessage(text, images, videoAttached);
  }
  }
 
@@ -11201,8 +11248,12 @@ function handleSend() {
    const images = pendingImages.splice(0);
    imagePreviewStrip.innerHTML = '';
    // Host consumes the pending take on sendPrompt; clear the chip optimistically.
+   // includeVideo tells the host to consume the take for THIS prompt — without it
+   // the host would attach a still-pending take to an unrelated send.
+   var includeVideo = false;
    if (pendingVideoAttached) {
      pendingVideoAttached = false;
+     includeVideo = true;
      if (videoPreviewStrip) videoPreviewStrip.innerHTML = '';
    }
    updateSendButton();
@@ -11244,7 +11295,7 @@ function handleSend() {
  clipboardPastedPending = false;
  pastedClipboardTexts = [];
  pastedLiteralTexts = [];
- vscode.postMessage({ type: 'sendPrompt', text: text || ' ', images, clipboardPasted: pastedNow, pastedClipboardTexts: pastedTexts, pastedLiteralTexts: literalTexts });
+ vscode.postMessage({ type: 'sendPrompt', text: text || ' ', images, includeVideo: includeVideo, clipboardPasted: pastedNow, pastedClipboardTexts: pastedTexts, pastedLiteralTexts: literalTexts });
 }
 
     function handleCancel() {
