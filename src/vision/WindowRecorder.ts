@@ -303,9 +303,20 @@ async function gfxcaptureAvailable(ffmpeg: string): Promise<boolean> {
   return _gfxcaptureAvailable;
 }
 
-async function listWindowsTargets(): Promise<CaptureTarget[]> {
-  const ffmpeg = resolveFfmpeg();
-  const gfx = await gfxcaptureAvailable(ffmpeg);
+async function listWindowsTargets(configuredFfmpeg?: string): Promise<CaptureTarget[]> {
+  // Probe for gfxcapture to offer per-monitor + window targets. resolveFfmpeg()
+  // honors the configured acp.vision.ffmpegPath first (a custom install not on
+  // PATH), then falls back to PATH probing. It throws when neither finds
+  // ffmpeg — catch that and degrade to the basic gdigrab targets so the picker
+  // still works; the real "ffmpeg required" error surfaces at start() time,
+  // exactly as before this feature existed.
+  let gfx = false;
+  try {
+    const ffmpeg = resolveFfmpeg(configuredFfmpeg);
+    gfx = await gfxcaptureAvailable(ffmpeg);
+  } catch (err) {
+    log(`[vision] ffmpeg not resolvable for target listing (${String(err)}); showing basic targets`);
+  }
   const targets: CaptureTarget[] = [];
 
   if (gfx) {
@@ -372,12 +383,12 @@ async function listLinuxTargets(): Promise<CaptureTarget[]> {
 }
 
 /** Enumerate recordable displays (and windows on macOS). */
-export async function listCaptureTargets(): Promise<CaptureTarget[]> {
+export async function listCaptureTargets(ffmpegPath?: string): Promise<CaptureTarget[]> {
   switch (process.platform) {
     case 'darwin':
       return listMacTargets();
     case 'win32':
-      return listWindowsTargets();
+      return listWindowsTargets(ffmpegPath);
     case 'linux':
       return listLinuxTargets();
     default:

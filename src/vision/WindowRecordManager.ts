@@ -240,7 +240,10 @@ export class WindowRecordManager {
         targets = await listCompanionCaptureTargets();
         useCompanion = true;
       } else {
-        targets = await listCaptureTargets();
+        // Pass the configured ffmpeg path so the gfxcapture probe can find a
+        // custom install that isn't on PATH (otherwise the picker degrades to
+        // basic targets even though recording would work fine at start()).
+        targets = await listCaptureTargets(readSettings().ffmpegPath || undefined);
       }
       const picked = await vscode.window.showQuickPick(
         targets.map((t) => ({

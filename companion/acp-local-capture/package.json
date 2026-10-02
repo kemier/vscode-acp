@@ -2,7 +2,7 @@
   "name": "acp-local-capture",
   "displayName": "ACP Local Capture (Mic + Screen)",
   "description": "Local microphone and screen capture for the ACP Client extension. Runs on the client machine so dictation and screen recording work in Remote SSH, WSL and Dev Container windows.",
-  "version": "0.2.3",
+  "version": "0.2.4",
   "publisher": "formulahendry",
   "license": "MIT",
   "engines": {

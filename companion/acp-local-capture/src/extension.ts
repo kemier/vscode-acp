@@ -207,7 +207,13 @@ export function activate(context: vscode.ExtensionContext): void {
     // ─── Screen capture commands (video vision) ──────────────────────────────
     vscode.commands.registerCommand('acpLocalCapture.listCaptureTargets', async () => {
       try {
-        const targets = await listCaptureTargets();
+        // Pass the client's configured ffmpeg path so the gfxcapture probe can
+        // find a custom install (e.g. C:\ffmpeg-9.0.2-essentials_build\bin) that
+        // isn't on the client's PATH. Without it, listWindowsTargets degrades
+        // to the basic gdigrab targets even though recording would work fine.
+        const cfg = vscode.workspace.getConfiguration('acp.vision');
+        const ffmpegPath = cfg.get<string>('ffmpegPath', '') || undefined;
+        const targets = await listCaptureTargets(ffmpegPath);
         return { targets, protocol: PROTOCOL };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
