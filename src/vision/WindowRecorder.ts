@@ -26,6 +26,12 @@ export interface CaptureTarget {
   source: string;
   /** Window bounds when kind=window (macOS), used for crop. */
   bounds?: { x: number; y: number; width: number; height: number };
+  /**
+   * Zero-based monitor index (Windows gfxcapture). Present for display targets
+   * enumerated per-monitor. `0` = primary. When absent on a Windows display
+   * target, the recorder falls back to `gdigrab -i desktop` (primary only).
+   */
+  monitorIndex?: number;
 }
 
 export interface WindowRecorderOptions {
@@ -80,6 +86,41 @@ export function resolveFfmpeg(configured?: string): string {
     );
   }
   return found;
+}
+
+/**
+ * Build the ffmpeg args for a Windows capture target. Exported as a pure
+ * function so the arg shape (gfxcapture vs gdigrab, monitor index, window
+ * title, hwdownload/fps chain) is unit-testable without spawning ffmpeg.
+ */
+export function buildWin32Args(
+  target: CaptureTarget,
+  out: string,
+  gfxAvailable: boolean,
+): string[] {
+  const encode = ['-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-y', out];
+  // gfxcapture emits d3d11 hardware frames at a variable rate, so the filter
+  // chain must hwdownload to system memory, normalize the pixel format, and pin
+  // the frame rate before the software libx264 encoder.
+  const gfxChain = 'hwdownload,format=bgra,format=yuv420p,fps=10';
+  if (target.kind === 'window') {
+    // Window by title. gfxcapture matches the title as a regex; fall back to
+    // gdigrab title= when the filter is unavailable.
+    if (gfxAvailable && target.source) {
+      const title = target.source.replace(/'/g, "'\''");
+      return ['-filter_complex', `gfxcapture=window_title='(?i)${title}':capture_cursor=1,${gfxChain}`, ...encode];
+    }
+    return ['-f', 'gdigrab', '-framerate', '10', '-i', `title=${target.source}`, ...encode];
+  }
+  // Display target.
+  if (gfxAvailable && typeof target.monitorIndex === 'number') {
+    // Per-monitor capture (primary = 0, extended = 1, …). This is what makes an
+    // extended screen recordable — gdigrab -i desktop is primary-only.
+    return ['-filter_complex', `gfxcapture=monitor_idx=${target.monitorIndex}:capture_cursor=1,${gfxChain}`, ...encode];
+  }
+  // No monitor index (legacy 'desktop' target or enumeration failed) → gdigrab
+  // primary desktop.
+  return ['-f', 'gdigrab', '-framerate', '10', '-i', 'desktop', ...encode];
 }
 
 /** Parse `screencapture -l` output into window entries (macOS). */
@@ -198,17 +239,124 @@ return ""
   return null;
 }
 
+/**
+ * Enumerate Windows monitors via PowerShell (System.Windows.Forms.Screen).
+ * Returns one entry per display, in Windows enumeration order (index 0 =
+ * primary). Used to build per-monitor gfxcapture targets so an extended
+ * screen shows up as its own pickable display instead of being hidden behind
+ * `gdigrab -i desktop` (primary only).
+ */
+async function listWindowsMonitors(): Promise<Array<{ index: number; label: string; width: number; height: number }>> {
+  // PowerShell enumerates System.Windows.Forms.Screen.AllScreens and emits JSON.
+  // The label is built in JS (not PS) to avoid quote-escaping headaches across
+  // the JS→PS boundary. PS only returns Index/Width/Height/Primary.
+  const ps =
+    "Add-Type -AssemblyName System.Windows.Forms; " +
+    "[System.Windows.Forms.Screen]::AllScreens | ForEach-Object { " +
+    "$i = [System.Windows.Forms.Screen]::AllScreens.IndexOf($_); " +
+    "$b = $_.Bounds; " +
+    "[pscustomobject]@{ Index=$i; Width=$b.Width; Height=$b.Height; Primary=$_.Primary } " +
+    "} | ConvertTo-Json -Compress";
+  try {
+    const { stdout } = await execFileAsync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], {
+      timeout: 8000,
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    const parsed = JSON.parse(stdout.trim());
+    const arr = Array.isArray(parsed) ? parsed : [parsed];
+    return arr
+      .filter((m: any) => m && typeof m.Index === 'number' && m.Width > 0)
+      .map((m: any) => {
+        const idx = m.Index as number;
+        const w = m.Width as number;
+        const h = m.Height as number;
+        const kind = m.Primary ? 'Primary' : `Extended ${idx}`;
+        return { index: idx, label: `${kind} (${w}\u00d7${h})`, width: w, height: h };
+      });
+  } catch (err) {
+    log(`[vision] PowerShell monitor enumeration failed: ${String(err)}`);
+    return [];
+  }
+}
+
+let _gfxcaptureAvailable: boolean | null = null;
+/**
+ * Probe whether the ffmpeg build supports the `gfxcapture` filter (Windows
+ * Graphics Capture, added in FFmpeg 8.1). Cached after the first check.
+ * Returns null when it cannot be determined (treated as unavailable, so the
+ * caller falls back to gdigrab).
+ */
+async function gfxcaptureAvailable(ffmpeg: string): Promise<boolean> {
+  if (_gfxcaptureAvailable !== null) return _gfxcaptureAvailable;
+  try {
+    const { stdout } = await execFileAsync(ffmpeg, ['-hide_banner', '-filters'], {
+      timeout: 8000,
+      encoding: 'utf8',
+      windowsHide: true,
+    });
+    _gfxcaptureAvailable = /\bgfxcapture\b/.test(stdout);
+  } catch (err) {
+    log(`[vision] gfxcapture probe failed: ${String(err)}`);
+    _gfxcaptureAvailable = false;
+  }
+  return _gfxcaptureAvailable;
+}
+
 async function listWindowsTargets(): Promise<CaptureTarget[]> {
-  // gdigrab can capture desktop; listing individual windows needs more work.
-  // Provide desktop + ask user for optional window title via QuickPick free text later.
-  return [
-    {
+  const ffmpeg = resolveFfmpeg();
+  const gfx = await gfxcaptureAvailable(ffmpeg);
+  const targets: CaptureTarget[] = [];
+
+  if (gfx) {
+    // gfxcapture is available: enumerate each monitor as its own target so an
+    // extended screen is pickable, plus a window-by-title option.
+    const monitors = await listWindowsMonitors();
+    if (monitors.length > 0) {
+      for (const m of monitors) {
+        targets.push({
+          id: `display:monitor-${m.index}`,
+          kind: 'display',
+          label: `Display: ${m.label}`,
+          source: String(m.index),
+          monitorIndex: m.index,
+        });
+      }
+    } else {
+      // Enumeration failed (e.g. PowerShell blocked) — fall back to the single
+      // primary target so recording still works.
+      targets.push({
+        id: 'display:monitor-0',
+        kind: 'display',
+        label: 'Display: Primary',
+        source: '0',
+        monitorIndex: 0,
+      });
+    }
+    // Window-by-title: the user types the title in the QuickPick free-text box.
+    targets.push({
+      id: 'window:title',
+      kind: 'window',
+      label: 'Window: (type a window title below)',
+      source: '',
+    });
+  } else {
+    // No gfxcapture in this ffmpeg build — fall back to gdigrab, which can only
+    // do the primary desktop or a window by title.
+    targets.push({
       id: 'display:desktop',
       kind: 'display',
       label: 'Display: Entire desktop',
       source: 'desktop',
-    },
-  ];
+    });
+    targets.push({
+      id: 'window:title',
+      kind: 'window',
+      label: 'Window: (type a window title below)',
+      source: '',
+    });
+  }
+  return targets;
 }
 
 async function listLinuxTargets(): Promise<CaptureTarget[]> {
@@ -268,7 +416,7 @@ export class WindowRecorder {
       }
     }
 
-    const args = this.buildArgs(ffmpeg, target, out, bounds);
+    const args = await this.buildArgs(ffmpeg, target, out, bounds);
     log(`[vision] starting ffmpeg: ${ffmpeg} ${args.join(' ')}`);
     this.outputPath = out;
     this.stopping = false;
@@ -311,14 +459,22 @@ export class WindowRecorder {
     }, maxMs);
   }
 
-  private buildArgs(
+  private async buildArgs(
     _ffmpeg: string,
     target: CaptureTarget,
     out: string,
     bounds?: { x: number; y: number; width: number; height: number },
-  ): string[] {
-    // Common encode: H.264 MP4, modest bitrate for API size limits
-    const encode = ['-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-movflags', '+faststart', '-y', out];
+  ): Promise<string[]> {
+    // Common encode: H.264 MP4, modest bitrate for API size limits.
+    //
+    // NO -movflags +faststart: faststart rewrites the moov atom to the front
+    // of the file on finalize, so a client ffmpeg killed mid-write (the 5s
+    // stop timeout, or the client window closing) leaves a file with no moov
+    // and the host's frame extractor rejects it ("moov atom not found") — the
+    // take is lost. Writing the moov at the end keeps every prefix of the
+    // file a playable MP4: a truncated take degrades to "shorter video"
+    // instead of "unreadable file".
+    const encode = ['-c:v', 'libx264', '-preset', 'ultrafast', '-pix_fmt', 'yuv420p', '-y', out];
 
     if (process.platform === 'darwin') {
       // Capture the screen device. Window targets crop via vf.
@@ -334,18 +490,8 @@ export class WindowRecorder {
     }
 
     if (process.platform === 'win32') {
-      if (target.kind === 'window') {
-        return [
-          '-f',
-          'gdigrab',
-          '-framerate',
-          '10',
-          '-i',
-          `title=${target.source}`,
-          ...encode,
-        ];
-      }
-      return ['-f', 'gdigrab', '-framerate', '10', '-i', 'desktop', ...encode];
+      const gfx = await gfxcaptureAvailable(_ffmpeg);
+      return buildWin32Args(target, out, gfx);
     }
 
     // Linux x11grab

@@ -256,12 +256,27 @@ export class WindowRecordManager {
       );
       if (!picked) return;
 
+      // Window-by-title targets arrive with an empty source; the user types the
+      // title in a follow-up input box. (Display targets carry their monitor
+      // index and need no prompt.)
+      let chosen: CaptureTarget = picked.target;
+      if (chosen.kind === 'window' && !chosen.source) {
+        const title = await vscode.window.showInputBox({
+          title: 'Window to record',
+          prompt: 'Type the exact window title (as shown in the title bar).',
+          placeHolder: 'e.g. Code - vscode-acp',
+          ignoreFocusOut: true,
+        });
+        if (!title || !title.trim()) return;
+        chosen = { ...chosen, source: title.trim(), id: `window:${title.trim()}` };
+      }
+
       const settings = readSettings();
       const out = nextTakePath();
       this.recorder = useCompanion ? new CompanionScreenRecorder() : new WindowRecorder();
-      this.currentTarget = picked.target;
+      this.currentTarget = chosen;
       this.boundSessionId = this.getActiveSessionId() ?? null;
-      await this.recorder.start(picked.target, {
+      await this.recorder.start(chosen, {
         outputPath: out,
         maxDurationSec: settings.maxDurationSec,
         ffmpegPath: settings.ffmpegPath || undefined,
