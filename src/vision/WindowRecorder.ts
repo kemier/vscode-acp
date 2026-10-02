@@ -249,13 +249,15 @@ return ""
 async function listWindowsMonitors(): Promise<Array<{ index: number; label: string; width: number; height: number }>> {
   // PowerShell enumerates System.Windows.Forms.Screen.AllScreens and emits JSON.
   // The label is built in JS (not PS) to avoid quote-escaping headaches across
-  // the JS→PS boundary. PS only returns Index/Width/Height/Primary.
+  // the JS→PS boundary. PS returns Index/Left/Top/Width/Height/Primary; the
+  // original Index is the value gfxcapture=monitor_idx=N needs, so it is
+  // preserved (not re-numbered) even when dedup drops a ghost entry.
   const ps =
     "Add-Type -AssemblyName System.Windows.Forms; " +
     "[System.Windows.Forms.Screen]::AllScreens | ForEach-Object { " +
     "$i = [System.Windows.Forms.Screen]::AllScreens.IndexOf($_); " +
     "$b = $_.Bounds; " +
-    "[pscustomobject]@{ Index=$i; Width=$b.Width; Height=$b.Height; Primary=$_.Primary } " +
+    "[pscustomobject]@{ Index=$i; Left=$b.Left; Top=$b.Top; Width=$b.Width; Height=$b.Height; Primary=$_.Primary } " +
     "} | ConvertTo-Json -Compress";
   try {
     const { stdout } = await execFileAsync('powershell', ['-NoProfile', '-NonInteractive', '-Command', ps], {
@@ -265,15 +267,33 @@ async function listWindowsMonitors(): Promise<Array<{ index: number; label: stri
     });
     const parsed = JSON.parse(stdout.trim());
     const arr = Array.isArray(parsed) ? parsed : [parsed];
-    return arr
-      .filter((m: any) => m && typeof m.Index === 'number' && m.Width > 0)
-      .map((m: any) => {
-        const idx = m.Index as number;
-        const w = m.Width as number;
-        const h = m.Height as number;
-        const kind = m.Primary ? 'Primary' : `Extended ${idx}`;
-        return { index: idx, label: `${kind} (${w}\u00d7${h})`, width: w, height: h };
-      });
+    // Dedup by full bounds (Left,Top,Width,Height). Windows sometimes reports
+    // the same physical display twice (a ghost entry for a previously-connected
+    // monitor, or a virtual display from a remote session) — two entries with
+    // identical bounds+position are the same screen. Using position (not just
+    // size) means two genuinely different monitors of the same resolution are
+    // NOT wrongly merged. `index` keeps the ORIGINAL Windows enumeration index
+    // (m.Index) because that is what gfxcapture=monitor_idx=N expects; the
+    // label's "Extended N" ordinal is a separate display counter.
+    const seen = new Set<string>();
+    const out: Array<{ index: number; label: string; width: number; height: number }> = [];
+    let ordinal = 0;
+    for (const m of arr) {
+      if (!m || typeof m.Width !== 'number' || typeof m.Height !== 'number') continue;
+      if (m.Width < 8 || m.Height < 8) continue; // zero/phantom area
+      const key = `${m.Left},${m.Top},${m.Width}x${m.Height}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const realIndex = typeof m.Index === 'number' ? m.Index : ordinal;
+      const isPrimary = !!m.Primary;
+      const kind = isPrimary ? 'Primary' : `Extended ${ordinal}`;
+      out.push({ index: realIndex, label: `${kind} (${m.Width}\u00d7${m.Height})`, width: m.Width, height: m.Height });
+      ordinal++;
+    }
+    if (out.length !== arr.length) {
+      log(`[vision] monitor enumeration: ${arr.length} raw → ${out.length} after dedup/phantom filter`);
+    }
+    return out;
   } catch (err) {
     log(`[vision] PowerShell monitor enumeration failed: ${String(err)}`);
     return [];
