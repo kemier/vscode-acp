@@ -53,7 +53,7 @@ function extractFn(name: string): string {
 }
 
 interface QueueRun {
-  queued: { text: string; images: unknown[] }[];
+  queued: { text: string; images: unknown[]; videoAttached?: boolean }[];
   cleared: boolean;
   rendered: number;
 }
@@ -65,7 +65,7 @@ interface QueueRun {
  * is the shipped source, so an undefined reference inside it throws here exactly
  * as it does in the webview.
  */
-function runHandleQueue(text: string, images: unknown[] = []): QueueRun {
+function runHandleQueue(text: string, images: unknown[] = [], videoAttached = false): QueueRun {
   const run: QueueRun = { queued: [], cleared: false, rendered: 0 };
   const promptInput = {
     _v: text,
@@ -99,6 +99,7 @@ return handleQueue;
     'isClearing',
     'messageQueue',
     'pendingVideoAttached',
+    'videoPreviewStrip',
     harness,
   );
   fn(
@@ -109,8 +110,8 @@ return handleQueue;
     () => {},
     () => {},
     (t: string) => t.startsWith('/'),
-    (t: string, imgs: unknown[]) => {
-      run.queued.push({ text: t, images: imgs });
+    (t: string, imgs: unknown[], vid?: boolean) => {
+      run.queued.push({ text: t, images: imgs, videoAttached: vid });
       run.rendered++;
     },
     { postMessage: () => {} },
@@ -119,7 +120,8 @@ return handleQueue;
     false,
     false,
     [],
-    false,
+    videoAttached,
+    { innerHTML: '' },
   )();
   return run;
 }
@@ -144,6 +146,23 @@ suite('handleQueue executes without throwing', () => {
   test('an image with no text still queues', () => {
     const run = runHandleQueue('', [{ data: 'x', mimeType: 'image/png' }]);
     assert.strictEqual(run.queued.length, 1, 'an attachment alone is a valid queued message');
+  });
+
+  test('a screen recording queues WITH its text, not instead of it', () => {
+    // The reported bug: sending a captured video + text mid-turn queued only the
+    // text — the take was a floating host global bound to no entry, so it was
+    // dropped (or attached to an unrelated later send). The video must ride the
+    // entry alongside the text.
+    const run = runHandleQueue('look at this recording', [], true);
+    assert.strictEqual(run.queued.length, 1, 'the message must be queued');
+    assert.strictEqual(run.queued[0].text, 'look at this recording', 'the text must survive');
+    assert.strictEqual(run.queued[0].videoAttached, true, 'the video must ride the same entry as the text');
+  });
+
+  test('a screen recording with no text still queues', () => {
+    const run = runHandleQueue('', [], true);
+    assert.strictEqual(run.queued.length, 1, 'a recording alone is a valid queued message');
+    assert.strictEqual(run.queued[0].videoAttached, true);
   });
 
   test('empty input queues nothing and leaves the composer alone', () => {

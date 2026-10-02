@@ -34,7 +34,7 @@ const src = fs.readFileSync(SOURCE, 'utf8');
 
 suite('queued @clipboard is snapshotted at queue time', () => {
   test('queueMessage requests a snapshot when the mention is present', () => {
-    const at = src.indexOf('function queueMessage(text, images) {');
+    const at = src.indexOf('function queueMessage(text, images, videoAttached) {');
     assert.ok(at > 0, 'queueMessage not found');
     const body = src.slice(at, at + 2200);
     assert.ok(body.includes("type: 'resolveClipboardForQueue'"), 'must request the snapshot');
@@ -43,7 +43,7 @@ suite('queued @clipboard is snapshotted at queue time', () => {
 
   test('the request is keyed, not a single global slot', () => {
     // Several messages can be queued; a shared slot would give them all the same content.
-    const at = src.indexOf('function queueMessage(text, images) {');
+    const at = src.indexOf('function queueMessage(text, images, videoAttached) {');
     const body = src.slice(at, at + 2200);
     assert.ok(body.includes("'clip-' + Date.now()"), 'token must be unique per entry');
   });
