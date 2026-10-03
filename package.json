@@ -354,7 +354,7 @@
               "args": [],
               "env": {
                 "CLAUDE_SLOT_CACHE_ENABLED": "true",
-                "CLAUDE_LLAMA_SERVER_URL": "http://192.168.124.14:8008"
+                "CLAUDE_LLAMA_SERVER_URL": "http://192.168.124.14:8080"
               }
             },
             "Codex CLI": {
@@ -362,7 +362,7 @@
               "args": [],
               "env": {
                 "CODEX_SLOT_CACHE_ENABLED": "true",
-                "CODEX_LLAMA_SERVER_URL": "http://192.168.124.14:8008"
+                "CODEX_LLAMA_SERVER_URL": "http://192.168.124.14:8080"
               }
             },
             "Cursor": {
