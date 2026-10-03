@@ -285,6 +285,43 @@ After installing either VSIX, reload the window (`Developer: Reload Window`). Fo
 
 Communication with agents uses the ACP protocol (JSON-RPC 2.0 over stdio). For contributor-level detail see [AGENTS.md](AGENTS.md).
 
+### Agent connection (vscode-acp ↔ codex-acp)
+
+The two repos are not linked by an import or shared package — they couple **at runtime**: vscode-acp spawns the `codex-acp` binary and speaks ACP over stdio.
+
+```mermaid
+flowchart LR
+  subgraph vscode_acp["vscode-acp (this repo — ACP client)"]
+    CFG["acp.agents config<br/>package.json:361<br/>command: codex-acp"]
+    SPAWN["AgentManager.spawnAgent()<br/>AgentManager.ts:115"]
+    QUIRK["protocol-quirk adapters<br/>_meta.codex.*, retry,<br/>NES-unsupported, collab"]
+    CFG --> SPAWN
+    SPAWN -.-> QUIRK
+  end
+
+  subgraph codex_acp["../codex-acp (ACP agent server)"]
+    BIN["package.json bin:<br/>codex-acp → dist/index.js"]
+    RUNTIME["dist/index.js<br/>@agentclientprotocol/codex-acp v1.1.9"]
+    BIN --> RUNTIME
+  end
+
+  ENV["env bridge<br/>CODEX_SLOT_CACHE_ENABLED<br/>CODEX_LLAMA_SERVER_URL :8080"]
+  LLAMA["Strata (llama-compatible)<br/>192.168.124.14:8080"]
+
+  SPAWN -->|"spawn(command, args, env)"| RUNTIME
+  RUNTIME <-->|"ACP JSON-RPC / stdio"| SPAWN
+  ENV --> SPAWN
+  RUNTIME -->|"reads env"| LLAMA
+```
+
+| Leg | Mechanism |
+|-----|-----------|
+| **Registration** | `package.json:361` — `acp.agents["Codex CLI"] = { command: "codex-acp", env: {...} }` |
+| **Spawn** | `AgentManager.ts:115` `spawnAgent()` → `spawn(command, args, {env})`; Windows wraps in a login shell (`:141`) |
+| **Binary resolution** | `../codex-acp/package.json` `bin: { "codex-acp": "dist/index.js" }` — `npm install`/`npm link` drops `codex-acp` on PATH, which vscode-acp then finds |
+| **Env bridge** | `CODEX_SLOT_CACHE_ENABLED` + `CODEX_LLAMA_SERVER_URL` injected into the child; this is how the slot/KV endpoint (Strata, llama-compatible) reaches codex-acp |
+| **Behavioral coupling** | ~40 `codex-acp` references in vscode-acp source = protocol-quirk handling (message shapes, retry notices, `_meta.codex.*`), not imports |
+
 ## Known Issues
 
 - Default agents must be available on the system `PATH` (`claude-code-acp`, `codex-acp`, `cursor-agent`); custom configs may use `npx`
