@@ -15717,6 +15717,32 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
 
     /**
+     * Collapse every turn fold the user had manually expanded.
+     *
+     * Sticky-expand policy: a fold the user opened stays open through the
+     * rest of THAT turn (promptEnd honors _userExpanded) and across idle time,
+     * but a NEW prompt resets the board — the user's attention moves to the
+     * fresh turn, so previously-expanded folds close. Called from promptStart.
+     * No-op when not in compact mode (folds only exist there).
+     */
+    function collapseAllUserExpandedFolds() {
+      if (!compactMode || !messagesEl) return;
+      var n = 0;
+      messagesEl.querySelectorAll('.turn').forEach(function(turn) {
+        var body = getTurnFoldBody(turn);
+        if (!body) return;
+        if (body._userExpanded) {
+          body._userExpanded = false;
+          setFoldExpanded(body, false);
+          n++;
+        }
+      });
+      if (n > 0) {
+        vscode.postMessage({ type: 'debugLog', message: '[WV-FOLDPROMPT] promptStart collapsed ' + n + ' user-expanded fold(s)' });
+      }
+    }
+
+    /**
      * Durable diagnostic: after a resume render (restore or session/load),
      * snapshot the promotion decision for every turn so we can see WHY a
      * completed summary stayed folded / an assistant strayed. Writes to a
@@ -21124,6 +21150,12 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
          }
        }
        interruptedNoticeHistoryIdx = -1;
+
+       // New prompt: close any folds the user had manually expanded on earlier
+       // turns. Sticky-expand is per-turn — attention moves to the fresh turn,
+       // so previously-opened details collapse (re-openable by click).
+       collapseAllUserExpandedFolds();
+
        // Chat history is being built for the current session.
        chatHistoryOriginSessionId = (sessionState && sessionState.sessionId) || null;
        cancelProvisionalSummaryPromote();
