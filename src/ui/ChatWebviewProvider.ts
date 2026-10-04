@@ -15240,6 +15240,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        // promptEnd (_endBody._userExpanded = false) and by
        // forceCollapseTurnFolds() on history restore, so this cannot leak open.
        body._userExpanded = !isLoadingSession && willExpand;
+       vscode.postMessage({ type: 'debugLog', message: '[WV-FOLDCREATE] user click on fold summary: willExpand=' + willExpand + ' body._userExpanded=' + body._userExpanded + ' isLoadingSession=' + isLoadingSession + ' bodyClass=' + body.className + ' isTurnLevelBody=' + !!(turn && getTurnFoldBody(turn) === body) });
        // When expanding a fold during streaming, the content grows via CSS
        // (no scroll event fires), so userScrolledUp stays false. The next
        // streaming chunk's autoScrollIfAtBottom() then yanks the user back
@@ -15675,9 +15676,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       // and forceCollapseTurnFolds() still shut completed turns.
       var allowSticky = collapsed && body._userExpanded && !isLoadingSession;
       if (collapsed && !allowSticky) {
+        vscode.postMessage({ type: 'debugLog', message: '[WV-FOLDSTICKY] ensureTurnFoldStructure COLLAPSING: collapsed=' + collapsed + ' body._userExpanded=' + body._userExpanded + ' isLoadingSession=' + isLoadingSession + ' allowSticky=' + allowSticky + ' bodyClass=' + body.className });
         body._userExpanded = false;
         setFoldExpanded(body, false);
       } else if (allowSticky) {
+        vscode.postMessage({ type: 'debugLog', message: '[WV-FOLDSTICKY] ensureTurnFoldStructure KEEPING OPEN (sticky): body._userExpanded=' + body._userExpanded });
         setFoldExpanded(body, true);
       } else if (!collapsed) {
         body.classList.remove('collapsed');
@@ -15697,6 +15700,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         ensureTurnFoldStructure(turn, true);
         var body = getTurnFoldBody(turn);
         if (!body) return;
+        vscode.postMessage({ type: 'debugLog', message: '[WV-FOLDFORCE] forceCollapseTurnFolds shutting turn: hadUserExpanded=' + body._userExpanded + ' bodyClass=' + body.className });
         body._userExpanded = false;
         setFoldExpanded(body, false);
         var summary = getTurnSummaryEl(turn);
@@ -21431,6 +21435,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         // The fold will still collapse on the next renderChatHistory /
         // forceCollapseTurnFolds (session switch, reload) if needed.
         var _userOpened = _endBody && _endBody._userExpanded && !isLoadingSession;
+        vscode.postMessage({ type: 'debugLog', message: '[WV-FOLDEND] promptEnd collapse: currentTurnEl=' + (!!currentTurnEl) + ' _endBody=' + (!!_endBody) + ' _userExpanded=' + (_endBody && _endBody._userExpanded) + ' _userOpened=' + _userOpened + ' compactMode=' + compactMode + ' toolCount=' + currentToolCount + ' bodyClass=' + (_endBody ? _endBody.className : '-') + ' bodyOpen=' + (_endBody ? _endBody.classList.contains('expanded') : '-') });
         ensureTurnFoldStructure(currentTurnEl, true);
         // Re-sort fold contents by data-history-index so the last tool group
         // (which was appended after the summary assistant was lifted outside
@@ -21444,9 +21449,11 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
             // ensureTurnFoldStructure continues to honor it.
             _endBody._userExpanded = true;
             setFoldExpanded(_endBody, true);
+            vscode.postMessage({ type: 'debugLog', message: '[WV-FOLDEND] promptEnd KEEPING OPEN (user had expanded) bodyClass=' + _endBody.className });
           } else {
             _endBody._userExpanded = false;
             setFoldExpanded(_endBody, false);
+            vscode.postMessage({ type: 'debugLog', message: '[WV-FOLDEND] promptEnd COLLAPSING (user did not expand / flag lost) bodyClass=' + _endBody.className });
           }
         }
       } else if (currentToolsCountEl && currentToolsCountEl.classList.contains('turn-tools-summary')) {
