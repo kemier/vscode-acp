@@ -11274,11 +11274,16 @@ function handleSend() {
   // it, so it lands at the bottom of the finished transcript and starts a turn
   // exactly as if it had been typed after the resume completed.
   //
+  // Gated on replayHoldActive, NOT isLoadingSession. isLoadingSession is cleared
+  // by showSessionConnected ~30ms before handleLoadSessionEnd drains, so gating
+  // on it let a prompt typed in that gap take the normal send path and render
+  // ahead of the held one. replayHoldActive spans the whole load.
+  //
   // Placed before the isSendingPrompt / isCompacting / isProcessing guards on
   // purpose: those would queue or drop the text, and the hold must win.
-  if (isLoadingSession) {
-    wvProbe('handleSend GUARD:isLoadingSession', 'holding prompt until replay ends');
-    wvQueueLog('send:GUARD-isLoadingSession', 'holding until loadSessionEnd');
+  if (replayHoldActive) {
+    wvProbe('handleSend GUARD:replayHoldActive', 'holding prompt until replay ends');
+    wvQueueLog('send:GUARD-replayHoldActive', 'holding until loadSessionEnd');
     // Capture attachments with the same splice-and-clear pattern handleQueue
     // uses, so images/video ride along with the held text.
     var _heldImages = pendingImages.splice(0);
@@ -11288,11 +11293,11 @@ function handleSend() {
       pendingVideoAttached = false;
       if (videoPreviewStrip) videoPreviewStrip.innerHTML = '';
     }
-    pendingResumeSend = {
+    pendingResumeSends.push({
       text: text,
       images: _heldImages,
       includeVideo: _heldVideo,
-    };
+    });
     promptInput.value = '';
     updateSendButton();
     // Tell the user it is held, not lost — otherwise a cleared composer with no
@@ -11993,10 +11998,26 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     // the snapshot merge are finished — so it appears at the bottom and starts a
     // turn as if it had been typed after the resume completed.
     //
-    // A single slot, not a queue: the user is waiting to ask one thing, and a
-    // second Enter while held replaces the first (the composer keeps the latest
-    // text anyway).
-    let pendingResumeSend = null;
+    // A QUEUE, not a single slot. It used to be one slot, on the reasoning that
+    // the user is waiting to ask one thing and a second Enter replaces the
+    // first. That reasoning was wrong for the window this actually has to cover:
+    // showSessionConnected clears isLoadingSession ~30ms BEFORE handleLoadSessionEnd
+    // drains (see the loadTailGrace comment in handleLoadSessionStart), so a
+    // prompt typed in that gap took the normal send path, rendered immediately,
+    // and was then followed by the drained hold — the first message appearing
+    // AFTER the second. Ordering is the whole point of holding, so hold every
+    // prompt typed while the replay is on screen and drain them in typed order.
+    let pendingResumeSends = [];
+    // True from handleLoadSessionStart until handleLoadSessionEnd has drained.
+    //
+    // This exists because isLoadingSession is NOT a safe gate for the hold:
+    // showSessionConnected clears it as soon as the session/load response
+    // resolves, which is ~30ms BEFORE handleLoadSessionEnd runs (the host defers
+    // loadSessionEnd by LOAD_END_TAIL_FLUSH_MS to flush the replay tail).
+    // Gating the hold on isLoadingSession left that gap uncovered, so a prompt
+    // typed in it was sent immediately and the held prompt drained after it.
+    // This flag spans the entire load, so the gap cannot open.
+    let replayHoldActive = false;
     let _replayUpdateMs = 0;
     let _replayUpdateCount = 0;
     // Monotonic counter for the [WV-ORDER] replay arrival trace. Reset at each
@@ -13178,9 +13199,13 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     }
     // A hold belongs to the session it was typed in. Loading a DIFFERENT
     // session must not drain it into the new one — the text was meant for the
-    // previous transcript. Drop it here; handleLoadSessionEnd only drains a
-    // hold created during THIS load.
-    pendingResumeSend = null;
+    // previous transcript. Drop it here; handleLoadSessionEnd only drains holds
+    // created during THIS load.
+    pendingResumeSends = [];
+    // Open the replay-hold window. Closed only in handleLoadSessionEnd, so it
+    // covers the whole load INCLUDING the showSessionConnected→loadSessionEnd
+    // gap that isLoadingSession leaves uncovered.
+    replayHoldActive = true;
     if (tokenUsageRing) tokenUsageRing.classList.remove('visible');
     if (typeof clearCursorTodosPlan === 'function') clearCursorTodosPlan();
     // Same reset for kiro's board; see clearKiroTodoList for why NOT per-turn.
@@ -13830,7 +13855,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        requestCursorToolEnrichIfNeeded('post-merge');
      }, 50);
 
-     // Drain a prompt that was typed while the replay was on screen.
+     // Drain prompts that were typed while the replay was on screen.
      //
      // Deliberately LAST: the replay tail is committed, the snapshot merge has
      // run, and the DOM has been rebuilt — so the bubble this renders lands at
@@ -13839,22 +13864,30 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      // directly) reuses the normal bubble-render and isSendingPrompt /
      // setProcessing logic, so the Stop button arms correctly.
      //
-     // isLoadingSession is already false here, so the guard above will not
-     // re-hold it.
-     if (pendingResumeSend) {
-       var _heldSend = pendingResumeSend;
-       pendingResumeSend = null;
+     // Close the hold window FIRST. handleSend() re-checks replayHoldActive on
+     // entry, so leaving it true would re-hold every drained prompt and the
+     // drain would spin. It must also be closed before the loop rather than
+     // after, so a prompt typed during the drain itself is not silently held
+     // forever with no later drain to release it.
+     replayHoldActive = false;
+     if (pendingResumeSends.length > 0) {
+       var _heldSends = pendingResumeSends;
+       pendingResumeSends = [];
        vscode.postMessage({ type: 'debugLog', message:
-         '[WV-RESUME-HOLD] draining held prompt after replay (len=' + (_heldSend.text ? _heldSend.text.length : 0) +
-         ' images=' + (_heldSend.images ? _heldSend.images.length : 0) + ')' });
-       promptInput.value = _heldSend.text || '';
-       if (_heldSend.images && _heldSend.images.length) {
-         for (var _hi = 0; _hi < _heldSend.images.length; _hi++) {
-           pendingImages.push(_heldSend.images[_hi]);
+         '[WV-RESUME-HOLD] draining ' + _heldSends.length + ' held prompt(s) after replay' });
+       // FIFO — the order the user typed them. Sending them in any other order
+       // is the reordering bug this queue exists to prevent.
+       for (var _hs = 0; _hs < _heldSends.length; _hs++) {
+         var _heldSend = _heldSends[_hs];
+         promptInput.value = _heldSend.text || '';
+         if (_heldSend.images && _heldSend.images.length) {
+           for (var _hi = 0; _hi < _heldSend.images.length; _hi++) {
+             pendingImages.push(_heldSend.images[_hi]);
+           }
          }
+         if (_heldSend.includeVideo) pendingVideoAttached = true;
+         handleSend();
        }
-       if (_heldSend.includeVideo) pendingVideoAttached = true;
-       handleSend();
      }
    }
 
