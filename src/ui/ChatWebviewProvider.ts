@@ -5470,6 +5470,37 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     }
     .agent-question-submit { color: var(--vscode-button-foreground); background: var(--vscode-button-background); }
     .agent-question-skip:hover:not(:disabled) { color: var(--vscode-foreground); }
+    .agent-question-freetext {
+      display: flex;
+      gap: 6px;
+      margin-top: 6px;
+      align-items: center;
+    }
+    .agent-question-freetext-input {
+      flex: 1 1 auto;
+      min-width: 0;
+      padding: 4px 8px;
+      font-size: 0.9em;
+      color: var(--vscode-input-foreground);
+      background: var(--vscode-input-background);
+      border: 1px solid var(--vscode-input-border, transparent);
+      border-radius: 4px;
+      outline: none;
+    }
+    .agent-question-freetext-input:focus {
+      border-color: var(--vscode-focusBorder);
+    }
+    .agent-question-freetext-send {
+      flex: 0 0 auto;
+      padding: 4px 10px;
+      font-size: 0.85em;
+      cursor: pointer;
+      border: none;
+      border-radius: 4px;
+      color: var(--vscode-button-foreground);
+      background: var(--vscode-button-background);
+    }
+    .agent-question-freetext-send:hover { background: var(--vscode-button-hoverBackground); }
     .message {
       padding: 8px 12px;
       border-radius: var(--message-radius);
@@ -7210,6 +7241,13 @@ var lateSubagentTurns = 0;
 var pendingRenderRetries = {}; // keys of pending renderMarkdown retries
 var historyRenderGen = 0; // generation counter for history renders (invalidated on DOM rebuild)
 var suppressFoldOrdering = false; // true during renderChatHistory to skip intermediate re-ordering
+// Durable per-turn user-expand intent. Keyed on the turn's data-history-index (a
+// stable identity that survives DOM recreation), so a fold the user opened stays
+// open across a body rebuild — e.g. a model switch that re-renders, or any path
+// that recreates the .turn-fold-body node and would otherwise lose the
+// body._userExpanded flag. Cleared on promptStart (new prompt resets the board)
+// and on forceCollapseTurnFolds (session switch / reload).
+var userExpandedTurnKeys = Object.create(null);
 let isCompacting = false;  // true while /compact is running
  let isClearing = false;    // true while Kiro /clear (or clear/status) is running
  // True only for user-typed /compact — auto-compact must not leave a sticky
@@ -15288,6 +15326,12 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        // promptEnd (_endBody._userExpanded = false) and by
        // forceCollapseTurnFolds() on history restore, so this cannot leak open.
        body._userExpanded = !isLoadingSession && willExpand;
+       // Record the durable per-turn intent so a body rebuild (model switch,
+       // re-render) keeps the fold open. Keyed on the turn's history index.
+       if (turn && turn.dataset && turn.dataset.historyIndex != null) {
+         if (willExpand && !isLoadingSession) userExpandedTurnKeys[turn.dataset.historyIndex] = true;
+         else delete userExpandedTurnKeys[turn.dataset.historyIndex];
+       }
        vscode.postMessage({ type: 'debugLog', message: '[WV-FOLDCREATE] user click on fold summary: willExpand=' + willExpand + ' body._userExpanded=' + body._userExpanded + ' isLoadingSession=' + isLoadingSession + ' bodyClass=' + body.className + ' isTurnLevelBody=' + !!(turn && getTurnFoldBody(turn) === body) });
        // When expanding a fold during streaming, the content grows via CSS
        // (no scroll event fires), so userScrolledUp stays false. The next
@@ -15722,13 +15766,21 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       // mid-stream tool call, and a false reading between turns used to clear
       // the flag and re-collapse a fold the user had just expanded. promptEnd
       // and forceCollapseTurnFolds() still shut completed turns.
+      //
+      // Also consult the DURABLE per-turn set: a body rebuild (model switch,
+      // re-render) creates a fresh node whose body._userExpanded is undefined,
+      // which used to snap the user's open fold shut. The set is keyed on the
+      // turn's history index, so the intent survives the rebuild.
+      var _turnKey = turn.dataset ? turn.dataset.historyIndex : null;
+      var _durableExpanded = _turnKey != null && userExpandedTurnKeys[_turnKey] === true;
+      if (_durableExpanded && !body._userExpanded) body._userExpanded = true;
       var allowSticky = collapsed && body._userExpanded && !isLoadingSession;
       if (collapsed && !allowSticky) {
-        vscode.postMessage({ type: 'debugLog', message: '[WV-FOLDSTICKY] ensureTurnFoldStructure COLLAPSING: collapsed=' + collapsed + ' body._userExpanded=' + body._userExpanded + ' isLoadingSession=' + isLoadingSession + ' allowSticky=' + allowSticky + ' bodyClass=' + body.className });
+        vscode.postMessage({ type: 'debugLog', message: '[WV-FOLDSTICKY] ensureTurnFoldStructure COLLAPSING: collapsed=' + collapsed + ' body._userExpanded=' + body._userExpanded + ' isLoadingSession=' + isLoadingSession + ' allowSticky=' + allowSticky + ' turnKey=' + _turnKey + ' durable=' + _durableExpanded + ' bodyClass=' + body.className });
         body._userExpanded = false;
         setFoldExpanded(body, false);
       } else if (allowSticky) {
-        vscode.postMessage({ type: 'debugLog', message: '[WV-FOLDSTICKY] ensureTurnFoldStructure KEEPING OPEN (sticky): body._userExpanded=' + body._userExpanded });
+        vscode.postMessage({ type: 'debugLog', message: '[WV-FOLDSTICKY] ensureTurnFoldStructure KEEPING OPEN (sticky): body._userExpanded=' + body._userExpanded + ' turnKey=' + _turnKey + ' durable=' + _durableExpanded });
         setFoldExpanded(body, true);
       } else if (!collapsed) {
         body.classList.remove('collapsed');
@@ -15743,6 +15795,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     /** Every turn fold must be shut in Collapse mode (history + promptEnd). */
     function forceCollapseTurnFolds() {
       if (!compactMode) return;
+      // Session switch / reload: drop the durable per-turn expand intent so a
+      // rebuilt body does not re-open a fold from the previous session state.
+      userExpandedTurnKeys = Object.create(null);
       messagesEl.querySelectorAll('.turn').forEach(function(turn) {
         // Scoop any stray thoughts/tools that escaped the fold, then shut it.
         ensureTurnFoldStructure(turn, true);
@@ -15785,6 +15840,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           n++;
         }
       });
+      // New prompt resets the board: drop the durable per-turn expand intent too,
+      // so a later body rebuild does not re-open a fold the user has moved past.
+      userExpandedTurnKeys = Object.create(null);
       if (n > 0) {
         vscode.postMessage({ type: 'debugLog', message: '[WV-FOLDPROMPT] promptStart collapsed ' + n + ' user-expanded fold(s)' });
       }
@@ -24663,6 +24721,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
     }
 
     var picked = {};
+    var freeText = {};
     var answered = false;
 
     /**
@@ -24762,7 +24821,14 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       var answers = [];
       for (var k = 0; k < questions.length; k++) {
         var qq = questions[k];
-        answers.push({ questionId: String(qq.id), selectedOptionIds: (picked[qq.id] || []).slice() });
+        var ans = { questionId: String(qq.id), selectedOptionIds: (picked[qq.id] || []).slice() };
+        // A typed free-text answer rides along as the answer's text field (the
+        // ACP answer shape already carries an optional text field). It is sent
+        // alongside any selected options so the agent sees both the pick and the
+        // custom note.
+        var ft = freeText[qq.id];
+        if (ft && ft.trim()) ans.text = ft.trim();
+        answers.push(ans);
       }
       settle({ outcome: 'answered', answers: answers });
     }
@@ -24822,6 +24888,41 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
             qEl.appendChild(b);
           })(opts[oi]);
         }
+        // Free-text "user prompt" box: a custom answer that is not one of the
+        // advertised options. Type here and press Enter (or click Send) to answer
+        // with your own words — the text rides along on the answer, so
+        // the agent receives it even when no option was picked.
+        var ftWrap = document.createElement('div');
+        ftWrap.className = 'agent-question-freetext';
+        var ftInput = document.createElement('input');
+        ftInput.type = 'text';
+        ftInput.className = 'agent-question-freetext-input';
+        ftInput.placeholder = 'Or type your own answer…';
+        ftInput.setAttribute('aria-label', 'Type your own answer');
+        ftInput.addEventListener('input', function () {
+          freeText[q.id] = ftInput.value;
+        });
+        ftInput.addEventListener('keydown', function (ev) {
+          if (ev && ev.key === 'Enter' && !ev.shiftKey) {
+            ev.preventDefault();
+            if (answered) return;
+            freeText[q.id] = ftInput.value;
+            answerNow();
+          }
+        });
+        var ftSend = document.createElement('button');
+        ftSend.className = 'agent-question-freetext-send';
+        ftSend.type = 'button';
+        ftSend.textContent = 'Send';
+        ftSend.title = 'Answer this question with your own text';
+        ftSend.addEventListener('click', function () {
+          if (answered) return;
+          freeText[q.id] = ftInput.value;
+          answerNow();
+        });
+        ftWrap.appendChild(ftInput);
+        ftWrap.appendChild(ftSend);
+        qEl.appendChild(ftWrap);
         if (q.allowMultiple) {
           var done = document.createElement('button');
           done.className = 'agent-question-submit';
