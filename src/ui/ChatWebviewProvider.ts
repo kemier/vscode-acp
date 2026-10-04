@@ -11267,6 +11267,39 @@ function handleSend() {
     updateResumeBar();
     return;
   }
+  // Resume-replay guard: a session/load replay is still rebuilding the
+  // transcript. Do NOT send the prompt and do NOT render a bubble now — either
+  // would interleave the message into the replaying history and start a turn
+  // against a half-built transcript. Hold it and let handleLoadSessionEnd drain
+  // it, so it lands at the bottom of the finished transcript and starts a turn
+  // exactly as if it had been typed after the resume completed.
+  //
+  // Placed before the isSendingPrompt / isCompacting / isProcessing guards on
+  // purpose: those would queue or drop the text, and the hold must win.
+  if (isLoadingSession) {
+    wvProbe('handleSend GUARD:isLoadingSession', 'holding prompt until replay ends');
+    wvQueueLog('send:GUARD-isLoadingSession', 'holding until loadSessionEnd');
+    // Capture attachments with the same splice-and-clear pattern handleQueue
+    // uses, so images/video ride along with the held text.
+    var _heldImages = pendingImages.splice(0);
+    imagePreviewStrip.innerHTML = '';
+    var _heldVideo = pendingVideoAttached;
+    if (_heldVideo) {
+      pendingVideoAttached = false;
+      if (videoPreviewStrip) videoPreviewStrip.innerHTML = '';
+    }
+    pendingResumeSend = {
+      text: text,
+      images: _heldImages,
+      includeVideo: _heldVideo,
+    };
+    promptInput.value = '';
+    updateSendButton();
+    // Tell the user it is held, not lost — otherwise a cleared composer with no
+    // bubble reads as a dropped message.
+    showTransientNotice('Message will send when the session finishes loading.');
+    return;
+  }
    // Transition-tick guard: a sendPrompt was just posted by drainQueue /
    // Send Now but the turn hasn't started yet (promptStart not received).
    // Sending now would race the in-flight session/prompt. Queue instead.
@@ -11949,6 +11982,21 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     // True while a session/load replay is in progress. Used to suppress
     // per-chunk markdown rendering until the replay finishes.
     let isLoadingSession = false;
+    // Prompt typed while a session/load replay is on screen.
+    //
+    // During a resume the transcript is being rebuilt message by message. A
+    // prompt sent in that window used to go straight to the agent AND have its
+    // user bubble injected by the host (the promptSentWhileLoading userBubble
+    // path), so the message landed in the middle of the replaying history and
+    // started a turn against a half-built transcript. Instead we hold it here,
+    // render nothing, and drain it from handleLoadSessionEnd once the replay and
+    // the snapshot merge are finished — so it appears at the bottom and starts a
+    // turn as if it had been typed after the resume completed.
+    //
+    // A single slot, not a queue: the user is waiting to ask one thing, and a
+    // second Enter while held replaces the first (the composer keeps the latest
+    // text anyway).
+    let pendingResumeSend = null;
     let _replayUpdateMs = 0;
     let _replayUpdateCount = 0;
     // Monotonic counter for the [WV-ORDER] replay arrival trace. Reset at each
@@ -13128,6 +13176,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       messageQueue = [];
       renderQueue();
     }
+    // A hold belongs to the session it was typed in. Loading a DIFFERENT
+    // session must not drain it into the new one — the text was meant for the
+    // previous transcript. Drop it here; handleLoadSessionEnd only drains a
+    // hold created during THIS load.
+    pendingResumeSend = null;
     if (tokenUsageRing) tokenUsageRing.classList.remove('visible');
     if (typeof clearCursorTodosPlan === 'function') clearCursorTodosPlan();
     // Same reset for kiro's board; see clearKiroTodoList for why NOT per-turn.
@@ -13776,6 +13829,33 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        vscode.postMessage({ type: 'debugLog', message: '[WV-DIAG] post-merge cursor tool enrich request' });
        requestCursorToolEnrichIfNeeded('post-merge');
      }, 50);
+
+     // Drain a prompt that was typed while the replay was on screen.
+     //
+     // Deliberately LAST: the replay tail is committed, the snapshot merge has
+     // run, and the DOM has been rebuilt — so the bubble this renders lands at
+     // the bottom of the finished transcript rather than inside the replaying
+     // history. Re-entering handleSend() (instead of posting sendPrompt
+     // directly) reuses the normal bubble-render and isSendingPrompt /
+     // setProcessing logic, so the Stop button arms correctly.
+     //
+     // isLoadingSession is already false here, so the guard above will not
+     // re-hold it.
+     if (pendingResumeSend) {
+       var _heldSend = pendingResumeSend;
+       pendingResumeSend = null;
+       vscode.postMessage({ type: 'debugLog', message:
+         '[WV-RESUME-HOLD] draining held prompt after replay (len=' + (_heldSend.text ? _heldSend.text.length : 0) +
+         ' images=' + (_heldSend.images ? _heldSend.images.length : 0) + ')' });
+       promptInput.value = _heldSend.text || '';
+       if (_heldSend.images && _heldSend.images.length) {
+         for (var _hi = 0; _hi < _heldSend.images.length; _hi++) {
+           pendingImages.push(_heldSend.images[_hi]);
+         }
+       }
+       if (_heldSend.includeVideo) pendingVideoAttached = true;
+       handleSend();
+     }
    }
 
    function handleSessionInfoUpdate(title) {
