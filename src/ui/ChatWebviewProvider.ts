@@ -6111,19 +6111,51 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    /* Plan */
    .plan-bar {
      flex-shrink: 0;
-     max-height: 200px;
-     overflow-y: auto;
    }
    .plan-bar:empty {
      display: none;
    }
    .plan {
-     padding: 8px 12px;
+     padding: 0;
      border-radius: var(--message-radius);
      background: var(--vscode-editorWidget-background);
      border: 1px solid var(--vscode-panel-border);
+     overflow: hidden;
    }
-    .plan .plan-title { font-weight: 600; margin-bottom: 6px; }
+    .plan .plan-title {
+      font-weight: 600;
+      padding: 6px 12px;
+      cursor: pointer;
+      user-select: none;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .plan .plan-title:hover {
+      background: var(--vscode-list-hoverBackground);
+    }
+    .plan .plan-title .plan-chevron {
+      font-size: 10px;
+      transition: transform 0.15s ease;
+      display: inline-block;
+    }
+    .plan .plan-title .plan-count {
+      font-weight: 400;
+      font-size: 11px;
+      opacity: 0.7;
+      margin-left: auto;
+    }
+    .plan.collapsed .plan-chevron {
+      transform: rotate(-90deg);
+    }
+    .plan .plan-entries {
+      padding: 0 12px 8px 12px;
+      max-height: 200px;
+      overflow-y: auto;
+    }
+    .plan.collapsed .plan-entries {
+      display: none;
+    }
     .plan .plan-entry {
       padding: 2px 0;
       display: flex;
@@ -20300,24 +20332,44 @@ forceCollapseTurnFolds();
      hideEmpty();
      if (!currentPlanEl) {
        currentPlanEl = document.createElement('div');
-       currentPlanEl.className = 'plan';
+       currentPlanEl.className = 'plan collapsed';
        planBar.appendChild(currentPlanEl);
+       // Toggle expand/collapse on title click (delegated once per element)
+       currentPlanEl.addEventListener('click', function (e) {
+         var t = e.target;
+         while (t && t !== currentPlanEl) {
+           if (t.classList && t.classList.contains('plan-title')) {
+             currentPlanEl.classList.toggle('collapsed');
+             return;
+           }
+           t = t.parentNode;
+         }
+       });
      }
       resumeDiag('[WV-PLANRENDER] title=' + planBarTitle(plan) +
         ' entries=' + ((plan && plan.entries) ? plan.entries.length : 0) +
         ' statuses=' + ((plan && plan.entries) ? plan.entries.map(function (e) { return e.status || 'pending'; }).join(',') : '-') +
         ' loading=' + isLoadingSession);
-      let html = '<div class="plan-title">' + escapeHtml(planBarTitle(plan)) + '</div>';
-      if (plan.entries) {
-        for (const entry of plan.entries) {
-          const icon = entry.status === 'completed' ? '✅'
-            : entry.status === 'in_progress' ? '🔄' : '⬜';
-          const cls = entry.status === 'completed' ? ' completed' : '';
-          html += '<div class="plan-entry' + cls + '">'
-            + icon + ' ' + escapeHtml(entry.title || entry.description || entry.content || '')
-            + '</div>';
-        }
+      var entries = (plan && plan.entries) ? plan.entries : [];
+      var completedCount = entries.filter(function (e) { return e.status === 'completed'; }).length;
+      var countLabel = entries.length
+        ? (completedCount + '/' + entries.length)
+        : '';
+      var html = '<div class="plan-title">'
+        + '<span class="plan-chevron">▾</span>'
+        + '<span class="plan-title-text">' + escapeHtml(planBarTitle(plan)) + '</span>'
+        + (countLabel ? '<span class="plan-count">' + countLabel + '</span>' : '')
+        + '</div>';
+      html += '<div class="plan-entries">';
+      for (const entry of entries) {
+        const icon = entry.status === 'completed' ? '✅'
+          : entry.status === 'in_progress' ? '🔄' : '⬜';
+        const cls = entry.status === 'completed' ? ' completed' : '';
+        html += '<div class="plan-entry' + cls + '">'
+          + icon + ' ' + escapeHtml(entry.title || entry.description || entry.content || '')
+          + '</div>';
       }
+      html += '</div>';
      currentPlanEl.innerHTML = html;
      autoScrollIfAtBottom();
    }
@@ -24958,16 +25010,26 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       if (!isNaN(na) && !isNaN(nb)) return na - nb;
       return String(a).localeCompare(String(b));
     });
-    var html = '<div class="plan"><div class="plan-title">Todos</div>';
+    var completedCount = 0;
+    for (var c = 0; c < ids.length; c++) {
+      if (normalizeCursorTodoStatus(cursorTodosById[ids[c]] && cursorTodosById[ids[c]].status) === 'completed') completedCount++;
+    }
+    var countLabel = ids.length ? (completedCount + '/' + ids.length) : '';
+    var html = '<div class="plan collapsed"><div class="plan-title">'
+      + '<span class="plan-chevron">▾</span>'
+      + '<span class="plan-title-text">Todos</span>'
+      + (countLabel ? '<span class="plan-count">' + countLabel + '</span>' : '')
+      + '</div>';
+    html += '<div class="plan-entries">';
     for (var i = 0; i < ids.length; i++) {
       var t = cursorTodosById[ids[i]];
       var st = normalizeCursorTodoStatus(t && t.status);
       var cls = st === 'completed' ? 'plan-entry completed' : 'plan-entry';
       html += '<div class="' + cls + '">' +
-        '<span>' + (st === 'completed' ? '✓' : st === 'in_progress' ? '…' : '○') + '</span>' +
+        '<span>' + (st === 'completed' ? '✅' : st === 'in_progress' ? '🔄' : '⬜') + '</span>' +
         '<span>' + escapeHtml((t && t.content) || '') + '</span></div>';
     }
-    html += '</div>';
+    html += '</div></div>';
     if (!root) {
       root = document.createElement('div');
       root.className = 'cursor-todos-plan';
@@ -24975,6 +25037,21 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
     }
     planBar.classList.add('cursor-todos-outside');
     root.innerHTML = html;
+    // Wire the same click-to-toggle as updatePlanDOM (cursor path builds its own .plan)
+    var planEl = root.querySelector('.plan');
+    if (planEl && !planEl._cursorToggleWired) {
+      planEl._cursorToggleWired = true;
+      planEl.addEventListener('click', function (e) {
+        var tt = e.target;
+        while (tt && tt !== planEl) {
+          if (tt.classList && tt.classList.contains('plan-title')) {
+            planEl.classList.toggle('collapsed');
+            return;
+          }
+          tt = tt.parentNode;
+        }
+      });
+    }
   }
 
   function handleCursorUpdateTodos(params) {

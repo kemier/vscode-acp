@@ -99,7 +99,7 @@ suite('plan bar title distinguishes a plan from a todo list', () => {
   });
 
   test('the title is escaped, since an agent supplies it', () => {
-    const at = provider.indexOf("'<div class=\"plan-title\">' + escapeHtml(planBarTitle(plan))");
+    const at = provider.indexOf("escapeHtml(planBarTitle(plan))");
     assert.ok(at > 0, 'agent-supplied title is not HTML-escaped');
   });
 
