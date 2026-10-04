@@ -7670,9 +7670,22 @@ let isCompacting = false;  // true while /compact is running
          // Two different states, and the difference matters: still waiting for this
          // turn's confirmation, versus sent but unconfirmed once the turn has ended
          // (which means it will be sent as a normal prompt instead).
-         sentTag.textContent = entry.steerPending ? 'in turn' : 'sent';
+         //
+         // The pending label is agent-aware: an agent that injects mid-turn
+         // (ericli — drains at onIterationStart) genuinely steers the in-flight
+         // work, so "in turn" is honest. An agent that can only drain AFTER the
+         // turn completes (claude-code-acp — Claude CLI has no mid-turn
+         // injection) does not steer the running work; it appends a follow-up at
+         // the turn's tail. Labelling that "in turn" overstates it, so we say
+         // "at turn end" instead.
+         const _drainsAtTurnEnd = agentDrainsSteerAtTurnEnd(currentAgentLabel());
+         sentTag.textContent = entry.steerPending
+           ? (_drainsAtTurnEnd ? 'at turn end' : 'in turn')
+           : 'sent';
          sentTag.title = entry.steerPending
-           ? 'Delivered into the running turn — waiting for the agent to confirm it'
+           ? (_drainsAtTurnEnd
+               ? 'Queued for this turn — Claude CLI cannot inject mid-turn, so it is delivered as a follow-up when the turn ends'
+               : 'Delivered into the running turn — waiting for the agent to confirm it')
            : 'Sent into the previous turn but never confirmed — it will go as a normal prompt';
          chip.appendChild(sentTag);
        }
@@ -7824,11 +7837,11 @@ let isCompacting = false;  // true while /compact is running
      // agent echoing a steered message when it DELIVERS it to the model, not when it
      // receives it — codex echoing on receipt let two interjections pile up and the
      // model answered only the last (codex now echoes at drain time).
-     if (!autoSteerQueuedEnabled) { wvQueueLog('steer:SKIP', 'autoSteer disabled'); return false; }
-     if (!isProcessing || isCompacting || isClearing) { wvQueueLog('steer:SKIP', 'not in a steerable turn'); return false; }
-     if (!agentAutoSteersQueuedMessages(currentAgentLabel())) { wvQueueLog('steer:SKIP', 'agent does not auto-steer'); return false; }
+     if (!autoSteerQueuedEnabled) { wvQueueLog('steer:SKIP', 'autoSteer disabled'); steerDiag('SKIP autoSteer disabled'); return false; }
+     if (!isProcessing || isCompacting || isClearing) { wvQueueLog('steer:SKIP', 'not in a steerable turn'); steerDiag('SKIP not in a steerable turn isProcessing=' + isProcessing + ' isCompacting=' + isCompacting + ' isClearing=' + isClearing); return false; }
+     if (!agentAutoSteersQueuedMessages(currentAgentLabel())) { wvQueueLog('steer:SKIP', 'agent does not auto-steer'); steerDiag('SKIP agent does not auto-steer agent=' + (currentAgentLabel() || '(none)')); return false; }
      var idx = nextAutoSteerIndex(messageQueue);
-     if (idx < 0) { wvQueueLog('steer:SKIP', 'no eligible entry (nextAutoSteerIndex=-1)'); return false; }
+     if (idx < 0) { wvQueueLog('steer:SKIP', 'no eligible entry (nextAutoSteerIndex=-1)'); steerDiag('SKIP no eligible entry queueLen=' + messageQueue.length + ' steerPending=' + messageQueue.filter(function (e) { return e && e.steerPending; }).length); return false; }
      var entry = messageQueue[idx];
      entry.steered = true;
      entry.steerPending = true;
@@ -7836,6 +7849,7 @@ let isCompacting = false;  // true while /compact is running
      vscode.postMessage({ type: 'steerPrompt', text: queueEntryPromptText(entry) || ' ' });
      renderQueue();
      wvQueueLog('STEERED', 'idx=' + idx);
+     steerDiag('STEERED idx=' + idx + ' agent=' + (currentAgentLabel() || '(none)') + ' text="' + String(queueEntryPromptText(entry) || '').substring(0, 60) + '"');
      showTransientHint('Sent into the running turn — the agent picks it up at its next step.');
      return true;
    }
@@ -8275,6 +8289,27 @@ function agentAutoSteersQueuedMessages(agentLabel) {
   // in silence, and steerQueuedMessage would have removed the message from the
   // queue and shown its bubble before sending it: lost, while looking delivered.
   return false;
+}
+
+/**
+ * True when the agent can only deliver a steered message AFTER the current turn
+ * completes (a follow-up), not mid-turn.
+ *
+ * claude-code-acp drives the Claude CLI as an opaque subprocess, which has no
+ * mid-turn injection point — it queues steers and drains them after Prompt
+ * completed, resuming the same session with a [Follow-up instruction]. The
+ * steered message therefore does NOT steer the in-flight work; it appends to the
+ * turn's tail. The queue chip says "at turn end" instead of "in turn" so the
+ * label matches what actually happens.
+ *
+ * ericli drains at onIterationStart (between tool-loop iterations), so its steer
+ * genuinely steers the running work — "in turn" is correct there. codex-acp has
+ * a real mid-turn injection path too.
+ */
+function agentDrainsSteerAtTurnEnd(agentLabel) {
+  var label = String(agentLabel || '');
+  if (!label) return false;
+  return /claude/i.test(label);
 }
 
 /**
@@ -10372,6 +10407,19 @@ var end = displayText.length;
            ' autoSteer=' + autoSteerQueuedEnabled +
            (detail ? ' | ' + detail : ''),
        });
+     } catch (_e) { /* diagnostics must never break the send path */ }
+   }
+   /**
+    * Steer diagnostics, gated on acp.debugResume (via the [STEER-DIAG] marker).
+    * Unlike wvQueueLog this is not behind acp.debugWebviewQueue, so the steer
+    * trace is available with the same switch the resume/fold traces use. Reports
+    * why a steer was skipped and whether the stage-1 accept matched a queued
+    * entry — the two facts needed to explain "only shows 'in turn'" for an agent
+    * that cannot inject mid-turn.
+    */
+   function steerDiag(detail) {
+     try {
+       vscode.postMessage({ type: 'debugLog', message: '[STEER-DIAG] ' + detail });
      } catch (_e) { /* diagnostics must never break the send path */ }
    }
    function updateSendButton() {
@@ -23571,7 +23619,22 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           typeof accContent.text === 'string' &&
           typeof ackSteeredQueueEntry === 'function'
         ) {
-          markSteeredEntryBubbleShown(accContent.text);
+          var _accShown = markSteeredEntryBubbleShown(accContent.text);
+          // [STEER-DIAG] stage-1 receipt: did the accepted echo match a queued,
+          // steered, not-yet-shown entry? A miss means the bubble stayed hidden
+          // (the "only shows 'in turn'" symptom) — report the queue state so the
+          // cause (no steered entry / text mismatch / already shown) is visible.
+          vscode.postMessage({ type: 'debugLog', message: '[STEER-DIAG] user_message_accepted: matched=' + _accShown +
+            ' queueLen=' + messageQueue.length +
+            ' steeredEntries=' + messageQueue.filter(function (e) { return e && e.steered; }).length +
+            ' pendingEntries=' + messageQueue.filter(function (e) { return e && e.steerPending; }).length +
+            ' shownEntries=' + messageQueue.filter(function (e) { return e && e.bubbleShown; }).length +
+            ' agent=' + (currentAgentLabel() || '(none)') +
+            ' echoText="' + String(accContent.text).substring(0, 60) + '"' });
+        } else {
+          vscode.postMessage({ type: 'debugLog', message: '[STEER-DIAG] user_message_accepted IGNORED: isLoadingSession=' + isLoadingSession +
+            ' hasContent=' + !!(accContent && accContent.type === 'text' && typeof accContent.text === 'string') +
+            ' hasAckFn=' + (typeof ackSteeredQueueEntry === 'function') });
         }
         break;
       }
@@ -23601,7 +23664,13 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           // receipt: drop the queued copy so it is neither shown twice nor
           // re-sent at promptEnd.
           if (!isLoadingSession && typeof ackSteeredQueueEntry === 'function') {
-            ackSteeredQueueEntry(content.text);
+            var _delivered = ackSteeredQueueEntry(content.text);
+            // [STEER-DIAG] stage-2 delivered echo: the agent put this message in
+            // front of the model. matched=false means it was not a queued steer
+            // (e.g. a subagent <task-notification> or a plain prompt echo).
+            steerDiag('user_message_chunk delivered: matched=' + _delivered +
+              ' queueLen=' + messageQueue.length +
+              ' text="' + String(content.text).substring(0, 60) + '"');
           }
           var _dbgChunk = content.text.length > 150 ? content.text.substring(0, 150) + '...' : content.text;
           resumeDiag('UMC chunk: len=' + content.text.length + ' isLoading=' + isLoadingSession + ' text="' + _dbgChunk + '"');
