@@ -206,25 +206,26 @@ suite('automatic steering of a mid-turn message', () => {
     assert.ok(fn.includes('entry.steered = true;'), fn);
   });
 
-  test('only one steer is in flight; the next waits for the ack', () => {
+  test('steers may run concurrently; the same entry is never re-steered', () => {
     const pick = new Function(`${extractFn('nextAutoSteerIndex')}; return nextAutoSteerIndex;`)() as (
       q: any[],
     ) => number;
-    // Steering the whole queue at once buried the earlier messages, and an echo
-    // cannot be attributed when several unacked steers share the channel.
-    // steerPending is the in-flight marker now; see the duplicate-delivery suite.
-    assert.strictEqual(pick([{ text: 'a', steered: true, steerPending: true }, { text: 'b' }]), -1);
+    // An entry with steerPending has been sent into the running turn but its
+    // echo hasn't landed yet. It is skipped (never re-steered), but a LATER
+    // entry may still be auto-steered — concurrent steers are allowed.
+    assert.strictEqual(pick([{ text: 'a', steered: true, steerPending: true }, { text: 'b' }]), 1);
     assert.strictEqual(pick([{ text: 'a' }, { text: 'b' }]), 0);
     assert.strictEqual(pick([]), -1);
     assert.strictEqual(pick(null as any), -1);
   });
 
-  test('an ack releases the next queued message', () => {
+  test('an ack splices the entry and releases the next queued message', () => {
     const ack = extractFn('ackSteeredQueueEntry');
     assert.ok(ack.includes('maybeAutoSteerNext()'), ack);
-    const bubble = ack.indexOf('addUserBubbleForQueuedEntry(e)');
+    // The entry is spliced from the queue, and the channel is released.
+    const splice = ack.indexOf('messageQueue.splice(i, 1)');
     const next = ack.indexOf('maybeAutoSteerNext()');
-    assert.ok(bubble > 0 && next > bubble, 'promote the confirmed one before releasing the next');
+    assert.ok(splice > 0 && next > splice, 'splice the confirmed entry, then release the next');
   });
 
   test('a turn ending clears the pending flag so later turns are not blocked', () => {
@@ -256,9 +257,9 @@ suite('automatic steering of a mid-turn message', () => {
     // locally), so the echo renders nothing by itself. Acking by deletion alone
     // left the message nowhere: chip gone, nothing in the transcript.
     const ack = extractFn('ackSteeredQueueEntry');
-    assert.ok(ack.includes('addUserBubbleForQueuedEntry(e)'), ack);
+    assert.ok(ack.includes('addUserBubbleEarly(e)'), ack);
     const splice = ack.indexOf('messageQueue.splice(i, 1)');
-    const bubble = ack.indexOf('addUserBubbleForQueuedEntry(e)');
+    const bubble = ack.indexOf('addUserBubbleEarly(e)');
     assert.ok(splice > 0 && bubble > splice, 'remove the chip, then render the bubble');
   });
 
@@ -346,8 +347,11 @@ suite('a steered message is never delivered twice', () => {
     return new Function(`${body}; return nextAutoSteerIndex;`)()(queue);
   }
 
-  test('an entry awaiting this turn blocks the next, an already-sent one does not', () => {
-    assert.strictEqual(pick([{ text: 'a', steered: true, steerPending: true }, { text: 'b' }]), -1);
+  test('a sent entry is skipped, an already-delivered one is never re-steered', () => {
+    // An entry with steerPending has been sent into the running turn. It is
+    // skipped (never re-steered), but a later entry may still be auto-steered
+    // — concurrent steers are allowed (see 249e22a).
+    assert.strictEqual(pick([{ text: 'a', steered: true, steerPending: true }, { text: 'b' }]), 1);
     // After the turn ended the pending flag is gone; the sent entry is skipped, not re-sent.
     assert.strictEqual(pick([{ text: 'a', steered: true }, { text: 'b' }]), 1);
     // And it is never picked again itself.

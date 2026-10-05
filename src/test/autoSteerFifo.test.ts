@@ -106,10 +106,11 @@ suite('auto-steer is FIFO (head-of-line blocking)', () => {
     );
   });
 
-  test('a steerPending entry still stops everything', () => {
+  test('a steerPending entry is skipped but does not block the next', () => {
     const pick = loadPicker();
-    // Unchanged behaviour: one in-flight steer at a time.
-    assert.strictEqual(pick([{ text: 'a', steered: true, steerPending: true }, { text: 'b' }]), -1);
+    // Concurrent steers are allowed (249e22a): the pending entry is skipped
+    // (never re-steered), but a later entry may still be auto-steered.
+    assert.strictEqual(pick([{ text: 'a', steered: true, steerPending: true }, { text: 'b' }]), 1);
   });
 
   test('a plain queue steers its oldest entry', () => {

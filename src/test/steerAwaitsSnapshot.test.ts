@@ -110,7 +110,10 @@ suite('a snapshot in flight blocks the steer', () => {
   test('the existing exclusions still hold', () => {
     const pick = loadPicker();
     // Regression guard: the new check must not have displaced these.
-    assert.strictEqual(pick([{ text: 'x', steerPending: true }]), -1, 'pending steer blocks all');
+    // A steerPending entry WITHOUT steered is not skipped by the first loop
+    // (it hasn't been sent yet), so it can still be picked. A steerPending
+    // entry WITH steered is skipped (never re-steered).
+    assert.strictEqual(pick([{ text: 'x', steerPending: true, steered: true }, { text: 'y' }]), 1, 'pending+steered is skipped, next is eligible');
     assert.strictEqual(pick([{ text: 'x', images: [{}] }]), -1, 'images never steer');
     assert.strictEqual(pick([{ text: '/compact' }]), -1, 'slash commands never steer');
   });
