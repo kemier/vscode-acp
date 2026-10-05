@@ -8271,38 +8271,24 @@ let isCompacting = false;  // true while /compact is running
   // queue time), so it must be added here. Helper centralizes the
   // chatHistory/DOM/turn-reset so every drain path is consistent.
   if (isProcessing) {
-   // Set the pending message; it will be sent once promptEnd fires
-   // after the cancel completes.
-   pendingSendAfterCancel = entry;
-   // Do NOT add the user bubble yet. The in-flight turn is still streaming, and
-   // addUserBubbleForQueuedEntry resets currentTurnEl — so every tool_call /
-   // chunk that the cancelled turn still emits opened a FRESH turn BELOW the
-   // new bubble. The queued message then rendered ABOVE the prior turn's own
-   // commands, i.e. before the work it was meant to interrupt.
-   //
-   // The bubble is added by the promptEnd drain path instead (guarded by
-   // entry.bubbleShown), which runs after the cancelled turn has closed, so the
-   // message lands after the prior turn's content. promptEnd is guaranteed:
-   // the host forces it via the cancel-timeout fallback if the agent never
-   // acknowledges session/cancel.
-   //
-   // Immediate feedback comes from the status line rather than a chat row: a
-   // row inserted here would sit in the same wrong position we are fixing.
+   // Mid-turn steer: write the message into the running turn's stdin so the
+   // agent deals with it in real time (matching happier's Send Now behavior).
+   // The agent acks with user_message_accepted / user_message_chunk, which
+   // triggers markSteeredEntryBubbleShown / ackSteeredQueueEntry to add the
+   // bubble at the right position. If the agent doesn't support session/steer
+   // or has no active turn, the steer falls back to the queue (delivered at
+   // turn end) — the entry was already spliced from messageQueue above, so
+   // re-queue it for the fallback.
+   entry.steered = true;
+   entry.steerPending = true;
+   vscode.postMessage({ type: 'steerPrompt', text: queueEntryPromptText(entry) || ' ' });
+   // Re-add to the queue so the ack path can find and splice it.
+   messageQueue.push(entry);
+   renderQueue();
    if (statusEl) {
-     statusEl.textContent = 'Interrupting — your message sends next…';
+     statusEl.textContent = 'Sent into the running turn…';
    }
-   // Kill long-running commands from the current turn BEFORE cancelling,
-   // so they don't keep running in the background after the new prompt
-   // starts. Without this, the cancel ends the ACP turn but spawned
-   // processes (builds, test suites, etc.) keep running and their output
-   // leaks into the next turn.
-   //
-   // suppressNotice: this is NOT a /stop — the user clicked "Send Now" and
-   // the kill is a side effect of interrupting the turn. The host will skip
-   // the transient "Killed N running process." notice so it doesn't look
-   // like the user explicitly stopped the processes.
-   vscode.postMessage({ type: 'stopProcesses', suppressNotice: true });
-   vscode.postMessage({ type: 'cancelTurn' });
+   vscode.postMessage({ type: 'debugLog', message: '[STEER] Send Now → mid-turn steer (stdin write)' });
   } else {
      // Not processing — send directly now and show the bubble.
     // Route slash commands through handleLocalSlashCommand so local UI

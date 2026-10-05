@@ -6,14 +6,12 @@ import { QUEUE_ENTRY_HELPERS_SRC } from './webviewQueueHelpers';
 /**
  * "Send Now" ordering regression.
  *
- * Clicking Send Now on a queued message while a turn is in flight used to add
- * the user bubble straight away. addUserBubbleForQueuedEntry resets
- * currentTurnEl, so every tool_call / chunk the cancelled turn still emitted
- * opened a FRESH turn BELOW the new bubble — the queued message rendered ABOVE
- * the prior turn's own commands, i.e. before the work it was meant to interrupt.
- *
- * Correct behaviour: request the cancel, and let the promptEnd drain path add
- * the bubble once the prior turn has closed, so the message lands after it.
+ * Clicking Send Now on a queued message while a turn is in flight now sends
+ * a mid-turn steer (session/steer → stdin write) so the agent deals with it
+ * in real time, matching happier's Send Now behavior. The entry is re-added
+ * to the queue with steered/steerPending set, so the ack path
+ * (markSteeredEntryBubbleShown / ackSteeredQueueEntry) adds the bubble at
+ * the right position.
  *
  * The real function is extracted out of the webview template literal in
  * ChatWebviewProvider.ts (it cannot be imported) and run against stubs, the
@@ -98,32 +96,30 @@ function makeHarness(opts: { isProcessing: boolean; queue: any[] }): Harness {
 }
 
 suite('Send Now ordering (queued message vs the turn it interrupts)', () => {
-  test('while processing: cancels and does NOT add the bubble yet', () => {
+  test('while processing: steers into the running turn, does NOT add the bubble yet', () => {
     const h = makeHarness({ isProcessing: true, queue: [{ text: 'do the thing', images: [] }] });
     h.run(0);
 
-    assert.deepStrictEqual(
-      h.posted.map((m) => m.type),
-      ['stopProcesses', 'cancelTurn'],
-      'must kill processes first, then request the cancel, and must not send the prompt yet',
-    );
+    // The isProcessing path sends a steerPrompt (mid-turn stdin write) and a
+    // debugLog. No cancelTurn, no stopProcesses.
+    const types = h.posted.map((m) => m.type);
+    assert.ok(types.includes('steerPrompt'), 'must send a mid-turn steer: ' + JSON.stringify(types));
+    assert.ok(!types.includes('cancelTurn'), 'must NOT cancel the turn');
+    assert.ok(!types.includes('stopProcesses'), 'must NOT kill processes');
     assert.ok(
       !h.calls.some((c) => c.startsWith('addUserBubble')),
-      'the bubble must NOT be added before the cancelled turn closes: ' + JSON.stringify(h.calls),
+      'the bubble must NOT be added before the steer echo arrives: ' + JSON.stringify(h.calls),
     );
-    assert.ok(h.pending, 'the entry must be parked for the promptEnd drain path');
-    assert.strictEqual(h.pending.text, 'do the thing');
-    assert.ok(
-      !h.pending.bubbleShown,
-      'bubbleShown must stay falsy so the promptEnd path adds the bubble',
-    );
-    assert.strictEqual(h.queue.length, 0, 'entry is removed from the visible queue');
+    // The entry is re-added to the queue with steered/steerPending set.
+    assert.strictEqual(h.queue.length, 1, 'entry is re-added to the queue for the ack path');
+    assert.ok(h.queue[0].steered, 'entry must be marked as steered');
+    assert.ok(h.queue[0].steerPending, 'entry must be marked as steerPending');
   });
 
   test('while processing: gives immediate feedback on the status line, not a chat row', () => {
     const h = makeHarness({ isProcessing: true, queue: [{ text: 'hi', images: [] }] });
     h.run(0);
-    assert.match(h.statusText, /Interrupting/i);
+    assert.match(h.statusText, /Sent into the running turn/i);
   });
 
   test('when idle: sends immediately and shows the bubble', () => {

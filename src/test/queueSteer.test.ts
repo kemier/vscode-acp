@@ -405,10 +405,10 @@ suite('Send Now cannot re-send a message already taken', () => {
     const fn = extractFn('sendQueuedMessageNow');
     assert.ok(fn.includes('messageQueue[index].steerPending'), fn);
     assert.ok(fn.includes('Already sent into the running turn'), fn);
-    // The guard must come before anything that mutates the queue or cancels.
+    // The guard must come before anything that mutates the queue or steers.
     const guard = fn.indexOf('steerPending');
-    const cancel = fn.indexOf('cancelTurn');
-    assert.ok(guard > 0 && (cancel < 0 || guard < cancel));
+    const steer = fn.indexOf("type: 'steerPrompt'");
+    assert.ok(guard > 0 && (steer < 0 || guard < steer));
   });
 });
 
