@@ -8414,11 +8414,13 @@ function nextAutoSteerIndex(queue) {
   if (!Array.isArray(queue)) return -1;
   for (var i = 0; i < queue.length; i++) {
     // steerPending means "sent in THIS turn, still waiting for the agent to confirm".
-    // Deliberately not the sent-ever flag, which stays set for the life of the entry so
-    // echo can still be matched: codex's steer queue survives a turn boundary, so an
-    // echo can arrive during the NEXT turn (measured: steer 08:50:48, echo 08:52:42,
-    // with a new prompt at 08:52:32 in between).
-    if (queue[i] && queue[i].steerPending) return -1;
+    // Continue past it (do NOT return -1): allowing multiple concurrent steers
+    // means a second queued message gets its own "in turn" chip instead of
+    // sitting plain while the first steer's echo is outstanding. The FIFO
+    // head-of-line loop below still skips e.steered entries, so the same entry
+    // is never steered twice. If the echo never arrives, drainQueue at
+    // promptEnd delivers the unacked entry as a normal turn (at-least-once).
+    if (queue[i] && queue[i].steerPending) continue;
     // Already delivered once — never steer the same entry twice.
     if (queue[i] && queue[i].steered && !queue[i].steerPending) continue;
   }
