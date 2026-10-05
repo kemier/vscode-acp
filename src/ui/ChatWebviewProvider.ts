@@ -7977,6 +7977,41 @@ let isCompacting = false;  // true while /compact is running
    }
 
    /**
+    * Flush steer bubbles that were deferred while a tool was in-flight or another
+    * steer was pending. Called when a tool completes (mid-turn) and at promptEnd.
+    * Only flushes if no tool is still running and no steer is still pending —
+    * otherwise the deferral reason is still valid.
+    */
+   function flushDeferredSteerBubbles() {
+     if (!messageQueue.length) return;
+     var stillPending = messageQueue.some(function (p) { return p && p.steerPending; });
+     if (stillPending) return;
+     if (typeof toolCalls !== 'undefined') {
+       for (var _tcId in toolCalls) {
+         var _tcEl = toolCalls[_tcId];
+         if (!_tcEl) continue;
+         var _icon = _tcEl.querySelector(':scope > .tc-icon') || _tcEl.querySelector('.tc-icon');
+         if (_icon && (_icon.classList.contains('running') ||
+                       _icon.classList.contains('pending') ||
+                       _icon.classList.contains('in_progress'))) {
+           return;
+         }
+       }
+     }
+     for (var _fi = messageQueue.length - 1; _fi >= 0; _fi--) {
+       var _fe = messageQueue[_fi];
+       if (_fe && _fe.steered && (_fe.bubbleDeferred || _fe.bubbleShown === undefined)) {
+         _fe.bubbleShown = true;
+         delete _fe.bubbleDeferred;
+         addUserBubbleEarly(_fe);
+         messageQueue.splice(_fi, 1);
+         renderQueue();
+         vscode.postMessage({ type: 'debugLog', message: '[STEER] flushDeferredBubble: "' + String(_fe.text || '').substring(0, 40) + '"' });
+       }
+     }
+   }
+
+   /**
     * Stage-1 steer receipt: the agent acknowledged a steered message on arrival
     * (user_message_accepted). Show its bubble immediately, but keep the queue
     * entry in place — the delivered echo (user_message_chunk) is the only signal
@@ -20335,7 +20370,10 @@ forceCollapseTurnFolds();
      }
     saveState();
      storeDiffContent(toolCallId, content, title);
-     if (_wasTerminal) refreshPsPanelIfVisible();
+     if (_wasTerminal) {
+       refreshPsPanelIfVisible();
+       flushDeferredSteerBubbles();
+     }
 
     // Crew stage: update spinner + fill tooltip from late rawInput (Claude/Codex
     // often send empty rawInput first, then prompt/description on update).
