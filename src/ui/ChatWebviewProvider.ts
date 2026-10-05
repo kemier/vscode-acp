@@ -7923,6 +7923,14 @@ let isCompacting = false;  // true while /compact is running
        // Match on the EXPANDED text: that is what was sent, so that is what the
        // agent echoes back (a clipboard snapshot included).
        if (e && e.steered && steerEchoMatchesEntry(queueEntryPromptText(e), echoText)) {
+         // The agent has now put this message in front of the model (the
+         // delivered echo) — it is no longer "sent but waiting for confirmation".
+         // Clearing it here (not just at setProcessing(false)/turn-end) lets a
+         // LATER steer's stage-2 echo flush its deferred bubble mid-turn: while
+         // steerPending stayed set for the whole turn, the matched entry blocked
+         // both ackSteeredQueueEntry's deferral and flushDeferredSteerBubbles, so
+         // every deferred bubble waited until promptEnd.
+         if (e.steerPending) { delete e.steerPending; }
          // The bubble may already be on screen from the stage-1 accepted echo
          // (user_message_accepted). Do not render a duplicate — only the chip
          // removal + next-message release belong to the delivered echo.
@@ -8029,6 +8037,13 @@ let isCompacting = false;  // true while /compact is running
      for (var i = 0; i < messageQueue.length; i++) {
        var e = messageQueue[i];
        if (e && e.steered && !e.bubbleShown && steerEchoMatchesEntry(queueEntryPromptText(e), echoText)) {
+         // Stage-1 (accepted) means the agent received and ack'd this steer, so
+         // it is no longer "waiting for confirmation". Clear steerPending here
+         // (paired with ackSteeredQueueEntry's clear on the stage-2 chunk) so a
+         // concurrently-accepted later steer isn't held back by this entry's
+         // stale pending flag — the deferral for tool-in-flight is still honored
+         // below.
+         if (e.steerPending) { delete e.steerPending; }
          e.bubbleShown = true;
          renderQueue();
          // Defer the bubble if a tool is still in-flight or another steer is
