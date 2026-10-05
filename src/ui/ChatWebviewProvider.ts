@@ -7956,6 +7956,8 @@ let isCompacting = false;  // true while /compact is running
          if (!_deferBubble) {
            messageQueue.splice(i, 1);
            renderQueue();
+         } else {
+           e.bubbleDeferred = true;
          }
          if (!e.bubbleShown && !_deferBubble) {
            addUserBubbleEarly(e);
@@ -7994,10 +7996,37 @@ let isCompacting = false;  // true while /compact is running
        if (e && e.steered && !e.bubbleShown && steerEchoMatchesEntry(queueEntryPromptText(e), echoText)) {
          e.bubbleShown = true;
          renderQueue();
-         addUserBubbleEarly(e);
+         // Defer the bubble if a tool is still in-flight or another steer is
+         // pending — same check as ackSteeredQueueEntry (stage-2). With mid-turn
+         // steer both stages fire back-to-back; without this the stage-1 bubble
+         // would appear immediately and stage-2's "deferred" log would be a no-op
+         // (the bubble is already on screen). The promptEnd flush renders it.
+         var _hasPendingSteer = messageQueue.some(function (p) { return p && p.steerPending; });
+         var _hasInFlightTool = false;
+         if (typeof toolCalls !== 'undefined') {
+           for (var _tcId in toolCalls) {
+             var _tcEl = toolCalls[_tcId];
+             if (!_tcEl) continue;
+             var _icon = _tcEl.querySelector(':scope > .tc-icon') || _tcEl.querySelector('.tc-icon');
+             if (_icon && (_icon.classList.contains('running') ||
+                           _icon.classList.contains('pending') ||
+                           _icon.classList.contains('in_progress'))) {
+               _hasInFlightTool = true;
+               break;
+             }
+           }
+         }
+         var _defer = _hasPendingSteer || _hasInFlightTool;
+         if (!_defer) {
+           addUserBubbleEarly(e);
+         } else {
+           e.bubbleDeferred = true;
+         }
          vscode.postMessage({
            type: 'debugLog',
-           message: '[STEER] agent acknowledged a steered message (stage-1 accepted); bubble shown, still queued',
+           message: '[STEER] agent acknowledged a steered message (stage-1 accepted); bubble ' +
+             (_hasPendingSteer ? 'deferred — pending steer in queue' :
+               _hasInFlightTool ? 'deferred — tool in flight' : 'shown, still queued'),
          });
          return true;
        }
@@ -21938,13 +21967,17 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         setTimeout(() => {
           vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drain setTimeout fired: isProcessing=' + isProcessing + ' isSendingPrompt=' + isSendingPrompt + ' messageQueue.length=' + messageQueue.length });
           if (!isProcessing && !isSendingPrompt && messageQueue.length > 0) {
-            // Flush deferred steer bubbles: a steer delivered mid-tool had its
-            // bubble deferred (tool was in-flight). Now the turn is done and
-            // all tools are settled — show the bubbles.
+            // Flush deferred steer bubbles: a steer delivered mid-tool (or while
+            // another steer was pending) had its bubble deferred. Now the turn
+            // is done and all tools are settled — show the bubbles.
+            // Two deferral paths set different flags:
+            //   - stage-1 (markSteeredEntryBubbleShown): bubbleShown=true, bubbleDeferred=true
+            //   - stage-2 (ackSteeredQueueEntry): bubbleShown=undefined, entry still in queue
             for (var _fi = messageQueue.length - 1; _fi >= 0; _fi--) {
               var _fe = messageQueue[_fi];
-              if (_fe && _fe.steered && _fe.bubbleShown === undefined) {
+              if (_fe && _fe.steered && (_fe.bubbleDeferred || _fe.bubbleShown === undefined)) {
                 _fe.bubbleShown = true;
+                delete _fe.bubbleDeferred;
                 addUserBubbleEarly(_fe);
                 messageQueue.splice(_fi, 1);
                 renderQueue();
