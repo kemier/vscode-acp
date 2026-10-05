@@ -2761,6 +2761,7 @@ export class SessionManager extends EventEmitter {
       placeholder.modes = (response as any).modes ?? null;
       placeholder.models = (response as any).models ?? null;
       placeholder.configOptions = (response as any).configOptions ?? null;
+      placeholder.availableCommands = (response as any).availableCommands ?? placeholder.availableCommands;
 
       // Emit config-options-changed so the webview picks up the model/mode
       // from the loaded session. Without this, the picker still shows the
@@ -2768,6 +2769,11 @@ export class SessionManager extends EventEmitter {
       // fresh session with the default model before loadSession overwrote it).
       if (placeholder.configOptions && placeholder.configOptions.length > 0) {
         this.applyConfigOptions(sessionId, placeholder.configOptions);
+      }
+      // Same for available commands — the response carries the agent's
+      // command set, but the placeholder was created with [].
+      if (placeholder.availableCommands.length > 0) {
+        this.applyAvailableCommands(sessionId, placeholder.availableCommands);
       }
 
       // Push the legacy `models` snapshot too. 'active-session-changed' is
@@ -2961,7 +2967,7 @@ export class SessionManager extends EventEmitter {
       modes: response?.modes ?? null,
       models: response?.models ?? null,
       configOptions: response?.configOptions ?? null,
-      availableCommands: [],
+      availableCommands: response?.availableCommands ?? [],
     };
     // Restore the renamed title from the history store so it appears in
     // the chat banner immediately (same as loadSession does).
