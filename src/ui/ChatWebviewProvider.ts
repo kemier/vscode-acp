@@ -17492,6 +17492,15 @@ function orderCompactFoldContents(body) {
      summaryEl.innerHTML = '';
      return;
    }
+   // After processing ends: if the ONLY foldable content is an interim text
+   // segment (no tools, no thoughts), the fold adds no value — it just wraps
+   // the reply in a collapsible with its own text as the title. Hide the
+   // header so the interim text renders inline with the promoted summary.
+   if (toolCount === 0 && hasInterimAsst && !hasThoughts && !isProcessing && !isLoadingSession) {
+     summaryEl.style.display = 'none';
+     summaryEl.innerHTML = '';
+     return;
+   }
     summaryEl.style.display = '';
      var body = (turn && getTurnFoldBody(turn)) || summaryEl.nextElementSibling;
      var isOpen = !!(body && (
