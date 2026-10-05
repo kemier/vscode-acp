@@ -3239,6 +3239,19 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       }
       return this.cursorModelSupportsImage(base);
     }
+    // Claude Code (claude-code-acp): the agent advertises
+    // promptCapabilities.image: true and forwards image blocks to the CLI
+    // via --input-format=stream-json. Trust the agent's capability for
+    // models not in the catalog (e.g. Qwen3.8-27B-FP8-1M, gpt-oss-120b) —
+    // the CLI handles vision. For models explicitly listed as text-only in
+    // the catalog (e.g. glm-5.2), respect the catalog.
+    if (agentName && /claude/i.test(agentName)) {
+      this.loadModelImageSupport();
+      if (this.modelImageSupport && this.modelImageSupport.has(base)) {
+        return this.modelImageSupport.get(base) === true;
+      }
+      return true;
+    }
     this.loadModelImageSupport();
     if (!this.modelImageSupport || this.modelImageSupport.size === 0) {
       return false;
@@ -17562,7 +17575,7 @@ function commitCurrentTextSegment(opts) {
      }
      currentMessageId = null;
      reactivatedHistoryIndex = -1;
-     return;
+     return true;
    }
    cancelProvisionalSummaryPromote();
     var asInterim = !!(opts && opts.interim);
@@ -17597,7 +17610,7 @@ function commitCurrentTextSegment(opts) {
           }
           currentMessageId = null;
           reactivatedHistoryIndex = -1;
-          return;
+          return true;
         }
         currentAssistantText = fencedStripped;
         vscode.postMessage({ type: 'debugLog', message: '[WV-COMMIT] interrupted commit: stripped lone empty trailing fence (textLen=' + currentAssistantText.length + ')' });
@@ -17724,6 +17737,7 @@ function commitCurrentTextSegment(opts) {
     currentAssistantText = '';
     currentMessageId = null;
     if (streamingRenderTimer) { clearTimeout(streamingRenderTimer); streamingRenderTimer = null; }
+    return true;
    }
 
     function addToolCall(toolCallId, title, status, content, rawInput, toolKind, locations, parentToolUseId) {
