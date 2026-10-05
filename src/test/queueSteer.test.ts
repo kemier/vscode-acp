@@ -48,6 +48,7 @@ suite('mid-turn steering of a queued message', () => {
     // so the text is delivered or refused — never silently dropped as in c397673.
     assert.strictEqual(supports('Codex CLI'), true);
     assert.strictEqual(supports('codex-acp'), true);
+    assert.strictEqual(supports('Cursor'), true);
   });
 
   test('withheld from agents with no steer path, and when no agent is known', () => {
@@ -57,8 +58,8 @@ suite('mid-turn steering of a queued message', () => {
     // session/set_mode, session/set_model — with no steering, and says unknown
     // _kiro.dev/ extensions may be "safely ignored". A steer would vanish.
     assert.strictEqual(supports('Kiro CLI'), false);
-    // cursor is an external binary with no adapter in this repo.
-    assert.strictEqual(supports('Cursor'), false);
+    // cursor is an ACP agent with session/steer support (cursor-agent acp).
+    assert.strictEqual(supports('Cursor'), true);
     // pi-acp queues whole prompts internally and implements no session/steer.
     assert.strictEqual(supports('pi-acp'), false);
     assert.strictEqual(supports('pi'), false);
@@ -165,6 +166,7 @@ suite('automatic steering of a mid-turn message', () => {
     assert.strictEqual(auto('Claude Code'), true);
     // codex-acp joined once it echoed an accepted steer (codex-acp 881decb).
     assert.strictEqual(auto('Codex CLI'), true);
+    assert.strictEqual(auto('Cursor'), true);
     // No steering method at all — see agentSupportsMidTurnSteer's note.
     assert.strictEqual(auto('Kiro CLI'), false);
 

@@ -8384,6 +8384,7 @@ function agentAutoSteersQueuedMessages(agentLabel) {
   if (/^pi([ _-]?acp)?$/i.test(label.trim())) return false;
   if (/claude/i.test(label)) return true;
   if (/codex/i.test(label)) return true;
+  if (/cursor/i.test(label)) return true;
   // NOT kiro. https://kiro.dev/docs/cli/acp/ lists its whole core protocol as
   // initialize, session/new, session/load, session/prompt, session/cancel,
   // session/set_mode and session/set_model — no steering, no mid-turn input — and
@@ -8545,6 +8546,7 @@ function agentSupportsMidTurnSteer(agentLabel) {
   if (/^pi([ _-]?acp)?$/i.test(label.trim())) return false;
   if (/claude/i.test(label)) return true;
   if (/codex/i.test(label)) return true;
+  if (/cursor/i.test(label)) return true;
   return false;
 }
 
