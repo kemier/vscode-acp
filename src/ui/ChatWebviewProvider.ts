@@ -7958,7 +7958,7 @@ let isCompacting = false;  // true while /compact is running
            renderQueue();
          }
          if (!e.bubbleShown && !_deferBubble) {
-           addUserBubbleForQueuedEntry(e);
+           addUserBubbleEarly(e);
          }
          vscode.postMessage({
            type: 'debugLog',
@@ -21945,7 +21945,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
               var _fe = messageQueue[_fi];
               if (_fe && _fe.steered && _fe.bubbleShown === undefined) {
                 _fe.bubbleShown = true;
-                addUserBubbleForQueuedEntry(_fe);
+                addUserBubbleEarly(_fe);
                 messageQueue.splice(_fi, 1);
                 renderQueue();
                 vscode.postMessage({ type: 'debugLog', message: '[STEER] flushDeferredBubble at promptEnd: "' + String(_fe.text || '').substring(0, 40) + '"' });
