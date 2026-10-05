@@ -224,14 +224,16 @@ export class MemoryHttpClient {
     }
   }
 
-  searchAtomic(iso: MemoryIsolation, params: { query: string; limit?: number }): Promise<{ items: AtomicSearchHit[] }> {
+  searchAtomic(iso: MemoryIsolation, params: { query: string; limit?: number; scope?: string }): Promise<{ items: AtomicSearchHit[] }> {
     // Omit session_id on recall so search aggregates across sessions for
     // this team+agent+user (Model B per-agent memory).
+    // scope="team" omits agent_id on the gateway side → cross-agent recall.
     const { sessionId: _sessionId, ...rest } = iso;
     return this.post('/v3/atomic/search', {
       ...this.isolationBody(rest),
       query: params.query,
       limit: params.limit,
+      ...(params.scope ? { scope: params.scope } : {}),
     });
   }
 

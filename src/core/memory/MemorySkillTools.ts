@@ -141,7 +141,7 @@ export function formatMemorySkillTools(opts: MemorySkillToolsOptions): string {
   const memorySearchCmd = formatSkillBridgePostCommand(
     opts.bridgeBaseUrl,
     'memory-search',
-    `{"query":"<keywords>","agent_id":"${id}"}`,
+    `{"query":"<keywords>","agent_id":"${id}","scope":"team"}`,
     platform,
   );
   const updateCmd = formatSkillBridgeUpdateCommand(opts.bridgeBaseUrl, opts.agentId, platform);

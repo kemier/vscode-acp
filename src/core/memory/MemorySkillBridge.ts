@@ -147,7 +147,8 @@ export class MemorySkillBridge {
           return;
         }
         const topK = typeof body.top_k === 'number' ? body.top_k : 5;
-        const result = await client.searchAtomic(iso, { query, limit: topK });
+        const scope = typeof body.scope === 'string' ? body.scope : undefined;
+        const result = await client.searchAtomic(iso, { query, limit: topK, scope });
         this.json(res, 200, result);
         return;
       }
