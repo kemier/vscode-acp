@@ -8385,13 +8385,7 @@ function agentAutoSteersQueuedMessages(agentLabel) {
   if (/claude/i.test(label)) return true;
   if (/codex/i.test(label)) return true;
   if (/cursor/i.test(label)) return true;
-  // NOT kiro. https://kiro.dev/docs/cli/acp/ lists its whole core protocol as
-  // initialize, session/new, session/load, session/prompt, session/cancel,
-  // session/set_mode and session/set_model — no steering, no mid-turn input — and
-  // its extensions all use the _kiro.dev/ prefix, which the same page says clients
-  // may "safely ignore". A session/steer notification to kiro is therefore dropped
-  // in silence, and steerQueuedMessage would have removed the message from the
-  // queue and shown its bubble before sending it: lost, while looking delivered.
+  if (/kiro/i.test(label)) return true;
   return false;
 }
 
@@ -8537,16 +8531,13 @@ function steerEchoMatchesEntry(entryText, echoText) {
 function agentSupportsMidTurnSteer(agentLabel) {
   var label = String(agentLabel || '');
   if (!label) return false;
-  // kiro is excluded for the reason spelled out on
-  // agentAutoSteersQueuedMessages: its documented protocol has no steering method
-  // and unknown extensions are ignored silently.
-  if (/kiro/i.test(label)) return false;
   // pi must be excluded before the generic checks — "pi-acp" contains no other
   // marker, but keep the guard explicit so a rename cannot silently enable it.
   if (/^pi([ _-]?acp)?$/i.test(label.trim())) return false;
   if (/claude/i.test(label)) return true;
   if (/codex/i.test(label)) return true;
   if (/cursor/i.test(label)) return true;
+  if (/kiro/i.test(label)) return true;
   return false;
 }
 

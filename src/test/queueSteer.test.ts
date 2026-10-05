@@ -53,13 +53,8 @@ suite('mid-turn steering of a queued message', () => {
 
   test('withheld from agents with no steer path, and when no agent is known', () => {
     const supports = loadGate();
-    // kiro-cli documents its whole core protocol at https://kiro.dev/docs/cli/acp/ —
-    // initialize, session/new, session/load, session/prompt, session/cancel,
-    // session/set_mode, session/set_model — with no steering, and says unknown
-    // _kiro.dev/ extensions may be "safely ignored". A steer would vanish.
-    assert.strictEqual(supports('Kiro CLI'), false);
-    // cursor is an ACP agent with session/steer support (cursor-agent acp).
-    assert.strictEqual(supports('Cursor'), true);
+    // kiro-cli now steers mid-turn (session/steer) like the other ACP agents.
+    assert.strictEqual(supports('Kiro CLI'), true);
     // pi-acp queues whole prompts internally and implements no session/steer.
     assert.strictEqual(supports('pi-acp'), false);
     assert.strictEqual(supports('pi'), false);
@@ -167,9 +162,8 @@ suite('automatic steering of a mid-turn message', () => {
     // codex-acp joined once it echoed an accepted steer (codex-acp 881decb).
     assert.strictEqual(auto('Codex CLI'), true);
     assert.strictEqual(auto('Cursor'), true);
-    // No steering method at all — see agentSupportsMidTurnSteer's note.
-    assert.strictEqual(auto('Kiro CLI'), false);
-
+    // kiro-cli now steers mid-turn (session/steer) like the other ACP agents.
+    assert.strictEqual(auto('Kiro CLI'), true);
     assert.strictEqual(auto('pi-acp'), false);
     assert.strictEqual(auto(''), false);
   });
