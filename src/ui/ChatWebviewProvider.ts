@@ -16791,12 +16791,26 @@ function orderCompactFoldContents(body) {
      });
    }
 
+    /** Stamp the live turn element with its chatHistory index so the durable
+     *  user-expanded set (userExpandedTurnKeys) can key on it.  Without this,
+     *  turn.dataset.historyIndex is undefined for live turns and the durable
+     *  set never fires — a body rebuild (promptEnd, model switch) loses the
+     *  user's expand intent.  The index is stable for the lifetime of the
+     *  turn element (set once at creation, never cleared until the element
+     *  is replaced). */
+    function stampTurnHistoryIndex(turnEl) {
+      if (turnEl && turnEl.dataset && turnEl.dataset.historyIndex == null) {
+        turnEl.dataset.historyIndex = String(chatHistory.length);
+      }
+    }
+
     /** Compact-mode fold for the live turn; returns .turn-fold-body. */
     function ensureCurrentTurnFold() {
       if (!currentTurnEl) {
         currentTurnEl = document.createElement('div');
         currentTurnEl.className = 'turn';
         messagesEl.appendChild(currentTurnEl);
+        stampTurnHistoryIndex(currentTurnEl);
         hideEmpty();
       }
       // Fold (thought/tools/interim) stays collapsed when Collapse is on.
@@ -16890,6 +16904,7 @@ function orderCompactFoldContents(body) {
        currentTurnEl = document.createElement('div');
        currentTurnEl.className = 'turn';
        messagesEl.appendChild(currentTurnEl);
+       stampTurnHistoryIndex(currentTurnEl);
      }
      // Finalize any in-progress thought before tools render. Use DOM+buffers so
      // a whitespace-only latest chunk cannot delete an earlier real thought.
