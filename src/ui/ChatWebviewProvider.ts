@@ -7928,12 +7928,21 @@ let isCompacting = false;  // true while /compact is running
          // The bubble may already be on screen from the stage-1 accepted echo
          // (user_message_accepted). Do not render a duplicate — only the chip
          // removal + next-message release belong to the delivered echo.
-         if (!e.bubbleShown) {
+         //
+         // If another entry is still steerPending (agent hasn't finished
+         // processing an earlier steer), skip the bubble render entirely.
+         // The message stays visible in the queue strip chip and the bubble
+         // will be added when the entry is eventually drained at promptEnd.
+         // Showing a bubble now would clutter the panel with messages the
+         // agent hasn't actually dealt with yet.
+         var _hasPendingSteer = messageQueue.some(function (p) { return p && p.steerPending; });
+         if (!e.bubbleShown && !_hasPendingSteer) {
            addUserBubbleForQueuedEntry(e);
          }
          vscode.postMessage({
            type: 'debugLog',
-           message: '[STEER] agent confirmed a steered message; promoted it into the chat',
+           message: '[STEER] agent confirmed a steered message; promoted it into the chat' +
+             (_hasPendingSteer ? ' (bubble deferred — pending steer in queue)' : ''),
          });
          // The channel is free again — release the next queued message.
          maybeAutoSteerNext();
