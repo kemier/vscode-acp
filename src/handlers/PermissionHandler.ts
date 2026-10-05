@@ -226,6 +226,21 @@ const DEFAULT_DENIED_COMMANDS = [
   '>/dev/null',
 ];
 
+/**
+ * Human-readable QuickPick label for a permission option. The ACP SDK types
+ * `PermissionOption.name` as `string` and its zod schema rejects non-strings,
+ * but a misbehaving adapter could still ship an object (or a missing value);
+ * string-interpolating it would render `[object Object]`. Mirror the webview
+ * ask-question guard (ChatWebviewProvider): accept a string/number name, else
+ * fall back to the `optionId`, else a placeholder.
+ */
+function optionLabel(option: { name?: unknown; optionId?: unknown }): string {
+  if (typeof option.name === 'string' && option.name.trim() !== '') return option.name;
+  if (typeof option.name === 'number') return String(option.name);
+  if (typeof option.optionId === 'string' && option.optionId.trim() !== '') return option.optionId;
+  return 'Option';
+}
+
 export class PermissionHandler {
   private pendingPermissionQueue: Array<{
     params: RequestPermissionRequest;
@@ -472,7 +487,7 @@ export class PermissionHandler {
     const items: (vscode.QuickPickItem & { optionId: string })[] = params.options.map((option) => {
       const icon = option.kind.startsWith('allow') ? '$(check)' : '$(x)';
       return {
-        label: `${icon} ${option.name}`,
+        label: `${icon} ${optionLabel(option)}`,
         description: option.kind,
         optionId: option.optionId,
       };
