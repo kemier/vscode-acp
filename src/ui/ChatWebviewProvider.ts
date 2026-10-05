@@ -15902,8 +15902,22 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         vscode.postMessage({ type: 'debugLog', message: '[WV-FOLDSTICKY] ensureTurnFoldStructure KEEPING OPEN (sticky): body._userExpanded=' + body._userExpanded + ' turnKey=' + _turnKey + ' durable=' + _durableExpanded });
         setFoldExpanded(body, true);
       } else if (!collapsed) {
-        body.classList.remove('collapsed');
-        body.classList.add('expanded');
+        // Not currently in a collapse pass. Normally this keeps the fold
+        // visible (adds .expanded). But if the user has EXPLICITLY collapsed
+        // this fold (body._userExpanded === false, recorded by the summary
+        // click handler), a mid-stream call (addToolCallInline runs this with
+        // collapsed=!isProcessing=false on every tool update) would otherwise
+        // re-open it — fighting the user's collapse and making a manually-
+        // closed turn flip open/closed as tools streamed in. Honor the
+        // explicit collapse: keep it shut until the next genuine open intent
+        // (a re-click sets _userExpanded=true; promptEnd settles it).
+        if (body._userExpanded === false) {
+          body.classList.remove('expanded');
+          body.classList.add('collapsed');
+        } else {
+          body.classList.remove('collapsed');
+          body.classList.add('expanded');
+        }
       }
 
       var count = parseInt(summary.dataset.count || '0', 10);
@@ -16869,14 +16883,19 @@ function orderCompactFoldContents(body) {
      }
      // Mid-turn assistant text (before more tools) goes into the fold.
      if (currentAssistantEl && currentAssistantText) {
-       commitCurrentTextSegment({ interim: true });
-       // Start a NEW tools group after the assistant text. Without this the
-       // next tool reuses the OLD wrapper, which sits BEFORE the text we just
-       // committed — collapsing every tool of the turn into one group and
-       // breaking the interleaved order (thought → tools → assistant → tools).
-       // The replay path in renderChatHistory already does this; the live
-       // streaming path did not.
-       currentToolsListEl = null;
+       var _committedSeg = commitCurrentTextSegment({ interim: true });
+       // Start a NEW tools group ONLY when the text actually committed.
+       // If the commit was deferred (text ends inside an open fence), the
+       // buffered text is still in currentAssistantText and the next tool
+       // must REUSE the current wrapper — starting a fresh group before
+       // uncommitted text would reorder it (the new group would sort after
+       // text that hasn't been committed yet). When _committedSeg is true the
+       // original behavior holds: the old wrapper sits before the just-
+       // committed text, so a new wrapper is needed to preserve the
+       // interleaved order (thought → tools → assistant → tools).
+       if (_committedSeg) {
+         currentToolsListEl = null;
+       }
      }
      // Cap the size of a single tools group. A run of tool calls with no
      // assistant text between them would otherwise grow one unbounded
@@ -16909,7 +16928,15 @@ function orderCompactFoldContents(body) {
        currentToolsListEl = list;
 
        if (compactMode) {
-         var body = ensureTurnFoldStructure(currentTurnEl, true, true);
+         // Match the live turn's fold state: while streaming the fold is kept
+         // open by addToolCallInline, so a hardcoded collapsed=true here
+         // (the previous value) routed into ensureTurnFoldStructure's
+         // COLLAPSING branch and stripped .expanded for a frame — the flicker
+         // that made a user-expanded fold flap shut then back open on every
+         // new tools group. Pass !isProcessing so a mid-stream group stays
+         // open, and a genuinely finished turn (isProcessing=false) collapses
+         // as before.
+         var body = ensureTurnFoldStructure(currentTurnEl, !isProcessing, true);
          var toolsWrap = document.createElement('div');
          toolsWrap.className = 'turn-tools';
          toolsWrap.appendChild(list);
@@ -17589,7 +17616,13 @@ function commitCurrentTextSegment(opts) {
     // partial reply is preserved.
     if (asInterim && !asInterrupted && hasOpenFence(currentAssistantText)) {
       vscode.postMessage({ type: 'debugLog', message: '[WV-COMMIT] deferring interim commit: text ends inside an open fence (textLen=' + currentAssistantText.length + ')' });
-      return;
+      // Return false: the text is still buffered in currentAssistantText.
+      // Callers must NOT clear their reattach anchors (lastCommitted* /
+      // messageSegmentCounter) on this path — the next chunk reattaches to the
+      // same bubble and the fence commits at the next boundary or promptEnd.
+      // Clearing the anchors here is exactly what desynced state and produced
+      // a stray assistant block after the end-turn summary.
+      return false;
     }
     var _commitPreview = currentAssistantText.replace(/\\s+/g, ' ').slice(0, 80);
     vscode.postMessage({ type: 'debugLog', message: '[WV-COMMIT] commitCurrentTextSegment: textLen=' + currentAssistantText.length + ' hasEl=' + !!currentAssistantEl + ' interim=' + asInterim + ' chatHistoryLen BEFORE=' + chatHistory.length + ' preview="' + _commitPreview + '"' });
@@ -17692,6 +17725,10 @@ function commitCurrentTextSegment(opts) {
     currentMessageId = null;
     if (streamingRenderTimer) { clearTimeout(streamingRenderTimer); streamingRenderTimer = null; }
    }
+    // Return true: the segment was committed (or was empty/whitespace and the
+    // buffer cleaned up), so the text is no longer in currentAssistantText.
+    // Callers may safely reset their reattach anchors.
+    return true;
 
     function addToolCall(toolCallId, title, status, content, rawInput, toolKind, locations, parentToolUseId) {
       dismissPsPanel(false);
@@ -17733,23 +17770,32 @@ function commitCurrentTextSegment(opts) {
         commitOrDiscardCurrentThought();
       }
       // Top-level tools must commit any in-flight assistant text so history
-      // order stays text → tools.
+      // order stays text → tools. When the commit is DEFERRED (the text ends
+      // inside an open fence — see commitCurrentTextSegment), the reattach
+      // anchors below must NOT be cleared: the next agent_message_chunk still
+      // belongs to the same buffered bubble and must reattach to it, and the
+      // fence commits at the next boundary or promptEnd. Clearing the anchors
+      // on a deferred commit is what orphaned the buffer and produced the
+      // stray assistant block after the end-turn summary.
       if (currentAssistantText) {
-        commitCurrentTextSegment({ interim: true });
+        var _committed = commitCurrentTextSegment({ interim: true });
+        if (_committed) {
+          // A tool call splits the assistant message. Clear reattach state so
+          // post-tool text starts a FRESH bubble instead of concatenating back
+          // into the pre-tool bubble. Without this, agents that use a
+          // turn-scoped messageId (e.g. Codex sends the same messageId for all
+          // chunks in a turn) would reattach every post-tool segment to the
+          // first bubble, grouping all assistant text at the top before all
+          // tool calls.
+          lastCommittedAssistantEl = null;
+          lastCommittedMessageId = null;
+          lastCommittedText = '';
+          reactivatedHistoryIndex = -1;
+          // Next post-tool text (no real messageId) gets a new synthetic
+          // segment so it cannot reattach to the pre-tool bubble.
+          messageSegmentCounter++;
+        }
       }
-      // A tool call splits the assistant message. Clear reattach state so
-      // post-tool text starts a FRESH bubble instead of concatenating back
-      // into the pre-tool bubble. Without this, agents that use a turn-scoped
-      // messageId (e.g. Codex sends the same messageId for all chunks in a
-      // turn) would reattach every post-tool segment to the first bubble,
-      // grouping all assistant text at the top before all tool calls.
-      lastCommittedAssistantEl = null;
-      lastCommittedMessageId = null;
-      lastCommittedText = '';
-      reactivatedHistoryIndex = -1;
-      // Next post-tool text (no real messageId) gets a new synthetic segment
-      // so it cannot reattach to the pre-tool bubble.
-      messageSegmentCounter++;
       chatHistory.push({
         kind: 'toolCall',
         toolCallId: toolCallId,
@@ -19699,7 +19745,26 @@ function commitCurrentTextSegment(opts) {
      flushPendingNestedTools(toolCallId);
      // Keep fold structure updated but honor sticky user expand while streaming.
      if (compactMode && currentTurnEl) {
-       ensureTurnFoldStructure(currentTurnEl, true);
+       // While the turn is still processing, keep the fold expanded so the
+       // user can see tools in real-time. ensureTurnFoldStructure above
+       // (collapsed=!isProcessing=false) runs its !collapsed branch, which
+       // adds .expanded — EXCEPT when the user has explicitly collapsed the
+       // fold (body._userExpanded === false), in which case it keeps the fold
+       // shut (see ensureTurnFoldStructure's !collapsed branch). So a fresh
+       // fold opens on the first tool, but a user-collapsed fold stays closed.
+       //
+       // The setFoldExpanded(true) below is the only other thing that could
+       // re-open a user-collapsed fold, so it is gated on _userExpanded !==
+       // false. This is the fix for the "expand a collapsed block and it
+       // auto-collapses and flips again and again" bug: previously a mid-
+       // stream call passed collapsed=true (or the !collapsed branch ignored
+       // the user's collapse) and stripped .expanded on every tool update,
+       // making a manually-closed turn flap open/closed as tools streamed in.
+       var _foldBody = getTurnFoldBody(currentTurnEl);
+       ensureTurnFoldStructure(currentTurnEl, !isProcessing);
+       if (isProcessing && _foldBody && _foldBody._userExpanded !== false) {
+         setFoldExpanded(_foldBody, true);
+       }
        refreshCurrentTurnSummary();
      }
      autoScrollIfAtBottom();

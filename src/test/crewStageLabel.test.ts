@@ -28,18 +28,30 @@ type LabelFn = (rawInput: RawInput | undefined, title?: string | null, index?: n
 type ClaudeLabelFn = (rawInput: RawInput | undefined, index?: number) => string;
 
 // Extract a single top-level function declaration by name. `sigStart` is the
-// exact `function <name>(` opener; the declaration ends at the next `function`
-// opener at the same brace depth (webview functions are uniformly indented with
-// a leading two/three spaces, and a closing `}` at that same indent).
+// exact `function <name>(` opener. The declaration ends at the next line that
+// opens a `function` at the SAME indentation as `sigStart` (webview functions
+// are uniformly indented; a sibling at the same indent is the boundary).
+//
+// The previous implementation used `/^(\n\s*)function\s+[A-Za-z_]/m`, which is
+// fragile: `\s*` is greedy and spans newlines, and the `^`+`\n` interaction
+// made it skip over same-line siblings (e.g. it extracted `isSubagentSpawnTitle`
+// all the way through `addToolCall`). Any top-level `return` added inside the
+// over-swallowed span then short-circuited the `new Function` eval and broke
+// this suite. Anchoring the boundary on the function's own indent fixes that.
 function extractFunction(src: string, sigStart: string): string {
   const startIdx = src.indexOf(sigStart);
   assert.ok(startIdx >= 0, `'${sigStart.replace(/\s+/g, ' ')}' not found in ChatWebviewProvider.ts`);
-  // Find the next top-level `function` opener after startIdx — the boundary of
-  // the current declaration.
-  const nextFn = /^(\n\s*)function\s+[A-Za-z_]/m.exec(src.slice(startIdx + sigStart.length));
-  let endIdx = nextFn ? startIdx + sigStart.length + nextFn.index + 1 : -1;
+  // Indent of the line that declares `sigStart` — the boundary is the next
+  // `function` opener at exactly this indent.
+  const lineStart = src.lastIndexOf('\n', startIdx - 1) + 1;
+  const indentMatch = /^\s*/.exec(src.slice(lineStart, startIdx));
+  const indent = indentMatch ? indentMatch[0].length : 0;
+  const indentRe = new RegExp('^' + ' '.repeat(indent) + 'function\\s+[A-Za-z_]', 'm');
+  const rest = src.slice(startIdx + sigStart.length);
+  const nextFn = indentRe.exec(rest);
+  let endIdx = nextFn ? startIdx + sigStart.length + nextFn.index + indent : -1;
   if (endIdx < 0) {
-    // Fallback: no next function — pull to end of file.
+    // Fallback: no sibling at the same indent — pull to end of file.
     endIdx = src.length;
   }
   return src.slice(startIdx, endIdx).trim();
