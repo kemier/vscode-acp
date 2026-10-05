@@ -17725,10 +17725,6 @@ function commitCurrentTextSegment(opts) {
     currentMessageId = null;
     if (streamingRenderTimer) { clearTimeout(streamingRenderTimer); streamingRenderTimer = null; }
    }
-    // Return true: the segment was committed (or was empty/whitespace and the
-    // buffer cleaned up), so the text is no longer in currentAssistantText.
-    // Callers may safely reset their reattach anchors.
-    return true;
 
     function addToolCall(toolCallId, title, status, content, rawInput, toolKind, locations, parentToolUseId) {
       dismissPsPanel(false);
