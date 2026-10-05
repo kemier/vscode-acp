@@ -7888,7 +7888,9 @@ let isCompacting = false;  // true while /compact is running
      renderQueue();
      wvQueueLog('STEERED', 'idx=' + idx);
      steerDiag('STEERED idx=' + idx + ' agent=' + (currentAgentLabel() || '(none)') + ' text="' + String(queueEntryPromptText(entry) || '').substring(0, 60) + '"');
-     showTransientHint('Sent into the running turn — the agent picks it up at its next step.');
+     showTransientHint(agentDrainsSteerAtTurnEnd(currentAgentLabel())
+       ? 'Queued for this turn — it will be delivered when the turn ends.'
+       : 'Sent into the running turn — the agent picks it up at its next step.');
      return true;
    }
 
@@ -8100,7 +8102,9 @@ let isCompacting = false;  // true while /compact is running
      hasSteeredThisTurn = true;
      renderQueue();
      vscode.postMessage({ type: 'steerPrompt', text: queueEntryPromptText(entry) || ' ' });
-     showTransientHint('Sent into the running turn — the agent picks it up at its next step.');
+     showTransientHint(agentDrainsSteerAtTurnEnd(currentAgentLabel())
+       ? 'Queued for this turn — it will be delivered when the turn ends.'
+       : 'Sent into the running turn — the agent picks it up at its next step.');
    }
 
    // Edit a queued message — moves text back to the prompt input and
@@ -8180,7 +8184,9 @@ let isCompacting = false;  // true while /compact is running
    // A steer for this entry is still awaiting confirmation: re-sending would deliver it
    // twice. The button is hidden in that state; this guards a stale click.
    if (messageQueue[index] && messageQueue[index].steerPending) {
-     showTransientHint('Already sent into the running turn — waiting for the agent to pick it up.');
+     showTransientHint(agentDrainsSteerAtTurnEnd(currentAgentLabel())
+       ? 'Already queued for this turn — it will be delivered when the turn ends.'
+       : 'Already sent into the running turn — waiting for the agent to pick it up.');
      return;
    }
    const entry = messageQueue[index];
