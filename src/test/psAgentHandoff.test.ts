@@ -165,4 +165,13 @@ suite('/ps defers to the agent when the agent implements it', () => {
       'the local psPanel must remain for agents that do not advertise /ps (pi-acp)',
     );
   });
+
+
+  test('an idle /ps panel schedules its own hide past the 3s window', () => {
+    const at = src.indexOf("if (text === '/ps') {");
+    const body = src.slice(at, at + 3200);
+    assert.ok(body.includes('psHideTimer = setTimeout'), 'idle /ps must schedule its own dismissal - no event fires while the session is idle');
+    assert.ok(body.includes('psMinDisplayUntil = Date.now() + 3000;'), 'the 3s minimum window still gates the hide');
+  });
+
 });

@@ -11375,6 +11375,11 @@ function handleLocalSlashCommand(cmdText) {
     // If panel already shows 'No background terminals' and still none,
     // don't re-render — avoids flicker on repeated /ps polls.
     if (bgProcs.length === 0 && psPanel.style.display === 'block' && psPanel.textContent.indexOf('No background terminals') !== -1) {
+      // Re-typed /ps while idle: slide the auto-hide window forward so the
+      // panel stays as long as the user keeps polling it.
+      psMinDisplayUntil = Date.now() + 3000;
+      if (psHideTimer) { clearTimeout(psHideTimer); }
+      psHideTimer = setTimeout(function() { psHideTimer = null; dismissPsPanel(false); }, 3000);
       return true;
     }
     if (!psPanel) { return true; }
@@ -11406,6 +11411,15 @@ function handleLocalSlashCommand(cmdText) {
     // Keep /ps visible for at least 3 seconds, even if a quick turn arrives.
     psMinDisplayUntil = Date.now() + 3000;
     if (psHideTimer) { clearTimeout(psHideTimer); psHideTimer = null; }
+    // Idle /ps: no turn/tool event will ever fire a dismissal, so schedule the
+    // hide just past the minimum window. dismissPsPanel re-checks the window,
+    // so a turn or tool arrival that dismisses earlier stays correct.
+    if (bgProcs.length === 0) {
+      psHideTimer = setTimeout(function() {
+        psHideTimer = null;
+        dismissPsPanel(false);
+      }, 3000);
+    }
     // Auto-scroll messages to bottom so latest streamed content stays visible
     // even when the ps panel takes vertical space on small chat panels.
     scrollToBottom();
