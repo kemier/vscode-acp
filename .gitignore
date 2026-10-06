@@ -9,3 +9,9 @@ out/
 .npmrc
 pnpm-lock.yaml
 .dcg
+# archify diagram evidence
+.archify
+docs/diagrams/*.finalize.json
+docs/diagrams/*.finalize-summary.json
+docs/diagrams/*.browser-check.json
+docs/diagrams/*.delivery.json
