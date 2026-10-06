@@ -1,4 +1,4 @@
-import { spawn, ChildProcess } from 'node:child_process';
+import { spawn, execFile, ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { log, logError } from '../utils/Logger';
@@ -179,6 +179,44 @@ export class AgentManager extends EventEmitter {
   }
 
   /**
+   * Terminate an agent's whole process tree.
+   *
+   * POSIX: agents are spawned with detached:true, so the child is its own
+   * process-group leader — signalling -pid reaches the shell and every
+   * descendant (npx → node → codex-acp).
+   *
+   * Windows: there are no process groups, and the child is a cmd.exe wrapper
+   * (spawned with shell:true). Killing only the wrapper orphans the node
+   * grandchild, which keeps its inference HTTP connection open and wedges the
+   * single-slot llama server. taskkill /T walks the tree; /F is required for
+   * console processes (SIGTERM on Windows is TerminateProcess anyway, so this
+   * is not a behavior change).
+   */
+  private killProcessTree(instance: AgentInstance, force: boolean): void {
+    const pid = instance.process.pid;
+    if (!pid) {
+      return;
+    }
+    if (process.platform === 'win32') {
+      execFile('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide: true }, () => {
+        // Best-effort: the process may already be gone.
+      });
+      return;
+    }
+    try {
+      process.kill(-pid, force ? 'SIGKILL' : 'SIGTERM');
+    } catch {
+      // Fallback: if process-group kill fails (e.g. process already gone),
+      // fall back to killing just the direct child.
+      try {
+        instance.process.kill(force ? 'SIGKILL' : 'SIGTERM');
+      } catch {
+        /* already gone */
+      }
+    }
+  }
+
+  /**
    * Kill an agent process.
    */
   killAgent(agentId: string): boolean {
@@ -190,28 +228,22 @@ export class AgentManager extends EventEmitter {
     log(`Killing agent "${instance.name}" (${agentId})`);
 
     try {
-      // Kill the entire process group. On Unix, when the child was spawned
-      // with detached:true, the child became its own process group leader.
-      // Sending a signal to -pid targets the whole group, which includes
-      // the shell and all its descendants (npx → node → codex-acp).
-      try {
-        process.kill(-instance.process.pid!, 'SIGTERM');
-      } catch {
-        // Fallback: if process-group kill fails (e.g. process already gone,
-        // or on Windows), fall back to killing just the direct child.
-        instance.process.kill('SIGTERM');
-      }
+      this.killProcessTree(instance, false);
 
-      // Force-kill after 5s if still running
-      setTimeout(() => {
-        try {
-          if (instance.process.exitCode === null) {
-            process.kill(-instance.process.pid!, 'SIGKILL');
+      // Force-kill after 5s if still running (POSIX only — on Windows
+      // taskkill already ran with /F, and exitCode never flips for orphaned
+      // grandchildren, so the timer would just re-kill the wrapper).
+      if (process.platform !== 'win32') {
+        setTimeout(() => {
+          try {
+            if (instance.process.exitCode === null) {
+              this.killProcessTree(instance, true);
+            }
+          } catch {
+            // Process or group already gone — nothing to do.
           }
-        } catch {
-          // Process or group already gone — nothing to do.
-        }
-      }, 5000);
+        }, 5000);
+      }
     } catch (e) {
       logError(`Failed to kill agent ${agentId}`, e);
     }
@@ -250,15 +282,7 @@ export class AgentManager extends EventEmitter {
    */
   forceKillAll(): void {
     for (const [, instance] of this.agents) {
-      try {
-        process.kill(-instance.process.pid!, 'SIGKILL');
-      } catch {
-        try {
-          instance.process.kill('SIGKILL');
-        } catch {
-          /* already gone */
-        }
-      }
+      this.killProcessTree(instance, true);
     }
     this.agents.clear();
   }
