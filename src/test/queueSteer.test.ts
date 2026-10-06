@@ -262,7 +262,7 @@ suite('automatic steering of a mid-turn message', () => {
   test('a steered entry is visibly marked and loses its now-pointless Steer button', () => {
     const src = fs.readFileSync(SOURCE, 'utf8');
     assert.ok(src.includes("chip.classList.add('queue-steered')"));
-    assert.ok(src.includes("_drainsAtTurnEnd ? 'at turn end' : 'in turn'"));
+    assert.ok(src.includes("_readsInTurn ? 'in turn' : 'at turn end'"));
     assert.ok(src.includes('.msg-queue-item .queue-sent-tag {'), 'the tag needs a style');
     // Steering an already-steered entry would send it twice.
     assert.ok(src.includes("if (isProcessing && !entry.steered && agentSupportsMidTurnSteer(currentAgentLabel()))"));
@@ -372,8 +372,8 @@ suite('a steered message is never delivered twice', () => {
   test('the chip distinguishes waiting from sent-but-unconfirmed', () => {
     const src = fs.readFileSync(SOURCE, 'utf8');
     // The pending label is agent-aware: agents that can inject mid-turn show
-    // 'in turn'; agents that can only drain at turn end (claude) show 'at turn end'.
-    assert.ok(src.includes("_drainsAtTurnEnd ? 'at turn end' : 'in turn'"));
+    // 'in turn'; agents that can only drain at turn end show 'at turn end'.
+    assert.ok(src.includes("_readsInTurn ? 'in turn' : 'at turn end'"));
     assert.ok(src.includes(": 'sent'"));
     assert.ok(src.includes('it will go as a normal prompt'));
   });

@@ -7722,21 +7722,21 @@ let isCompacting = false;  // true while /compact is running
          // turn's confirmation, versus sent but unconfirmed once the turn has ended
          // (which means it will be sent as a normal prompt instead).
          //
-         // The pending label is agent-aware: an agent that injects mid-turn
-         // (ericli — drains at onIterationStart) genuinely steers the in-flight
-         // work, so "in turn" is honest. An agent that can only drain AFTER the
-         // turn completes (claude-code-acp — Claude CLI has no mid-turn
-         // injection) does not steer the running work; it appends a follow-up at
-         // the turn's tail. Labelling that "in turn" overstates it, so we say
-         // "at turn end" instead.
-         const _drainsAtTurnEnd = agentDrainsSteerAtTurnEnd(currentAgentLabel());
+         // The pending label is agent-aware: every steerable agent in the
+         // gates now injects mid-turn — ericli at onIterationStart, claude-
+         // code-acp via the runner's open stream-json stdin (the live CLI
+         // absorbs the second user line at its next boundary), codex/cursor/
+         // kiro natively — so "in turn" is honest for all of them. "at turn
+         // end" remains only for a future agent that queues steers without
+         // an injection point.
+         const _readsInTurn = agentSteerReadsInTurn(currentAgentLabel());
          sentTag.textContent = entry.steerPending
-           ? (_drainsAtTurnEnd ? 'at turn end' : 'in turn')
+           ? (_readsInTurn ? 'in turn' : 'at turn end')
            : 'sent';
          sentTag.title = entry.steerPending
-           ? (_drainsAtTurnEnd
-               ? 'Queued for this turn — Claude CLI cannot inject mid-turn, so it is delivered as a follow-up when the turn ends'
-               : 'Delivered into the running turn — waiting for the agent to confirm it')
+           ? (_readsInTurn
+               ? 'Delivered into the running turn — waiting for the agent to confirm it'
+               : 'Queued for this turn — delivered as a follow-up when the turn ends')
            : 'Sent into the previous turn but never confirmed — it will go as a normal prompt';
          chip.appendChild(sentTag);
        }
@@ -7901,7 +7901,7 @@ let isCompacting = false;  // true while /compact is running
      renderQueue();
      wvQueueLog('STEERED', 'idx=' + idx);
      steerDiag('STEERED idx=' + idx + ' agent=' + (currentAgentLabel() || '(none)') + ' text="' + String(queueEntryPromptText(entry) || '').substring(0, 60) + '"');
-     showTransientHint(agentDrainsSteerAtTurnEnd(currentAgentLabel())
+     showTransientHint(agentSteerReadsInTurn(currentAgentLabel())
        ? 'Queued for this turn — it will be delivered when the turn ends.'
        : 'Sent into the running turn — the agent picks it up at its next step.');
      return true;
@@ -7960,7 +7960,7 @@ let isCompacting = false;  // true while /compact is running
              }
            }
          }
-         var _drainAtEnd = agentDrainsSteerAtTurnEnd(currentAgentLabel());
+         var _drainAtEnd = agentSteerBubbleAtTurnTail(currentAgentLabel());
          // Drain-at-turn-end agents: the delivered echo arrives at the turn's
          // tail (drainSteerQueue runs after the subprocess result), so no tool
          // can be in flight and deferral would only strand the entry — a
@@ -8010,7 +8010,7 @@ let isCompacting = false;  // true while /compact is running
      // itself (ackSteeredQueueEntry → addUserBubbleForQueuedEntry). Flushing a
      // steered-but-undelivered entry here would float it above the turn the
      // model is still processing without it.
-     if (agentDrainsSteerAtTurnEnd(currentAgentLabel())) return;
+     if (agentSteerBubbleAtTurnTail(currentAgentLabel())) return;
      var stillPending = messageQueue.some(function (p) { return p && p.steerPending; });
      if (stillPending) return;
      if (typeof toolCalls !== 'undefined') {
@@ -8063,7 +8063,7 @@ let isCompacting = false;  // true while /compact is running
          // float the bubble above in-flight output the model never saw this
          // message beside. Keep steerPending set: the chip stays "at turn end"
          // until the delivered echo drains it.
-         if (agentDrainsSteerAtTurnEnd(currentAgentLabel())) {
+         if (agentSteerBubbleAtTurnTail(currentAgentLabel())) {
            return false;
          }
          // Stage-1 (accepted) means the agent received and ack'd this steer, so
@@ -8129,7 +8129,7 @@ let isCompacting = false;  // true while /compact is running
      // there is nothing to retract — and scanning chatHistory/DOM for a text
      // match could delete an older identical user message unrelated to this
      // steer.
-     if (agentDrainsSteerAtTurnEnd(currentAgentLabel())) return;
+     if (agentSteerBubbleAtTurnTail(currentAgentLabel())) return;
      // Remove the matching chatHistory row (last occurrence = the early bubble).
      for (var hi = chatHistory.length - 1; hi >= 0; hi--) {
        var row = chatHistory[hi];
@@ -8259,7 +8259,7 @@ let isCompacting = false;  // true while /compact is running
      hasSteeredThisTurn = true;
      renderQueue();
      vscode.postMessage({ type: 'steerPrompt', text: queueEntryPromptText(entry) || ' ' });
-     showTransientHint(agentDrainsSteerAtTurnEnd(currentAgentLabel())
+     showTransientHint(agentSteerReadsInTurn(currentAgentLabel())
        ? 'Queued for this turn — it will be delivered when the turn ends.'
        : 'Sent into the running turn — the agent picks it up at its next step.');
    }
@@ -8341,7 +8341,7 @@ let isCompacting = false;  // true while /compact is running
    // A steer for this entry is still awaiting confirmation: re-sending would deliver it
    // twice. The button is hidden in that state; this guards a stale click.
    if (messageQueue[index] && messageQueue[index].steerPending) {
-     showTransientHint(agentDrainsSteerAtTurnEnd(currentAgentLabel())
+     showTransientHint(agentSteerReadsInTurn(currentAgentLabel())
        ? 'Already queued for this turn — it will be delivered when the turn ends.'
        : 'Already sent into the running turn — waiting for the agent to pick it up.');
      return;
@@ -8474,24 +8474,45 @@ function agentAutoSteersQueuedMessages(agentLabel) {
 }
 
 /**
- * True when the agent can only deliver a steered message AFTER the current turn
- * completes (a follow-up), not mid-turn.
+ * Bubble-placement gate: true when a steered message's bubble belongs at the
+ * tail of what has streamed so far, NOT hoisted above the in-flight turn.
  *
- * claude-code-acp drives the Claude CLI as an opaque subprocess, which has no
- * mid-turn injection point — it queues steers and drains them after Prompt
- * completed, resuming the same session with a [Follow-up instruction]. The
- * steered message therefore does NOT steer the in-flight work; it appends to the
- * turn's tail. The queue chip says "at turn end" instead of "in turn" so the
- * label matches what actually happens.
+ * claude-code-acp keeps the stream-json stdin open during a main turn and
+ * writeSteerToMainTurn() writes a second user line the live CLI absorbs at
+ * its next boundary (verified against the live CLI) — the delivered echo is
+ * emitted synchronously at write time, so the bubble lands after the output
+ * streamed before the steer and the post-steer output starts a fresh visual
+ * turn. The queued follow-up drain (no live stdin) delivers the same way, at
+ * the turn's tail. Either way the stage-2 echo arrives when the message is
+ * already in the CLI's input stream — tail render is correct for both paths,
+ * hoisting is not.
  *
- * ericli drains at onIterationStart (between tool-loop iterations), so its steer
- * genuinely steers the running work — "in turn" is correct there. codex-acp has
- * a real mid-turn injection path too.
+ * ericli drains at onIterationStart and codex-acp has a real mid-turn
+ * injection path; their receipt-time echoes render hoisted-above-turn, which
+ * matches their semantics.
+ *
+ * Renamed from agentDrainsSteerAtTurnEnd: claude-code-acp gained a mid-turn
+ * stdin injection point, so the old name described a capability that is no
+ * longer true — what remains true is where the bubble belongs.
  */
-function agentDrainsSteerAtTurnEnd(agentLabel) {
+function agentSteerBubbleAtTurnTail(agentLabel) {
   var label = String(agentLabel || '');
   if (!label) return false;
   return /claude/i.test(label);
+}
+
+/**
+ * True when the queue chip may honestly say "in turn": every steerable agent
+ * in the gates now injects mid-turn — ericli at onIterationStart, claude-
+ * code-acp via the runner's open stream-json stdin, codex/cursor/kiro
+ * natively. "at turn end" remains the honest label for a future agent that
+ * queues steers without an injection point.
+ */
+function agentSteerReadsInTurn(agentLabel) {
+  var label = String(agentLabel || '');
+  if (!label) return false;
+  if (/^pi([ _-]?acp)?$/i.test(label.trim())) return false;
+  return /claude|codex|cursor|kiro|ericli/i.test(label);
 }
 
 /**
