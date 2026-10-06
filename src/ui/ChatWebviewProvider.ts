@@ -7960,7 +7960,13 @@ let isCompacting = false;  // true while /compact is running
              }
            }
          }
-         var _deferBubble = !e.bubbleShown && (_hasPendingSteer || _hasInFlightTool);
+         var _drainAtEnd = agentDrainsSteerAtTurnEnd(currentAgentLabel());
+         // Drain-at-turn-end agents: the delivered echo arrives at the turn's
+         // tail (drainSteerQueue runs after the subprocess result), so no tool
+         // can be in flight and deferral would only strand the entry — a
+         // deferred entry never gets a stage-2 flush here and drainQueue would
+         // re-send an already-delivered message. Render at the tail NOW.
+         var _deferBubble = !_drainAtEnd && !e.bubbleShown && (_hasPendingSteer || _hasInFlightTool);
          if (!_deferBubble) {
            messageQueue.splice(i, 1);
            renderQueue();
@@ -7968,7 +7974,14 @@ let isCompacting = false;  // true while /compact is running
            e.bubbleDeferred = true;
          }
          if (!e.bubbleShown && !_deferBubble) {
-           addUserBubbleEarly(e);
+           if (_drainAtEnd) {
+             // Tail bubble + fresh turn state: the follow-up response renders
+             // as a new assistant message under this user bubble, matching the
+             // chip's "at turn end" label.
+             addUserBubbleForQueuedEntry(e);
+           } else {
+             addUserBubbleEarly(e);
+           }
          }
          vscode.postMessage({
            type: 'debugLog',
@@ -7992,6 +8005,12 @@ let isCompacting = false;  // true while /compact is running
     */
    function flushDeferredSteerBubbles() {
      if (!messageQueue.length) return;
+     // Drain-at-turn-end agents never hoist steer bubbles: their stage-2
+     // delivered echo arrives at the turn's tail and renders the bubble there
+     // itself (ackSteeredQueueEntry → addUserBubbleForQueuedEntry). Flushing a
+     // steered-but-undelivered entry here would float it above the turn the
+     // model is still processing without it.
+     if (agentDrainsSteerAtTurnEnd(currentAgentLabel())) return;
      var stillPending = messageQueue.some(function (p) { return p && p.steerPending; });
      if (stillPending) return;
      if (typeof toolCalls !== 'undefined') {
@@ -8037,6 +8056,16 @@ let isCompacting = false;  // true while /compact is running
      for (var i = 0; i < messageQueue.length; i++) {
        var e = messageQueue[i];
        if (e && e.steered && !e.bubbleShown && steerEchoMatchesEntry(queueEntryPromptText(e), echoText)) {
+         // Drain-at-turn-end agents (claude-code-acp): stage-1 accepted means
+         // RECEIVED only — the message rides a follow-up drain after the turn,
+         // so its bubble must wait for the stage-2 delivered echo, which renders
+         // it at the tail and opens the follow-up turn. Rendering it now would
+         // float the bubble above in-flight output the model never saw this
+         // message beside. Keep steerPending set: the chip stays "at turn end"
+         // until the delivered echo drains it.
+         if (agentDrainsSteerAtTurnEnd(currentAgentLabel())) {
+           return false;
+         }
          // Stage-1 (accepted) means the agent received and ack'd this steer, so
          // it is no longer "waiting for confirmation". Clear steerPending here
          // (paired with ackSteeredQueueEntry's clear on the stage-2 chunk) so a
@@ -8096,6 +8125,11 @@ let isCompacting = false;  // true while /compact is running
    function removeSteeredEarlyBubble(text) {
      var _display = collapseWhitespaceChars(text || '');
      if (!_display) return;
+     // Drain-at-turn-end agents never rendered a stage-1 early bubble, so
+     // there is nothing to retract — and scanning chatHistory/DOM for a text
+     // match could delete an older identical user message unrelated to this
+     // steer.
+     if (agentDrainsSteerAtTurnEnd(currentAgentLabel())) return;
      // Remove the matching chatHistory row (last occurrence = the early bubble).
      for (var hi = chatHistory.length - 1; hi >= 0; hi--) {
        var row = chatHistory[hi];
