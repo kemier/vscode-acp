@@ -132,9 +132,9 @@ export function parseScreencaptureList(stdout: string): Array<{ id: string; labe
   while ((m = re.exec(stdout)) !== null) {
     const id = m[1];
     const label = m[2].trim();
-    if (!id || !label) continue;
+    if (!id || !label) {continue;}
     // Skip empty / utility windows that are not useful to record
-    if (/^Window Server/i.test(label)) continue;
+    if (/^Window Server/i.test(label)) {continue;}
     out.push({ id, label });
   }
   return out;
@@ -150,7 +150,7 @@ export function parseAvfoundationDisplays(stderr: string): Array<{ index: string
   while ((m = re.exec(videoSection)) !== null) {
     const index = m[1];
     const label = m[2].trim();
-    if (!label) continue;
+    if (!label) {continue;}
     // Skip cameras; prefer Capture screen / Display
     if (/camera|facetime|webcam/i.test(label) && !/capture screen|display/i.test(label)) {
       continue;
@@ -230,7 +230,7 @@ return ""
     const parts = stdout.trim().split(',').map((s) => Number(s.trim()));
     if (parts.length === 4 && parts.every((n) => Number.isFinite(n) && n >= 0)) {
       const [x, y, width, height] = parts;
-      if (width < 8 || height < 8) return null;
+      if (width < 8 || height < 8) {return null;}
       return { x, y, width, height };
     }
   } catch (err) {
@@ -279,10 +279,10 @@ async function listWindowsMonitors(): Promise<Array<{ index: number; label: stri
     const out: Array<{ index: number; label: string; width: number; height: number }> = [];
     let ordinal = 0;
     for (const m of arr) {
-      if (!m || typeof m.Width !== 'number' || typeof m.Height !== 'number') continue;
-      if (m.Width < 8 || m.Height < 8) continue; // zero/phantom area
+      if (!m || typeof m.Width !== 'number' || typeof m.Height !== 'number') {continue;}
+      if (m.Width < 8 || m.Height < 8) {continue;} // zero/phantom area
       const key = `${m.Left},${m.Top},${m.Width}x${m.Height}`;
-      if (seen.has(key)) continue;
+      if (seen.has(key)) {continue;}
       seen.add(key);
       const realIndex = typeof m.Index === 'number' ? m.Index : ordinal;
       const isPrimary = !!m.Primary;
@@ -308,7 +308,7 @@ let _gfxcaptureAvailable: boolean | null = null;
  * caller falls back to gdigrab).
  */
 async function gfxcaptureAvailable(ffmpeg: string): Promise<boolean> {
-  if (_gfxcaptureAvailable !== null) return _gfxcaptureAvailable;
+  if (_gfxcaptureAvailable !== null) {return _gfxcaptureAvailable;}
   try {
     const { stdout } = await execFileAsync(ffmpeg, ['-hide_banner', '-filters'], {
       timeout: 8000,
@@ -462,11 +462,11 @@ export class WindowRecorder {
       let stderr = '';
       child.stderr?.on('data', (buf: Buffer) => {
         stderr += buf.toString('utf8');
-        if (stderr.length > 8000) stderr = stderr.slice(-4000);
+        if (stderr.length > 8000) {stderr = stderr.slice(-4000);}
       });
       // ffmpeg writes header then starts; give it a moment to fail fast
       const failTimer = setTimeout(() => {
-        if (this.child === child) resolve();
+        if (this.child === child) {resolve();}
       }, 800);
       child.once('error', (err) => {
         clearTimeout(failTimer);
@@ -475,7 +475,7 @@ export class WindowRecorder {
       });
       child.once('exit', (code, signal) => {
         clearTimeout(failTimer);
-        if (this.stopping) return;
+        if (this.stopping) {return;}
         if (code && code !== 0 && !fs.existsSync(out)) {
           this.child = null;
           reject(new Error(`Screen recording: ffmpeg exited (${code}/${signal}). ${stderr.slice(-500)}`));
@@ -597,7 +597,7 @@ export class WindowRecorder {
   }
 
   async cancel(): Promise<void> {
-    if (!this.child) return;
+    if (!this.child) {return;}
     const out = this.outputPath;
     try {
       await this.stop();

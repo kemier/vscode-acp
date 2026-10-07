@@ -66,19 +66,19 @@ function runPlacement(loaded: Item[], snapTurn: Item[], loadedLastUserIdx: numbe
   const loadedThoughtIdx: Record<string, number> = {};
   for (let k = loadedLastUserIdx + 1; k < loaded.length; k++) {
     const cur = loaded[k];
-    if (!cur) continue;
-    if (cur.kind === 'message' && cur.role === 'user') break;
+    if (!cur) {continue;}
+    if (cur.kind === 'message' && cur.role === 'user') {break;}
     if (cur.kind === 'toolCall' && cur.toolCallId && !(cur.toolCallId in loadedToolIdx)) {
       loadedToolIdx[cur.toolCallId] = k;
     }
     if (cur.kind === 'message' && cur.role === 'assistant' && cur.text) {
       const key = String(cur.text).trim();
-      if (!(key in loadedAssistantIdx)) loadedAssistantIdx[key] = k;
+      if (!(key in loadedAssistantIdx)) {loadedAssistantIdx[key] = k;}
     }
   }
   // Rows present in the snapshot turn but absent from the loaded list.
   const missing = snapTurn.filter((s) => {
-    if (s.kind === 'toolCall') return !(s.toolCallId && s.toolCallId in loadedToolIdx);
+    if (s.kind === 'toolCall') {return !(s.toolCallId && s.toolCallId in loadedToolIdx);}
     if (s.kind === 'message' && s.role === 'assistant') {
       return !(String(s.text || '').trim() in loadedAssistantIdx);
     }

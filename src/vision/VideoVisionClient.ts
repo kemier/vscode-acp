@@ -55,15 +55,15 @@ export function readVisionConfigFromWorkspace(get: (key: string, def: any) => an
 
 function chatCompletionsUrl(endpoint: string): string {
   const base = endpoint.replace(/\/+$/, '');
-  if (/\/chat\/completions$/i.test(base)) return base;
-  if (/\/v1$/i.test(base)) return `${base}/chat/completions`;
+  if (/\/chat\/completions$/i.test(base)) {return base;}
+  if (/\/v1$/i.test(base)) {return `${base}/chat/completions`;}
   return `${base}/v1/chat/completions`;
 }
 
 function filesUrl(endpoint: string): string {
   const base = endpoint.replace(/\/+$/, '');
-  if (/\/v1$/i.test(base)) return `${base}/files`;
-  if (/\/chat\/completions$/i.test(base)) return base.replace(/\/chat\/completions$/i, '/files');
+  if (/\/v1$/i.test(base)) {return `${base}/files`;}
+  if (/\/chat\/completions$/i.test(base)) {return base.replace(/\/chat\/completions$/i, '/files');}
   return `${base}/v1/files`;
 }
 
@@ -122,12 +122,12 @@ async function uploadStepfile(cfg: VisionConfig, filePath: string, signal: Abort
 function extractAssistantText(parsed: any): string {
   const choice = parsed?.choices?.[0];
   const content = choice?.message?.content ?? choice?.text ?? parsed?.output_text;
-  if (typeof content === 'string' && content.trim()) return content.trim();
+  if (typeof content === 'string' && content.trim()) {return content.trim();}
   if (Array.isArray(content)) {
     const parts = content
       .map((c: any) => (typeof c === 'string' ? c : c?.text || ''))
       .filter(Boolean);
-    if (parts.length) return parts.join('\n').trim();
+    if (parts.length) {return parts.join('\n').trim();}
   }
   throw new VisionError('Vision API returned an empty assistant message.');
 }
@@ -198,7 +198,7 @@ export async function analyzeVideo(filePath: string, cfg: VisionConfig): Promise
     if (err?.name === 'AbortError') {
       throw new VisionError(`Vision API timed out after ${cfg.timeoutMs}ms`);
     }
-    if (err instanceof VisionError) throw err;
+    if (err instanceof VisionError) {throw err;}
     logError('[vision] analyzeVideo failed', err);
     throw new VisionError(`Vision API failed: ${String(err?.message || err)}`);
   } finally {

@@ -35,14 +35,13 @@ function loadStripLeadingGoalPrompt(): (text: string) => string {
   let depth = 0;
   let end = -1;
   for (let i = open; i < src.length; i++) {
-    if (src[i] === '{') depth++;
+    if (src[i] === '{') {depth++;}
     else if (src[i] === '}' && --depth === 0) { end = i + 1; break; }
   }
   assert.ok(end > 0, 'could not brace-match stripLeadingGoalPrompt');
   // Collapse escapes the way the template literal does before evaluating.
   const body = src.slice(at, end).replace(/\\\\/g, '\\');
   assert.ok(!body.includes('${'), `unresolved interpolation: ${body}`);
-  // eslint-disable-next-line no-new-func
   return new Function('text', `${body}\nreturn stripLeadingGoalPrompt(text);`) as (t: string) => string;
 }
 
@@ -119,7 +118,7 @@ suite('cleanUserMessage applies the goal stripper', () => {
     let depth = 0;
     let end = -1;
     for (let i = open; i < src.length; i++) {
-      if (src[i] === '{') depth++;
+      if (src[i] === '{') {depth++;}
       else if (src[i] === '}' && --depth === 0) { end = i + 1; break; }
     }
     assert.ok(end > 0, 'could not brace-match cleanUserMessage');

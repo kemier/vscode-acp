@@ -38,7 +38,7 @@ function loadIsPayloadSizedPaste(): (text: string) => boolean {
   let depth = 0;
   let end = -1;
   for (let i = open; i < src.length; i++) {
-    if (src[i] === '{') depth++;
+    if (src[i] === '{') {depth++;}
     else if (src[i] === '}' && --depth === 0) { end = i + 1; break; }
   }
   assert.ok(end > 0, 'could not brace-match isPayloadSizedPaste');
@@ -52,7 +52,6 @@ function loadIsPayloadSizedPaste(): (text: string) => boolean {
     !body.includes('${'),
     `unresolved interpolation in the extracted helper: ${body}`,
   );
-  // eslint-disable-next-line no-new-func
   return new Function('text', `${body}\nreturn isPayloadSizedPaste(text);`) as (t: string) => boolean;
 }
 
@@ -142,12 +141,11 @@ function loadComposerHoldsSlashCommand(): (value: string) => boolean {
   let depth = 0;
   let end = -1;
   for (let i = open; i < src.length; i++) {
-    if (src[i] === '{') depth++;
+    if (src[i] === '{') {depth++;}
     else if (src[i] === '}' && --depth === 0) { end = i + 1; break; }
   }
   assert.ok(end > 0, 'could not brace-match composerHoldsSlashCommand');
   const body = src.slice(at, end).replace(/\\\\/g, '\\');
-  // eslint-disable-next-line no-new-func
   return new Function(
     'value',
     `const promptInput = { value: value };\n${body}\nreturn composerHoldsSlashCommand();`,

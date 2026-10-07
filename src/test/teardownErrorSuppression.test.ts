@@ -41,8 +41,8 @@ function makeTeardownTracker(nowRef: { now: number }) {
     const open = src.indexOf('{', at);
     let depth = 0;
     for (let i = open; i < src.length; i++) {
-      if (src[i] === '{') depth++;
-      else if (src[i] === '}' && --depth === 0) return src.slice(at, i + 1);
+      if (src[i] === '{') {depth++;}
+      else if (src[i] === '}' && --depth === 0) {return src.slice(at, i + 1);}
     }
     assert.fail(`could not brace-match ${sig}`);
   }
@@ -98,7 +98,7 @@ function makePredicate(activeId: string | null, tornDown: Set<string>) {
   let depth = 0;
   let end = -1;
   for (let i = open; i < src.length; i++) {
-    if (src[i] === '{') depth++;
+    if (src[i] === '{') {depth++;}
     else if (src[i] === '}' && --depth === 0) { end = i + 1; break; }
   }
   const body = src
@@ -141,7 +141,7 @@ suite('deliberate teardown bookkeeping', () => {
   test('old entries are pruned so the map cannot grow unbounded', () => {
     const nowRef = { now: 1_000_000 };
     const { tracker, windowMs } = makeTeardownTracker(nowRef);
-    for (let i = 0; i < 50; i++) tracker.mark('old-' + i);
+    for (let i = 0; i < 50; i++) {tracker.mark('old-' + i);}
     assert.strictEqual(tracker.size(), 50);
     nowRef.now += windowMs + 1;
     tracker.mark('fresh');

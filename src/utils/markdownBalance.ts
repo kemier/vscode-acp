@@ -72,7 +72,7 @@ function fenceRuns(text: string): string[] {
  */
 function listContentIndent(lineBefore: string): number {
   const m = lineBefore.match(/^(\s*)(\d+\.|\-|\*|\+)(\s+)(.*)$/);
-  if (!m) return 0;
+  if (!m) {return 0;}
   const lead = m[1].length;
   const marker = m[2].length;
   const space = m[3].length;
@@ -125,7 +125,7 @@ export function repairMultiLineInlineCode(text: string): string {
     }
     // Count the backtick run that opens here.
     let run = 0;
-    while (i + run < n && text[i + run] === '`') run++;
+    while (i + run < n && text[i + run] === '`') {run++;}
     const openLen = run;
     // Find the matching closing run of the SAME length. A longer run is a
     // fence (handled by the fence balancer) or a different span — not our
@@ -135,7 +135,7 @@ export function repairMultiLineInlineCode(text: string): string {
     while (j < n) {
       if (text[j] === '`') {
         let r = 0;
-        while (j + r < n && text[j + r] === '`') r++;
+        while (j + r < n && text[j + r] === '`') {r++;}
         if (r === openLen) {
           closeIdx = j;
           break;
@@ -167,10 +167,10 @@ export function repairMultiLineInlineCode(text: string): string {
         const indent = listContentIndent(lineBefore);
         const pad = indent > 0 ? ' '.repeat(indent) : '';
         let body = content;
-        if (body.startsWith('\n')) body = body.slice(1);
-        if (body.endsWith('\n')) body = body.slice(0, -1);
+        if (body.startsWith('\n')) {body = body.slice(1);}
+        if (body.endsWith('\n')) {body = body.slice(0, -1);}
         out += '\n' + pad + '```\n';
-        for (const l of body.split('\n')) out += pad + l + '\n';
+        for (const l of body.split('\n')) {out += pad + l + '\n';}
         out += pad + '```';
       } else {
         // TIER 2: collapse newlines so it is a valid single-line inline span.

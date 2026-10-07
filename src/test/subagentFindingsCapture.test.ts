@@ -154,8 +154,6 @@ suite('subagent findings capture', () => {
  * private seams.
  */
 suite('subagent findings capture (executed)', () => {
-  /* eslint-disable @typescript-eslint/no-explicit-any */
-
   function harness(overrides: Record<string, unknown>) {
     const sent: any[] = [];
     // The constructor subscribes to session updates; a stub listener sink is all

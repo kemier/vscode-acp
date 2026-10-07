@@ -140,7 +140,7 @@ export class WindowRecordManager {
     agentSupportsImage: boolean;
   }): Promise<{ text?: string; images?: Array<{ data: string; mimeType: string }>; pill?: string }> {
     const take = this.pending;
-    if (!take) return {};
+    if (!take) {return {};}
     // Detach pending so a concurrent clear doesn't double-free
     this.pending = null;
     this.onEvent({ type: 'cleared' });
@@ -179,7 +179,7 @@ export class WindowRecordManager {
       );
     } finally {
       try {
-        if (fs.existsSync(take.path)) fs.unlinkSync(take.path);
+        if (fs.existsSync(take.path)) {fs.unlinkSync(take.path);}
       } catch {
         /* ignore */
       }
@@ -257,7 +257,7 @@ export class WindowRecordManager {
           placeHolder: 'Pick a display (incl. extended) or window',
         },
       );
-      if (!picked) return;
+      if (!picked) {return;}
 
       // Window-by-title targets arrive with an empty source; the user types the
       // title in a follow-up input box. (Display targets carry their monitor
@@ -270,7 +270,7 @@ export class WindowRecordManager {
           placeHolder: 'e.g. Code - vscode-acp',
           ignoreFocusOut: true,
         });
-        if (!title || !title.trim()) return;
+        if (!title || !title.trim()) {return;}
         chosen = { ...chosen, source: title.trim(), id: `window:${title.trim()}` };
       }
 

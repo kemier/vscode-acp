@@ -144,7 +144,7 @@ suite('SessionUpdateHandler applies the filter', () => {
     h.addListener(() => {
       count += 1;
     });
-    for (let i = 0; i < 3; i++) h.handleUpdate(frame(null, 'tool_call'));
+    for (let i = 0; i < 3; i++) {h.handleUpdate(frame(null, 'tool_call'));}
     assert.strictEqual(count, 3);
   });
 });

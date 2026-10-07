@@ -235,9 +235,9 @@ const DEFAULT_DENIED_COMMANDS = [
  * fall back to the `optionId`, else a placeholder.
  */
 function optionLabel(option: { name?: unknown; optionId?: unknown }): string {
-  if (typeof option.name === 'string' && option.name.trim() !== '') return option.name;
-  if (typeof option.name === 'number') return String(option.name);
-  if (typeof option.optionId === 'string' && option.optionId.trim() !== '') return option.optionId;
+  if (typeof option.name === 'string' && option.name.trim() !== '') {return option.name;}
+  if (typeof option.name === 'number') {return String(option.name);}
+  if (typeof option.optionId === 'string' && option.optionId.trim() !== '') {return option.optionId;}
   return 'Option';
 }
 

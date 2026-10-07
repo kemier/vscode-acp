@@ -247,7 +247,7 @@ suite('jev-mcp server registration (Claude Code + Cursor + Codex CLI)', () => {
     );
     // env is the ACP wire shape: an array of {name, value}.
     const env: Record<string, string> = {};
-    for (const v of s.env) env[v.name] = v.value;
+    for (const v of s.env) {env[v.name] = v.value;}
     assert.strictEqual(env.JEV_API_KEY, 'sk-test');
     assert.strictEqual(env.JEV_BASE_URL, 'https://api.codiv.ai');
     assert.strictEqual(env.JEV_MODEL, 'jev-latest');

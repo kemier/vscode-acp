@@ -96,9 +96,9 @@ export function stripMachineContextBlocks(text: string): string {
   // Collapse standalone <clipboard>…</clipboard> to a pill.
   for (let guard = 0; guard < 20; guard++) {
     const open = t.indexOf('<clipboard>');
-    if (open < 0) break;
+    if (open < 0) {break;}
     const close = t.indexOf('</clipboard>', open);
-    if (close < 0) break;
+    if (close < 0) {break;}
     const body = t.substring(open + '<clipboard>'.length, close);
     const lines = body.split('\n').length;
     const pill = '[Clipboard: ' + lines + (lines === 1 ? ' line]' : ' lines]');
@@ -111,16 +111,16 @@ export function stripMachineContextBlocks(text: string): string {
   // alone (the memory/skills blocks are handled by other filters).
   for (let guard = 0; guard < 20; guard++) {
     const open = t.indexOf('<context');
-    if (open < 0) break;
+    if (open < 0) {break;}
     const gt = t.indexOf('>', open);
-    if (gt < 0) break;
+    if (gt < 0) {break;}
     const close = t.indexOf('</context>', gt);
-    if (close < 0) break;
+    if (close < 0) {break;}
     const block = t.substring(open, close + '</context>'.length);
     const clipOpen = block.indexOf('<clipboard>');
-    if (clipOpen < 0) break; // no clipboard inside — not our shape
+    if (clipOpen < 0) {break;} // no clipboard inside — not our shape
     const clipClose = block.indexOf('</clipboard>', clipOpen);
-    if (clipClose < 0) break;
+    if (clipClose < 0) {break;}
     const clipBody = block.substring(clipOpen + '<clipboard>'.length, clipClose);
     const lines = clipBody.split('\n').length;
     const pill = '[Clipboard: ' + lines + (lines === 1 ? ' line]' : ' lines]');
