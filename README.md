@@ -84,6 +84,7 @@ Core settings (voice / vision subsections below; the Settings UI lists every key
 | `acp.deniedCommands` | `[]` | Command prefixes always denied (merged with a built-in denylist). |
 | `acp.defaultWorkingDirectory` | `""` | Default working directory for agent sessions. Empty uses current workspace. |
 | `acp.autoSteerQueuedMessages` | `true` | Deliver a mid-turn typed message into the running turn instead of waiting for it to end. |
+| `acp.modelImageSupport` | `{"qwen3.8-flash-next": false}` | Per-model image-input overrides applied on top of the `~/.codex` catalogs. Keys are model slugs — a key also matches family variants (slug starting with `key-`), so `qwen3.8-flash-next` covers `qwen3.8-flash-next-coder-iq1_m`. `true` shows the 📎 attach button, `false` hides it; overrides beat the catalog and the agent-level default (claude-code-acp advertises image capability for every model, so text-only local models served via Strata/Ollama need an explicit `false`). |
 | `acp.compaction.hookWatcher` | `true` | Watch the Cursor preCompact hook log and reset memory capture across compaction. |
 | `acp.logTraffic` | `true` | Log all ACP protocol traffic to the ACP Traffic output channel. |
 | `acp.logTrafficMaxEntries` | `1000` | Maximum entries kept in the ACP Traffic output channel before it is cleared. |
