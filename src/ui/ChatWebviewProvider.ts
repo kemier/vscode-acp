@@ -494,6 +494,16 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
   private modelImageSupportLoaded = false;
 
   /**
+   * User overrides from the `acp.modelImageSupport` setting (slug → boolean),
+   * applied on top of the catalogs. A key also matches family variants:
+   * `qwen3.8-flash-next` matches `qwen3.8-flash-next-coder-iq1_m`. Overrides
+   * beat the catalog — e.g. `{"qwen3.8-flash-next": false}` hides the attach
+   * button for a text-only local model that claude-code-acp would otherwise
+   * trust (its agent-level `promptCapabilities.image` is true).
+   */
+  private modelImageOverrides: Map<string, boolean> = new Map();
+
+  /**
    * Fallback timer for cancel: if the agent doesn't acknowledge a
    * session/cancel within 5s (some agents ignore it or hang), force
    * the webview out of processing mode so the Stop button recovers.
@@ -703,11 +713,28 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    */
   private getModelImageMap(): Record<string, boolean> {
     this.loadModelImageSupport();
-    if (!this.modelImageSupport) {
-      return {};
-    }
     const obj: Record<string, boolean> = {};
-    for (const [k, v] of this.modelImageSupport) {
+    if (this.modelImageSupport) {
+      for (const [k, v] of this.modelImageSupport) {
+        obj[k] = v;
+      }
+    }
+    // Settings overrides win over catalog entries with the same slug.
+    for (const [k, v] of this.modelImageOverrides) {
+      obj[k] = v;
+    }
+    return obj;
+  }
+
+  /**
+   * The `acp.modelImageSupport` setting as a plain object (slug → boolean),
+   * sent to the webview so its local recompute paths (model switch in the
+   * picker) can apply family-prefix overrides without a round-trip.
+   */
+  private getModelImageOverridesMap(): Record<string, boolean> {
+    this.loadModelImageSupport();
+    const obj: Record<string, boolean> = {};
+    for (const [k, v] of this.modelImageOverrides) {
       obj[k] = v;
     }
     return obj;
@@ -1223,6 +1250,13 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           this.screenRecord.clearPending();
         }
         this.postMessage({ type: 'screenRecordEnabled', enabled });
+      }
+      if (e.affectsConfiguration('acp.modelImageSupport')) {
+        // Overrides changed — drop the cached catalog+overrides and re-push
+        // state so the attach button flips without a model switch.
+        this.modelImageSupportLoaded = false;
+        this.loadModelImageSupport();
+        this.sendCurrentState();
       }
     });
     webviewView.onDidDispose(() => {
@@ -3174,6 +3208,52 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       }
     }
     this.modelImageSupport = map;
+    this.loadModelImageOverrides();
+  }
+
+  /**
+   * Read the `acp.modelImageSupport` setting: { slug: boolean }. Non-boolean
+   * values and empty keys are dropped; keys are lowercased for matching.
+   */
+  private loadModelImageOverrides(): void {
+    const map = new Map<string, boolean>();
+    try {
+      const raw = vscode.workspace.getConfiguration('acp').get<object>('modelImageSupport');
+      if (raw && typeof raw === 'object') {
+        for (const [k, v] of Object.entries(raw)) {
+          const key = String(k || '').trim().toLowerCase();
+          if (key && typeof v === 'boolean') {
+            map.set(key, v);
+          }
+        }
+      }
+    } catch {
+      // Setting absent or malformed — no overrides
+    }
+    this.modelImageOverrides = map;
+  }
+
+  /**
+   * Settings override for a normalized model slug: exact match first, then
+   * family-prefix match (slug starts with key + '-'). Returns null when no
+   * override applies. Loads the catalog (and overrides) on demand.
+   */
+  private imageOverrideFor(base: string): boolean | null {
+    this.loadModelImageSupport();
+    const slug = String(base || '').toLowerCase();
+    if (!slug || this.modelImageOverrides.size === 0) {
+      return null;
+    }
+    const exact = this.modelImageOverrides.get(slug);
+    if (exact !== undefined) {
+      return exact;
+    }
+    for (const [key, val] of this.modelImageOverrides) {
+      if (slug.startsWith(key + '-')) {
+        return val;
+      }
+    }
+    return null;
   }
 
   /**
@@ -3228,6 +3308,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    */
   private modelSupportsImage(modelId: string, agentName?: string): boolean {
     const base = this.normalizeModelIdForImageCaps(modelId);
+    // User overrides from `acp.modelImageSupport` beat every rule below —
+    // including the claude-agent "trust the agent" default, which is exactly
+    // why a text-only local model (qwen3.8-flash-next via Strata) needs a
+    // `"qwen3.8-flash-next": false` entry to hide the attach button.
+    const ov = this.imageOverrideFor(base);
+    if (ov !== null) {
+      return ov;
+    }
     // For Kiro CLI, determine from model name — no catalog file.
     if (agentName && /kiro/i.test(agentName)) {
       return /claude/i.test(base);
@@ -4575,6 +4663,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
               return mid ? this.modelSupportsImage(mid, session.agentName) : undefined;
             })(),
             modelImageMap: this.getModelImageMap(),
+            modelImageOverrides: this.getModelImageOverridesMap(),
             goalSnapshot: (session as any)?.goalSnapshot ?? null,
           }
         : null,
@@ -8684,6 +8773,29 @@ function cursorModelSupportsImage(baseModelId) {
   if (/^gemini/.test(base)) return true;
   if (/^composer/.test(base) || /^kimi/.test(base) || /^glm/.test(base)) return false;
   return false;
+}
+
+/**
+ * Settings override (acp.modelImageSupport) for a model slug: exact match
+ * first, then family-prefix match (slug starts with key + '-', so
+ * 'qwen3.8-flash-next' covers 'qwen3.8-flash-next-coder-iq1_m'). Returns
+ * null when no override applies. Mirrors the host's imageOverrideFor.
+ */
+function imageOverrideFor(slug, overrides) {
+  if (!overrides) return null;
+  // indexOf, not a regex: this lives inside the webview template literal,
+  // where a backslash-escaped regex would be collapsed (see the note above
+  // isCommandLikeTitle). Strip the trailing [effort]/[params] suffix instead.
+  var s = String(slug || '');
+  var br = s.indexOf('[');
+  if (br >= 0) s = s.slice(0, br);
+  s = s.trim().toLowerCase();
+  if (!s) return null;
+  if (Object.prototype.hasOwnProperty.call(overrides, s)) return !!overrides[s];
+  for (var key in overrides) {
+    if (s.indexOf(key + '-') === 0) return !!overrides[key];
+  }
+  return null;
 }
 
 /**
@@ -14473,7 +14585,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
          var agent = sessionState && sessionState.agentName ? sessionState.agentName : '';
          // Strip any trailing [...] (Codex effort, Cursor Auto default[], params).
          var modelBase2 = String(value || '').replace(/\\[[^\\]]*\\]$/, '');
-         if (agent && /kiro/i.test(agent)) {
+         var ovr2 = imageOverrideFor(modelBase2, sessionState && sessionState.modelImageOverrides);
+         if (ovr2 !== null) {
+           if (sessionState) sessionState.currentModelImageSupport = ovr2;
+           updateAttachButtonVisibility(undefined, ovr2);
+         } else if (agent && /kiro/i.test(agent)) {
            if (attachBtn) attachBtn.style.display = /claude/i.test(modelBase2) ? '' : 'none';
          } else if (agent && /cursor/i.test(agent)) {
            var cursorMapped = cursorModelSupportsImage(modelBase2);
@@ -21256,6 +21372,14 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
    }
    if (!caps || !caps.image) {
      attachBtn.style.display = 'none';
+     return;
+   }
+   // User overrides from acp.modelImageSupport beat every per-agent rule —
+   // e.g. {"qwen3.8-flash-next": false} hides the button on a text-only
+   // Strata-served model that claude-code-acp would otherwise trust.
+   var _ovr = imageOverrideFor(currentModelId || '', sessionState && sessionState.modelImageOverrides);
+   if (_ovr !== null) {
+     attachBtn.style.display = _ovr ? '' : 'none';
      return;
    }
    // For Kiro CLI, determine image support from model name — no catalog.
