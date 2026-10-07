@@ -14,7 +14,6 @@ import {
   findCursorSessionStorePath,
   CursorSessionToolEnricher,
   lookupEnriched,
-  MAX_LIVE_ENRICH_FULL_SCAN_BYTES,
   cursorToolMatchKind,
   cursorSearchKindFallback,
   cursorFileMutateKindFallback,
@@ -401,7 +400,7 @@ suite('CursorToolEnricher', () => {
       for (let i = 0; i < 3; i++) {
         blobs.push([`tail-${i}`, { role: 'assistant', content: [{ type: 'tool-call', toolCallId: `call-t-${i}\nfc_t_${i}`, toolName: 'Glob', args: { glob_pattern: `**/t${i}*.ts` } }] }]);
       }
-      const dbPath = makeCursorStoreFixture(tmp, sid, blobs);
+      makeCursorStoreFixture(tmp, sid, blobs);
       const enricher = new CursorSessionToolEnricher(sid, tmp);
       const tools = await enricher.listEnrichedTools();
       assert.ok(tools.length >= 10, 'expected many indexed tools');
