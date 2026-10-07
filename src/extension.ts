@@ -879,29 +879,24 @@ export function activate(context: vscode.ExtensionContext): void {
       // restoring the previous session (this is a "new conversation").
       const lastAgent = context.workspaceState.get<string>('acp.lastConnectedAgent');
       if (lastAgent) {
-        // Temporarily clear lastConnectedSessionId so connectAgent
-        // doesn't auto-load the old session history.
-        const savedSessionId = context.workspaceState.get<string>('acp.lastConnectedSessionId');
+        // Clear lastConnectedSessionId so connect/restore paths don't auto-load
+        // the previous conversation. Do NOT restore the old id in finally —
+        // that overwrote the new session id written by active-session-changed
+        // and made "+" look like it was still on the old Claude session.
         context.workspaceState.update('acp.lastConnectedSessionId', undefined);
-        try {
-          sessionManager.cancelInFlightSessionLoads();
-          clearSessionOpenInFlight();
-          await vscode.window.withProgress(
-            {
-              location: vscode.ProgressLocation.Notification,
-              title: `Starting new conversation with ${lastAgent}...`,
-              cancellable: false,
-            },
-            async () => {
-              chatWebviewProvider.clearChat(false);
-              await sessionManager.connectToAgent(lastAgent);
-            },
-          );
-        } finally {
-          // Restore the saved session ID (the new session will update
-          // workspaceState via active-session-changed).
-          context.workspaceState.update('acp.lastConnectedSessionId', savedSessionId);
-        }
+        sessionManager.cancelInFlightSessionLoads();
+        clearSessionOpenInFlight();
+        await vscode.window.withProgress(
+          {
+            location: vscode.ProgressLocation.Notification,
+            title: `Starting new conversation with ${lastAgent}...`,
+            cancellable: false,
+          },
+          async () => {
+            chatWebviewProvider.clearChat(false);
+            await sessionManager.connectToAgent(lastAgent);
+          },
+        );
       } else {
         // No last agent — fall back to the agent picker.
         await vscode.commands.executeCommand('acp.connectAgent');
