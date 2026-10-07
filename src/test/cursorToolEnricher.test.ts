@@ -158,13 +158,10 @@ suite('CursorToolEnricher', () => {
         'utf8',
       );
       db.prepare('INSERT INTO blobs (id, data) VALUES (?, ?)').run('h1', payload);
-      const broken = db
-        .prepare(`SELECT COUNT(*) AS c FROM blobs WHERE substr(data, 1, 1) = '{'`)
-        .get()?.c;
-      const fixed = db.prepare(`SELECT COUNT(*) AS c FROM blobs WHERE ${SQL_JSON_BLOB_PREFIX}`).get()
-        ?.c;
+      const broken = db.prepare(`SELECT COUNT(*) AS c FROM blobs WHERE substr(data, 1, 1) = '{'`).get()?.c;
+      const fixed = db.prepare(`SELECT COUNT(*) AS c FROM blobs WHERE ${SQL_JSON_BLOB_PREFIX}`).get()?.c;
       assert.strictEqual(broken, 0, 'TEXT compare against BLOB substr must not match');
-      assert.strictEqual(fixed, 1, 'X\'7B\'/X\'5B\' BLOB compare must match JSON blobs');
+      assert.strictEqual(fixed, 1, "X'7B'/X'5B' BLOB compare must match JSON blobs");
     } finally {
       try {
         db.close();
@@ -260,10 +257,7 @@ suite('CursorToolEnricher', () => {
   });
 
   test('formatCursorEnrichedTitle includes path/pattern', () => {
-    assert.strictEqual(
-      formatCursorEnrichedTitle('Read', { path: '/Users/me/pkg.json' }),
-      'Read /Users/me/pkg.json',
-    );
+    assert.strictEqual(formatCursorEnrichedTitle('Read', { path: '/Users/me/pkg.json' }), 'Read /Users/me/pkg.json');
     assert.strictEqual(
       formatCursorEnrichedTitle('Grep', {
         path: '/Users/me/src',
@@ -392,13 +386,78 @@ suite('CursorToolEnricher', () => {
       // suffix-only sort would reorder them against the rowid order (10, 9, 2).
       const blobs: Array<[id: string, payload: unknown]> = [];
       for (let i = 0; i < 7; i++) {
-        blobs.push([`filler-${i}`, { role: 'assistant', content: [{ type: 'tool-call', toolCallId: `call-f-${i}\nfc_f_${i}`, toolName: 'Read', args: { path: `/tmp/f${i}.ts` } }] }]);
+        blobs.push([
+          `filler-${i}`,
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool-call',
+                toolCallId: `call-f-${i}\nfc_f_${i}`,
+                toolName: 'Read',
+                args: { path: `/tmp/f${i}.ts` },
+              },
+            ],
+          },
+        ]);
       }
-      blobs.push(['g10', { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'call-g-10\nfc_g_0', toolName: 'Grep', args: { pattern: 'p1', path: '/s' } }] }]);
-      blobs.push(['g9', { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'call-g-9\nfc_g_1', toolName: 'Grep', args: { pattern: 'p2', path: '/s' } }] }]);
-      blobs.push(['g2', { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'call-g-2\nfc_g_2', toolName: 'Grep', args: { pattern: 'p3', path: '/s' } }] }]);
+      blobs.push([
+        'g10',
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'call-g-10\nfc_g_0',
+              toolName: 'Grep',
+              args: { pattern: 'p1', path: '/s' },
+            },
+          ],
+        },
+      ]);
+      blobs.push([
+        'g9',
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'call-g-9\nfc_g_1',
+              toolName: 'Grep',
+              args: { pattern: 'p2', path: '/s' },
+            },
+          ],
+        },
+      ]);
+      blobs.push([
+        'g2',
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'call-g-2\nfc_g_2',
+              toolName: 'Grep',
+              args: { pattern: 'p3', path: '/s' },
+            },
+          ],
+        },
+      ]);
       for (let i = 0; i < 3; i++) {
-        blobs.push([`tail-${i}`, { role: 'assistant', content: [{ type: 'tool-call', toolCallId: `call-t-${i}\nfc_t_${i}`, toolName: 'Glob', args: { glob_pattern: `**/t${i}*.ts` } }] }]);
+        blobs.push([
+          `tail-${i}`,
+          {
+            role: 'assistant',
+            content: [
+              {
+                type: 'tool-call',
+                toolCallId: `call-t-${i}\nfc_t_${i}`,
+                toolName: 'Glob',
+                args: { glob_pattern: `**/t${i}*.ts` },
+              },
+            ],
+          },
+        ]);
       }
       makeCursorStoreFixture(tmp, sid, blobs);
       const enricher = new CursorSessionToolEnricher(sid, tmp);
@@ -467,10 +526,7 @@ suite('CursorToolEnricher', () => {
   });
 
   test('formatCursorEnrichedTitle maps StrReplace to Edit path', () => {
-    assert.strictEqual(
-      formatCursorEnrichedTitle('StrReplace', { path: '/Users/me/a.ts' }),
-      'Edit /Users/me/a.ts',
-    );
+    assert.strictEqual(formatCursorEnrichedTitle('StrReplace', { path: '/Users/me/a.ts' }), 'Edit /Users/me/a.ts');
   });
 
   test('enrich sticks to primary session store without thrashing', async function () {
@@ -482,8 +538,7 @@ suite('CursorToolEnricher', () => {
       return;
     }
     const enricher = new CursorSessionToolEnricher(sid);
-    const toolCallId =
-      'call-6b826533-813a-4920-9633-56609c3021a3-2\nfc_2f7aa6c7-00c3-90fe-be31-8d579d58b273_1';
+    const toolCallId = 'call-6b826533-813a-4920-9633-56609c3021a3-2\nfc_2f7aa6c7-00c3-90fe-be31-8d579d58b273_1';
     const t0 = Date.now();
     const hit = await enricher.enrich(toolCallId, { timeoutMs: 3000 });
     const ms = Date.now() - t0;
