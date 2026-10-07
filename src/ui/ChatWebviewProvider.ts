@@ -7301,6 +7301,10 @@ let isCompacting = false;  // true while /compact is running
    }
  }
  let kiroCompactWatchdog = null; // safety timeout while waiting for true Kiro done
+ // Manual /compact (Claude/Codex/Kiro): local LLM + ~200k context can spend
+ // many minutes on the summary turn alone before "completed" arrives. 10 min
+ // was too short and falsely reported "conversation was left unchanged".
+ var COMPACT_WATCHDOG_MS = 1800000; // 30 minutes
  // After a successful compact flush, drop late Codex boilerplate
  // ("Warning: Heads up…", "*Context compacted…") that arrives after isCompacting
  // is cleared so it never lands in the chat panel.
@@ -11259,7 +11263,7 @@ function handleLocalSlashCommand(cmdText) {
           error: true,
           message: 'Kiro /compact timed out waiting for a compaction notice. Conversation was left unchanged.',
         });
-      }, 600000);
+      }, COMPACT_WATCHDOG_MS);
       vscode.postMessage({ type: 'executeKiroCommand', command: 'compact' });
     } else {
       // Codex/Claude resolve /compact (and aliases) as a prompt slash command.
@@ -11277,7 +11281,7 @@ function handleLocalSlashCommand(cmdText) {
         setProcessing(false, 'compact-timeout-watchdog');
         addMessage('system',
           'Timed out waiting for compaction to finish. Conversation was left unchanged.');
-      }, 600000);
+      }, COMPACT_WATCHDOG_MS);
       vscode.postMessage({ type: 'sendPrompt', text: compactPrompt });
     }
     return true;
