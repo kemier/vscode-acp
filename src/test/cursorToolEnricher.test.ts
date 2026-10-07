@@ -320,70 +320,111 @@ suite('CursorToolEnricher', () => {
     );
   });
 
-  test('loadEnrichedToolCallsByPrefix finds Read/Grep args in live store', async function () {
-    this.timeout(10000);
-    const sid = 'a4879912-b370-4918-ac86-965e011333ff';
-    const db = findCursorSessionStorePath(sid);
-    if (!db || !fs.existsSync(db) || fs.statSync(db).size < 1000) {
-      this.skip();
-      return;
+  // Synthetic store fixture instead of the live ~/.cursor store: pinned live
+  // ids drift (Cursor rewrites blobs), and this.skip() inside an async test
+  // can only be reported as pending by mocha — which fails the suite.
+  const makeCursorStoreFixture = (tmp: string, sid: string, blobs: Array<[id: string, payload: unknown]>) => {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { DatabaseSync } = require('node:sqlite') as {
+      DatabaseSync: new (path: string) => {
+        exec: (sql: string) => void;
+        prepare: (sql: string) => {
+          run: (...params: unknown[]) => void;
+        };
+        close: () => void;
+      };
+    };
+    const dbDir = path.join(tmp, 'acp-sessions', sid);
+    fs.mkdirSync(dbDir, { recursive: true });
+    const dbPath = path.join(dbDir, 'store.db');
+    const db = new DatabaseSync(dbPath);
+    try {
+      db.exec('CREATE TABLE blobs (id TEXT, data BLOB)');
+      const insert = db.prepare('INSERT INTO blobs (id, data) VALUES (?, ?)');
+      for (const [id, payload] of blobs) {
+        insert.run(id, Buffer.from(JSON.stringify(payload), 'utf8'));
+      }
+    } finally {
+      db.close();
     }
-    const toolCallId =
-      'call-7b4d4dfe-b7e6-4427-9adc-8d5a3119699e-106\nfc_1071b380-16f7-9322-b9a6-6644150f2f46_0';
-    assert.strictEqual(toolCallIdPrefix(toolCallId), 'call-7b4d4dfe-b7e6-4427-9adc-8d5a3119699e-106');
-    const map = await loadEnrichedToolCallsByPrefix(db, toolCallId);
-    // Fixture-drift guard: the pinned id may no longer resolve in the live
-    // store (Cursor rewrites blobs, and later tool outputs re-mention old
-    // ids). Skip the live assertion then — parsing is covered by the
-    // synthetic tests above.
-    if (!lookupEnriched(map, toolCallId)) {
-      this.skip();
-      return;
+    return dbPath;
+  };
+
+  test('loadEnrichedToolCallsByPrefix finds Read/Grep args in a synthetic store', async function () {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cursor-enrich-prefix-'));
+    try {
+      const sid = 'prefix-scan-sess';
+      const readId = 'call-read-1\nfc_batch_0';
+      const grepId = 'call-grep-2\nfc_batch_1';
+      // One batch blob holds both parallel tool calls; a noise blob must not match.
+      const dbPath = makeCursorStoreFixture(tmp, sid, [
+        ['noise', { role: 'user', content: [{ type: 'text', text: 'unrelated' }] }],
+        [
+          'batch',
+          {
+            role: 'assistant',
+            content: [
+              { type: 'tool-call', toolCallId: readId, toolName: 'Read', args: { path: '/tmp/a.ts', limit: 10 } },
+              { type: 'tool-call', toolCallId: grepId, toolName: 'Grep', args: { path: '/tmp', pattern: 'needle' } },
+            ],
+          },
+        ],
+      ]);
+      assert.strictEqual(toolCallIdPrefix(grepId), 'call-grep-2');
+      const map = await loadEnrichedToolCallsByPrefix(dbPath, grepId);
+      const grep = lookupEnriched(map, grepId);
+      assert.ok(grep, 'prefix LIKE query must find the Grep tool');
+      assert.strictEqual(grep!.toolName, 'Grep');
+      assert.strictEqual(grep!.title, 'grep "needle" /tmp');
+      const read = lookupEnriched(map, readId);
+      assert.ok(read, 'sibling Read in the same batch blob must be indexed too');
+      assert.strictEqual(read!.toolName, 'Read');
+      assert.strictEqual(read!.title, 'Read /tmp/a.ts');
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
     }
-    const enricher = new CursorSessionToolEnricher(sid);
-    const hit = await enricher.enrich(toolCallId, { timeoutMs: 4000 });
-    assert.ok(hit, 'expected enrich hit for Read');
-    assert.strictEqual(hit!.toolName, 'Read');
-    assert.ok(
-      String(hit!.args.path || '').includes('update-cli-config') || hit!.title.includes('SKILL.md'),
-      hit!.title,
-    );
   });
 
   test('listEnrichedTools preserves blob rowid order (not suffix-only sort)', async function () {
-    this.timeout(10000);
-    const sid = 'a4879912-b370-4918-ac86-965e011333ff';
-    const db = findCursorSessionStorePath(sid);
-    if (!db || !fs.existsSync(db) || fs.statSync(db).size < 1000) {
-      this.skip();
-      return;
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'cursor-enrich-rowid-'));
+    try {
+      const sid = 'rowid-order-sess';
+      // Greps are inserted with descending numeric suffixes (10, 9, 2) so a
+      // suffix-only sort would reorder them against the rowid order (10, 9, 2).
+      const blobs: Array<[id: string, payload: unknown]> = [];
+      for (let i = 0; i < 7; i++) {
+        blobs.push([`filler-${i}`, { role: 'assistant', content: [{ type: 'tool-call', toolCallId: `call-f-${i}\nfc_f_${i}`, toolName: 'Read', args: { path: `/tmp/f${i}.ts` } }] }]);
+      }
+      blobs.push(['g10', { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'call-g-10\nfc_g_0', toolName: 'Grep', args: { pattern: 'p1', path: '/s' } }] }]);
+      blobs.push(['g9', { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'call-g-9\nfc_g_1', toolName: 'Grep', args: { pattern: 'p2', path: '/s' } }] }]);
+      blobs.push(['g2', { role: 'assistant', content: [{ type: 'tool-call', toolCallId: 'call-g-2\nfc_g_2', toolName: 'Grep', args: { pattern: 'p3', path: '/s' } }] }]);
+      for (let i = 0; i < 3; i++) {
+        blobs.push([`tail-${i}`, { role: 'assistant', content: [{ type: 'tool-call', toolCallId: `call-t-${i}\nfc_t_${i}`, toolName: 'Glob', args: { glob_pattern: `**/t${i}*.ts` } }] }]);
+      }
+      const dbPath = makeCursorStoreFixture(tmp, sid, blobs);
+      const enricher = new CursorSessionToolEnricher(sid, tmp);
+      const tools = await enricher.listEnrichedTools();
+      assert.ok(tools.length >= 10, 'expected many indexed tools');
+      const greps = tools.filter((t) => t.toolName.toLowerCase() === 'grep');
+      assert.ok(greps.length >= 2, 'expected multiple grep tools');
+      const suffixSort = greps.slice().sort((a, b) => {
+        const seq = (id: string) => {
+          const pref = id.split(/\n/)[0];
+          const m = pref.match(/-(\d+)$/);
+          return m ? parseInt(m[1], 10) : 0;
+        };
+        return seq(a.toolCallId) - seq(b.toolCallId);
+      });
+      const rowidOrder = greps.map((g) => g.toolCallId.split('\n')[0]);
+      const wrongOrder = suffixSort.map((g) => g.toolCallId.split('\n')[0]);
+      assert.notDeepStrictEqual(
+        rowidOrder.slice(0, 8),
+        wrongOrder.slice(0, 8),
+        'suffix-only sort must not match chronological rowid order',
+      );
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
     }
-    // listEnrichedTools full-rescans the store; the extension-host size cap
-    // means multi-100MB live stores are out of scope for this test.
-    if (fs.statSync(db).size > MAX_LIVE_ENRICH_FULL_SCAN_BYTES) {
-      this.skip();
-      return;
-    }
-    const enricher = new CursorSessionToolEnricher(sid);
-    const tools = await enricher.listEnrichedTools();
-    assert.ok(tools.length >= 10, 'expected many indexed tools');
-    const greps = tools.filter((t) => t.toolName.toLowerCase() === 'grep');
-    assert.ok(greps.length >= 2, 'expected multiple grep tools');
-    const suffixSort = greps.slice().sort((a, b) => {
-      const seq = (id: string) => {
-        const pref = id.split(/\n/)[0];
-        const m = pref.match(/-(\d+)$/);
-        return m ? parseInt(m[1], 10) : 0;
-      };
-      return seq(a.toolCallId) - seq(b.toolCallId);
-    });
-    const rowidOrder = greps.map((g) => g.toolCallId.split('\n')[0]);
-    const wrongOrder = suffixSort.map((g) => g.toolCallId.split('\n')[0]);
-    assert.notDeepStrictEqual(
-      rowidOrder.slice(0, 8),
-      wrongOrder.slice(0, 8),
-      'suffix-only sort must not match chronological rowid order',
-    );
   });
 
   test('findCursorSessionStorePath resolves acp-sessions layout', () => {
