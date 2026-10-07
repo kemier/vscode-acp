@@ -126,6 +126,9 @@ export class AgentManager extends EventEmitter {
           env: spawnEnv,
           cwd: cwd || undefined,
           shell: true,
+          // The cmd.exe wrapper would otherwise pop a visible console
+          // window when the extension host (GUI parent) has no console.
+          windowsHide: true,
         });
       }
 
