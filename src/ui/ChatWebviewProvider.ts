@@ -7263,6 +7263,11 @@ var suppressFoldOrdering = false; // true during renderChatHistory to skip inter
 var userExpandedTurnKeys = Object.create(null);
 let isCompacting = false;  // true while /compact is running
  let isClearing = false;    // true while Kiro /clear (or clear/status) is running
+ // True while the /clear prompt (sent to non-Kiro agents as a real prompt)
+ // is in flight: the agent's reply ("Conversation cleared...") is a snapshot,
+ // not conversation, so finalizeCurrentAssistantTurn keeps it in the DOM for
+ // 3s and then vanishes it instead of pushing it to chatHistory.
+ let slashPromptTurn = false;
  // True only for user-typed /compact — auto-compact must not leave a sticky
  // "Conversation compacted." banner while the agent keeps streaming.
  let manualCompacting = false;
@@ -11328,6 +11333,9 @@ function handleLocalSlashCommand(cmdText) {
       toolCalls = {};
       toolCallDiffs = {};
       saveState();
+      // The agent's reply to the /clear prompt ("Conversation cleared...") is
+      // a snapshot: render it transiently and vanish it 3s later.
+      slashPromptTurn = true;
      vscode.postMessage({ type: 'sendPrompt', text: '/clear' });
      // After /clear, chatHistory belongs to current session.
      chatHistoryOriginSessionId = (sessionState && sessionState.sessionId) || null;
@@ -14724,6 +14732,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
 
    /** Show a transient system notification that auto-dismisses after 4s. */
    function showTransientNotice(text) {
+     return addTransientSystemRow(text, 4000);
+   }
+
+   /** Append a transient system row that vanishes after ms milliseconds. */
+   function addTransientSystemRow(text, ms) {
      // Null the tracker BEFORE addMessageDOM so the notice's own append does
      // not try to re-position itself (see the notice re-positioning in
      // addMessageDOM).
@@ -14734,8 +14747,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        setTimeout(function () {
          if (el.parentNode) { el.parentNode.removeChild(el); }
          if (transientNoticeEl === el) { transientNoticeEl = null; }
-       }, 4000);
+       }, ms);
      }
+     return el;
    }
 
    /**
@@ -14791,13 +14805,19 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    }
 
    /**
-    * Post-compact banner — DOM only (not chatHistory). Cleared when the user
-    * sends the next message so it does not stick around forever.
+    * Post-compact banner — DOM only (not chatHistory). Vanishes 3s after
+    * compaction finished (same window as the clear notice); the next user
+    * message still clears it earlier via clearCompactNotices.
     */
    function showCompactNotice() {
      clearCompactNotices();
      var el = addMessageDOM('system', 'Conversation compacted.');
-     if (el) el.classList.add('compact-notice');
+     if (el) {
+       el.classList.add('compact-notice');
+       setTimeout(function () {
+         if (el.parentNode) { el.parentNode.removeChild(el); }
+       }, 3000);
+     }
    }
 
    function clearCompactNotices() {
@@ -20960,10 +20980,19 @@ forceCollapseTurnFolds();
     }
 
     function finalizeCurrentAssistantTurn() {
+      // A slash command forwarded to the agent as a prompt produced this
+      // reply: it is a snapshot, not conversation — keep it in the DOM for
+      // 3s, then vanish it, and never push it to chatHistory.
+      var _slashTurn = slashPromptTurn;
+      slashPromptTurn = false;
       if (currentThoughtEl || currentThoughtText || thoughtDomBase) {
         commitOrDiscardCurrentThought();
       }
     if (currentAssistantText) {
+      if (_slashTurn) {
+        var _slashEl = currentAssistantEl;
+        setTimeout(function () { vanishSlashReplyRow(_slashEl); }, 3000);
+      } else {
       // Dedup guard: skip pushing a duplicate assistant message. After a
       // full-snapshot merge (handleLoadSessionEnd), currentAssistantText
       // holds text that was replayed via agent_message_chunk during
@@ -20995,6 +21024,7 @@ forceCollapseTurnFolds();
       chatHistory.push({ kind: 'message', role: 'assistant', text: currentAssistantText });
        saveState();
        }
+      }
      }
       currentAssistantEl = null;
       currentAssistantText = '';
@@ -21009,6 +21039,20 @@ forceCollapseTurnFolds();
       thoughtStartTime = null;
       thoughtEndTime = null;
     }
+
+  /** Remove a vanished slash-reply row; drop the turn container too when it
+   * is left with nothing visible so no orphan fold/summary header remains. */
+  function vanishSlashReplyRow(el) {
+    if (!el) return;
+    var parent = el.parentNode;
+    if (!parent) return;
+    parent.removeChild(el);
+    if (parent !== messagesEl && parent.className.indexOf('turn') === 0) {
+      var hasContent = parent.querySelector('.message') || parent.querySelector('.thought-block') ||
+        parent.querySelector('.turn-tools') || parent.querySelector('.turn-fold-body');
+      if (!hasContent) { parent.parentNode.removeChild(parent); }
+    }
+  }
 
   function addThoughtDOM(text, durationSec, historyIndex) {
     hideEmpty();
@@ -22253,6 +22297,10 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
             }
           }
          addMessage('error', msg.message || 'An error occurred');
+         // A failed slash prompt never reaches finalizeCurrentAssistantTurn,
+         // so clear the snapshot-reply flag here or the NEXT turn's reply
+         // would vanish too.
+         slashPromptTurn = false;
          // Reset processing state in case the error prevents promptEnd from firing
          // (e.g. early return in handleSendPrompt before slash command path).
          if (isProcessing && !isCompacting && !isClearing) {
@@ -24912,7 +24960,9 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
    chatHistoryOriginSessionId = (sessionState && sessionState.sessionId) || null;
    hideEmpty();
    if (notice && String(notice).trim()) {
-     addMessage('system', String(notice).trim());
+     // Transient: the clear result vanishes 3s later (all agents) and never
+     // enters chatHistory, so a reload does not resurrect it.
+     addTransientSystemRow(String(notice).trim(), 3000);
    }
  }
 
