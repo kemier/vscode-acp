@@ -7351,6 +7351,16 @@ let suppressNextUserBubble = false;
 var LATE_SUBAGENT_TURN_CAP = 5;
 var lateSubagentTurns = 0;
 var pendingRenderRetries = {}; // keys of pending renderMarkdown retries
+// Handle for the deferred restoreState history render. On a reload the webview
+// restores saved chatHistory and renders it SYNCHRONOUSLY (~1.6s for 170 items)
+// — but when the restored session is live, the host then drives session/load,
+// whose handleLoadSessionStart wipes messagesEl and whose replay + handleLoadSessionEnd
+// rebuild the DOM from scratch. The restore render is entirely discarded
+// (measured: [WV-REBUILD] "discarded 5 node(s)"). Deferring it one tick lets
+// handleLoadSessionStart cancel it before the DOM work happens, so a resumed
+// session paints straight from the replay instead of paying for a transcript
+// that is about to be thrown away. Left non-zero only while a render is queued.
+var pendingRestoreRenderTimer = 0;
 var historyRenderGen = 0; // generation counter for history renders (invalidated on DOM rebuild)
 var suppressFoldOrdering = false; // true during renderChatHistory to skip intermediate re-ordering
 // Durable per-turn user-expand intent. Keyed on the turn's data-history-index (a
@@ -10521,40 +10531,58 @@ var end = displayText.length;
      vscode.postMessage({ type: 'debugLog', message: '[WV-STATE] restoreState: skipping render — session was interrupted, waiting for session/load' });
    }
    if (!_skipRestoreRender) {
-     // Render chat history using compact turn-based inline layout
-     // (groups tool calls into collapsible containers instead of standalone cards)
+     // Defer the actual DOM render one tick. If the host drives a session/load
+     // for this restored session in the meantime (the common case on a reload
+     // of a live session), handleLoadSessionStart cancels this render — the
+     // replay owns the DOM and our render would be discarded by its rebuild.
+     // The reconcile passes and the small bookkeeping run synchronously either
+     // way so the state (interrupt flags, in-flight tool statuses) is clean for
+     // session/load even when the render itself is cancelled.
      reconcileInterruptedSessionFlag(false);
      failInterruptedSpawnToolsInHistory();
      failInterruptedSubagentStagesInHistory();
      foldInterruptedAssistantsOnPromote = true;
-     var assistantItems = renderChatHistory();
-     foldInterruptedAssistantsOnPromote = false;
-     failRunningSubagentStagesInDom();
-     failCompletedCrewsInInterruptedTurn();
-     forceCollapseTurnFolds();
-     failRunningSubagentStagesInDom();
-     failCompletedCrewsInInterruptedTurn();
-     if (assistantItems.length > 0) {
-        vscode.postMessage({ type: 'debugLog', message: '[WV-STATE] restoreState: sending renderMarkdown for ' + assistantItems.length + ' assistant items' });
-        vscode.postMessage({ type: 'renderMarkdown', items: assistantItems });
-        vscode.postMessage({ type: 'debugLog', message: '[WV-STATE] restoreState: renderMarkdown sent' });
-        // Retry mechanism: if the extension host doesn't respond within 2s,
-        // re-send the renderMarkdown request. This handles a race condition
-        // where the initial postMessage is lost during webview initialization.
-       var _retryItems = assistantItems.slice();
-       var _retryCount = 0;
-      var _retryKey = 'restore_' + Date.now();
-      pendingRenderRetries[_retryKey] = true;
-     var _retryFn = function() {
-       if (pendingRenderRetries[_retryKey] && _retryCount < 3) {
-         _retryCount++;
-         vscode.postMessage({ type: 'debugLog', message: '[WV-STATE] restoreState: RETRY ' + _retryCount + ' sending renderMarkdown for ' + _retryItems.length + ' items' });
-         vscode.postMessage({ type: 'renderMarkdown', items: _retryItems });
-         setTimeout(_retryFn, 2000);
+     // The deferral is 0 ms — it yields a macrotask, not a visible frame — so
+     // there is no flash of empty chat; a non-resumed restore still renders
+     // within the same tick burst as before.
+     if (pendingRestoreRenderTimer) { clearTimeout(pendingRestoreRenderTimer); }
+     pendingRestoreRenderTimer = setTimeout(function() {
+       pendingRestoreRenderTimer = 0;
+       // A session/load may have started in the deferral window — it owns the
+       // DOM now (isLoadingSession true), and its replay will rebuild it.
+       if (isLoadingSession) {
+         vscode.postMessage({ type: 'debugLog', message: '[WV-STATE] restoreState: deferred render skipped — session/load took over' });
+         return;
        }
-     };
-     setTimeout(_retryFn, 2000);
-     }
+       var assistantItems = renderChatHistory();
+       foldInterruptedAssistantsOnPromote = false;
+       failRunningSubagentStagesInDom();
+       failCompletedCrewsInInterruptedTurn();
+       forceCollapseTurnFolds();
+       failRunningSubagentStagesInDom();
+       failCompletedCrewsInInterruptedTurn();
+       if (assistantItems.length > 0) {
+          vscode.postMessage({ type: 'debugLog', message: '[WV-STATE] restoreState: sending renderMarkdown for ' + assistantItems.length + ' assistant items' });
+          vscode.postMessage({ type: 'renderMarkdown', items: assistantItems });
+          vscode.postMessage({ type: 'debugLog', message: '[WV-STATE] restoreState: renderMarkdown sent' });
+          // Retry mechanism: if the extension host doesn't respond within 2s,
+          // re-send the renderMarkdown request. This handles a race condition
+          // where the initial postMessage is lost during webview initialization.
+         var _retryItems = assistantItems.slice();
+         var _retryCount = 0;
+        var _retryKey = 'restore_' + Date.now();
+        pendingRenderRetries[_retryKey] = true;
+       var _retryFn = function() {
+         if (pendingRenderRetries[_retryKey] && _retryCount < 3) {
+           _retryCount++;
+           vscode.postMessage({ type: 'debugLog', message: '[WV-STATE] restoreState: RETRY ' + _retryCount + ' sending renderMarkdown for ' + _retryItems.length + ' items' });
+           vscode.postMessage({ type: 'renderMarkdown', items: _retryItems });
+           setTimeout(_retryFn, 2000);
+         }
+       };
+       setTimeout(_retryFn, 2000);
+       }
+     }, 0);
    } else {
      // Still reconcile interrupt flags so the state is clean for session/load.
      reconcileInterruptedSessionFlag(false);
@@ -13547,6 +13575,16 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    // about to be wiped and rebuilt, so stale renderMarkdown requests
    // would target wrong elements.
    for (var _rk in pendingRenderRetries) { delete pendingRenderRetries[_rk]; }
+   // Cancel a still-queued restore render for the same reason: the replay is
+   // about to own the DOM, so rendering the restored snapshot first would be
+   // synchronously discarded by handleLoadSessionEnd's rebuild. This is the
+   // common path on a reload of a live session — the single biggest chunk of
+   // the reload's wall-clock (measured 1.6s render for 170 items, all thrown
+   // away). Skipping it lets the replay paint directly.
+   if (pendingRestoreRenderTimer) {
+     clearTimeout(pendingRestoreRenderTimer);
+     pendingRestoreRenderTimer = 0;
+   }
    dismissPsPanel(true);
     isLoadingSession = true;
     // Arm the replay-tail window NOW, not at load end. showSessionConnected
@@ -15004,10 +15042,26 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     * readable a minute later.
     */
    function addCommandOutputRow(text) {
+     // Build via the DOM-only helper (does not persist — the agent does not
+     // keep slash output, so the row must vanish on reload too).
      var el = addMessageDOM('system', text);
-     if (el) {
-       el.classList.add('command-output');
+     if (!el) return null;
+     el.classList.add('command-output');
+     // Position: when a turn is actively streaming (currentTurnEl set),
+     // addMessageDOM appended the row BELOW the in-flight turn, and the turn's
+     // fold / commit reflows keep pushing it — the row "isn't valid" for seconds
+     // after the snapshot already answered (mid-stream /ps, measured ~3s before
+     // the row settles on a streaming turn). Re-insert it BEFORE the current
+     // turn (same rule as addUserBubbleEarly) so the snapshot pins above the
+     // running output and is stable + immediately visible. Idle path (no
+     // current turn) keeps the append-at-bottom position.
+     if (el.parentNode !== messagesEl) return el;
+     if (currentTurnEl && currentTurnEl !== el &&
+         currentTurnEl.parentNode === messagesEl) {
+       messagesEl.removeChild(el);
+       messagesEl.insertBefore(el, currentTurnEl);
      }
+     scrollToBottom();
      return el;
    }
 
