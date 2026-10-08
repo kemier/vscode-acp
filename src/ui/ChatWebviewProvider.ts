@@ -22324,7 +22324,13 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
             //   - stage-2 (ackSteeredQueueEntry): bubbleShown=undefined, entry still in queue
             for (var _fi = messageQueue.length - 1; _fi >= 0; _fi--) {
               var _fe = messageQueue[_fi];
-              if (_fe && _fe.steered && (_fe.bubbleDeferred || _fe.bubbleShown === undefined)) {
+              // Only flush entries that were DEFERRED (stage-1 bubble not yet
+              // shown). A steered entry with bubbleShown===undefined was
+              // genuinely delivered mid-turn (stage-2 echo landed) — it must
+              // stay in the queue for drainQueue() to send as a follow-up
+              // prompt. Splicing it here shows the bubble but drops the
+              // message, so the agent never receives it as a new turn.
+              if (_fe && _fe.steered && _fe.bubbleDeferred) {
                 _fe.bubbleShown = true;
                 delete _fe.bubbleDeferred;
                 addUserBubbleEarly(_fe);
