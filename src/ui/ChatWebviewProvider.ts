@@ -7840,13 +7840,13 @@ let isCompacting = false;  // true while /compact is running
          // turn's confirmation, versus sent but unconfirmed once the turn has ended
          // (which means it will be sent as a normal prompt instead).
          //
-         // The pending label is agent-aware: every steerable agent in the
-         // gates now injects mid-turn — ericli at onIterationStart, claude-
-         // code-acp via the runner's open stream-json stdin (the live CLI
-         // absorbs the second user line at its next boundary), codex/cursor/
-         // kiro natively — so "in turn" is honest for all of them. "at turn
-         // end" remains only for a future agent that queues steers without
-         // an injection point.
+         // The pending label is agent-aware: a steerable agent that has a
+         // mid-turn injection point shows "in turn" — ericli drains at
+         // onIterationStart, codex/cursor/kiro natively. claude-code-acp is
+         // the odd one out: its headless CLI cannot take a mid-turn user line,
+         // so it drains the queue at turn end as a [Follow-up] turn and shows
+         // "at turn end". "at turn end" is therefore the honest label for
+         // claude, not a future-only case.
          const _readsInTurn = agentSteerReadsInTurn(currentAgentLabel());
          sentTag.textContent = entry.steerPending
            ? (_readsInTurn ? 'in turn' : 'at turn end')
@@ -8621,23 +8621,21 @@ function agentAutoSteersQueuedMessages(agentLabel) {
  * Bubble-placement gate: true when a steered message's bubble belongs at the
  * tail of what has streamed so far, NOT hoisted above the in-flight turn.
  *
- * claude-code-acp keeps the stream-json stdin open during a main turn and
- * writeSteerToMainTurn() writes a second user line the live CLI absorbs at
- * its next boundary (verified against the live CLI) — the delivered echo is
- * emitted synchronously at write time, so the bubble lands after the output
- * streamed before the steer and the post-steer output starts a fresh visual
- * turn. The queued follow-up drain (no live stdin) delivers the same way, at
- * the turn's tail. Either way the stage-2 echo arrives when the message is
- * already in the CLI's input stream — tail render is correct for both paths,
- * hoisting is not.
+ * claude-code-acp delivers a steered message as a [Follow-up] turn at the
+ * turn's end (its headless CLI cannot take a mid-turn user line), so the
+ * delivered echo lands after the output streamed before the steer and the
+ * post-steer answer starts a fresh visual turn — the bubble belongs at the
+ * tail, never hoisted above the in-flight turn.
  *
  * ericli drains at onIterationStart and codex-acp has a real mid-turn
  * injection path; their receipt-time echoes render hoisted-above-turn, which
  * matches their semantics.
  *
- * Renamed from agentDrainsSteerAtTurnEnd: claude-code-acp gained a mid-turn
- * stdin injection point, so the old name described a capability that is no
- * longer true — what remains true is where the bubble belongs.
+ * Renamed from agentDrainsSteerAtTurnEnd, which then became the bubble-
+ * placement gate. (An earlier comment here claimed claude-code-acp gained a
+ * mid-turn stream-json stdin injection point; that path — writeSteerToMainTurn
+ * — was removed, so claude now drains at turn end and the bubble stays at the
+ * tail.)
  */
 function agentSteerBubbleAtTurnTail(agentLabel) {
   var label = String(agentLabel || '');
@@ -8649,19 +8647,21 @@ function agentSteerBubbleAtTurnTail(agentLabel) {
  * True when the queue chip may honestly say "in turn" (as opposed to
  * "at turn end"): the agent has a mid-turn injection point, so a steered
  * message lands between tool calls rather than waiting for the turn to end.
- * ericli drains at onIterationStart, claude-code-acp writes the live
- * stream-json stdin, codex/cursor/kiro natively. "at turn end" remains the
- * honest label for a future agent that queues steers without an injection
- * point. NOTE: this gate is about the CHIP label only — the transient hint
- * that explains delivery timing is driven by agentSteerBubbleAtTurnTail,
- * because the delivery SEMANTICS (mid-turn inject vs turn-end drain) differ
- * from the bubble placement they happen to share.
+ * ericli drains at onIterationStart and codex/cursor/kiro inject natively.
+ * claude-code-acp is deliberately excluded: its headless CLI cannot accept a
+ * mid-turn user line, so it drains the queue at turn end as a [Follow-up]
+ * turn — "at turn end" is the honest label for it (the earlier comment that
+ * it wrote the live stream-json stdin referred to writeSteerToMainTurn,
+ * which was removed). NOTE: this gate is about the CHIP label only — the
+ * transient hint that explains delivery timing is driven by
+ * agentSteerBubbleAtTurnTail, because the delivery SEMANTICS (mid-turn inject
+ * vs turn-end drain) differ from the bubble placement they happen to share.
  */
 function agentSteerReadsInTurn(agentLabel) {
   var label = String(agentLabel || '');
   if (!label) return false;
   if (/^pi([ _-]?acp)?$/i.test(label.trim())) return false;
-  return /claude|codex|cursor|kiro|ericli/i.test(label);
+  return /codex|cursor|kiro|ericli/i.test(label);
 }
 
 /**
