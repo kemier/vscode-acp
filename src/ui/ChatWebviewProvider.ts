@@ -11557,19 +11557,20 @@ function handleLocalSlashCommand(cmdText) {
  // /ps is turn-safe (slashCommandRunsDuringTurn), so it is sent immediately
  // even mid-turn and its output lands as a normal chat message.
  //
- // EXCEPTION: claude-code-acp's /ps is a stub — it returns a hardcoded
- // "No background terminals running." without tracking any processes. Its
- // in-progress tools DO appear in chatHistory (as tool_call updates with
- // status:"in_progress"), so the local panel gives the SAME answer faster,
- // without the ACP round-trip through the spawned CLI. Serve locally for
- // claude-code-acp; defer to the agent for codex-acp/ericli (whose /ps
- // reports A2A tasks and background terminals invisible to chatHistory).
+ // claude-code-acp's /ps was once a hardcoded stub, so it was served locally
+ // (its in-progress tools already appear in chatHistory as tool_call rows).
+ // That carve-out is now stale: claude-code-acp tracks real background Bash
+ // commands (run_in_background:true) in sessionBackgroundBash, which the
+ // local chatHistory scan cannot see — a backgrounded command returns its
+ // launch-ack in the same turn, so its row is already "completed" and never
+ // matches the in_progress filter below. Deferring to the agent is the
+ // richer, correct answer for all three adapters that implement /ps.
  //
  // The local panel stays as the fallback for agents with no /ps of their own —
  // pi-acp advertises compact/autocompact/export/session/name/steering/follow-up
  // and nothing else.
  if (text === '/ps') {
-    if (commandListHasCommand(availableCommands, 'ps') && !isClaudeAgent()) { return false; }
+    if (commandListHasCommand(availableCommands, 'ps')) { return false; }
     promptInput.value = '';
     updateSendButton();
     pendingImages.splice(0);
