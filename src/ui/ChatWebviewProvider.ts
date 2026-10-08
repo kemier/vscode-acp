@@ -8088,7 +8088,9 @@ let isCompacting = false;  // true while /compact is running
              // chip's "at turn end" label.
              addUserBubbleForQueuedEntry(e);
            } else {
-             addUserBubbleEarly(e);
+             // Mid-turn steer: the agent's response continues in the SAME turn,
+             // so the bubble sits AFTER the in-flight turn (at the tail).
+             addUserBubbleMidTurn(e);
            }
          }
          vscode.postMessage({
@@ -8289,6 +8291,30 @@ let isCompacting = false;  // true while /compact is running
      } else {
        messagesEl.appendChild(el);
      }
+     if (transientNoticeEl && transientNoticeEl !== el &&
+         transientNoticeEl.parentNode === messagesEl &&
+         messagesEl.lastElementChild !== transientNoticeEl) {
+       messagesEl.removeChild(transientNoticeEl);
+       messagesEl.appendChild(transientNoticeEl);
+     }
+     scrollToBottom();
+   }
+
+   /**
+    * Mid-turn steer bubble: appended AFTER the in-flight turn (not before it),
+    * because the agent's response to the steer continues in the same turn.
+    * addUserBubbleEarly inserts before currentTurnEl, which visually groups the
+    * steer with the prior user message and places it above the current output.
+    */
+   function addUserBubbleMidTurn(entry) {
+     var _display = queueEntryDisplayText(entry) || '(image)';
+     chatHistory.push({ kind: 'message', role: 'user', text: _display });
+     saveState();
+     hideEmpty();
+     var el = document.createElement('div');
+     el.className = 'message user';
+     renderUserMessageContent(el, _display);
+     messagesEl.appendChild(el);
      if (transientNoticeEl && transientNoticeEl !== el &&
          transientNoticeEl.parentNode === messagesEl &&
          messagesEl.lastElementChild !== transientNoticeEl) {

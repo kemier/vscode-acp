@@ -253,9 +253,10 @@ suite('automatic steering of a mid-turn message', () => {
     // locally), so the echo renders nothing by itself. Acking by deletion alone
     // left the message nowhere: chip gone, nothing in the transcript.
     const ack = extractFn('ackSteeredQueueEntry');
-    assert.ok(ack.includes('addUserBubbleEarly(e)'), ack);
+    // Mid-turn steer: bubble appended after the in-flight turn (not before it).
+    assert.ok(ack.includes('addUserBubbleMidTurn(e)'), ack);
     const splice = ack.indexOf('messageQueue.splice(i, 1)');
-    const bubble = ack.indexOf('addUserBubbleEarly(e)');
+    const bubble = ack.indexOf('addUserBubbleMidTurn(e)');
     assert.ok(splice > 0 && bubble > splice, 'remove the chip, then render the bubble');
   });
 
