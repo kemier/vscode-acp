@@ -14947,6 +14947,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      // A new user OR assistant message retires any stale voice-error notice
      // (the mic warning should not stick around once the conversation moves on).
      if (role === 'user' || role === 'assistant') clearVoiceNotices();
+     // …and any slash-command snapshot row (a "/ps" / tool listing is stale the
+     // moment the conversation moves on — don't let it linger beside new messages).
+     if (role === 'user' || role === 'assistant') clearCommandOutputRows();
      // New user message ends the previous assistant turn visually — do not
      // let later agent chunks / placeSummaryAssistant scoop into the old fold
      // (Claude ACP often streams between turns after promptEnd).
@@ -15061,8 +15064,27 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
        messagesEl.removeChild(el);
        messagesEl.insertBefore(el, currentTurnEl);
      }
+     // A snapshot is a snapshot: it answers the question, then it is stale.
+     // Vanish after 3s (same window as the compact notice), or sooner when the
+     // next user/assistant message arrives (clearCommandOutputRows in
+     // addMessage) — a stale "/ps" or "64 tools" listing should not linger
+     // beside the conversation.
+     setTimeout(function () {
+       if (el.parentNode) { el.parentNode.removeChild(el); }
+     }, 3000);
      scrollToBottom();
      return el;
+   }
+
+   /** Remove any live slash-command snapshot rows (called when a user/assistant
+    *  message arrives, so a stale "/ps" or tool listing clears immediately the
+    *  conversation moves on). DOM-only — these rows are never in chatHistory. */
+   function clearCommandOutputRows() {
+     if (!messagesEl) return;
+     var nodes = messagesEl.querySelectorAll('.message.system.command-output');
+     for (var i = 0; i < nodes.length; i++) {
+       if (nodes[i].parentNode) { nodes[i].parentNode.removeChild(nodes[i]); }
+     }
    }
 
    /**

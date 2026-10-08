@@ -101,12 +101,24 @@ suite('slash-command output renders as a transient snapshot row', () => {
     );
   });
 
-  test('the row does not auto-vanish like a transient hint', () => {
-    // showTransientNotice removes itself after 4s; a 64-tool listing must stay
-    // readable for the session.
+  test('the row is a transient snapshot: vanishes after 3s or on the next message', () => {
+    // A snapshot answers its question and then goes stale. It must NOT linger
+    // beside the conversation: it auto-removes after 3s (like the compact
+    // notice), or sooner when the next user/assistant message arrives.
     const at = src.indexOf('function addCommandOutputRow(text) {');
+    assert.ok(at > 0, 'addCommandOutputRow not found');
     const body = src.slice(at, src.indexOf('\n   }', at));
-    assert.ok(!body.includes('setTimeout'), 'command output must not auto-remove');
+    assert.ok(body.includes('setTimeout'), 'must auto-remove after 3s');
+    assert.ok(body.includes('3000'), 'the snapshot window is 3s');
+    // And the next user/assistant message clears any live snapshot row.
+    // (The call precedes the function definition — function declarations are
+    // hoisted — so assert on presence, not position.)
+    const clearAt = src.indexOf('function clearCommandOutputRows() {');
+    assert.ok(clearAt > 0, 'clearCommandOutputRows not found');
+    assert.ok(
+      src.includes('clearCommandOutputRows();'),
+      'a new user/assistant message must clear live snapshot rows',
+    );
   });
 
   test('it is styled as terminal-style output, outside any turn fold', () => {
