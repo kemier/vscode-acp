@@ -8019,9 +8019,9 @@ let isCompacting = false;  // true while /compact is running
      renderQueue();
      wvQueueLog('STEERED', 'idx=' + idx);
      steerDiag('STEERED idx=' + idx + ' agent=' + (currentAgentLabel() || '(none)') + ' text="' + String(queueEntryPromptText(entry) || '').substring(0, 60) + '"');
-     showTransientHint(agentSteerReadsInTurn(currentAgentLabel())
+     showTransientHint(agentSteerBubbleAtTurnTail(currentAgentLabel())
        ? 'Queued for this turn — it will be delivered when the turn ends.'
-       : 'Sent into the running turn — the agent picks it up at its next step.');
+       : 'Sent into the running turn — the agent folds it in at its next tool step.');
      return true;
    }
 
@@ -8403,9 +8403,9 @@ let isCompacting = false;  // true while /compact is running
      hasSteeredThisTurn = true;
      renderQueue();
      vscode.postMessage({ type: 'steerPrompt', text: queueEntryPromptText(entry) || ' ' });
-     showTransientHint(agentSteerReadsInTurn(currentAgentLabel())
+     showTransientHint(agentSteerBubbleAtTurnTail(currentAgentLabel())
        ? 'Queued for this turn — it will be delivered when the turn ends.'
-       : 'Sent into the running turn — the agent picks it up at its next step.');
+       : 'Sent into the running turn — the agent folds it in at its next tool step.');
    }
 
    // Edit a queued message — moves text back to the prompt input and
@@ -8485,9 +8485,9 @@ let isCompacting = false;  // true while /compact is running
    // A steer for this entry is still awaiting confirmation: re-sending would deliver it
    // twice. The button is hidden in that state; this guards a stale click.
    if (messageQueue[index] && messageQueue[index].steerPending) {
-     showTransientHint(agentSteerReadsInTurn(currentAgentLabel())
+     showTransientHint(agentSteerBubbleAtTurnTail(currentAgentLabel())
        ? 'Already queued for this turn — it will be delivered when the turn ends.'
-       : 'Already sent into the running turn — waiting for the agent to pick it up.');
+       : 'Already sent into the running turn — waiting for the agent to fold it in.');
      return;
    }
    const entry = messageQueue[index];
@@ -8646,11 +8646,16 @@ function agentSteerBubbleAtTurnTail(agentLabel) {
 }
 
 /**
- * True when the queue chip may honestly say "in turn": every steerable agent
- * in the gates now injects mid-turn — ericli at onIterationStart, claude-
- * code-acp via the runner's open stream-json stdin, codex/cursor/kiro
- * natively. "at turn end" remains the honest label for a future agent that
- * queues steers without an injection point.
+ * True when the queue chip may honestly say "in turn" (as opposed to
+ * "at turn end"): the agent has a mid-turn injection point, so a steered
+ * message lands between tool calls rather than waiting for the turn to end.
+ * ericli drains at onIterationStart, claude-code-acp writes the live
+ * stream-json stdin, codex/cursor/kiro natively. "at turn end" remains the
+ * honest label for a future agent that queues steers without an injection
+ * point. NOTE: this gate is about the CHIP label only — the transient hint
+ * that explains delivery timing is driven by agentSteerBubbleAtTurnTail,
+ * because the delivery SEMANTICS (mid-turn inject vs turn-end drain) differ
+ * from the bubble placement they happen to share.
  */
 function agentSteerReadsInTurn(agentLabel) {
   var label = String(agentLabel || '');
