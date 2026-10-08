@@ -24463,6 +24463,23 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
             markSessionInterrupted();
             break;
           }
+          // claude-code-acp compact-boundary marker: the replay emits a
+          // "— conversation compacted —" row with _meta.compactBoundary so
+          // the panel has a visible anchor at the post-compaction boundary.
+          // Without it the post-compact content (often a tool_call) starts
+          // the panel with no user prompt above it — the "resume anchor
+          // shifted" symptom.
+          if (update._meta && update._meta.compactBoundary) {
+            finalizeCurrentAssistantTurn();
+            var _cbSummary = String(content.text || '').split('\\n').slice(1).join('\\n').trim();
+            compactionBoundaryIndex = chatHistory.length;
+            chatHistory.push({ kind: 'message', role: 'system', text: '— conversation compacted —', compactNotice: true });
+            if (_cbSummary) {
+              chatHistory.push({ kind: 'message', role: 'assistant', text: _cbSummary, compactionSummary: true });
+            }
+            resumeDiag('[WV-DIAG] UMC compact-boundary: pushed system+summary rows, chatLen=' + chatHistory.length);
+            break;
+          }
           // Strip injected context blocks from replayed user messages.
           // Uses the shared cleanUserMessage helper defined above.
          var _umcBeforeUsers = countRealUserMessages(chatHistory);
