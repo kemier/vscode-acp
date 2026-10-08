@@ -1,3 +1,4 @@
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 
 import type { McpServer, EnvVariable } from '@agentclientprotocol/sdk';
@@ -135,6 +136,62 @@ function findClaudeCodeAcpScript(): string | undefined {
   return undefined;
 }
 
+/** The Jev MCP server entry, relative to the root of a claude-code-acp checkout. */
+const JEV_MCP_SERVER_RELATIVE = path.join('dist', 'jev-mcp-stdio.js');
+
+/**
+ * Directory candidates for locating the `jev-mcp` stdio server, derived from a
+ * configured `claude-code-acp` command path.
+ *
+ * The `acp.agents` command is not always the real binary. It may be:
+ *   - the binary itself (…/bin/claude-code-acp.js) — the common case;
+ *   - a **symlink** to the binary (…/.local/bin/claude-code-acp → repo/bin/…);
+ *   - a **wrapper shell script** that `exec`s the real binary
+ *     (…/.local/bin/claude-code-acp-ccr → exec …/.local/bin/claude-code-acp).
+ *
+ * A naive `dirname(command) + '/../dist'` only works for the first case. For a
+ * wrapper, the script lives beside no `dist/`, and `realpath` is a no-op (it is
+ * a regular file, not a symlink) — so the derived path points at a non-existent
+ * `dist/jev-mcp-stdio.js` and the Claude CLI silently fails to spawn the server
+ * (no `jev_judge` tool, no error). To handle all three shapes we collect every
+ * plausible "script directory": the command's own dir, the symlink-resolved
+ * dir, and — when the command is a wrapper script — the dir of the absolute
+ * path it `exec`s (and that target's symlink resolution). Callers pick the first
+ * candidate that actually contains the server.
+ */
+function jevMcpServerCandidateDirs(script: string): string[] {
+  const dirs = new Set<string>();
+  const add = (p?: string): void => {
+    if (p && path.isAbsolute(p)) {
+      dirs.add(p);
+    }
+  };
+  add(path.dirname(script));
+  try {
+    add(path.dirname(fs.realpathSync(script)));
+  } catch {
+    // not resolvable — fine, other candidates may still work
+  }
+  // Wrapper script: follow the `exec <absolute path>` it launches.
+  try {
+    if (fs.statSync(script).isFile()) {
+      const text = fs.readFileSync(script, 'utf8');
+      const m = text.match(/\bexec\s+(\/\S+)/);
+      if (m) {
+        add(path.dirname(m[1]));
+        try {
+          add(path.dirname(fs.realpathSync(m[1])));
+        } catch {
+          // ignore
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return [...dirs];
+}
+
 /**
  * Resolve the absolute path to the `jev-mcp` stdio server.
  *
@@ -155,11 +212,20 @@ export function resolveJevMcpServerPath(hint?: AgentCommandHint | string): strin
   }
   script = script ?? findClaudeCodeAcpScript();
   if (script && path.isAbsolute(script)) {
-    // …/bin/claude-code-acp.js → …/dist/jev-mcp-stdio.js
-    return path.join(path.dirname(script), '..', 'dist', 'jev-mcp-stdio.js');
+    // …/bin/claude-code-acp.js (or a wrapper/symlink to it) → …/dist/jev-mcp-stdio.js
+    // Probe candidate dirs so wrapper/symlink launchers resolve to the real
+    // checkout; fall back to the legacy `dirname/../dist` derivation when no
+    // candidate exists on disk (unit tests, or a not-yet-deployed layout).
+    for (const dir of jevMcpServerCandidateDirs(script)) {
+      const candidate = path.join(dir, '..', JEV_MCP_SERVER_RELATIVE);
+      if (fs.existsSync(candidate)) {
+        return candidate;
+      }
+    }
+    return path.join(path.dirname(script), '..', JEV_MCP_SERVER_RELATIVE);
   }
   if (script && /claude-code-acp/i.test(script)) {
-    return path.join(path.dirname(script), '..', 'dist', 'jev-mcp-stdio.js');
+    return path.join(path.dirname(script), '..', JEV_MCP_SERVER_RELATIVE);
   }
   return 'claude-code-acp/dist/jev-mcp-stdio.js';
 }

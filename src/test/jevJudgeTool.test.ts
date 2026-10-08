@@ -1,4 +1,6 @@
 import * as assert from 'assert';
+import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 
 import {
@@ -18,7 +20,7 @@ import {
   type JevResponse,
 } from '../jev/JevClient';
 import type { JevClient } from '../jev/JevClient';
-import { buildJevMcpServers } from '../jev/JevMcpServer';
+import { buildJevMcpServers, resolveJevMcpServerPath } from '../jev/JevMcpServer';
 
 /**
  * jev_judge native tool — request validation, wire mapping, and verdict
@@ -333,5 +335,56 @@ suite('jev-mcp server registration (Claude Code + Cursor + Codex CLI)', () => {
     const servers = buildJevMcpServers('ClaudeCode CLI', enabled, undefined);
     assert.strictEqual(servers.length, 1);
     assert.strictEqual((servers[0] as any).args[0], 'claude-code-acp/dist/jev-mcp-stdio.js');
+  });
+
+  test('matches a non-`ClaudeCode CLI` key by its claude-code-acp command (settings-based, not hardkey)', () => {
+    // The `acp.agents` key is whatever the user typed (e.g. `Claude Code` from
+    // package.json defaults). The gate must key off the command, not the name.
+    const servers = buildJevMcpServers('Claude Code', enabled, {
+      command: 'node',
+      args: ['/opt/claude-code-acp/bin/claude-code-acp.js'],
+    });
+    assert.strictEqual(servers.length, 1);
+    assert.strictEqual((servers[0] as any).name, 'jev-mcp');
+    assert.strictEqual((servers[0] as any).args[0], '/opt/claude-code-acp/dist/jev-mcp-stdio.js');
+  });
+
+  test('resolves the jev-mcp server through a wrapper launcher that execs the real binary', () => {
+    // Regression: the `acp.agents` command is a wrapper shell script (e.g. a CCR
+    // launcher) that `exec`s the real claude-code-acp binary. A naive
+    // `dirname(command) + '/../dist'` points at a non-existent dist/ beside the
+    // wrapper, so the Claude CLI silently fails to spawn jev-mcp and the
+    // `jev_judge` tool never appears. The resolver must follow the wrapper's
+    // exec target (and its symlink) to the real checkout.
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-mcp-resolve-'));
+    try {
+      const repo = path.join(root, 'claude-code-acp');
+      const binDir = path.join(repo, 'bin');
+      const distDir = path.join(repo, 'dist');
+      fs.mkdirSync(binDir, { recursive: true });
+      fs.mkdirSync(distDir, { recursive: true });
+      const realBin = path.join(binDir, 'claude-code-acp.js');
+      fs.writeFileSync(realBin, '#!/usr/bin/env node\n');
+      const server = path.join(distDir, 'jev-mcp-stdio.js');
+      fs.writeFileSync(server, '// jev-mcp-stdio\n');
+
+      // A launch dir that holds a SYMLINK to the real binary plus a WRAPPER
+      // script that `exec`s the symlink — mirroring ~/.local/bin/claude-code-acp-ccr.
+      const launchDir = path.join(root, 'launch');
+      fs.mkdirSync(launchDir);
+      const link = path.join(launchDir, 'claude-code-acp');
+      fs.symlinkSync(realBin, link);
+      const wrapper = path.join(launchDir, 'claude-code-acp-ccr');
+      fs.writeFileSync(wrapper, `#!/usr/bin/env bash\nexec ${link} "$@"\n`);
+
+      // Wrapper (this session's shape): follows exec → symlink → real bin → sibling dist.
+      assert.strictEqual(resolveJevMcpServerPath(wrapper), server);
+      // Symlink launcher (no wrapper): follows the symlink directly.
+      assert.strictEqual(resolveJevMcpServerPath(link), server);
+      // Direct binary: unchanged behavior.
+      assert.strictEqual(resolveJevMcpServerPath(realBin), server);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 });
