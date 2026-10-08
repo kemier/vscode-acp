@@ -187,6 +187,47 @@ export function repairMultiLineInlineCode(text: string): string {
   return out;
 }
 
+/**
+ * True if `text` has an unclosed single-backtick inline code span — i.e. an
+ * ODD number of single-backtick runs (the last one is an opener with no
+ * closer). Used to decide whether an INTERIM commit is safe, exactly like
+ * `hasOpenFence` does for fences.
+ *
+ * The odd-backtick corruption: when an inline code span (`` `...` ``) is split
+ * across an interim commit boundary — the opening backtick lands in this
+ * segment and the closing one in a LATER one — this segment has an ODD number
+ * of single-backtick runs. marked pairs those runs by strict alternation (1st/
+ * 3rd/5th... open, 2nd/4th/6th... close), so the unpaired opener pairs with a
+ * backtick from a LATER span and swallows the prose between into one
+ * `<code>` capsule: stray backticks, broken **bold**, mis-paired spans.
+ *
+ * Unlike a fence, an odd inline count can be BENIGN: a segment that ENDS on a
+ * trailing CLOSER (its opener was committed in a previous segment) has an odd
+ * count too, and marked renders it as a code block without corrupting anything
+ * — the next segment, being even, is fine. We cannot distinguish the two cases
+ * from this segment alone (only the next segment's backticks disambiguate), so
+ * the safe choice is to DEFER both. The committed source stays whole in
+ * `currentAssistantText`; the closing backtick arrives in the next segment, the
+ * count goes even, and the combined text commits correctly.
+ *
+ * Only SINGLE-backtick runs are counted. Multi-backtick runs (``` fences,
+ * `` `` `` spans) are fences / other spans and are left to their own balancers,
+ * so a lone unclosed fence is still reported by `hasOpenFence`, not here.
+ */
+export function hasUnclosedInlineCode(text: string): boolean {
+  let count = 0;
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    if (text[i] !== '`') { i++; continue; }
+    let run = 0;
+    while (i + run < n && text[i + run] === '`') { run++; }
+    if (run === 1) { count++; }
+    i += run;
+  }
+  return count % 2 === 1;
+}
+
 export function balanceMarkdownForPartialRender(text: string): string {
   // --- Inline code spans that contain a newline ---
   // A single-backtick span cannot hold a line break (CommonMark). When the

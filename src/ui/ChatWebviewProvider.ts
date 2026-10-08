@@ -18056,6 +18056,35 @@ function hasOpenFence(text) {
   }
   return openLen > 0;
 }
+function hasUnclosedInlineCode(text) {
+  // True if text has an ODD number of single-backtick runs — i.e. an unclosed
+  // inline code span (an opener whose closing backtick will arrive in a later
+  // segment). Used by commitCurrentTextSegment to DEFER an interim commit:
+  // committing now would leave the opener unpaired, and marked pairs it with a
+  // backtick from a later span, swallowing the prose between into a <code>
+  // capsule (stray backticks, broken **bold**, mis-paired spans). The closing
+  // backtick arrives in the next segment, the count goes even, and the combined
+  // text commits correctly.
+  // Mirrors src/utils/markdownBalance.ts hasUnclosedInlineCode, inlined here
+  // because the webview script runs in its own JS context (no module import).
+  // Only SINGLE-backtick runs count; a run of >= 2 is a fence / other span and
+  // is left to hasOpenFence / the fence balancer.
+  // NOTE: the backtick char is built via String.fromCharCode(96) because a
+  // literal backtick anywhere in this body would terminate the template
+  // literal that wraps the entire webview script.
+  var bt = String.fromCharCode(96);
+  var count = 0;
+  var i = 0;
+  var n = text.length;
+  while (i < n) {
+    if (text.charAt(i) !== bt) { i++; continue; }
+    var run = 0;
+    while (i + run < n && text.charAt(i + run) === bt) { run++; }
+    if (run === 1) { count++; }
+    i += run;
+  }
+  return (count % 2) === 1;
+}
 function commitCurrentTextSegment(opts) {
    // Skip whitespace-only text — DeepSeek-V4-Flash emits whitespace
    // between tool calls (empty streams), which would create empty
@@ -18131,6 +18160,21 @@ function commitCurrentTextSegment(opts) {
       // same bubble and the fence commits at the next boundary or promptEnd.
       // Clearing the anchors here is exactly what desynced state and produced
       // a stray assistant block after the end-turn summary.
+      return false;
+    }
+    // Inline-code-swallow guard: if this is an INTERIM commit and the text has
+    // an ODD number of single-backtick runs, an inline code span was split
+    // across this boundary (the opening backtick committed, the closing one
+    // lands in a LATER segment). Committing now would leave the opener
+    // unpaired — marked pairs it with a backtick from a later span and swallows
+    // the prose between into a <code> capsule (stray backticks, broken **bold**,
+    // mis-paired spans). Keep the text buffered: the closing backtick arrives in
+    // the next segment, the count goes even, and the combined text commits
+    // correctly. Interrupted commits (cancelled turn) must still go through so
+    // the partial reply is preserved — balanceMarkdownForPartialRender renders
+    // the lone backtick literally in that final case.
+    if (asInterim && !asInterrupted && hasUnclosedInlineCode(currentAssistantText)) {
+      vscode.postMessage({ type: 'debugLog', message: '[WV-COMMIT] deferring interim commit: text has an unclosed inline code span (odd backtick count) (textLen=' + currentAssistantText.length + ')' });
       return false;
     }
     var _commitPreview = currentAssistantText.replace(/\\s+/g, ' ').slice(0, 80);

@@ -4,6 +4,7 @@ import { createMathExtension } from '../utils/markdownMath';
 import {
   balanceMarkdownForPartialRender,
   hasOpenFence,
+  hasUnclosedInlineCode,
   stripLoneTrailingFence,
 } from '../utils/markdownBalance';
 
@@ -246,6 +247,51 @@ suite('markdownBalance', () => {
           `mismatch for ${JSON.stringify(c)}: hasOpenFence=${hasOpenFence(c)} balancerChanged=${expectedOpen}`,
       );
     }
+  });
+
+  suite('hasUnclosedInlineCode', () => {
+    test('true when an inline code span is split across a boundary (odd count)', () => {
+      // The opening backtick committed; the closer lands in a later segment.
+      // "The log shows `session/" has ONE single-backtick run -> odd.
+      assert.ok(hasUnclosedInlineCode('The log shows `session/'));
+      assert.ok(hasUnclosedInlineCode('see `ChatWebviewProvider.ts: for it'));
+    });
+
+    test('true when a trailing closer is unpaired (opener in a prior segment)', () => {
+      // Odd count too — the defer-guard treats this conservatively so the
+      // committed source stays whole until the next segment makes it even.
+      // "`steer and ChatWebviewProvider.ts:" has ONE single-backtick run.
+      assert.ok(hasUnclosedInlineCode('`steer and ChatWebviewProvider.ts:'));
+    });
+
+    test('false when all inline spans are balanced (even count)', () => {
+      assert.ok(!hasUnclosedInlineCode('Use `code` and `more`.'));
+      assert.ok(!hasUnclosedInlineCode('a `b c` d `e f` g'));
+      assert.ok(!hasUnclosedInlineCode('see `main.ts` for it'));
+      // Two single-backtick runs (one balanced span) -> even.
+      assert.ok(!hasUnclosedInlineCode('log shows `31889c4` after'));
+    });
+
+    test('false for plain prose with no backticks', () => {
+      assert.ok(!hasUnclosedInlineCode('Just a normal sentence.'));
+    });
+
+    test('does not count multi-backtick (fence) runs toward the inline count', () => {
+      // A lone unclosed fence is a FENCE (hasOpenFence's job), not an inline
+      // span — the inline count must stay even (0 single-backtick runs).
+      assert.ok(!hasUnclosedInlineCode('intro\n```\ncode'));
+      // A balanced inline span plus an open fence: inline count is 2 (even).
+      assert.ok(!hasUnclosedInlineCode('see `x` and then:\n```\ncode'));
+    });
+
+    test('distinguishes inline-unclosed from fence-unclosed', () => {
+      // Fence open, no inline spans -> hasOpenFence true, inline false.
+      assert.ok(hasOpenFence('```\ncode'));
+      assert.ok(!hasUnclosedInlineCode('```\ncode'));
+      // Inline unclosed (odd), no fence -> hasOpenFence false, inline true.
+      assert.ok(!hasOpenFence('log shows `session/'));
+      assert.ok(hasUnclosedInlineCode('log shows `session/'));
+    });
   });
 
   suite('stripLoneTrailingFence', () => {
