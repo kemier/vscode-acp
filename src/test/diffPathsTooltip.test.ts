@@ -185,4 +185,104 @@ suite('tool call diff-paths tooltip', () => {
     assert.deepStrictEqual(fn({}, 'x.ts'), []);
     assert.deepStrictEqual(fn({ path: '/x/f.ts', edits: [] }, ''), []);
   });
+
+  /**
+   * capDiffData (host-side saveState helper) caps a persisted diff's
+   * oldText+newText so a large write_file doesn't bloat vscode.getState().
+   * It's host-side (not the webview template) so it's extractable directly:
+   * we pull the function source and evaluate it with DIFF_DATA_MAX_CHARS
+   * injected. Returns the item unchanged when the diff is already under the
+   * cap, and truncates newText (larger share) + oldText (rest) otherwise.
+   */
+  function loadCapDiffData() {
+    const body = sourceText();
+    const start = body.indexOf('function capDiffData(item) {');
+    assert.ok(start >= 0, 'capDiffData not found in source');
+    let i = body.indexOf('{', start);
+    let depth = 0;
+    let end = -1;
+    for (; i < body.length; i++) {
+      if (body[i] === '{') depth++;
+      else if (body[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+    }
+    assert.ok(end > start, 'capDiffData body boundary not found');
+    const fnSrc = body.slice(start, end);
+    return new Function('DIFF_DATA_MAX_CHARS', 'return ' + fnSrc)(16384);
+  }
+
+  test('capDiffData leaves a small diff untouched', () => {
+    const fn = loadCapDiffData();
+    const item = { kind: 'toolCall', diffData: [{ path: '/x/f.ts', oldText: 'A', newText: 'B' }] };
+    const out = fn(item);
+    assert.strictEqual(out.diffData[0].oldText, 'A');
+    assert.strictEqual(out.diffData[0].newText, 'B');
+  });
+
+  test('capDiffData truncates an oversized diff and keeps path intact', () => {
+    const fn = loadCapDiffData();
+    const bigOld = 'x'.repeat(20000);
+    const bigNew = 'y'.repeat(20000);
+    const item = { kind: 'toolCall', diffData: [{ path: '/x/big.ts', oldText: bigOld, newText: bigNew }] };
+    const out = fn(item);
+    assert.strictEqual(out.diffData[0].path, '/x/big.ts');
+    assert.ok(out.diffData[0].oldText.length < bigOld.length, 'oldText truncated');
+    assert.ok(out.diffData[0].newText.length < bigNew.length, 'newText truncated');
+    assert.ok(
+      out.diffData[0].oldText.length + out.diffData[0].newText.length <= 16384,
+      'combined text under the cap',
+    );
+  });
+
+  test('capDiffData returns the item unchanged when there is no diffData', () => {
+    const fn = loadCapDiffData();
+    const item = { kind: 'toolCall', rawInput: {} };
+    assert.strictEqual(fn(item), item);
+  });
+
+  test('storeDiffContent persists diffData alongside diffPaths on chatHistory', () => {
+    const body = sourceText();
+    const fnStart = body.indexOf('function storeDiffContent(toolCallId, content, title, rawInput) {');
+    assert.ok(fnStart >= 0, 'storeDiffContent not found');
+    const fnEnd = body.indexOf('\n    function diffFromRawInput', fnStart);
+    assert.ok(fnEnd > fnStart, 'storeDiffContent body boundary not found');
+    const fnBody = body.slice(fnStart, fnEnd);
+    assert.ok(
+      fnBody.indexOf('chatHistory[i].diffPaths = paths;') >= 0,
+      'must still persist diffPaths (tooltip)',
+    );
+    assert.ok(
+      fnBody.indexOf('chatHistory[i].diffData = diffs;') >= 0,
+      'must persist full diffData so icon+click survive a bare restart',
+    );
+  });
+
+  test('saveState caps diffData via capDiffData', () => {
+    const body = sourceText();
+    assert.ok(
+      body.indexOf('function capDiffData(item) {') >= 0,
+      'capDiffData helper not found',
+    );
+    const ssStart = body.indexOf('function saveState() {');
+    assert.ok(ssStart >= 0, 'saveState not found');
+    const ssBody = body.slice(ssStart, ssStart + 3000);
+    assert.ok(
+      ssBody.indexOf('capDiffData(') >= 0,
+      'saveState must cap diffData before persisting',
+    );
+  });
+
+  test('restore path re-populates toolCallDiffs from diffData before addToolCallInline', () => {
+    const body = sourceText();
+    // The restore case 'toolCall' must set toolCallDiffs[item.toolCallId] from
+    // item.diffData BEFORE addToolCallInline runs, so applyStoredDiffContent
+    // (called inside addToolCallInline) re-attaches the icon + click.
+    const caseStart = body.indexOf("case 'toolCall': {");
+    assert.ok(caseStart >= 0, "restore case 'toolCall' not found");
+    const seg = body.slice(caseStart, caseStart + 1200);
+    const repopIdx = seg.indexOf('toolCallDiffs[item.toolCallId] = item.diffData;');
+    const addIdx = seg.indexOf('addToolCallInline(item.toolCallId');
+    assert.ok(repopIdx >= 0, 'restore path must repopulate toolCallDiffs from diffData');
+    assert.ok(addIdx >= 0, 'restore path must call addToolCallInline');
+    assert.ok(repopIdx < addIdx, 'toolCallDiffs repopulation must precede addToolCallInline');
+  });
 });

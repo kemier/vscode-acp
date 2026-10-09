@@ -10290,6 +10290,28 @@ var end = displayText.length;
      * live panel; only the persistence snapshot is trimmed.
      */
    var PERSISTED_HISTORY_MAX = 500;
+  // Cap a persisted diff's oldText+newText so a large write_file (whole file)
+  // doesn't bloat vscode.getState(). The in-memory toolCallDiffs keeps the
+  // full text; only the persisted snapshot is trimmed. A truncated diff still
+  // opens (showing a partial file) rather than silently dropping the icon.
+  var DIFF_DATA_MAX_CHARS = 16384;
+  function capDiffData(item) {
+    if (!item || !Array.isArray(item.diffData) || item.diffData.length === 0) return item;
+    var out = item.diffData.map(function(d) {
+      var oldLen = (d.oldText || '').length;
+      var newLen = (d.newText || '').length;
+      if (oldLen + newLen <= DIFF_DATA_MAX_CHARS) return d;
+      // Budget split: give newText the larger share (it's the "after" state),
+      // oldText the rest, each truncated independently.
+      var newBudget = Math.floor(DIFF_DATA_MAX_CHARS * 0.6);
+      var oldBudget = DIFF_DATA_MAX_CHARS - newBudget;
+      var truncated = Object.assign({}, d);
+      if (newLen > newBudget) truncated.newText = (d.newText || '').slice(0, newBudget);
+      if (oldLen > oldBudget) truncated.oldText = (d.oldText || '').slice(0, oldBudget);
+      return truncated;
+    });
+    return Object.assign({}, item, { diffData: out });
+  }
   function saveState() {
    var capped = (chatHistory.length > PERSISTED_HISTORY_MAX
      ? chatHistory.slice(chatHistory.length - PERSISTED_HISTORY_MAX)
@@ -10316,9 +10338,9 @@ var end = displayText.length;
            } else {
              copy.rawInput = rawStr.slice(0, 10240);
            }
-           return copy;
+           return capDiffData(copy);
          }
-         return item;
+         return capDiffData(item);
        }
        return item;
      });
@@ -18433,10 +18455,16 @@ function commitCurrentTextSegment(opts) {
         }
         // Persist diffPaths on the chatHistory entry so it survives
         // saveState/restoreState (VS Code restart without session/load).
+        // diffData carries the full {path,oldText,newText} so the icon AND
+        // click-to-open survive a bare restart (applyStoredDiffContent reads
+        // the in-memory toolCallDiffs Map, which is empty in a fresh process;
+        // the restore path re-populates it from diffData). saveState caps the
+        // text so a large write_file doesn't bloat vscode.getState().
         for (var i = chatHistory.length - 1; i >= 0; i--) {
           if (chatHistory[i] && chatHistory[i].kind === 'toolCall' &&
               chatHistory[i].toolCallId === toolCallId) {
             chatHistory[i].diffPaths = paths;
+            chatHistory[i].diffData = diffs;
             break;
           }
         }
@@ -20648,6 +20676,15 @@ if (_deduped) {
          }
          break;
      case 'toolCall': {
+      // Re-populate the in-memory toolCallDiffs Map from persisted diffData
+      // BEFORE addToolCallInline runs: applyStoredDiffContent() (called inside
+      // addToolCallInline) reads toolCallDiffs[toolCallId] to re-attach the ⇔
+      // icon + click, and handleOpenDiff reads it for oldText/newText. Without
+      // this, a bare VS Code restart (no session/load replay) lost the icon
+      // for every agent because toolCallDiffs is empty in a fresh process.
+      if (item.diffData && Array.isArray(item.diffData) && item.diffData.length > 0) {
+        toolCallDiffs[item.toolCallId] = item.diffData;
+      }
        addToolCallInline(item.toolCallId, item.title, item.status,
          item.rawInput && item.rawInput.taskResult
            ? stripTaskResult(item.rawInput)
