@@ -9375,6 +9375,13 @@ function closeClaudeDrainTurn() {
   currentToolsListEl = null;
   currentToolsCountEl = null;
   currentToolCount = 0;
+  // Commit the drain turn's accumulated reply BEFORE tearing down the streaming
+  // element — exactly what promptEnd's normal path does (line ~22229). Without
+  // this the final render lands on a nulled currentAssistantEl (hasEl=false) and
+  // the whole reply is discarded: the steer bubble stays and no answer appears.
+  // commitCurrentTextSegment nulls currentAssistantEl/currentAssistantText
+  // itself, so the two lines below are the no-op-when-empty fallback.
+  commitCurrentTextSegment();
   currentAssistantEl = null;
   currentAssistantText = '';
   isSendingPrompt = false;
