@@ -62,6 +62,7 @@ import { sendEvent } from '../utils/TelemetryManager';
 import { cleanSessionTitle } from '../utils/TitleCleaner';
 import { createMathExtension } from '../utils/markdownMath';
 import { balanceMarkdownForPartialRender } from '../utils/markdownBalance';
+import { escapeUnbalancedTildes } from '../utils/tildeEscape';
 import { cleanAgentToolTitle } from '../utils/toolTitle';
 import {
   fileSearchRoots,
@@ -910,7 +911,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // get rendered as a code block. See markdownBalance.ts for the full
       // rationale. A complete, balanced reply is returned unchanged.
       const balanced = balanceMarkdownForPartialRender(text);
-      let html = marked.parse(balanced) as string;
+      // Escape a lone `~` (e.g. `~173`, `~/.path`) so GFM does not parse it as
+      // the start of a strikethrough. Balanced `~~text~~` is left intact.
+      const safe = escapeUnbalancedTildes(balanced);
+      let html = marked.parse(safe) as string;
       // Unwrap markdown links that point to non-file paths
       // (e.g. [3pp/sources/nats-c/](3pp/sources/nats-c/) -> plain text)
       // Keeps links to actual files (.ext) and @symbol: links; unwraps everything else
