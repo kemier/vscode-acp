@@ -8154,7 +8154,12 @@ let isCompacting = false;  // true while /compact is running
        if (_fe && _fe.steered && (_fe.bubbleDeferred || _fe.bubbleShown === undefined)) {
          _fe.bubbleShown = true;
          delete _fe.bubbleDeferred;
-         addUserBubbleEarly(_fe);
+         // Match the non-deferred path (ackSteeredQueueEntry → addUserBubbleMidTurn):
+         // append AFTER the in-flight turn. addUserBubbleEarly would insert before
+         // currentTurnEl, floating the bubble above the agent's live output — the
+         // same steer would then render top or bottom depending on tool-in-flight at
+         // ack time. The guard above (8087) already keeps us clear of a running tool.
+         addUserBubbleMidTurn(_fe);
          messageQueue.splice(_fi, 1);
          renderQueue();
          vscode.postMessage({ type: 'debugLog', message: '[STEER] flushDeferredBubble: "' + String(_fe.text || '').substring(0, 40) + '"' });
