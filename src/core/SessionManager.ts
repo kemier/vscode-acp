@@ -1294,7 +1294,7 @@ export class SessionManager extends EventEmitter {
    * after the current turn finishes. For agents that don't support this
    * notification, it's silently ignored.
    */
-  async steerPrompt(sessionId: string, text: string): Promise<void> {
+  async steerPrompt(sessionId: string, text: string, images?: Array<{ data: string; mimeType: string }>): Promise<void> {
     const session = this.sessions.get(sessionId);
     if (!session) {
       return;
@@ -1304,8 +1304,20 @@ export class SessionManager extends EventEmitter {
       return;
     }
     try {
-      await connInfo.connection.notify('session/steer', { sessionId, text });
-      log(`Steered session ${sessionId}: ${text.substring(0, 80)}...`);
+      // Images ride along on the steer notification too, so a message steered
+      // mid-turn delivers its pictures to the model — the drain (sendPrompt)
+      // path already carries them, and before this the steer path (text-only
+      // session/steer) dropped them, so only the last queued message (the one
+      // that drains) kept its image. `images` is optional: agents that don't
+      // read it (ericli, codex-acp) ignore the extra field, and text-only
+      // steers omit it entirely (no change for them).
+      const imagesBlocks = (images && images.length > 0)
+        ? images.map((img) => ({ type: 'image', data: img.data, mimeType: img.mimeType }))
+        : undefined;
+      await connInfo.connection.notify('session/steer', imagesBlocks
+        ? { sessionId, text, images: imagesBlocks }
+        : { sessionId, text });
+      log(`Steered session ${sessionId}: ${text.substring(0, 80)}...${imagesBlocks ? ` (+${imagesBlocks.length} image(s))` : ''}`);
     } catch (e: any) {
       log(`steerPrompt: agent does not support session/steer (non-fatal): ${e?.message || e}`);
     }

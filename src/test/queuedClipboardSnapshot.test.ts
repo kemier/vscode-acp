@@ -103,7 +103,9 @@ suite('queued @clipboard is snapshotted at queue time', () => {
         'sendPrompt',
         /vscode\.postMessage\(\{\s*type: 'sendPrompt', text: queueEntryPromptText\(entry\) \|\| ' ', images: entry\.images,/,
       ],
-      ['steerPrompt', /vscode\.postMessage\(\{ type: 'steerPrompt', text: queueEntryPromptText\(entry\) \|\| ' ' \}\)/],
+      // The steer sites also carry `images: entry.images` now (a steered message
+      // must deliver its pictures, not just its text — same fix as the drain path).
+      ['steerPrompt', /vscode\.postMessage\(\{\s*type: 'steerPrompt', text: queueEntryPromptText\(entry\) \|\| ' ', images: entry\.images \}\)/],
     ] as Array<[string, RegExp]>) {
       assert.ok(re.test(src), `send path not expanding the snapshot: ${label}`);
     }
@@ -126,7 +128,7 @@ suite('queued @clipboard is snapshotted at queue time', () => {
   test('editing a queued message restores the mention, not the stale snapshot', () => {
     const at = src.indexOf('function editQueuedMessage(index) {');
     assert.ok(at > 0, 'editQueuedMessage not found');
-    const body = src.slice(at, at + 900);
+    const body = src.slice(at, at + 2000);
     assert.ok(body.includes("'@clipboard '"), 'the mention goes back in the composer');
   });
 });

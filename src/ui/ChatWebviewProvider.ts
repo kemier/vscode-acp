@@ -1381,7 +1381,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           }
           break;
         case 'steerPrompt':
-          await this.handleSteerPrompt(message.text);
+          await this.handleSteerPrompt(message.text, message.images);
           break;
         case 'steerPromptRemove':
           await this.handleSteerPromptRemove(message.text);
@@ -3018,7 +3018,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * For agents that don't support it, the notification is silently ignored
    * and the message is only queued for the next turn (via handleQueue).
    */
-  private async handleSteerPrompt(text: string): Promise<void> {
+  private async handleSteerPrompt(text: string, images?: { data: string; mimeType: string }[]): Promise<void> {
     const activeId = this.sessionManager.getActiveSessionId();
     if (!activeId) {
       return;
@@ -3026,7 +3026,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     // Steer sends composer text too — same Voice Memory feedback path.
     this.voiceInput.captureFeedback(text, activeId);
     try {
-      await this.sessionManager.steerPrompt(activeId, text);
+      await this.sessionManager.steerPrompt(activeId, text, images);
     } catch (e) {
       logError('Steer failed', e);
     }
@@ -8019,7 +8019,7 @@ let isCompacting = false;  // true while /compact is running
      entry.steered = true;
      entry.steerPending = true;
      hasSteeredThisTurn = true;
-     vscode.postMessage({ type: 'steerPrompt', text: queueEntryPromptText(entry) || ' ' });
+     vscode.postMessage({ type: 'steerPrompt', text: queueEntryPromptText(entry) || ' ', images: entry.images });
      renderQueue();
      wvQueueLog('STEERED', 'idx=' + idx);
      steerDiag('STEERED idx=' + idx + ' agent=' + (currentAgentLabel() || '(none)') + ' text="' + String(queueEntryPromptText(entry) || '').substring(0, 60) + '"');
@@ -8411,7 +8411,7 @@ let isCompacting = false;  // true while /compact is running
      entry.steerPending = true;
      hasSteeredThisTurn = true;
      renderQueue();
-     vscode.postMessage({ type: 'steerPrompt', text: queueEntryPromptText(entry) || ' ' });
+     vscode.postMessage({ type: 'steerPrompt', text: queueEntryPromptText(entry) || ' ', images: entry.images });
      showTransientHint(agentSteerBubbleAtTurnTail(currentAgentLabel())
        ? 'Queued for this turn — it will be delivered when the turn ends.'
        : 'Sent into the running turn — the agent folds it in at its next tool step.');
@@ -8518,7 +8518,7 @@ let isCompacting = false;  // true while /compact is running
    // re-queue it for the fallback.
    entry.steered = true;
    entry.steerPending = true;
-   vscode.postMessage({ type: 'steerPrompt', text: queueEntryPromptText(entry) || ' ' });
+   vscode.postMessage({ type: 'steerPrompt', text: queueEntryPromptText(entry) || ' ', images: entry.images });
    // Re-add to the queue so the ack path can find and splice it.
    messageQueue.push(entry);
    renderQueue();

@@ -92,7 +92,11 @@ suite('mid-turn steering of a queued message', () => {
     const provider = fs.readFileSync(SOURCE, 'utf8');
     assert.ok(provider.includes("case 'steerPrompt':"));
     const sm = fs.readFileSync(path.resolve(__dirname, '../../src/core/SessionManager.ts'), 'utf8');
-    assert.ok(sm.includes("connInfo.connection.notify('session/steer', { sessionId, text })"));
+    // steerPrompt forwards images when present; text-only steers keep the
+    // plain { sessionId, text } payload (unchanged for other agents).
+    assert.ok(sm.includes("notify('session/steer', imagesBlocks"), sm);
+    assert.ok(sm.includes("{ sessionId, text, images: imagesBlocks }"), sm);
+    assert.ok(sm.includes("{ sessionId, text }"), sm);
   });
 });
 
