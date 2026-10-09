@@ -18362,7 +18362,7 @@ function commitCurrentTextSegment(opts) {
       });
       saveState();
     var _tcHistoryIndex = chatHistory.length - 1;
-     storeDiffContent(toolCallId, content, title);
+     storeDiffContent(toolCallId, content, title, rawInput);
      // For edit tool calls with a generic title (e.g. "Editing files"),
      // extract the file path from diff content to show in the title.
      var _editPath = null;
@@ -18388,8 +18388,13 @@ function commitCurrentTextSegment(opts) {
       vscode.postMessage({ type: 'debugLog', message: '[WV-ADDTC] AFTER push chatHistoryLen=' + chatHistory.length });
     }
 
-    function storeDiffContent(toolCallId, content, title) {
-      if (!content || !Array.isArray(content)) return;
+    function storeDiffContent(toolCallId, content, title, rawInput) {
+      // No content array AND no rawInput → nothing to diff. (Some agents, e.g.
+      // ericli's in-place edit_file, carry the changed text in rawInput rather
+      // than a type:"diff" content block, so we must not bail when content is
+      // absent if rawInput may hold a diff.)
+      if ((!content || !Array.isArray(content)) && !rawInput) return;
+      content = (content && Array.isArray(content)) ? content : [];
       // Codex apply_patch sends {"type":"diff","oldText":"...","newText":"..."}
       // without a "path" field. Extract the path from the tool call title
       // (e.g. "Edit 'ChatWebviewProvider.ts'" → "ChatWebviewProvider.ts")
@@ -18397,10 +18402,20 @@ function commitCurrentTextSegment(opts) {
       var tcEl = toolCalls[toolCallId];
       if (tcEl && tcEl._toolTitle) title = title || tcEl._toolTitle;
       var titlePath = extractPathFromTitle(title);
-      const diffs = content
+      var diffs = content
         .filter(c => c.type === 'diff')
         .map(c => c.path ? c : Object.assign({}, c, { path: titlePath || c.path || '' }))
         .filter(c => c.path);
+      // Fallback: some agents (notably ericli's in-place edit_file) put the
+      // changed text in rawInput.edits[].oldText/newText (or a flat
+      // rawInput.oldText/newText) instead of a type:"diff" content block.
+      // Without this, clicking the tool title opens nothing. Synthesize a
+      // diff from rawInput when content carried no diff. For a multi-edit the
+      // old/new text is a concatenation of each edit's old→new (we don't have
+      // the full file here), which still shows what was replaced by what.
+      if (diffs.length === 0) {
+        diffs = diffFromRawInput(rawInput, titlePath);
+      }
       if (diffs.length > 0) {
         toolCallDiffs[toolCallId] = diffs;
         var paths = diffs.map(function(d) { return d.path; });
@@ -18426,6 +18441,45 @@ function commitCurrentTextSegment(opts) {
           }
         }
       }
+    }
+
+    /**
+     * Build a {path, oldText, newText} diff from a tool call's rawInput when
+     * the agent put the changed text there instead of in a type:"diff" content
+     * block. Handles ericli's in-place edit_file shapes:
+     *   {path, edits:[{oldText,newText}, ...]}   (array form, the standard)
+     *   {path, replacements:[...]} / {path, changes:[...]}  (aliases)
+     *   {path, oldText, newText}                  (flat single-edit form)
+     * A multi-edit produces one combined diff: oldText is each edit's oldText
+     * joined by a separator, newText each edit's newText joined the same way,
+     * so the viewer shows what was replaced by what. Returns [] when nothing
+     * usable is present (no path, or no old/new text).
+     */
+    function diffFromRawInput(rawInput, titlePath) {
+      if (!rawInput || typeof rawInput !== 'object') return [];
+      var path = rawInput.path || rawInput.file_path || rawInput.source || titlePath || '';
+      if (!path) return [];
+      var edits = rawInput.edits || rawInput.replacements || rawInput.changes;
+      var oldText = '';
+      var newText = '';
+      if (Array.isArray(edits) && edits.length > 0) {
+        var sep = '\\n\\n';
+        for (var i = 0; i < edits.length; i++) {
+          var e = edits[i];
+          if (!e || typeof e !== 'object') continue;
+          if (typeof e.oldText === 'string' || typeof e.newText === 'string') {
+            if (oldText) oldText += sep;
+            if (newText) newText += sep;
+            oldText += (typeof e.oldText === 'string' ? e.oldText : '');
+            newText += (typeof e.newText === 'string' ? e.newText : '');
+          }
+        }
+      } else if (typeof rawInput.oldText === 'string' || typeof rawInput.newText === 'string') {
+        oldText = typeof rawInput.oldText === 'string' ? rawInput.oldText : '';
+        newText = typeof rawInput.newText === 'string' ? rawInput.newText : '';
+      }
+      if (!oldText && !newText) return [];
+      return [{ path: path, oldText: oldText, newText: newText }];
     }
 
     /**
@@ -20813,7 +20867,7 @@ forceCollapseTurnFolds();
        }
      }
     saveState();
-     storeDiffContent(toolCallId, content, title);
+     storeDiffContent(toolCallId, content, title, rawInput);
      if (_wasTerminal) {
        refreshPsPanelIfVisible();
        flushDeferredSteerBubbles();

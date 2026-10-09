@@ -33,7 +33,7 @@ function sourceText(): string {
 suite('tool call diff-paths tooltip', () => {
   test('storeDiffContent stashes to toolCallDiffs even when tcEl is absent', () => {
     const body = sourceText();
-    const fnStart = body.indexOf('function storeDiffContent(toolCallId, content, title) {');
+    const fnStart = body.indexOf('function storeDiffContent(toolCallId, content, title, rawInput) {');
     assert.ok(fnStart >= 0, 'storeDiffContent not found');
     const fnEnd = body.indexOf('\n    function markClickable', fnStart);
     assert.ok(fnEnd > fnStart, 'storeDiffContent body boundary not found');
@@ -81,8 +81,8 @@ suite('tool call diff-paths tooltip', () => {
     assert.ok(addTcStart >= 0, 'addToolCall not found');
     const seg = body.slice(addTcStart, addTcStart + 9000);
     assert.ok(
-      seg.indexOf('storeDiffContent(toolCallId, content, title);') >= 0,
-      'addToolCall must pass the raw diff content to storeDiffContent',
+      seg.indexOf('storeDiffContent(toolCallId, content, title, rawInput);') >= 0,
+      'addToolCall must pass the raw diff content (and rawInput) to storeDiffContent',
     );
     assert.ok(
       seg.indexOf('toolCallDiffs[toolCallId]') >= 0 || seg.indexOf('applyStoredDiffContent') >= 0,
@@ -106,5 +106,83 @@ suite('tool call diff-paths tooltip', () => {
       fnBody.indexOf("'Files (' + fileList.length + '):\\\\n'") >= 0,
       'multi-file "Files (N)" list format missing',
     );
+  });
+
+  /**
+   * diffFromRawInput is a webview-internal function (not importable), so we
+   * extract its source from the template literal and evaluate it in a sandbox
+   * to behaviorally test the ericli in-place edit_file shapes:
+   *   {path, edits:[{oldText,newText}]}   (array form, the standard)
+   *   {path, oldText, newText}             (flat single-edit form)
+   * plus the "no usable data → []" cases. This is the fix for "clicking an
+   * ericli Edit tool title does nothing" — the client now synthesizes a diff
+   * from rawInput when the agent sent no type:"diff" content block.
+   */
+  function loadDiffFromRawInput() {
+    const body = sourceText();
+    const start = body.indexOf('function diffFromRawInput(rawInput, titlePath) {');
+    assert.ok(start >= 0, 'diffFromRawInput not found in source');
+    // Walk braces to find the matching close.
+    let i = body.indexOf('{', start);
+    let depth = 0;
+    let end = -1;
+    for (; i < body.length; i++) {
+      if (body[i] === '{') depth++;
+      else if (body[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
+    }
+    assert.ok(end > start, 'diffFromRawInput body boundary not found');
+    const fnSrc = body.slice(start, end);
+    return new Function('return ' + fnSrc)();
+  }
+
+  test('diffFromRawInput builds a diff from ericli edits[] array form', () => {
+    const fn = loadDiffFromRawInput();
+    const out = fn(
+      { path: '/x/SKILL.md', edits: [{ oldText: 'A', newText: 'B' }] },
+      'SKILL.md',
+    );
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].path, '/x/SKILL.md');
+    assert.strictEqual(out[0].oldText, 'A');
+    assert.strictEqual(out[0].newText, 'B');
+  });
+
+  test('diffFromRawInput joins a multi-edit into a combined old/new', () => {
+    const fn = loadDiffFromRawInput();
+    const out = fn(
+      { path: '/x/f.ts', edits: [{ oldText: 'A', newText: 'B' }, { oldText: 'C', newText: 'D' }] },
+      '',
+    );
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].oldText, 'A\\n\\nC');
+    assert.strictEqual(out[0].newText, 'B\\n\\nD');
+  });
+
+  test('diffFromRawInput handles the flat {path, oldText, newText} form', () => {
+    const fn = loadDiffFromRawInput();
+    const out = fn({ path: '/x/f.ts', oldText: 'A', newText: 'B' }, '');
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].oldText, 'A');
+    assert.strictEqual(out[0].newText, 'B');
+  });
+
+  test('diffFromRawInput falls back to titlePath when rawInput has no path', () => {
+    const fn = loadDiffFromRawInput();
+    const out = fn({ edits: [{ oldText: 'A', newText: 'B' }] }, 'fallback.ts');
+    assert.strictEqual(out.length, 1);
+    assert.strictEqual(out[0].path, 'fallback.ts');
+  });
+
+  test('diffFromRawInput returns [] with no path and no titlePath', () => {
+    const fn = loadDiffFromRawInput();
+    assert.deepStrictEqual(fn({ edits: [{ oldText: 'A', newText: 'B' }] }, ''), []);
+  });
+
+  test('diffFromRawInput returns [] for non-object / empty rawInput', () => {
+    const fn = loadDiffFromRawInput();
+    assert.deepStrictEqual(fn(null, 'x.ts'), []);
+    assert.deepStrictEqual(fn(undefined, 'x.ts'), []);
+    assert.deepStrictEqual(fn({}, 'x.ts'), []);
+    assert.deepStrictEqual(fn({ path: '/x/f.ts', edits: [] }, ''), []);
   });
 });
