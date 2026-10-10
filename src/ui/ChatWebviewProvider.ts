@@ -8485,6 +8485,14 @@ let isCompacting = false;  // true while /compact is running
         imagePreviewStrip.appendChild(thumb);
       }
     }
+    // Retract the adapter-side steer if this entry was already steered:
+    // editing is a new write, so the pre-edit text must not survive in the
+    // agent's steerQueues — otherwise the edit lands as TWO queued steers
+    // (the stale one drains as its own turn, then the re-typed one drains
+    // again: two answers for one edit). Send Now does the same retract.
+    if (entry.steered) {
+      vscode.postMessage({ type: 'steerPromptRemove', text: queueEntryPromptText(entry) || '' });
+    }
     // Remove from queue
     messageQueue.splice(index, 1);
     renderQueue();
