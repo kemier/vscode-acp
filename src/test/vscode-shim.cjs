@@ -47,6 +47,8 @@ Module._load = function (request, parent, isMain) {
         showErrorMessage: () => undefined,
         createOutputChannel: outputChannel,
         createDiagnosticCollection: () => ({ set: () => {}, dispose: () => {} }),
+        // TerminalHandler opens a Pseudoterminal-backed terminal per createTerminal.
+        createTerminal: () => ({ dispose: () => {}, show: () => {}, hide: () => {} }),
       },
       commands,
       env: { remoteName: globalThis.__acpTestRemoteName, clipboard: { writeText: async () => {} } },

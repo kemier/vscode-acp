@@ -16,11 +16,15 @@ import type {
 
 import { spawn, ChildProcess } from 'node:child_process';
 
+interface OutputBuffer {
+  output: string;
+  truncated: boolean;
+}
+
 interface ManagedTerminal {
   id: string;
   process: ChildProcess;
-  output: string;
-  truncated: boolean;
+  buf: OutputBuffer;
   outputByteLimit: number;
   exitCode: number | null;
   exitSignal: string | null;
@@ -30,8 +34,10 @@ interface ManagedTerminal {
 }
 
 /**
- * Manages terminals that ACP agents request (terminal/create, terminal/output, etc.).
- * Uses real child processes for capturing output, with VS Code terminals for display.
+ * Manages terminals that ACP agents request (terminal/create, terminal/output,
+ * terminal/wait_for_exit, terminal/kill, terminal/release — the full v1 terminal
+ * capability surface). Uses real child processes for capturing output, with
+ * VS Code terminals for display.
  */
 export class TerminalHandler {
   private terminals: Map<string, ManagedTerminal> = new Map();
@@ -57,48 +63,30 @@ export class TerminalHandler {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
-    let output = '';
-    let truncated = false;
+    // Shared output buffer: appends mutate it in place, so terminalOutput
+    // always sees the latest bytes without a sync timer.
+    const buf: OutputBuffer = { output: '', truncated: false };
 
     const appendOutput = (data: Buffer) => {
-      const text = data.toString();
-      output += text;
+      buf.output += data.toString();
       // Truncate from beginning if over limit
-      const byteLength = Buffer.byteLength(output, 'utf-8');
+      const byteLength = Buffer.byteLength(buf.output, 'utf-8');
       if (byteLength > outputByteLimit) {
         const excess = byteLength - outputByteLimit;
         // Find a safe character boundary to truncate at
         let cutPoint = 0;
         let bytes = 0;
-        for (let i = 0; i < output.length; i++) {
-          bytes += Buffer.byteLength(output[i], 'utf-8');
+        for (let i = 0; i < buf.output.length; i++) {
+          bytes += Buffer.byteLength(buf.output[i], 'utf-8');
           if (bytes >= excess) {
             cutPoint = i + 1;
             break;
           }
         }
-        output = output.substring(cutPoint);
-        truncated = true;
+        buf.output = buf.output.substring(cutPoint);
+        buf.truncated = true;
       }
     };
-
-    child.stdout?.on('data', appendOutput);
-    child.stderr?.on('data', appendOutput);
-
-    const exitPromise = new Promise<void>((resolve) => {
-      child.on('close', (code, signal) => {
-        const managed = this.terminals.get(terminalId);
-        if (managed) {
-          managed.exitCode = code;
-          managed.exitSignal = signal;
-          managed.exited = true;
-        }
-        resolve();
-      });
-      child.on('error', () => {
-        resolve();
-      });
-    });
 
     // Also create a VS Code terminal for visual output
     const writeEmitter = new vscode.EventEmitter<string>();
@@ -116,38 +104,49 @@ export class TerminalHandler {
       pty,
     });
 
-    // Stream output to VS Code terminal
-    child.stdout?.on('data', (data: Buffer) => {
+    // Capture and mirror output in one pass per stream
+    const onData = (data: Buffer) => {
+      appendOutput(data);
       writeEmitter.fire(data.toString().replace(/\n/g, '\r\n'));
-    });
-    child.stderr?.on('data', (data: Buffer) => {
-      writeEmitter.fire(data.toString().replace(/\n/g, '\r\n'));
-    });
+    };
+    child.stdout?.on('data', onData);
+    child.stderr?.on('data', onData);
 
     const managed: ManagedTerminal = {
       id: terminalId,
       process: child,
-      output: '',
-      truncated: false,
+      buf,
       outputByteLimit,
       exitCode: null,
       exitSignal: null,
       exited: false,
-      exitPromise,
+      exitPromise: undefined as unknown as Promise<void>, // assigned below
       vsTerminal,
     };
 
-    // Keep output reference updated
-    const timer = setInterval(() => {
-      managed.output = output;
-      managed.truncated = truncated;
-    }, 100);
-
-    child.on('close', () => {
-      managed.output = output;
-      managed.truncated = truncated;
-      clearInterval(timer);
+    const exitPromise = new Promise<void>((resolve) => {
+      child.on('close', (code, signal) => {
+        managed.exitCode = code;
+        managed.exitSignal = signal;
+        managed.exited = true;
+        // Show the exit status in the VS Code terminal so the user sees how
+        // the command ended, per the live-output display contract.
+        const status = signal !== null ? `signal ${signal}` : `exit ${code ?? 'unknown'}`;
+        writeEmitter.fire(`\r\n[${status}]\r\n`);
+        resolve();
+      });
+      child.on('error', (e) => {
+        // Spawn failed (e.g. ENOENT): the process never ran. Synthesize a
+        // failed exit so waitForTerminalExit/terminalOutput report a valid
+        // status instead of an all-null one.
+        logError(`Terminal ${terminalId} spawn failed`, e);
+        managed.exited = true;
+        managed.exitCode = 1;
+        writeEmitter.fire('\r\n[spawn failed]\r\n');
+        resolve();
+      });
     });
+    managed.exitPromise = exitPromise;
 
     this.terminals.set(terminalId, managed);
 
@@ -161,8 +160,8 @@ export class TerminalHandler {
     }
 
     const response: TerminalOutputResponse = {
-      output: managed.output,
-      truncated: managed.truncated,
+      output: managed.buf.output,
+      truncated: managed.buf.truncated,
     };
 
     if (managed.exited) {
