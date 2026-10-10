@@ -7322,10 +7322,10 @@ const LOAD_TAIL_GRACE_MS = 2500;
 // model never consumed is re-queued by the ADAPTER and streamed as a follow-up
 // turn with NO promptStart — the client sees only idle chunks/tools after a
 // normal end_turn. Without this the idle guards drop them → "queued msg shown
-// at the end, then nothing continues". drainFollowUpExpected arms the window
-// at promptEnd (steer delivered this turn); claudeDrainTurnOpen marks the
+// at the end, then nothing continues". drainFollowUpCount arms the window
+// at promptEnd (one slot per steered entry queued this turn); claudeDrainTurnOpen marks the
 // client-owned turn we open for the drain's first event.
-let drainFollowUpExpected = false;
+let drainFollowUpCount = 0;
 let claudeDrainTurnOpen = false;
 let hasSentPrompt = false;
 // Track whether the last sent prompt was a slash command (e.g. /ps, /stats).
@@ -7970,6 +7970,10 @@ let isCompacting = false;  // true while /compact is running
 
    function queueMessage(text, images, videoAttached) {
      const entry = { text, images: images || [], videoAttached: !!videoAttached };
+     // Identity stamp: flushCompactionMessages preserves queued bubbles by this
+     // id, not by display text — two 'go on' bubbles (one sent, one queued)
+     // share text, and text matching preserved the sent one across the wipe.
+     entry.queueId = 'q-' + Date.now() + '-' + Math.random().toString(36).slice(2, 8);
      messageQueue.push(entry);
      // Snapshot @clipboard NOW, not when this drains.
      //
@@ -8303,7 +8307,7 @@ let isCompacting = false;  // true while /compact is running
     */
    function addUserBubbleEarly(entry) {
      var _display = queueEntryDisplayText(entry) || '(image)';
-     chatHistory.push({ kind: 'message', role: 'user', text: _display });
+     chatHistory.push({ kind: 'message', role: 'user', text: _display, queueId: entry.queueId });
      saveState();
      hideEmpty();
      var el = document.createElement('div');
@@ -8334,7 +8338,7 @@ let isCompacting = false;  // true while /compact is running
     */
    function addUserBubbleMidTurn(entry) {
      var _display = queueEntryDisplayText(entry) || '(image)';
-     chatHistory.push({ kind: 'message', role: 'user', text: _display });
+     chatHistory.push({ kind: 'message', role: 'user', text: _display, queueId: entry.queueId });
      saveState();
      hideEmpty();
      var el = document.createElement('div');
@@ -8358,7 +8362,7 @@ let isCompacting = false;  // true while /compact is running
      // Display text, not prompt text: an attached clipboard snapshot shows as
      // "[Clipboard: N lines]" here and is expanded only on the wire.
      var _display = queueEntryDisplayText(entry) || '(image)';
-     chatHistory.push({ kind: 'message', role: 'user', text: _display });
+     chatHistory.push({ kind: 'message', role: 'user', text: _display, queueId: entry.queueId });
      saveState();
      addMessageDOM('user', _display);
      // Reset turn + tool state so the next agent_message_chunk / tool_call
@@ -9340,8 +9344,10 @@ return true;
  */
 function openClaudeDrainTurnIfNeeded() {
   if (claudeDrainTurnOpen) return true;
-  if (!drainFollowUpExpected || !isClaudeAgent() || isForceCancelled) return false;
-  drainFollowUpExpected = false;
+  if (drainFollowUpCount <= 0 || !isClaudeAgent() || isForceCancelled) return false;
+  // Do NOT decrement here: the turn stays open while its chunks stream. The
+  // count is consumed by closeClaudeDrainTurn (one slot per follow-up turn),
+  // so follow-ups 2..N re-open a fresh drain turn after the previous one closes.
   claudeDrainTurnOpen = true;
   setProcessing(true, 'claude-drain-followup-turn');
   vscode.postMessage({ type: 'debugLog', message: '[WV-DRAIN-TURN] claude-code-acp steer drain: opening client-owned follow-up turn (no promptStart on the wire)' });
@@ -9357,7 +9363,11 @@ function openClaudeDrainTurnIfNeeded() {
 function closeClaudeDrainTurn() {
   if (!claudeDrainTurnOpen) return;
   claudeDrainTurnOpen = false;
-  drainFollowUpExpected = false;
+  // One slot per follow-up turn. A stray session_info_update (goal snapshot,
+  // agent.ts publishGoalSnapshot — including the one inside drainSteerQueue)
+  // closes THIS turn but leaves the count live, so the next idle chunk re-opens
+  // a fresh drain turn for the next steer instead of dropping its chunks.
+  if (drainFollowUpCount > 0) drainFollowUpCount--;
   for (var _dhi = 0; _dhi < chatHistory.length; _dhi++) {
     var _dhItem = chatHistory[_dhi];
     if (_dhItem && _dhItem.kind === 'toolCall' &&
@@ -22364,11 +22374,15 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         // (end_turn with no tool_use after it) — claude-code-acp then re-queues
         // it and streams a background follow-up turn with no promptStart. Arm
         // the drain window so the idle chunk/tool handlers open a client-owned
-        // turn for it instead of dropping. Cleared when the drain turn opens
-        // (one-shot) or at the next promptStart.
-        drainFollowUpExpected = isClaudeAgent() && hasSteeredThisTurn;
+        // turn for it instead of dropping. One slot per steered entry still in
+        // the queue (echoes land during the post-turn drain, so they are all
+        // still queued here); each closeClaudeDrainTurn consumes one slot, so
+        // follow-ups 2..N re-open a fresh drain turn instead of being dropped.
+        drainFollowUpCount = isClaudeAgent() && hasSteeredThisTurn
+          ? messageQueue.filter(function (e) { return e && e.steered; }).length
+          : 0;
       } else {
-        drainFollowUpExpected = false;
+        drainFollowUpCount = 0;
       }
       // Plan-mode handoff: the turn produced a plan and the agent will not edit
       // anything while collaboration_mode is 'plan'. Offer the switch instead of
@@ -23653,11 +23667,13 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
      // Previously we preserved ALL user messages, which left the original
      // prompt floating with no assistant response below it after codex
      // auto-compact replaced the conversation with a summary.
-     var _queuedTexts = {};
+     var _queuedIds = {};
      for (var _mqi = 0; _mqi < messageQueue.length; _mqi++) {
-       // Keyed on the DISPLAY text, which is what the bubble carries.
-       var _mqText = queueEntryDisplayText(messageQueue[_mqi]);
-       if (_mqText) _queuedTexts[_mqText] = true;
+       // Keyed on the entry's identity stamp, NOT display text: two bubbles
+       // with the same text (one already sent, one still queued) must not both
+       // survive the wipe — only the genuinely-queued one carries a live queueId.
+       var _mqId = messageQueue[_mqi] && messageQueue[_mqi].queueId;
+       if (_mqId) _queuedIds[_mqId] = true;
      }
      // Preserve IN-FLIGHT tool calls for the same reason we preserve queued
      // user messages: a tool call that is still running is live state, not
@@ -23679,9 +23695,11 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        var _qItem = chatHistory[_qi];
        if (!_qItem) continue;
        if (_qItem.kind === 'message' && _qItem.role === 'user') {
-         // Only preserve if still queued (not yet sent to the agent).
-         var _qText = typeof _qItem.text === 'string' ? _qItem.text : '';
-         if (!_queuedTexts[_qText]) continue;
+         // Only preserve if still queued (not yet sent to the agent). Matched by
+         // the entry's identity stamp — a sent bubble whose text happens to
+         // equal a queued entry's text must be wiped, not preserved.
+         var _qId = _qItem.queueId;
+         if (!_qId || !_queuedIds[_qId]) continue;
          _preservedQueue.push(_qItem);
          _preserved.push(_qItem);
        } else if (_qItem.kind === 'toolCall' && _isLiveToolStatus(_qItem.status)) {
