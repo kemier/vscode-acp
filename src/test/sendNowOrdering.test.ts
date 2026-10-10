@@ -6,12 +6,13 @@ import { QUEUE_ENTRY_HELPERS_SRC } from './webviewQueueHelpers';
 /**
  * "Send Now" ordering regression.
  *
- * Clicking Send Now on a queued message while a turn is in flight now sends
- * a mid-turn steer (session/steer → stdin write) so the agent deals with it
- * in real time, matching happier's Send Now behavior. The entry is re-added
- * to the queue with steered/steerPending set, so the ack path
- * (markSteeredEntryBubbleShown / ackSteeredQueueEntry) adds the bubble at
- * the right position.
+ * Clicking Send Now on a queued message while a turn is in flight INTERRUPTS:
+ * it retracts any steer the agent already holds for the entry
+ * (session/steer-remove), cancels the running turn (cancelTurn), and parks the
+ * entry in pendingSendAfterCancel so the promptEnd(cancelled) path sends it as
+ * a fresh prompt. The mid-turn option is the separate Steer button (steerable
+ * agents only) — Send Now no longer doubles as a steer, so claude-code-acp
+ * users get an honest immediate option next to the "at turn end" default.
  *
  * The real function is extracted out of the webview template literal in
  * ChatWebviewProvider.ts (it cannot be imported) and run against stubs, the
@@ -96,30 +97,40 @@ function makeHarness(opts: { isProcessing: boolean; queue: any[] }): Harness {
 }
 
 suite('Send Now ordering (queued message vs the turn it interrupts)', () => {
-  test('while processing: steers into the running turn, does NOT add the bubble yet', () => {
+  test('while processing: interrupts — cancel + pendingSendAfterCancel, no steer', () => {
     const h = makeHarness({ isProcessing: true, queue: [{ text: 'do the thing', images: [] }] });
     h.run(0);
 
-    // The isProcessing path sends a steerPrompt (mid-turn stdin write) and a
-    // debugLog. No cancelTurn, no stopProcesses.
     const types = h.posted.map((m) => m.type);
-    assert.ok(types.includes('steerPrompt'), 'must send a mid-turn steer: ' + JSON.stringify(types));
-    assert.ok(!types.includes('cancelTurn'), 'must NOT cancel the turn');
+    assert.ok(types.includes('cancelTurn'), 'must cancel the running turn: ' + JSON.stringify(types));
+    assert.ok(!types.includes('steerPrompt'), 'Send Now must NOT steer — Steer is its own button');
     assert.ok(!types.includes('stopProcesses'), 'must NOT kill processes');
     assert.ok(
       !h.calls.some((c) => c.startsWith('addUserBubble')),
-      'the bubble must NOT be added before the steer echo arrives: ' + JSON.stringify(h.calls),
+      'the bubble waits for the post-cancel send: ' + JSON.stringify(h.calls),
     );
-    // The entry is re-added to the queue with steered/steerPending set.
-    assert.strictEqual(h.queue.length, 1, 'entry is re-added to the queue for the ack path');
-    assert.ok(h.queue[0].steered, 'entry must be marked as steered');
-    assert.ok(h.queue[0].steerPending, 'entry must be marked as steerPending');
+    // The entry is NOT re-added to the queue — it is parked for promptEnd.
+    assert.strictEqual(h.queue.length, 0, 'entry leaves the queue; pendingSendAfterCancel owns it');
+    assert.ok(h.pending, 'entry parked in pendingSendAfterCancel');
+    assert.ok(!h.pending.steered, 'flags cleared so the post-cancel sender does not skip it');
   });
 
   test('while processing: gives immediate feedback on the status line, not a chat row', () => {
     const h = makeHarness({ isProcessing: true, queue: [{ text: 'hi', images: [] }] });
     h.run(0);
-    assert.match(h.statusText, /Sent into the running turn/i);
+    assert.match(h.statusText, /Interrupting — sending now/i);
+  });
+
+  test('a steered entry is retracted before the cancel (no double delivery)', () => {
+    const h = makeHarness({ isProcessing: true, queue: [{ text: 'already steered', images: [], steered: true, steerPending: true }] });
+    h.run(0);
+
+    const types = h.posted.map((m) => m.type);
+    const retract = types.indexOf('steerPromptRemove');
+    const cancel = types.indexOf('cancelTurn');
+    assert.ok(retract >= 0, 'must retract the held steer first: ' + JSON.stringify(types));
+    assert.ok(cancel > retract, 'retract must precede the cancel: ' + JSON.stringify(types));
+    assert.ok(h.pending, 'entry still delivered once, as the post-cancel prompt');
   });
 
   test('when idle: sends immediately and shows the bubble', () => {

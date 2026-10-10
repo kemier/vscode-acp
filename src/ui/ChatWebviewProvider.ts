@@ -7862,15 +7862,22 @@ let isCompacting = false;  // true while /compact is running
            : 'Sent into the previous turn but never confirmed — it will go as a normal prompt';
          chip.appendChild(sentTag);
        }
-       // Withheld while a steer for this entry awaits confirmation: pressing it cancelled
-       // the turn and re-sent a message the agent had already taken (steer 02:14:26, echo
-       // 02:14:28, Send Now 02:17:20, duplicate prompt id=10 at 02:17:30). Once a turn
-       // ends without a confirmation it is offered again, since then it truly did not land.
-       if (!entry.steerPending) chip.appendChild(sendNowBtn);
+       // Send Now is offered in EVERY state, including while a steer for this
+       // entry awaits confirmation. Clicking it is a one-click mode switch: it
+       // retracts the steer the agent already holds (session/steer-remove),
+       // interrupts the turn, and resends — so a message auto-committed to
+       // "at turn end" (claude-code-acp has no mid-turn option) can still be
+       // made immediate by the user. The old hide-while-steerPending rule left
+       // claude users with no immediate option at all once auto-steer fired.
+       if (entry.steerPending) {
+         sendNowBtn.title = 'Retract this queued steer, interrupt the turn, and send immediately';
+       }
+       chip.appendChild(sendNowBtn);
        // Steer button — injects into the RUNNING turn instead of waiting for it
-       // to end. Only for agents whose steer path is dependable (see
-       // agentSupportsMidTurnSteer); everyone else keeps queue-and-drain.
-       if (isProcessing && !entry.steered && agentSupportsMidTurnSteer(currentAgentLabel())) {
+       // to end. Gated on agentSteerReadsInTurn (not agentSupportsMidTurnSteer):
+       // claude-code-acp's session/steer is a turn-END drain, so offering it a
+       // "Steer" button would duplicate the default mode, not add a choice.
+       if (isProcessing && !entry.steered && agentSteerReadsInTurn(currentAgentLabel())) {
          const steerBtn = document.createElement('span');
          steerBtn.className = 'queue-send-now queue-steer';
          steerBtn.textContent = 'Steer';
@@ -8491,14 +8498,6 @@ let isCompacting = false;  // true while /compact is running
    var suppressInterruptNotice = false;
  function sendQueuedMessageNow(index) {
    if (index < 0 || index >= messageQueue.length) return;
-   // A steer for this entry is still awaiting confirmation: re-sending would deliver it
-   // twice. The button is hidden in that state; this guards a stale click.
-   if (messageQueue[index] && messageQueue[index].steerPending) {
-     showTransientHint(agentSteerBubbleAtTurnTail(currentAgentLabel())
-       ? 'Already queued for this turn — it will be delivered when the turn ends.'
-       : 'Already sent into the running turn — waiting for the agent to fold it in.');
-     return;
-   }
    const entry = messageQueue[index];
    // Remove from queue immediately
    messageQueue.splice(index, 1);
@@ -8508,24 +8507,25 @@ let isCompacting = false;  // true while /compact is running
   // queue time), so it must be added here. Helper centralizes the
   // chatHistory/DOM/turn-reset so every drain path is consistent.
   if (isProcessing) {
-   // Mid-turn steer: write the message into the running turn's stdin so the
-   // agent deals with it in real time (matching happier's Send Now behavior).
-   // The agent acks with user_message_accepted / user_message_chunk, which
-   // triggers markSteeredEntryBubbleShown / ackSteeredQueueEntry to add the
-   // bubble at the right position. If the agent doesn't support session/steer
-   // or has no active turn, the steer falls back to the queue (delivered at
-   // turn end) — the entry was already spliced from messageQueue above, so
-   // re-queue it for the fallback.
-   entry.steered = true;
-   entry.steerPending = true;
-   vscode.postMessage({ type: 'steerPrompt', text: queueEntryPromptText(entry) || ' ', images: entry.images });
-   // Re-add to the queue so the ack path can find and splice it.
-   messageQueue.push(entry);
-   renderQueue();
-   if (statusEl) {
-     statusEl.textContent = 'Sent into the running turn…';
+   // Send Now is the INTERRUPT mode, honest for every agent: retract any
+   // steer the agent already holds for this entry (session/steer-remove —
+   // the fork matches by collapsed text and no-ops once delivered), cancel
+   // the running turn, and hand the entry to pendingSendAfterCancel so the
+   // promptEnd(cancelled) path sends it as a fresh prompt. This is the
+   // one-click switch from the "at turn end" default to immediate delivery;
+   // the mid-turn option is the separate Steer button (steerable agents
+   // only), so Send Now no longer doubles as a steer.
+   if (entry.steered) {
+     vscode.postMessage({ type: 'steerPromptRemove', text: queueEntryPromptText(entry) || '' });
+     entry.steered = false;
+     entry.steerPending = false;
    }
-   vscode.postMessage({ type: 'debugLog', message: '[STEER] Send Now → mid-turn steer (stdin write)' });
+   pendingSendAfterCancel = entry;
+   vscode.postMessage({ type: 'cancelTurn' });
+   if (statusEl) {
+     statusEl.textContent = 'Interrupting — sending now…';
+   }
+   vscode.postMessage({ type: 'debugLog', message: '[SEND-NOW] interrupt: retract+cancelTurn+pendingSendAfterCancel' });
   } else {
      // Not processing — send directly now and show the bubble.
     // Route slash commands through handleLocalSlashCommand so local UI

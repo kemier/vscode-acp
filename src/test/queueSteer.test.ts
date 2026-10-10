@@ -78,14 +78,29 @@ suite('mid-turn steering of a queued message', () => {
     assert.ok(!fn.includes('cancelTurn'), 'steering must not interrupt the turn');
   });
 
-  test('the button only appears while a turn is running', () => {
+  test('the button only appears while a turn is running, and only where it is honest', () => {
     const src = fs.readFileSync(SOURCE, 'utf8');
-    // Also skipped for an already-steered entry, which would otherwise send twice.
-    assert.ok(src.includes('if (isProcessing && !entry.steered && agentSupportsMidTurnSteer(currentAgentLabel()))'));
+    // Gated on agentSteerReadsInTurn, not agentSupportsMidTurnSteer: claude-code-acp's
+    // session/steer is a turn-END drain, so a "Steer" button there would duplicate the
+    // default mode rather than add a choice.
+    assert.ok(src.includes('if (isProcessing && !entry.steered && agentSteerReadsInTurn(currentAgentLabel()))'));
     assert.ok(src.includes("steerBtn.textContent = 'Steer'"));
     // Queue-and-drain stays the default: Send Now (interrupt) and drain (wait) both remain.
     assert.ok(src.includes('sendQueuedMessageNow(index)'));
     assert.ok(src.includes('function drainQueue()'));
+  });
+
+  test('agentSteerReadsInTurn is the honest mid-turn gate (claude excluded)', () => {
+    const reads = new Function(`${extractFn('agentSteerReadsInTurn')}; return agentSteerReadsInTurn;`)() as (l: string) => boolean;
+    assert.strictEqual(reads('Claude Code'), false, 'headless CLI: steer drains at turn end, not mid-turn');
+    assert.strictEqual(reads('claude-code-acp'), false);
+    assert.strictEqual(reads('Codex CLI'), true);
+    assert.strictEqual(reads('codex-acp'), true);
+    assert.strictEqual(reads('Cursor'), true);
+    assert.strictEqual(reads('Kiro CLI'), true);
+    assert.strictEqual(reads('ericli'), true);
+    assert.strictEqual(reads('pi-acp'), false);
+    assert.strictEqual(reads(''), false);
   });
 
   test('the host forwards it as the session/steer notification', () => {
@@ -97,6 +112,42 @@ suite('mid-turn steering of a queued message', () => {
     assert.ok(sm.includes("notify('session/steer', imagesBlocks"), sm);
     assert.ok(sm.includes("{ sessionId, text, images: imagesBlocks }"), sm);
     assert.ok(sm.includes("{ sessionId, text }"), sm);
+  });
+});
+
+suite('Send Now is the interrupt mode, one click from any state', () => {
+  /**
+   * The chip's per-entry choice: default "at turn end" (auto-steer drain),
+   * Steer (mid-turn, steerable agents only), and Send Now = interrupt. Send
+   * Now must be offered even while a steer for the entry awaits confirmation —
+   * clicking it retracts the queued steer (session/steer-remove), cancels the
+   * turn, and resends via pendingSendAfterCancel. Without the retract the
+   * agent's private steer queue would deliver the same text twice at drain.
+   */
+  test('Send Now is shown while a steer awaits confirmation', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    // The old hide-while-steerPending gate is gone: the button is appended
+    // unconditionally, with a steered-aware title.
+    assert.ok(!src.includes('if (!entry.steerPending) chip.appendChild(sendNowBtn);'), src);
+    assert.ok(src.includes('chip.appendChild(sendNowBtn);'), src);
+    assert.ok(src.includes("'Retract this queued steer, interrupt the turn, and send immediately'"), src);
+  });
+
+  test('sendQueuedMessageNow retracts, cancels, and hands off to pendingSendAfterCancel', () => {
+    const fn = extractFn('sendQueuedMessageNow');
+    // No more early-return for steerPending — the button works in that state.
+    assert.ok(!fn.includes('Already queued for this turn'), fn);
+    // Retract first when the agent already holds a copy.
+    assert.ok(fn.includes('if (entry.steered) {'), fn);
+    assert.ok(fn.includes("type: 'steerPromptRemove'"), fn);
+    // Then interrupt: cancel the running turn...
+    assert.ok(fn.includes("type: 'cancelTurn'"), fn);
+    // ...and queue the send for the promptEnd(cancelled) path.
+    assert.ok(fn.includes('pendingSendAfterCancel = entry;'), fn);
+    // Flags cleared so the post-cancel sender does not skip the entry.
+    assert.ok(fn.includes('entry.steered = false;'), fn);
+    // Send Now is no longer a steer: it must not post steerPrompt.
+    assert.ok(!fn.includes("type: 'steerPrompt'"), fn);
   });
 });
 
@@ -269,8 +320,10 @@ suite('automatic steering of a mid-turn message', () => {
     assert.ok(src.includes("chip.classList.add('queue-steered')"));
     assert.ok(src.includes("_readsInTurn ? 'in turn' : 'at turn end'"));
     assert.ok(src.includes('.msg-queue-item .queue-sent-tag {'), 'the tag needs a style');
-    // Steering an already-steered entry would send it twice.
-    assert.ok(src.includes("if (isProcessing && !entry.steered && agentSupportsMidTurnSteer(currentAgentLabel()))"));
+    // Steering an already-steered entry would send it twice. The button is
+    // also gated on agentSteerReadsInTurn so claude never sees a Steer option
+    // that would just duplicate its turn-end drain default.
+    assert.ok(src.includes("if (isProcessing && !entry.steered && agentSteerReadsInTurn(currentAgentLabel()))"));
   });
 
   test('the ack runs on live chunks only, not during replay', () => {
@@ -395,21 +448,24 @@ suite('Send Now cannot re-send a message already taken', () => {
    * The Steer button was hidden for a steered entry but Send Now was not, so the entry
    * could still be cancelled-and-resent after delivery.
    */
-  test('the button is withheld while a steer awaits confirmation', () => {
+  test('the button stays offered, but retracts the held steer before cancelling', () => {
     const src = fs.readFileSync(SOURCE, 'utf8');
-    assert.ok(src.includes('if (!entry.steerPending) chip.appendChild(sendNowBtn);'));
-    // Still offered once the turn ended without a confirmation — then it did not land.
-    assert.ok(src.includes('truly did not land'));
+    // Hiding the button was the old fix; the new design keeps the choice
+    // available in every state and prevents the duplicate with a retract.
+    assert.ok(!src.includes('if (!entry.steerPending) chip.appendChild(sendNowBtn);'), src);
+    assert.ok(src.includes('chip.appendChild(sendNowBtn);'), src);
   });
 
-  test('the action refuses a stale click', () => {
+  test('the action retracts before it interrupts', () => {
     const fn = extractFn('sendQueuedMessageNow');
-    assert.ok(fn.includes('messageQueue[index].steerPending'), fn);
-    assert.ok(fn.includes('Already sent into the running turn'), fn);
-    // The guard must come before anything that mutates the queue or steers.
-    const guard = fn.indexOf('steerPending');
-    const steer = fn.indexOf("type: 'steerPrompt'");
-    assert.ok(guard > 0 && (steer < 0 || guard < steer));
+    // The retract must come before the cancel so the agent drops its copy
+    // first; the post-cancel send then delivers exactly once.
+    const retract = fn.indexOf("type: 'steerPromptRemove'");
+    const cancel = fn.indexOf("type: 'cancelTurn'");
+    assert.ok(retract > 0 && cancel > retract, 'retract must precede cancel: ' + fn);
+    assert.ok(fn.includes('entry.steered = false;'), fn);
+    // No steer fallback left in Send Now — Steer is its own button.
+    assert.ok(!fn.includes("type: 'steerPrompt'"), fn);
   });
 });
 
