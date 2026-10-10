@@ -10,6 +10,13 @@ are kept as standalone top-level functions inside the webview template literal
 so they can be extracted and tested verbatim
 (`src/test/messageQueue.test.ts`).
 
+Since commit `077f0b7` the queue chip is no longer one-size-fits-all: each
+queued entry carries a **delivery choice — Steer / Send Now / at turn end**
+(default). The capability gate is `agentSteerReadsInTurn(agentLabel)` —
+whether the agent actually reads a steer **inside** the running turn — not
+the older `agentSupportsSteering`/`agentSupportsMidTurnSteer`, which only
+meant "the agent has a `session/steer` handler".
+
 ---
 
 ## 1. Requirement: every mid-turn message is delivered — never lost
@@ -64,6 +71,29 @@ Net effect: **Option B keeps memory recall working for every message that is
 actually sent to the agent.** The recall just happens at `sendPrompt` time
 instead of at steer time.
 
+## 1c. Requirement: the chip offers an honest per-entry delivery choice
+
+Each queued entry renders a chip with up to three actions (commit `077f0b7`
+replaced the old auto-commit-to-drain behavior, which left claude-code-acp
+users with **no immediate option at all** once auto-steer fired):
+
+- **at turn end** — the default (Option B drain): the message is delivered as
+  a follow-up `sendPrompt` when the current turn ends. Steered entries show a
+  state tag instead of a second button: `in turn` (steerable agent, awaiting
+  confirmation), `at turn end` (claude-code-acp — its `session/steer` is a
+  turn-END drain; `handleSteer` never writes stdin, so this label is honest,
+  not aspirational), or `sent` (sent into the previous turn but never
+  confirmed — it will go as a normal prompt).
+- **Send Now** — shown in **EVERY** state, including while a steer for this
+  entry awaits confirmation. It is the interrupt mode: retract the steer the
+  agent already holds (`session/steer-remove`), `cancelTurn`, then resend via
+  `pendingSendAfterCancel`. One click switches "at turn end" to immediate.
+- **Steer** — inject into the running turn without interrupting
+  (`steerQueuedMessage`). Rendered only when `isProcessing && !entry.steered
+  && agentSteerReadsInTurn(currentAgentLabel())` — gated on reading-in-turn,
+  so claude-code-acp never sees a Steer button that would only duplicate its
+  turn-end drain default.
+
 ## 2. Requirement: strict FIFO — ONE queued message per agent turn
 
 With Option B all agents take the deferred-queue path. `drainQueue()` sends
@@ -78,9 +108,9 @@ Drain triggers:
 - immediately after a drained **local** slash command that does **not** start a
   turn (`/stop`, `/rename`, `/ps`, `/session`) — chained right away so the
   queue never stalls behind an unrelated turn;
-- `Send Now` on the queue chip — interrupts the current turn
-  (`cancelTurn`), then sends after the cancel completes
-  (`pendingSendAfterCancel`).
+- `Send Now` on the queue chip — retracts any steer the agent holds for this
+  entry (`session/steer-remove`), interrupts the current turn (`cancelTurn`),
+  then sends after the cancel completes (`pendingSendAfterCancel`).
 
 ## 3. Requirement: the transition tick must queue, not race
 
@@ -133,7 +163,10 @@ startedTurn, isProcessingNow)` encodes exactly this decision.
 `messageQueue.test.ts` extracts the real `queueIsMutatingCommand`,
 `queueDrainStartedTurn` and `agentSupportsSteering` from
 `ChatWebviewProvider.ts` and asserts the classification/drain decisions above.
-Run with:
+The per-entry chip semantics of §1c are pinned by `queueSteer.test.ts`
+(steer/remove/send-now button gating) and `sendNowOrdering.test.ts`
+(retract → cancel → resend ordering, incl. the force-abort fallback when the
+cancel does not produce a `promptEnd`). Run with:
 
 ```bash
 npm run test:unit
