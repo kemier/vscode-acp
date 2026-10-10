@@ -356,7 +356,10 @@ suite('jev-mcp server registration (Claude Code + Cursor + Codex CLI)', () => {
     // wrapper, so the Claude CLI silently fails to spawn jev-mcp and the
     // `jev_judge` tool never appears. The resolver must follow the wrapper's
     // exec target (and its symlink) to the real checkout.
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'jev-mcp-resolve-'));
+    // realpathSync: the resolver realpaths its input, which on macOS also
+    // rewrites the /var tmpdir prefix to /private/var — pin root resolved so
+    // both sides of the comparison agree (no-op on Linux).
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'jev-mcp-resolve-')));
     try {
       const repo = path.join(root, 'claude-code-acp');
       const binDir = path.join(repo, 'bin');
