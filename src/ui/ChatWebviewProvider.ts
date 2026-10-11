@@ -11641,6 +11641,15 @@ function handleLocalSlashCommand(cmdText) {
       addMessage('user', '/clear');
       chatHistory = [];
       messagesEl.innerHTML = '';
+      // The plan bar is a sibling DOM channel (id="planBar", outside messagesEl)
+      // rebuilt from chatHistory kind:'plan' entries. Wiping chatHistory alone
+      // leaves the pre-clear todo list rendered in planBar — the reported
+      // "todos show before the clear point" symptom. Mirror every other history
+      // wipe (renderChatHistory, the compact flushes): null the handle and clear
+      // the bar so /clear leaves no stale plan, and a resume that skips
+      // renderChatHistory still starts from a clean bar.
+      currentPlanEl = null;
+      if (planBar) { planBar.innerHTML = ''; }
       historyRenderGen++;
       for (var _clrRk in pendingRenderRetries) { delete pendingRenderRetries[_clrRk]; }
       currentTurnEl = null;
@@ -13757,6 +13766,13 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     if (typeof clearCursorTodosPlan === 'function') clearCursorTodosPlan();
     // Same reset for kiro's board; see clearKiroTodoList for why NOT per-turn.
     if (typeof clearKiroTodoList === 'function') clearKiroTodoList();
+    // The plan bar is a sibling DOM channel (id="planBar", outside messagesEl).
+    // The empty-replay branch below returns before renderChatHistory() rebuilds
+    // it, so a cleared session (whose replay now emits nothing) would keep the
+    // previous session's stale todo list rendered. Wipe it here alongside the
+    // cursor/kiro boards so every load starts from a clean plan bar.
+    currentPlanEl = null;
+    if (planBar) { planBar.innerHTML = ''; }
       // Keep a copy of the restored webview history. Claude session/load for an
      // interrupted mid-turn often only replays the user prompt — without this
      // snapshot (and without saveState of the empty array) the collapse block
@@ -17398,7 +17414,21 @@ function orderCompactFoldContents(body) {
       }
       // Fold (thought/tools/interim) stays collapsed when Collapse is on.
       // The final assistant summary sits outside and streams in the panel.
-      return ensureTurnFoldStructure(currentTurnEl, !!compactMode, true);
+      var _foldBody = ensureTurnFoldStructure(currentTurnEl, !!compactMode, true);
+      // Honor a manual expand while the turn is still streaming. ensureTurnFoldStructure
+      // above runs its collapsed branch (collapsed=!!compactMode=true), which shuts the
+      // fold unless body._userExpanded / the durable per-turn key survived. The first
+      // assistant message (moveAssistantIntoFold) and every thought (placeThoughtInTurn)
+      // funnel through here — and unlike the tool-call handler, which force-reopens with
+      // its own setFoldExpanded(true), this path had no such fallback, so the fold the
+      // user opened snapped shut the moment the first reply arrived. Mirror that handler:
+      // while streaming, keep the fold open unless the user explicitly collapsed it
+      // (body._userExpanded === false). Gated on isProcessing so promptEnd (isProcessing
+      // false) keeps its own collapse decision.
+      if (_foldBody && isProcessing && !isLoadingSession && _foldBody._userExpanded !== false) {
+        setFoldExpanded(_foldBody, true);
+      }
+      return _foldBody;
     }
 
     function refreshCurrentTurnSummary() {
