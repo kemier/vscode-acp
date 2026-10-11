@@ -19713,12 +19713,10 @@ function commitCurrentTextSegment(opts) {
         var stage = stages[s];
         if (!stage || typeof stage !== 'object') continue;
         var st = stage.status;
-        if (sessionInterrupted &&
-            (st === 'completed' || st === 'done' || st === 'success' || st === 'terminated')) {
-          stages[s] = Object.assign({}, stage, { status: 'failed' });
-          anyFailed = true;
-          continue;
-        }
+        // A recorded terminal status is authoritative — an interrupted SESSION
+        // does not retroactively fail stages that completed (the user's Send Now
+        // repro: subagents that finished showed failed after resume). Only
+        // unterminated stages get the failed inference below.
         if (st === 'completed' || st === 'done' || st === 'success' || st === 'terminated') continue;
         if (st === 'failed' || st === 'error') { anyFailed = true; continue; }
         if (st === 'running' || st === 'in_progress' || st === 'pending' || st === 'working') {
@@ -19780,6 +19778,12 @@ function commitCurrentTextSegment(opts) {
          item.rawInput = Object.assign({}, item.rawInput, {
            stages: item.rawInput.stages.map(function(st) {
              if (!st || typeof st !== 'object') return st;
+             // A recorded terminal status is authoritative — an interrupted
+             // spawn does not retroactively fail children that finished
+             // (Send Now repro: completed subagents showed failed on resume).
+             var ss = st.status;
+             if (ss === 'completed' || ss === 'done' || ss === 'success' || ss === 'terminated' ||
+                 ss === 'failed' || ss === 'error') return st;
              return Object.assign({}, st, { status: 'failed' });
            }),
          });
@@ -19815,6 +19819,11 @@ function commitCurrentTextSegment(opts) {
        }
        var stageIcons = crew.querySelectorAll('.tc-stage-icon');
        for (var s = 0; s < stageIcons.length; s++) {
+         // A stage icon already showing a terminal status is authoritative —
+         // don't repaint a completed subagent green-check to failed on resume.
+         if (stageIcons[s].classList.contains('completed') ||
+             stageIcons[s].classList.contains('failed') ||
+             stageIcons[s].classList.contains('error')) continue;
          var stageEl = stageIcons[s].closest('.tc-stage');
          if (stageEl) applyStageIcon(stageEl, 'failed');
        }
@@ -25310,6 +25319,22 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
     });
   }
 
+ // Goal chip elapsed = accumulated goal WORK + the live current turn only.
+ // The old form (Math.max(secs, now - createdAt)) counted wall-clock since the
+ // goal was created, so idle gaps between prompts folded into the figure
+ // ("time added from previous"). 'now' is a param so the pinned test is
+ // deterministic. turnStartedAt is the webview's turn-start timestamp (0 when
+ // idle); a paused/inactive goal adds nothing live. The adapter's timeUsedSeconds
+ // base counts only FINISHED turns, so the live term is the current turn only —
+ // no double count (the base gains the turn the moment isProcessing clears).
+ function goalElapsedSecs(goalSnapshot, isProcessing, turnStartedAt, now) {
+   var secs = goalSnapshot.timeUsedSeconds || goalSnapshot.elapsedSecs || 0;
+   if (goalSnapshot.status === 'active' && isProcessing && turnStartedAt) {
+     secs += Math.floor((now - turnStartedAt) / 1000);
+   }
+   return secs;
+ }
+
  function renderGoalChip() {
    if (!goalChipEl) return;
    if (!goalSnapshot) {
@@ -25347,11 +25372,8 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
      if (typeof goalSnapshot.iteration === 'number' && typeof goalSnapshot.maxIterations === 'number') {
        parts.push('iter ' + goalSnapshot.iteration + '/' + goalSnapshot.maxIterations);
      }
-     // Elapsed time -- use live tick for active goals
-     var secs = goalSnapshot.timeUsedSeconds || goalSnapshot.elapsedSecs || 0;
-     if (goalSnapshot.status === 'active' && goalSnapshot.createdAt) {
-       secs = Math.max(secs, Math.floor((Date.now() / 1000) - goalSnapshot.createdAt));
-     }
+     // Elapsed time -- accumulated goal work + live current turn (see goalElapsedSecs)
+     var secs = goalElapsedSecs(goalSnapshot, isProcessing, turnStartedAt, Date.now());
      if (secs > 0) {
        if (secs < 60) parts.push(secs + 's');
        else parts.push(Math.floor(secs / 60) + 'm' + String(secs % 60).padStart(2, '0') + 's');
