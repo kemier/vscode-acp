@@ -88,4 +88,37 @@ suite('resume preserves recorded terminal stage status', () => {
       'the DOM stage loop must skip completed icons',
     );
   });
+
+  test('mergePreLoadInterruptedTurn failToolCopy preserves recorded terminal statuses', () => {
+    // The 4th force-fail site: mergePreLoadInterruptedTurn re-injects the last
+    // turn from the pre-load snapshot when Claude's session/load drops it — the
+    // Send Now → Reload Window path. failToolCopy used to stamp EVERY tool call
+    // and EVERY stage failed, red-crossing subagents that had completed.
+    const sig = 'function failToolCopy(item) {';
+    const at = src.indexOf(sig);
+    assert.ok(at > 0, 'failToolCopy not found');
+    const end = braceMatch(at);
+    assert.ok(end > 0, 'could not brace-match failToolCopy');
+    const fn = src.slice(at, end).replace(/\\\\/g, '\\');
+    assert.ok(!fn.includes('${'), `unresolved interpolation: ${fn}`);
+    const failToolCopy = new Function(`return (${fn});`)() as (item: any) => any;
+    const out = failToolCopy({
+      kind: 'toolCall',
+      status: 'completed',
+      rawInput: {
+        stages: [
+          { name: 'a', status: 'completed' },
+          { name: 'b', status: 'running' },
+          { name: 'c' },
+        ],
+      },
+    });
+    assert.strictEqual(out.status, 'completed', 'completed parent must be preserved');
+    assert.strictEqual(out.rawInput.stages[0].status, 'completed', 'completed stage must be preserved');
+    assert.strictEqual(out.rawInput.stages[1].status, 'failed', 'running stage must be failed');
+    assert.strictEqual(out.rawInput.stages[2].status, 'failed', 'missing-status stage must be failed');
+    const out2 = failToolCopy({ kind: 'toolCall', status: 'running', rawInput: { stages: [{ status: 'done' }] } });
+    assert.strictEqual(out2.status, 'failed', 'running parent must be failed');
+    assert.strictEqual(out2.rawInput.stages[0].status, 'done', 'done stage must be preserved under a failed parent');
+  });
 });

@@ -13403,12 +13403,26 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       }
 
       function failToolCopy(item) {
-        var toolCopy = Object.assign({}, item, { status: 'failed' });
+        // A recorded terminal status is authoritative — the pre-load snapshot
+        // can hold subagents that genuinely completed before the cancel (Send
+        // Now repro: finished subagents showed failed after Reload Window).
+        // Preserve terminal parent/stage statuses; only unterminated items get
+        // the failed inference (same principle as the resume sweeps).
+        var parentStatus = item.status;
+        var parentTerminal = parentStatus === 'completed' || parentStatus === 'done' ||
+            parentStatus === 'success' || parentStatus === 'terminated' ||
+            parentStatus === 'failed' || parentStatus === 'error';
+        var toolCopy = parentTerminal
+          ? Object.assign({}, item)
+          : Object.assign({}, item, { status: 'failed' });
         if (toolCopy.rawInput && typeof toolCopy.rawInput === 'object' &&
             Array.isArray(toolCopy.rawInput.stages)) {
           toolCopy.rawInput = Object.assign({}, toolCopy.rawInput, {
             stages: toolCopy.rawInput.stages.map(function(st) {
               if (!st || typeof st !== 'object') return st;
+              var ss = st.status;
+              if (ss === 'completed' || ss === 'done' || ss === 'success' || ss === 'terminated' ||
+                  ss === 'failed' || ss === 'error') return st;
               return Object.assign({}, st, { status: 'failed' });
             }),
           });
