@@ -7361,6 +7361,7 @@ let lastPromptWasSlash = false;
 // the active turn (shown as a user bubble + session/steer). Any
 // subsequent messages are queued and drained after the turn ends.
 let hasSteeredThisTurn = false;
+let steeredThisTurnCount = 0;
 // True in the tiny window between drainQueue() posting sendPrompt and the
 // host's promptStart arriving (the turn-transition tick). A message typed in
 // that window must NOT be sent as a prompt — the previous sendPrompt is still
@@ -8053,7 +8054,7 @@ let isCompacting = false;  // true while /compact is running
      var entry = messageQueue[idx];
      entry.steered = true;
      entry.steerPending = true;
-     hasSteeredThisTurn = true;
+     hasSteeredThisTurn = true; steeredThisTurnCount++;
      vscode.postMessage({ type: 'steerPrompt', text: queueEntryPromptText(entry) || ' ', images: entry.images });
      renderQueue();
      wvQueueLog('STEERED', 'idx=' + idx);
@@ -8444,7 +8445,7 @@ let isCompacting = false;  // true while /compact is running
      // still drains as a normal prompt at promptEnd.
      entry.steered = true;
      entry.steerPending = true;
-     hasSteeredThisTurn = true;
+     hasSteeredThisTurn = true; steeredThisTurnCount++;
      renderQueue();
      vscode.postMessage({ type: 'steerPrompt', text: queueEntryPromptText(entry) || ' ', images: entry.images });
      showTransientHint(agentSteerBubbleAtTurnTail(currentAgentLabel())
@@ -12468,7 +12469,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       if (turnTicker) { clearInterval(turnTicker); turnTicker = null; }
       turnStartedAt = 0;
       lastAgentUpdateAt = 0;
-      hasSteeredThisTurn = false;
+      hasSteeredThisTurn = false; steeredThisTurnCount = 0;
       var _tl = document.getElementById('turn-elapsed-label');
       if (_tl) _tl.style.display = 'none';
       // A turn ended (promptEnd / error) — the transition-tick guard is no
@@ -13740,7 +13741,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     hideCompactionProgress();
     tokenUsage = null;
      hasSentPrompt = false;
-     hasSteeredThisTurn = false;
+     hasSteeredThisTurn = false; steeredThisTurnCount = 0;
      isSendingPrompt = false;
     // A session switch / reload must NOT carry the previous session's queued
     // messages into the new session's queue. messageQueue is a webview-level
@@ -13918,7 +13919,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     clearSessionInterrupted();
     saveState();
     hasSentPrompt = false;
-    hasSteeredThisTurn = false;
+    hasSteeredThisTurn = false; steeredThisTurnCount = 0;
     isSendingPrompt = false;
     if (loadOverlay) loadOverlay.classList.remove('visible');
     if (inputArea) inputArea.classList.remove('disabled');
@@ -21650,7 +21651,7 @@ forceCollapseTurnFolds();
    }
   hasActiveSession = true;
   hasSentPrompt = false;
-  hasSteeredThisTurn = false;
+  hasSteeredThisTurn = false; steeredThisTurnCount = 0;
   isSendingPrompt = false;
   // A session switch / new-session connect must NOT carry the previous
   // session's queued messages into the new session's queue. messageQueue is a
@@ -21763,7 +21764,7 @@ sessionState = {
      if (isLoadingSession) return;
     hasActiveSession = false;
     hasSentPrompt = false;
-    hasSteeredThisTurn = false;
+    hasSteeredThisTurn = false; steeredThisTurnCount = 0;
     isSendingPrompt = false;
     sessionState = null;
      saveState();
@@ -22497,8 +22498,14 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         // the queue (echoes land during the post-turn drain, so they are all
         // still queued here); each closeClaudeDrainTurn consumes one slot, so
         // follow-ups 2..N re-open a fresh drain turn instead of being dropped.
+        // Count steers SET this turn (steeredThisTurnCount), NOT steers still in
+        // the queue: a steer whose delivered echo (user_message_chunk) landed
+        // BEFORE this promptEnd was already spliced out of messageQueue by
+        // ackSteeredQueueEntry — its follow-up turn is still streaming, so
+        // filtering the queue here armed 0 slots and the follow-up's idle
+        // chunks were dropped (the "msg shown in chat but no new turn" symptom).
         drainFollowUpCount = isClaudeAgent() && hasSteeredThisTurn
-          ? messageQueue.filter(function (e) { return e && e.steered; }).length
+          ? steeredThisTurnCount
           : 0;
       } else {
         drainFollowUpCount = 0;
@@ -22760,7 +22767,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        sessionState = null;
       chatHistoryOriginSessionId = null;
        hasSentPrompt = false;
-      hasSteeredThisTurn = false;
+      hasSteeredThisTurn = false; steeredThisTurnCount = 0;
        saveState();
          currentAssistantEl = null;
          currentAssistantText = '';
