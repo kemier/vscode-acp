@@ -10425,6 +10425,10 @@ var end = displayText.length;
      // <open_files>/<selection>/etc. blocks from before the fix.
      var rawHistory = saved.chatHistory || [];
      chatHistory = [];
+     // sessionState is not assigned until after this loop, so sessionMarkedInterrupted()
+     // is unreliable here — read the persisted flag for the session we are restoring.
+     var _restoredInterrupted = !!((saved.sessionState && saved.sessionState.sessionId) &&
+       interruptedSessionIds[saved.sessionState.sessionId]);
      for (var ri = 0; ri < rawHistory.length; ri++) {
        var riItem = rawHistory[ri];
        // Debug: log each restored item
@@ -10495,7 +10499,12 @@ var end = displayText.length;
              break;
            }
          }
-         riItem = { ...riItem, status: _hasFollowingAssistant ? 'completed' : 'failed' };
+         // A session NOT marked interrupted was torn down by a reload, not
+         // cancelled — a cancel sets interruptedSessionIds[sid] AND mirrors
+         // 'failed' into history, so a still-'in_progress' tool here is a
+         // teardown whose agent finished the work (only the completion
+         // notification was lost). Stamp it completed, not failed.
+         riItem = { ...riItem, status: (_hasFollowingAssistant || !_restoredInterrupted) ? 'completed' : 'failed' };
        }
       // Drop Kiro Summarizing/summary tool rows — redundant with the main
       // agent_message summary and used to reappear as a wrapped tool block.
@@ -14212,7 +14221,10 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
             break;
           }
         }
-        var _newStatus = _hasFollowingAssistant ? 'completed' : 'failed';
+        // Same discriminator as restoreState: flag unset ⇒ reload teardown
+        // (agent finished the tools), not a cancel. Stamp completed so the
+        // post-loop reconcile/fail helpers don't re-poison the flag.
+        var _newStatus = (_hasFollowingAssistant || !sessionMarkedInterrupted()) ? 'completed' : 'failed';
         item.status = _newStatus;
         if (_newStatus === 'failed') _failedAnyTool = true;
         const el = lookupToolCallEl(item.toolCallId);
