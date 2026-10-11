@@ -22383,7 +22383,14 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
               if (_wasCancelled) {
                 _iconEl.className = 'tc-icon failed';
                 _iconEl.textContent = getStatusIcon('failed');
-              } else {
+              } else if (!isClaudeAgent() || !_tcEl.classList.contains('tc-subagent')) {
+                // claude-code-acp subagent spawns stay in_progress at end_turn:
+                // the adapter no longer force-completes them (the proxy
+                // throttles the subagent model, so they are genuinely still
+                // running). anthropics/claude-code#47936: never report
+                // completed for a subagent that did not choose to stop. The
+                // auto follow-up's <task-notification> lands a tool_call_update
+                // that completes them honestly.
                 _iconEl.className = 'tc-icon completed';
                 _iconEl.textContent = getStatusIcon('completed');
               }
@@ -22394,7 +22401,11 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
               if (_stIcon && (_stIcon.classList.contains('running') ||
                   _stIcon.classList.contains('in_progress') ||
                   _stIcon.classList.contains('pending'))) {
-                applyStageIcon(_stages[_si], _wasCancelled ? 'failed' : 'completed');
+                if (_wasCancelled) {
+                  applyStageIcon(_stages[_si], 'failed');
+                } else if (!isClaudeAgent() || !_tcEl.classList.contains('tc-subagent')) {
+                  applyStageIcon(_stages[_si], 'completed');
+                }
               }
             }
           }
@@ -22426,6 +22437,10 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           var _hItem2 = chatHistory[_hi2];
           if (_hItem2 && _hItem2.kind === 'toolCall' &&
               (_hItem2.status === 'in_progress' || _hItem2.status === 'running' || _hItem2.status === 'pending')) {
+            // Mirror the DOM gate: claude-code-acp subagent spawns stay
+            // in_progress so a re-render (collapse/switch/reload) keeps the
+            // spinner instead of resurrecting a lie.
+            if (isClaudeAgent() && isSubagentSpawnTitle(_hItem2.title, _hItem2.rawInput)) continue;
             _hItem2.status = 'completed';
           }
         }
