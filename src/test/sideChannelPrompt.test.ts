@@ -54,9 +54,17 @@ suite('mid-turn slash command does not steal turn state', () => {
 
   test('classifies a command sent during a pending turn as side-channel', () => {
     assert.ok(
-      branch.includes('const isSideChannelSlash = this._pendingPromptSessionId === activeId;'),
+      branch.includes('const isSideChannelSlash = this._pendingPromptSessionId === activeId'),
       'the slash branch must classify a command sent while a turn is already pending ' +
         'for this session as a side-channel request',
+    );
+    // Adapter-initiated turns (evaluator re-seed / steer drain) never set
+    // _pendingPromptSessionId, so the host also ORs the webview's own streaming
+    // signal (midTurnStream) into the same classification.
+    assert.ok(
+      branch.includes('|| midTurnStream === true;'),
+      'the slash branch must also treat a command sent during an adapter-initiated ' +
+        'streaming turn (midTurnStream) as a side-channel request',
     );
   });
 

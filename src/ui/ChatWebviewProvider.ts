@@ -1288,6 +1288,10 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             Array.isArray(message.pastedLiteralTexts) ? message.pastedLiteralTexts : undefined,
             // True only for the send that owns the pending screen-recording take.
             message.includeVideo === true,
+            // Webview ground truth: a turn is streaming when this send was posted.
+            // True for adapter-initiated turns (evaluator re-seed / steer drain) whose
+            // pending-prompt signal the host never set; ORed into isSideChannelSlash.
+            message.midTurnStream === true,
           );
           break;
         // Snapshot the clipboard for a message being QUEUED. Read now so the queued
@@ -2256,6 +2260,19 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
      * to the wrong turn.
      */
     includeVideo?: boolean,
+    /**
+     * True when the webview KNOWS a turn is streaming as this send was posted.
+     *
+     * The host's `_pendingPromptSessionId` is the authoritative "a real turn is
+     * pending here" signal — but it is set only by the host's own prompt path.
+     * Adapter-initiated turns (evaluator re-seed / steer drain) never run
+     * handleSendPrompt on the host, so the slot is null and a turn-safe slash
+     * sent mid-stream would be misread as a NEW turn, closing the stream and
+     * dropping the remaining chunks. The webview is the other authoritative
+     * source (it owns isProcessing), so it carries that ground truth here and
+     * the slash branch ORs it into isSideChannelSlash.
+     */
+    midTurnStream?: boolean,
   ): Promise<void> {
     // TEMP-DEBUG (cannot-send investigation): entry marker so we can tell
     // "webview never posted" apart from "host received but dropped".
@@ -2367,7 +2384,14 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // is pending here" signal — it is set only by the main prompt path below,
       // and the Send Now cancel fallback clears it before starting a
       // replacement turn.
-      const isSideChannelSlash = this._pendingPromptSessionId === activeId;
+      //
+      // OR in `midTurnStream`: the webview's own ground truth that a turn is
+      // streaming. Adapter-initiated turns (evaluator re-seed / steer drain) never
+      // set _pendingPromptSessionId, so without this a turn-safe slash sent during
+      // one is misread as a NEW turn — bumping _cancelGeneration (gen-staling the
+      // streaming turn's real promptEnd), posting promptStart, then promptEnd(end_turn)
+      // in milliseconds, which closes the turn mid-stream and drops the rest.
+      const isSideChannelSlash = this._pendingPromptSessionId === activeId || midTurnStream === true;
       // Send promptStart so the webview sets isProcessing=true. Without this,
       // agent_message_chunk notifications from slash commands (e.g. /index build,
       // /tools, /stats) are dropped by the "After promptEnd the turn is closed"
@@ -11943,7 +11967,14 @@ function handleSend() {
  clipboardPastedPending = false;
  pastedClipboardTexts = [];
  pastedLiteralTexts = [];
- vscode.postMessage({ type: 'sendPrompt', text: text || ' ', images, includeVideo: includeVideo, clipboardPasted: pastedNow, pastedClipboardTexts: pastedTexts, pastedLiteralTexts: literalTexts });
+ // midTurnStream: the webview's authoritative "a turn was already streaming when
+ // this send was posted" signal, captured PRE-send in _sideChannelSend (isProcessing
+ // is optimistically set true below for non-side-channel sends, so reading it here
+ // would report true even from idle). The host ORs it into isSideChannelSlash so a
+ // turn-safe slash sent during an adapter-initiated turn (evaluator re-seed / steer
+ // drain — the host never set _pendingPromptSessionId for those) stays a side-channel
+ // instead of closing the stream mid-turn.
+ vscode.postMessage({ type: 'sendPrompt', text: text || ' ', images, includeVideo: includeVideo, clipboardPasted: pastedNow, pastedClipboardTexts: pastedTexts, pastedLiteralTexts: literalTexts, midTurnStream: _sideChannelSend });
 }
 
     function handleCancel() {
