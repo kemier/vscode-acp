@@ -1639,8 +1639,10 @@ export class SessionManager extends EventEmitter {
 
   /**
    * Send a goal control action (pause/clear) to the agent via the
-   * `_codex/session/goal_control` extension method.
-   * Currently only supported by codex-acp. Other agents will throw silently.
+   * `_codex/session/goal_control` extension method. Supported by codex-acp,
+   * pi-acp, and claude-code-acp (all register an extMethod handler for it).
+   * Agents that don't register the method fall through to method-not-found,
+   * which we swallow here so an unsupported agent just no-ops the chip button.
    */
   async goalControl(sessionId: string, action: 'pause' | 'clear'): Promise<void> {
     const session = this.sessions.get(sessionId);
