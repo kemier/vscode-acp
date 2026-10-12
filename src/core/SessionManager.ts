@@ -1683,6 +1683,14 @@ export class SessionManager extends EventEmitter {
       case 'reasoning_effort':
         this.historyStore.setReasoningEffort(agentName, sessionId, value);
         break;
+      // Plan/collaboration mode (claude-code-acp uses 'collaboration_mode',
+      // codex/claude also expose it; ericli uses 'plan_mode'). Persist so the
+      // picker state survives a client restart — without this a session set to
+      // 'plan' silently came back in 'default' after a reload.
+      case 'collaboration_mode':
+      case 'plan_mode':
+        this.historyStore.setCollaborationMode(agentName, sessionId, value);
+        break;
       default:
         // Unknown config option — nothing to persist.
         break;
@@ -1724,6 +1732,24 @@ export class SessionManager extends EventEmitter {
       } else {
         try {
           await this.setConfigOption(sessionId, 'reasoning_effort', entry.reasoningEffort);
+        } catch {
+          /* non-fatal */
+        }
+      }
+    }
+    // Restore collaboration/plan mode. Agents advertise the option under
+    // different ids (claude-code-acp/codex: 'collaboration_mode', ericli:
+    // 'plan_mode'), so pick whichever the agent actually exposes. Only restore
+    // a non-default value: forcing 'default' would downgrade a session that is
+    // legitimately still in 'plan' and is not worth a round-trip.
+    if (entry.collaborationMode && entry.collaborationMode !== 'default') {
+      const session = this.sessions.get(sessionId);
+      const ids = (session?.configOptions ?? [])
+        .map((o: any) => o?.id)
+        .filter((id: unknown): id is string => id === 'collaboration_mode' || id === 'plan_mode');
+      if (ids.length > 0) {
+        try {
+          await this.setConfigOption(sessionId, ids[0], entry.collaborationMode);
         } catch {
           /* non-fatal */
         }

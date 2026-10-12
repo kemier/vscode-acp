@@ -26,6 +26,8 @@ export interface PersistedSessionEntry {
   modelId?: string;
   /** Last-selected reasoning effort (e.g. "low", "high"). */
   reasoningEffort?: string;
+  /** Last-selected collaboration/plan mode (e.g. "plan", "default", "agent"). */
+  collaborationMode?: string;
   /** First user prompt of the session, used as a label fallback (truncated). */
   firstPrompt?: string;
   /** ISO timestamp when the session was first observed. */
@@ -193,6 +195,31 @@ export class SessionHistoryStore {
       delete entry.reasoningEffort;
     } else {
       entry.reasoningEffort = effort;
+    }
+    void this.workspaceState.update(STATE_KEY, { version: 1, entries: this.entries });
+  }
+
+  /** Persist the last-selected collaboration/plan mode for a session. */
+  setCollaborationMode(agentName: string, sessionId: string, mode: string | null | undefined): void {
+    if (mode === undefined) {
+      return;
+    }
+    let entry = this.get(agentName, sessionId);
+    if (!entry) {
+      const now = new Date().toISOString();
+      entry = {
+        agentName,
+        cwd: '',
+        sessionId,
+        createdAt: now,
+        lastActiveAt: now,
+      };
+      this.entries.push(entry);
+    }
+    if (mode === null) {
+      delete entry.collaborationMode;
+    } else {
+      entry.collaborationMode = mode;
     }
     void this.workspaceState.update(STATE_KEY, { version: 1, entries: this.entries });
   }

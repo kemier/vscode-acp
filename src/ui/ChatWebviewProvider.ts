@@ -16425,6 +16425,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
         }
       }
       attachTurnSummaryClick(summary);
+      attachTurnSummaryTooltip(summary);
 
      if (!body) {
        // Create already-collapsed so a missing class never flashes open content.
@@ -19085,7 +19086,18 @@ function commitCurrentTextSegment(opts) {
       result = rawInput.target_directory;
     }
     else if (typeof rawInput.file_path === 'string' && rawInput.file_path) {
-      result = rawInput.file_path;
+      var fpLine = rawInput.file_path;
+      if (rawInput.line != null) fpLine += ':' + rawInput.line;
+      if (typeof rawInput.pattern === 'string' && rawInput.pattern) {
+        result = fpLine + '\\npattern: ' + rawInput.pattern;
+      } else if (rawInput.offset != null && rawInput.limit != null) {
+        // claude-code-acp Read: {file_path, offset, limit} — show the read
+        // range so the tooltip says which slice of the file was read, not just
+        // the (already-shown-in-title) path.
+        result = fpLine + '\\nlines ' + rawInput.offset + '-' + (rawInput.offset + rawInput.limit);
+      } else {
+        result = fpLine;
+      }
     }
     // Kiro "operation" payloads — never dump the whole JSON into the title.
     else if (typeof rawInput.operation === 'string' && rawInput.operation) {
@@ -19175,6 +19187,83 @@ function commitCurrentTextSegment(opts) {
     if (parts.length === 0 && title) parts.push(title);
     return parts.join('\\n\\n');
   }
+
+   /**
+    * Build a per-tool "short title — full path" list for a fold summary bar.
+    * When a fold is collapsed the individual tool rows are hidden, so this is
+    * the only place their file paths can be recovered. Resolves each path from
+    * the row's locations (preferred, carries line numbers) or its rawInput.
+    */
+   function formatTurnSummaryPathList(summary) {
+     var titles = summary._titles || [];
+     var raws = summary._rawInputs || [];
+     var lists = (summary.closest('.turn') || summary).querySelectorAll('.tool-call-inline');
+     var lines = [];
+     for (var i = 0; i < titles.length; i++) {
+       var title = String(titles[i] || '').trim();
+       if (!title) continue;
+       var path = '';
+       var rowEl = lists[i];
+       if (rowEl && rowEl._locations && rowEl._locations.length && rowEl._locations[0] && rowEl._locations[0].path) {
+         var loc = rowEl._locations[0];
+         path = String(loc.path) + (loc.line != null ? ':' + loc.line : '');
+       }
+       if (!path && raws[i]) path = pathFromToolRawInput(raws[i]);
+       if (path && path !== title) {
+         lines.push(title + '  →  ' + path);
+       } else if (title) {
+         lines.push(title);
+       }
+     }
+     return lines.join('\\n');
+   }
+
+   /**
+    * Show the fold summary bar's aggregated path tooltip at the current mouse
+    * position. Reuses the shared tc-tooltip popover (no new UI). Called from
+    * the per-row hover handler when the fold is collapsed (rows hidden), and
+    * can be re-invoked on pointermove to follow the cursor.
+    */
+   function showTurnSummaryTooltipAt(e, summary) {
+     var text = formatTurnSummaryPathList(summary);
+     if (!text) return;
+     if (tcTooltipEl && tcTooltipEl.style.display !== 'none' && tcTooltipEl._isStageTooltip) {
+       tcTooltipEl.style.display = 'none';
+       tcTooltipEl._isStageTooltip = false;
+     }
+     ensureTcTooltipEl();
+     tcTooltipEl._isStageTooltip = false;
+     var truncated = text.length > TC_TOOLTIP_MAX_CHARS;
+     var displayText = truncated ? text.slice(0, TC_TOOLTIP_MAX_CHARS) : text;
+     var html = '<pre>' + escapeHtml(displayText) + '</pre>';
+     if (truncated) {
+       html += '<div class="tc-tooltip-trunc">… truncated (' + text.length + ' chars total, showing first ' + TC_TOOLTIP_MAX_CHARS + ')</div>';
+     }
+     tcTooltipEl.innerHTML = html;
+     tcTooltipEl.style.display = 'block';
+     positionTcTooltip(e);
+   }
+
+   /**
+    * Attach a hover tooltip to a fold summary bar ("3 reads, 2 writes") that
+    * lists each tool with its full file path. The rows are the natural hover
+    * target when expanded (they already have attachToolCallTooltip); this covers
+    * the bar itself — most useful when the fold is collapsed and the rows are
+    * gone. Guarded so a rebuild re-binding is a no-op.
+    */
+   function attachTurnSummaryTooltip(summary) {
+     if (!summary || summary._summaryTooltipBound) return;
+     summary._summaryTooltipBound = true;
+     summary.addEventListener('pointerenter', function(e) {
+       showTurnSummaryTooltipAt(e, summary);
+     });
+     summary.addEventListener('pointermove', function(e) {
+       if (tcTooltipEl && tcTooltipEl.style.display !== 'none') positionTcTooltip(e);
+     });
+     summary.addEventListener('pointerleave', function() {
+       if (tcTooltipEl && tcTooltipEl.style.display !== 'none' && !tcTooltipEl._isStageTooltip) hideTcTooltip();
+     });
+   }
 
    /**
     * Attach a hover tooltip to a tool call element showing the full
@@ -19310,11 +19399,21 @@ function commitCurrentTextSegment(opts) {
    // full command/input. Previously this was blocked when collapsed, which
    // meant long commands in the summary had no way to show their full text.
    var parentList = el.closest('.turn-tools-list');
-   if (parentList && parentList.classList.contains('collapsed')) return;
+   if (parentList && parentList.classList.contains('collapsed')) {
+     // The tool rows are hidden (fold collapsed). Instead of showing nothing,
+     // surface the fold summary bar's aggregated path tooltip — this is the
+     // ONLY place a path can appear while collapsed.
+     var _sum = parentList.closest('.turn') && getTurnSummaryEl(parentList.closest('.turn'));
+     if (_sum) showTurnSummaryTooltipAt(e, _sum);
+     return;
+   }
    var foldBody = el.closest('.turn-fold-body');
    if (foldBody && foldBody.classList.contains('collapsed')) {
      // The tool row itself is hidden; the user is hovering the fold summary
-     // bar. Find the matching summary element and show the tooltip there.
+     // bar. Show the aggregated path list there.
+     var _turn2 = el.closest('.turn');
+     var _sum2 = _turn2 && getTurnSummaryEl(_turn2);
+     if (_sum2) showTurnSummaryTooltipAt(e, _sum2);
      return;
    }
 
