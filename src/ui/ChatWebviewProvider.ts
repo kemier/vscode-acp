@@ -13827,6 +13827,30 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       setProcessing(false, 'handleLoadSessionStart');
     }
 
+  // Close the replay-hold window and send any prompts typed during load.
+  // Must run on EVERY loadSessionEnd exit — including the empty-replay early
+  // return — otherwise replayHoldActive stays true forever and handleSend
+  // only shows "Message will send when the session finishes loading."
+  function drainReplayHold() {
+     replayHoldActive = false;
+     if (pendingResumeSends.length === 0) return;
+     var _heldSends = pendingResumeSends;
+     pendingResumeSends = [];
+     vscode.postMessage({ type: 'debugLog', message:
+       '[WV-RESUME-HOLD] draining ' + _heldSends.length + ' held prompt(s) after replay' });
+     for (var _hs = 0; _hs < _heldSends.length; _hs++) {
+       var _heldSend = _heldSends[_hs];
+       promptInput.value = _heldSend.text || '';
+       if (_heldSend.images && _heldSend.images.length) {
+         for (var _hi = 0; _hi < _heldSend.images.length; _hi++) {
+           pendingImages.push(_heldSend.images[_hi]);
+         }
+       }
+       if (_heldSend.includeVideo) pendingVideoAttached = true;
+       handleSend();
+     }
+  }
+
   function handleLoadSessionEnd(ok) {
    resetResumeConnectUi();
    hideEmpty();
@@ -13936,6 +13960,9 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
     } else if (emptyState) {
       messagesEl.appendChild(emptyState); emptyState.style.display = '';
     }
+    // Empty-replay early return used to skip the hold drain below — leaving
+    // replayHoldActive stuck true (Claude "conversation was cleared" loads).
+    drainReplayHold();
     return;
   }
   // After replay, chatHistory belongs to the loaded session.
@@ -14436,26 +14463,8 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
      // drain would spin. It must also be closed before the loop rather than
      // after, so a prompt typed during the drain itself is not silently held
      // forever with no later drain to release it.
-     replayHoldActive = false;
-     if (pendingResumeSends.length > 0) {
-       var _heldSends = pendingResumeSends;
-       pendingResumeSends = [];
-       vscode.postMessage({ type: 'debugLog', message:
-         '[WV-RESUME-HOLD] draining ' + _heldSends.length + ' held prompt(s) after replay' });
-       // FIFO — the order the user typed them. Sending them in any other order
-       // is the reordering bug this queue exists to prevent.
-       for (var _hs = 0; _hs < _heldSends.length; _hs++) {
-         var _heldSend = _heldSends[_hs];
-         promptInput.value = _heldSend.text || '';
-         if (_heldSend.images && _heldSend.images.length) {
-           for (var _hi = 0; _hi < _heldSend.images.length; _hi++) {
-             pendingImages.push(_heldSend.images[_hi]);
-           }
-         }
-         if (_heldSend.includeVideo) pendingVideoAttached = true;
-         handleSend();
-       }
-     }
+     // FIFO — the order the user typed them.
+     drainReplayHold();
    }
 
    function handleSessionInfoUpdate(title) {
