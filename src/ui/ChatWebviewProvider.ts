@@ -7351,6 +7351,13 @@ const LOAD_TAIL_GRACE_MS = 2500;
 // client-owned turn we open for the drain's first event.
 let drainFollowUpCount = 0;
 let claudeDrainTurnOpen = false;
+// Deferred idle flip for a drain turn. closeClaudeDrainTurn commits the drain
+// reply and posts an index render; setProcessing(false) used to run in the same
+// tick, so the spinner/Stop state went idle ~155ms BEFORE the committed render
+// round-tripped — the turn looked finished with an empty bubble ("no response
+// after end_turn"). Latch the idle flip on the render ack instead, with a
+// bounded timer fallback so a lost render can never wedge isProcessing=true.
+let drainTurnIdlePending = null; // { index, hgen, timer } | null
 let hasSentPrompt = false;
 // Track whether the last sent prompt was a slash command (e.g. /ps, /stats).
 // Used to delay queue draining after slash command output so the result
@@ -9424,12 +9431,60 @@ function closeClaudeDrainTurn() {
   // the whole reply is discarded: the steer bubble stays and no answer appears.
   // commitCurrentTextSegment nulls currentAssistantEl/currentAssistantText
   // itself, so the two lines below are the no-op-when-empty fallback.
+  // Capture the element BEFORE the commit so we can tell whether the commit
+  // posted an index render (its ack is what releases the deferred idle flip).
+  var _drainCommitEl = currentAssistantEl;
   commitCurrentTextSegment();
   currentAssistantEl = null;
   currentAssistantText = '';
   isSendingPrompt = false;
   turnTailGraceUntil = Date.now() + TURN_TAIL_GRACE_MS;
+  // Defer the idle flip until the committed reply's index render lands, so the
+  // turn does not visibly end on an empty bubble (the "no response" symptom).
+  // The commit posted an index render only when it had a live element + text;
+  // an empty drain commit has nothing to wait for and flips immediately.
+  if (_drainCommitEl) {
+    armDrainTurnIdle();
+  } else {
+    setProcessing(false, 'claude-drain-turn-end');
+    drainAfterDrainTurnClose();
+  }
+}
+
+/**
+ * Arm the deferred idle flip for the just-closed drain turn. The next
+ * markdownRendered ack for the committed index (or the bounded fallback timer)
+ * releases it. Idempotent: a second arm replaces the previous latch, and its
+ * timer is cleared so at most one fallback is ever live.
+ */
+function armDrainTurnIdle() {
+  releaseDrainTurnIdle();
+  var _idx = chatHistory.length - 1;
+  // historyRenderGen matches the hgen stamped on the commit's render request.
+  var latch = { index: _idx, hgen: historyRenderGen, timer: null };
+  latch.timer = setTimeout(function() {
+    vscode.postMessage({ type: 'debugLog', message: '[WV-DRAIN-TURN] idle-flip fallback timer fired (no render ack for index=' + _idx + ')' });
+    releaseDrainTurnIdle();
+  }, 2000);
+  drainTurnIdlePending = latch;
+  vscode.postMessage({ type: 'debugLog', message: '[WV-DRAIN-TURN] drain turn closed; deferring idle flip until render ack (index=' + _idx + ' hgen=' + latch.hgen + ')' });
+}
+
+/**
+ * Release a pending drain-turn idle latch: flip processing off and run the
+ * post-close FIFO drain. Safe to call when no latch is pending (no-op).
+ */
+function releaseDrainTurnIdle() {
+  if (!drainTurnIdlePending) return;
+  var _latch = drainTurnIdlePending;
+  drainTurnIdlePending = null;
+  if (_latch.timer) { clearTimeout(_latch.timer); }
   setProcessing(false, 'claude-drain-turn-end');
+  drainAfterDrainTurnClose();
+}
+
+/** FIFO drain of queued messages behind a closed drain turn. */
+function drainAfterDrainTurnClose() {
   if (!isCompacting && messageQueue.length > 0) {
     setTimeout(function() { if (!isProcessing && messageQueue.length > 0) { drainQueue(); } }, 0);
   }
@@ -11653,6 +11708,10 @@ function handleLocalSlashCommand(cmdText) {
       if (planBar) { planBar.innerHTML = ''; }
       historyRenderGen++;
       for (var _clrRk in pendingRenderRetries) { delete pendingRenderRetries[_clrRk]; }
+      // Release (not just drop) a deferred drain idle flip: a clear wipes the
+      // committed row its render ack would have matched, so the latch would
+      // otherwise wait out its fallback with isProcessing stuck true.
+      releaseDrainTurnIdle();
       currentTurnEl = null;
       currentAssistantEl = null;
       currentAssistantText = '';
@@ -20731,9 +20790,58 @@ if (_deduped) {
  // order correctly once all items are in place.
  suppressFoldOrdering = true;
  keepAssistantsInFold = true;
- var assistantItems = [];
   // Buffer thoughts only until we can attach them to a turn; each thought
   // renders as its own block (in history order) — never merge/overwrite.
+  var assistantItems = [];
+  // A history with NO user rows cannot use the user/system/error rule below to
+  // open turns: every assistant/tool row would merge into ONE turn. That happens
+  // after an auto-compaction at the tail of a session, where the replay carries
+  // the summary plus the compacting turn's own assistant/tool activity and no
+  // genuine post-compact prompt. One monolithic turn then mis-promotes an
+  // arbitrary assistant to the visible summary, with unrelated messages and
+  // tools stacked above it when expanded. When there are no user rows, treat a
+  // *closing* assistant (its turn's tools are all complete) as a boundary so the
+  // promoted summary is the last turn's reply.
+  var _historyHasUserRows = false;
+  for (var _hur = 0; _hur < chatHistory.length; _hur++) {
+    var _hurItem = chatHistory[_hur];
+    if (_hurItem && _hurItem.kind === 'message' && _hurItem.role === 'user') {
+      if (String(_hurItem.text || '').trim() && !isSessionInterruptNotice(_hurItem.text)) {
+        _historyHasUserRows = true;
+        break;
+      }
+    }
+  }
+  // True when the turn-so-far has completed tool work and its last assistant is
+  // a final reply (no running/pending tool after it) — the natural seam between
+  // two work units when there is no user prompt to split on. Self-contained
+  // (reads data-history-index directly) so the fold-ordering test can extract and
+  // exercise it against a fake DOM.
+  function userRowlessTurnLooksSealed(turn) {
+    if (!turn) return false;
+    var _idxOf = function(el) {
+      if (!el || !el.getAttribute) return -1;
+      var v = el.getAttribute('data-history-index');
+      if (v === null || v === undefined || String(v).trim() === '') return -1;
+      var n = Number(v);
+      return isFinite(n) ? n : -1;
+    };
+    var assts = turn.querySelectorAll('.message.assistant');
+    if (!assts || !assts.length) return false;
+    var lastAsstIdx = _idxOf(assts[assts.length - 1]);
+    // Any tool row AFTER the last assistant means the reply was not the end of
+    // the unit — the turn is still open, so do not split here.
+    var tools = turn.querySelectorAll('.tool-call-inline');
+    for (var ti = 0; ti < tools.length; ti++) {
+      if (_idxOf(tools[ti]) > lastAsstIdx) return false;
+    }
+    // A still-running/pending tool anywhere keeps the turn open.
+    if (turn.querySelector(
+      '.tc-icon.running, .tc-icon.in_progress, .tc-icon.pending, ' +
+      '.tc-stage-icon.running, .tc-stage-icon.in_progress, .tc-stage-icon.pending'
+    )) return false;
+    return true;
+  }
   var turnThoughts = [];
   function flushTurnThought() {
     if (turnThoughts.length === 0) return;
@@ -20836,6 +20944,20 @@ if (_deduped) {
            }
            var turnHasAssistant = currentTurnEl && currentTurnEl.querySelector('.message.assistant');
            var turnHasTools = currentTurnEl && currentTurnEl.querySelector('.tool-call-inline');
+           // No user rows in this history (post-auto-compaction replay): split
+           // at each sealed work unit so the panel is not one monolithic turn.
+           // Only when the running turn already closed a unit — otherwise an
+           // interim assistant streamed before its tools would wrongly split.
+           if (!_historyHasUserRows && turnHasAssistant && turnHasTools &&
+               userRowlessTurnLooksSealed(currentTurnEl)) {
+             flushTurnThought();
+             currentTurnEl = null;
+             currentToolsListEl = null;
+             currentToolsCountEl = null;
+             turnHasAssistant = false;
+             turnHasTools = false;
+             trace('  -> assistant: user-rowless history, sealed turn -> split');
+           }
            if (turnHasAssistant && !turnHasTools) {
              // Back-to-back assistants with no tools between them: keep in
              // the SAME turn and mark prior assistants as interim (folded).
@@ -23261,10 +23383,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
               _isBoundary = true;
             }
           } else if (_ceItem.kind === 'message') {
-            var _ceText = typeof _ceItem.text === 'string' ? _ceItem.text.toLowerCase() : '';
-            if (_ceText.includes('compacted') || _ceText.includes('compacting')) {
-              _isBoundary = true;
-            }
+            _isBoundary = _isCompactionTextMarker(_ceItem.role, _ceItem.text);
           }
           if (_isBoundary) {
             // Start AFTER the boundary marker: the marker itself (a "Context
@@ -23280,6 +23399,13 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
             // history AND the summaries that superseded it.
             _exportStart = _cei + 1;
           }
+        }
+        // A boundary as the FINAL item makes _exportStart === length and exports
+        // nothing, so the fork silently claims the session is empty (the real
+        // "No conversation to fork" bug). Fall back to the full history — a
+        // marker in the export is better than a lost conversation.
+        if (_exportStart >= _exportItems.length) {
+          _exportStart = 0;
         }
         var _exportParts = [];
         // Parallel { role, content } list for the summarizer (the fork sends a
@@ -23321,6 +23447,29 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           }
           return s;
         }
+        // Marker-shaped compaction detector for message rows. Mirrors
+        // isCompactionTextMarker in core/conversationExport.ts.
+        //
+        // Must NOT be a substring test: arbitrary conversation prose can merely
+        // mention compaction — most importantly the RETAINED compaction summary
+        // itself, which Claude stores as an ordinary role:'assistant' row whose
+        // text narrates the session and contains "compacted". A substring rule
+        // flagged that ~26KB summary as a boundary; because the LAST boundary
+        // wins and the summary was the final row, the export started past the
+        // end of the array and the fork came out empty ("No conversation to
+        // fork"). Only unmistakable markers count: a system notice, or text that
+        // STARTS with a compaction marker such as codex's
+        // "*Context compacted to fit the model's context window.*".
+        function _isCompactionTextMarker(role, rawText) {
+          var text = String(rawText == null ? '' : rawText);
+          if (!text.replace(/\\s+/g, '').length) return false;
+          if (role === 'system') {
+            var low = text.toLowerCase();
+            return low.indexOf('compacted') >= 0 || low.indexOf('compacting') >= 0;
+          }
+          var head = text.replace(/^\\s+/, '').replace(/^<\\/?(analysis|summary)>/i, '').replace(/^\\s+/, '');
+          return /^\\**\\s*(context\\s+)?compacting\\b/i.test(head) || /^\\**\\s*(context\\s+)?compacted\\b/i.test(head);
+        }
         for (var _ei = _exportStart; _ei < _exportItems.length; _ei++) {
           var _item = _exportItems[_ei];
           if (!_item) continue;
@@ -23339,10 +23488,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
               _isBoundaryMarker = true;
             }
           } else if (_item.kind === 'message') {
-            var _itemText = typeof _item.text === 'string' ? _item.text.toLowerCase() : '';
-            if (_itemText.includes('compacted') || _itemText.includes('compacting')) {
-              _isBoundaryMarker = true;
-            }
+            _isBoundaryMarker = _isCompactionTextMarker(_item.role, _item.text);
           }
           if (_isBoundaryMarker) continue;
           if (_item.kind === 'message') {
@@ -23495,6 +23641,12 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
             // Find the DOM element for this history item
             // For the just-completed streaming message, update the last assistant el
           const historyItem = chatHistory[item.index];
+          // Release a deferred drain-turn idle flip as soon as its committed
+          // reply's render is acknowledged — BEFORE the paint-skip guards below,
+          // so a stale/live/same-hash skip cannot leave isProcessing stuck true.
+          if (drainTurnIdlePending && item.index === drainTurnIdlePending.index) {
+            releaseDrainTurnIdle();
+          }
           if (!historyItem || historyItem.role !== 'assistant') continue;
 
           // Discard stale history renders from a previous DOM build.

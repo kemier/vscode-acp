@@ -293,4 +293,35 @@ suite('conversationExport', () => {
     assert.strictEqual(isCompactionBoundaryItem({ kind: 'message', role: 'user', text: 'normal question' }), false);
     assert.strictEqual(isCompactionBoundaryItem({ kind: 'toolCall', title: 'edit_file' }), false);
   });
+
+  // ── Regression: prose that merely MENTIONS compaction is not a boundary ──
+  // Claude stores its /compact summary as an ordinary role:'assistant' row whose
+  // text narrates the session and contains the word "compacted". The old
+  // substring rule flagged that row; because the LAST boundary wins and the
+  // summary was the final item, the export started past the end of the array and
+  // the fork silently reported "this session has no messages yet".
+
+  test('assistant prose mentioning compaction mid-text is NOT a boundary', () => {
+    const prose =
+      'Let me chronologically analyze this conversation segment, which was compacted earlier. ' +
+      'The user asked me to check the fold rendering.';
+    assert.strictEqual(isCompactionBoundaryItem({ kind: 'message', role: 'assistant', text: prose }), false);
+    const items: ConversationExportItem[] = [
+      { kind: 'message', role: 'user', text: 'hello' },
+      { kind: 'message', role: 'assistant', text: prose },
+    ];
+    assert.strictEqual(exportConversation(items), 'User: hello\n\nAssistant: ' + prose);
+  });
+
+  test('a compaction marker as the LAST item still exports a non-empty fork', () => {
+    // Boundary at the final index would make start === length and export nothing.
+    // The fallback must carry the conversation rather than claim it is empty.
+    const items: ConversationExportItem[] = [
+      { kind: 'message', role: 'user', text: 'old question' },
+      { kind: 'toolCall', title: 'Context compacting', status: 'completed' },
+    ];
+    assert.notStrictEqual(exportConversation(items), '');
+    assert.strictEqual(exportConversation(items), 'User: old question');
+    assert.deepStrictEqual(exportConversationMessages(items), [{ role: 'user', content: 'User: old question' }]);
+  });
 });

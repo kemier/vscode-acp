@@ -251,12 +251,45 @@ export function isCompactionBoundaryItem(item: ConversationExportItem): boolean 
   // Text markers: codex emits an assistant "*Context compacted ...*" line;
   // some adapters emit a system notice mentioning "compacted".
   if (item.kind === 'message') {
-    const text = typeof item.text === 'string' ? item.text.toLowerCase() : '';
-    if (text.includes('compacted') || text.includes('compacting')) {
-      return true;
-    }
+    const role = typeof item.role === 'string' ? item.role : '';
+    const text = typeof item.text === 'string' ? item.text : '';
+    return isCompactionTextMarker(role, text);
   }
   return false;
+}
+
+/**
+ * Marker-shaped compaction detector for message rows.
+ *
+ * Must NOT be a substring test: a real conversation can contain arbitrary prose
+ * that merely mentions compaction — most importantly the retained compaction
+ * SUMMARY itself, which Claude stores as an ordinary `role:'assistant'` row
+ * whose text narrates the session and contains "compacted". A substring rule
+ * flagged that 26 KB summary as a boundary; since findCompactionBoundary takes
+ * the LAST match and the summary was the final row, the export started past the
+ * end of the array and produced an empty fork ("No conversation to fork").
+ *
+ * So a message is a boundary only when it is unmistakably a marker:
+ *   - a system notice that mentions compacting (machine-generated), or
+ *   - text that STARTS with a compaction marker, e.g. codex's
+ *     "*Context compacted to fit the model's context window.*"
+ */
+export function isCompactionTextMarker(role: string, rawText: string): boolean {
+  const text = String(rawText ?? '');
+  if (!text.trim()) {
+    return false;
+  }
+  if (role === 'system') {
+    const lowered = text.toLowerCase();
+    return lowered.includes('compacted') || lowered.includes('compacting');
+  }
+  // Leading "*/#/-/•" bullets and whitespace are allowed before the marker, and
+  // a closing tag from an adapter wrapper may precede it.
+  const head = text
+    .trim()
+    .replace(/^<\/?(analysis|summary)>/i, '')
+    .trim();
+  return /^\**\s*(context\s+)?compacting\b/i.test(head) || /^\**\s*(context\s+)?compacted\b/i.test(head);
 }
 
 /**
@@ -296,7 +329,11 @@ export function exportConversation(items: ConversationExportItem[]): string {
   // tool call, a "*Context compacted*" line, or a compaction_update) is
   // protocol noise, not content the forked agent needs. Post-compaction turns
   // (the retained summary / recent messages) begin after it.
-  const start = boundary >= 0 ? boundary + 1 : 0;
+  //
+  // A boundary as the FINAL item would make start === length and export
+  // nothing, so a fork would silently claim the session is empty. Fall back to
+  // the full history — better to carry a marker than to lose the conversation.
+  const start = boundary >= 0 && boundary + 1 < items.length ? boundary + 1 : 0;
   const parts: string[] = [];
   for (let i = start; i < items.length; i++) {
     const line = exportConversationItem(items[i]);
@@ -325,7 +362,7 @@ export function exportConversationMessages(
   items: ConversationExportItem[],
 ): Array<{ role: 'user' | 'assistant'; content: string }> {
   const boundary = findCompactionBoundary(items);
-  const start = boundary >= 0 ? boundary + 1 : 0;
+  const start = boundary >= 0 && boundary + 1 < items.length ? boundary + 1 : 0;
   const out: Array<{ role: 'user' | 'assistant'; content: string }> = [];
   for (let i = start; i < items.length; i++) {
     const item = items[i];

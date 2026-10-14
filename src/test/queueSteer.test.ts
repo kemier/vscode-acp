@@ -109,7 +109,12 @@ suite('mid-turn steering of a queued message', () => {
     const sm = fs.readFileSync(path.resolve(__dirname, '../../src/core/SessionManager.ts'), 'utf8');
     // steerPrompt forwards images when present; text-only steers keep the
     // plain { sessionId, text } payload (unchanged for other agents).
-    assert.ok(sm.includes("notify('session/steer', imagesBlocks"), sm);
+    // Assert on the notify call and its channel separately: a formatter can
+    // rewrap `notify('session/steer', ...)` across lines, so a single-line
+    // substring match would break on formatting alone (it did on the a2a
+    // branch — 0527fef's inline call was rewrapped to a multiline ternary).
+    assert.ok(sm.includes('connection.notify('), sm);
+    assert.ok(sm.includes("'session/steer'"), sm);
     assert.ok(sm.includes("{ sessionId, text, images: imagesBlocks }"), sm);
     assert.ok(sm.includes("{ sessionId, text }"), sm);
   });

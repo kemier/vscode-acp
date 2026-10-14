@@ -279,3 +279,158 @@ suite('compact fold ordering', () => {
     assert.ok(after.indexOf('suppressFoldOrdering') < after.indexOf('orderCompactFoldContents(_endBody)'));
   });
 });
+
+/**
+ * A resumed auto-compacted session can replay with ZERO user rows (the
+ * compaction fired at the session tail, so the surviving post-compact region is
+ * the summary plus the compacting turn's own assistant/tool activity). The
+ * render loop opens turns only on user/system/error rows, so all 94 items used
+ * to collapse into ONE turn; promoteFinalAssistantForTurn then lifted an
+ * arbitrary assistant (the highest history index) to the visible summary while
+ * every other message/tool stacked above it inside the fold.
+ *
+ * The fix: when a history has no user rows, split at each SEALED work unit — an
+ * assistant whose turn's tools are all complete and none follow it. This suite
+ * extracts the real `userRowlessTurnLooksSealed` from the webview template
+ * literal and runs it against a fake DOM (same pattern as the fold-ordering
+ * suite above).
+ */
+function extractSealedFunction(): string {
+  const src = fs.readFileSync(SOURCE, 'utf8');
+  const startIdx = src.indexOf('function userRowlessTurnLooksSealed(turn) {');
+  assert.ok(startIdx >= 0, 'userRowlessTurnLooksSealed not found in ChatWebviewProvider.ts');
+  // The function ends at the first "\n  }" that closes it — the next sibling
+  // declaration is `var turnThoughts = [];`. Slice to that marker instead of
+  // brace-matching so the extractor stays simple and fails loudly if the
+  // surrounding code moves.
+  const endIdx = src.indexOf('var turnThoughts = [];', startIdx);
+  assert.ok(endIdx > startIdx, 'end marker after userRowlessTurnLooksSealed not found');
+  return src.slice(startIdx, endIdx).trim();
+}
+
+interface FakeNode {
+  className: string;
+  attrs: Record<string, string>;
+  children: FakeNode[];
+  getAttribute(name: string): string | null;
+  querySelector(sel: string): FakeNode | null;
+  querySelectorAll(sel: string): FakeNode[];
+  appendChild(c: FakeNode): FakeNode;
+}
+
+function makeNode(className: string, historyIndex?: number): FakeNode {
+  const node: FakeNode = {
+    className,
+    attrs: historyIndex !== undefined ? { 'data-history-index': String(historyIndex) } : {},
+    children: [],
+    getAttribute: (n: string) => (n in node.attrs ? node.attrs[n] : null),
+    querySelector: (sel: string) => {
+      const all = node.querySelectorAll(sel);
+      return all.length ? all[0] : null;
+    },
+    querySelectorAll: (sel: string) => {
+      // Selectors here are single-class ('.tool-call-inline') or
+      // compound-class ('.message.assistant'); match the LAST class token in
+      // each, which is the most specific and sufficient for these fakes.
+      const classes = sel
+        .split(',')
+        .map((s) => {
+          const tokens = s.trim().split(/\s+/).pop() || '';
+          const dotted = tokens.split('.').filter(Boolean);
+          return dotted.length ? dotted[dotted.length - 1] : '';
+        })
+        .filter(Boolean);
+      const out: FakeNode[] = [];
+      const walk = (n: FakeNode): void => {
+        for (const c of n.children) {
+          if (classes.some((cl) => c.className.split(' ').indexOf(cl) >= 0)) {
+            out.push(c);
+          }
+          walk(c);
+        }
+      };
+      walk(node);
+      return out;
+    },
+    appendChild: (c: FakeNode) => {
+      node.children.push(c);
+      return c;
+    },
+  };
+  return node;
+}
+
+function sealed(spec: Array<[string, number?]>): boolean {
+  const factory = new Function('return (' + extractSealedFunction() + ')');
+  const fn = factory() as (t: FakeNode) => boolean;
+  const turn = makeNode('turn');
+  for (const [cls, idx] of spec) {
+    // In the real DOM a tool row is a `.tool-call-inline` nested inside its
+    // `.turn-tools` wrapper; the helper queries the inner row for its index.
+    if (cls === 'turn-tools') {
+      const wrapper = makeNode('turn-tools');
+      wrapper.appendChild(makeNode('tool-call-inline', idx));
+      turn.appendChild(wrapper);
+    } else {
+      turn.appendChild(makeNode(cls, idx));
+    }
+  }
+  return fn(turn);
+}
+
+suite('user-rowless turn splitting', () => {
+  test('a turn whose tools all precede its final reply is sealed', () => {
+    assert.strictEqual(
+      sealed([
+        ['turn-tools', 1],
+        ['message assistant', 2],
+      ]),
+      true,
+    );
+  });
+
+  test('a turn with a tool AFTER its latest reply is not sealed', () => {
+    // The reply was not the end of the work unit — the turn is still open.
+    assert.strictEqual(
+      sealed([
+        ['message assistant', 2],
+        ['turn-tools', 3],
+      ]),
+      false,
+    );
+  });
+
+  test('a still-running tool keeps the turn open', () => {
+    assert.strictEqual(
+      sealed([
+        ['turn-tools', 1],
+        ['tc-icon running', 2],
+        ['message assistant', 2],
+      ]),
+      false,
+    );
+  });
+
+  test('a turn with no assistant cannot be sealed', () => {
+    assert.strictEqual(sealed([['turn-tools', 1]]), false);
+  });
+
+  test('the split is wired into the assistant branch of renderChatHistory', () => {
+    // Source guard: the helper existing is not enough — it must be consulted
+    // (and the turn reset) on the assistant path, gated on a user-rowless history.
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const callIdx = src.indexOf('userRowlessTurnLooksSealed(currentTurnEl)');
+    assert.ok(callIdx > 0, 'the sealed check is never called');
+    const before = src.slice(callIdx - 400, callIdx);
+    assert.ok(before.indexOf('!_historyHasUserRows') >= 0, 'the split must be gated on a user-rowless history');
+    const after = src.slice(callIdx, callIdx + 400);
+    assert.ok(
+      after.indexOf('currentTurnEl = null') >= 0,
+      'the split must reset the current turn so the next row opens a new one',
+    );
+    assert.ok(
+      src.indexOf('var _historyHasUserRows = false;') >= 0,
+      'the user-row scan must exist in renderChatHistory',
+    );
+  });
+});

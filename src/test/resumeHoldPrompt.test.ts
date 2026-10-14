@@ -38,10 +38,13 @@ function extractHoldBlock(src: string, start: number): string {
   assert.ok(open > start, 'no block after the guard');
   let depth = 0;
   for (let i = open; i < src.length; i++) {
-    if (src[i] === '{') { depth++; }
-    else if (src[i] === '}') {
+    if (src[i] === '{') {
+      depth++;
+    } else if (src[i] === '}') {
       depth--;
-      if (depth === 0) { return src.slice(start, i + 1); }
+      if (depth === 0) {
+        return src.slice(start, i + 1);
+      }
     }
   }
   assert.fail('unbalanced block');
@@ -54,10 +57,13 @@ function extractFn(name: string): string {
   let i = src.indexOf('{', start);
   let depth = 0;
   for (; i < src.length; i++) {
-    if (src[i] === '{') { depth++; }
-    else if (src[i] === '}') {
+    if (src[i] === '{') {
+      depth++;
+    } else if (src[i] === '}') {
       depth--;
-      if (depth === 0) { break; }
+      if (depth === 0) {
+        break;
+      }
     }
   }
   return src.slice(start, i + 1);
@@ -125,9 +131,13 @@ suite('the hold window spans the whole load, not just isLoadingSession', () => {
     assert.ok(start.includes('replayHoldActive = true;'), 'must open the hold window on load start');
   });
 
-  test('handleLoadSessionEnd closes the window', () => {
-    const end = extractFn('handleLoadSessionEnd');
-    assert.ok(end.includes('replayHoldActive = false;'), 'must close the hold window on load end');
+  test('drainReplayHold closes the window', () => {
+    // The drain was extracted into drainReplayHold() so it runs on EVERY
+    // handleLoadSessionEnd exit, including the empty-replay early return — an
+    // inline drain is skipped by that return and leaves replayHoldActive stuck
+    // true. The close therefore lives in drainReplayHold now, not in the caller.
+    const drain = extractFn('drainReplayHold');
+    assert.ok(drain.includes('replayHoldActive = false;'), 'must close the hold window when draining');
   });
 
   test('the window is closed BEFORE the drain loop, not after', () => {
@@ -135,28 +145,41 @@ suite('the hold window spans the whole load, not just isLoadingSession', () => {
     // loop would re-hold every drained prompt and the drain would spin; closing
     // it before also means a prompt typed during the drain is not held forever
     // with no later drain to release it.
+    const drain = extractFn('drainReplayHold');
+    const close = drain.indexOf('replayHoldActive = false;');
+    const loop = drain.indexOf('if (pendingResumeSends.length === 0) return;');
+    assert.ok(close > 0 && loop > 0, 'both the close and the drain must exist');
+    assert.ok(close < loop, 'the window must be closed before draining');
+  });
+
+  test('handleLoadSessionEnd drains on the empty-replay early return', () => {
+    // The regression this pins: the drain must be reachable on the early-return
+    // path (Claude "conversation was cleared" loads replay nothing). Extracting
+    // the drain to a named function and calling it BEFORE the return is what
+    // makes that path drain instead of leaving replayHoldActive latched.
     const end = extractFn('handleLoadSessionEnd');
-    const close = end.indexOf('replayHoldActive = false;');
-    const drain = end.indexOf('if (pendingResumeSends.length > 0)');
-    assert.ok(close > 0 && drain > 0, 'both the close and the drain must exist');
-    assert.ok(close < drain, 'the window must be closed before draining');
+    const earlyReturn = end.indexOf('drainReplayHold();\n    return;');
+    assert.ok(earlyReturn > 0, 'the early return must drain the hold before returning');
   });
 });
 
 suite('the held prompts drain only after the replay is fully rendered', () => {
-  test('handleLoadSessionEnd drains the hold queue', () => {
-    const end = extractFn('handleLoadSessionEnd');
-    assert.ok(end.includes('if (pendingResumeSends.length > 0)'), 'must check the hold queue');
-    assert.ok(end.includes('pendingResumeSends = [];'), 'must clear the queue before sending');
-    assert.ok(end.includes('handleSend();'), 'must re-enter the normal send path');
+  test('drainReplayHold drains the hold queue', () => {
+    const drain = extractFn('drainReplayHold');
+    assert.ok(drain.includes('if (pendingResumeSends.length === 0) return;'), 'must check the hold queue');
+    assert.ok(drain.includes('pendingResumeSends = [];'), 'must clear the queue before sending');
+    assert.ok(drain.includes('handleSend();'), 'must re-enter the normal send path');
   });
 
   test('the drain runs after the snapshot merge and the rebuild', () => {
+    // The tail drain call site must come after the merge/rebuild markers, or
+    // the bubble lands inside the replaying history instead of at the bottom.
+    // There are two calls: the empty-replay early return (before the rebuild)
+    // and the normal tail (after it) — assert on the LAST one.
     const end = extractFn('handleLoadSessionEnd');
-    const drain = end.indexOf('if (pendingResumeSends.length > 0)');
-    assert.ok(drain > 0, 'drain block not found');
-    // The merge/rebuild markers must all precede the drain, or the bubble lands
-    // inside the replaying history instead of at the bottom.
+    const drain = end.lastIndexOf('drainReplayHold();');
+    assert.ok(drain > 0, 'tail drain call not found in handleLoadSessionEnd');
+    // The merge/rebuild markers must all precede the tail drain call.
     for (const marker of ['renderChatHistory', 'forceCollapseTurnFolds', 'scrollToBottom']) {
       const at = end.indexOf(marker);
       assert.ok(at >= 0, marker + ' not found in handleLoadSessionEnd');
@@ -168,26 +191,19 @@ suite('the held prompts drain only after the replay is fully rendered', () => {
     // The reordering bug: the held prompt was drained after a later prompt that
     // had taken the normal send path. Draining must walk the queue front-to-back
     // so the transcript matches what the user typed.
-    const end = extractFn('handleLoadSessionEnd');
-    const drain = end.indexOf('if (pendingResumeSends.length > 0)');
-    const block = end.slice(drain);
-    const loop = block.indexOf('for (var _hs = 0; _hs < _heldSends.length; _hs++)');
-    const send = block.indexOf('handleSend();');
+    const drain = extractFn('drainReplayHold');
+    const loop = drain.indexOf('for (var _hs = 0; _hs < _heldSends.length; _hs++)');
+    const send = drain.indexOf('handleSend();');
     assert.ok(loop > 0, 'must iterate the held queue in order');
     assert.ok(send > loop, 'handleSend must be called inside the ordered loop');
-    assert.ok(
-      !block.includes('_heldSends.pop()'),
-      'must not pop — that reverses typed order',
-    );
+    assert.ok(!drain.includes('_heldSends.pop()'), 'must not pop — that reverses typed order');
   });
 
   test('the drain restores text and attachments before sending', () => {
-    const end = extractFn('handleLoadSessionEnd');
-    const drain = end.indexOf('if (pendingResumeSends.length > 0)');
-    const block = end.slice(drain);
-    const setText = block.indexOf('promptInput.value = _heldSend.text');
-    const pushImages = block.indexOf('pendingImages.push(');
-    const send = block.indexOf('handleSend();');
+    const drain = extractFn('drainReplayHold');
+    const setText = drain.indexOf('promptInput.value = _heldSend.text');
+    const pushImages = drain.indexOf('pendingImages.push(');
+    const send = drain.indexOf('handleSend();');
     assert.ok(setText > 0, 'must restore the held text');
     assert.ok(pushImages > 0 && pushImages < send, 'must restore images before sending');
     assert.ok(send > setText, 'must send after restoring');
