@@ -1,5 +1,7 @@
 # ACP Client for VS Code
 
+> Public release. Published publicly under the MIT License (see [LICENSE](LICENSE)).
+
 A [Visual Studio Code extension](https://marketplace.visualstudio.com/items?itemName=formulahendry.acp-client) that provides a client for the [Agent Client Protocol (ACP)](https://agentclientprotocol.com/) — connect to any ACP-compatible AI coding agent directly from your editor.
 
 ![ACP Client Screenshot](resources/screenshot.png)
