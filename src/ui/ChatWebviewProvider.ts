@@ -19280,86 +19280,26 @@ function commitCurrentTextSegment(opts) {
   }
 
    /**
-    * Build a per-tool "short title — full path" list for a fold summary bar.
-    * When a fold is collapsed the individual tool rows are hidden, so this is
-    * the only place their file paths can be recovered. Resolves each path from
-    * the row's locations (preferred, carries line numbers) or its rawInput.
+    * Hover on the fold summary title ("▸ 3 reads") must not open a tooltip.
+    * formatTurnSummaryPathList used to dump every tool title and path here.
+    * That fired for a collapsed fold and again while a live turn kept the
+    * same title on screen with the body open. Expanded rows still use
+    * attachToolCallTooltip. The compactMode flag is the wrong gate: a fold
+    * is also collapsed when it has a subagent or more than three tools.
     */
-   function formatTurnSummaryPathList(summary) {
-     var titles = summary._titles || [];
-     var raws = summary._rawInputs || [];
-     var lists = (summary.closest('.turn') || summary).querySelectorAll('.tool-call-inline');
-     var lines = [];
-     for (var i = 0; i < titles.length; i++) {
-       var title = String(titles[i] || '').trim();
-       if (!title) continue;
-       var path = '';
-       var rowEl = lists[i];
-       if (rowEl && rowEl._locations && rowEl._locations.length && rowEl._locations[0] && rowEl._locations[0].path) {
-         var loc = rowEl._locations[0];
-         path = String(loc.path) + (loc.line != null ? ':' + loc.line : '');
-       }
-       if (!path && raws[i]) path = pathFromToolRawInput(raws[i]);
-       if (path && path !== title) {
-         lines.push(title + '  →  ' + path);
-       } else if (title) {
-         lines.push(title);
-       }
-     }
-     return lines.join('\\n');
+   function showTurnSummaryTooltipAt(_e, _summary) {
+     if (tcTooltipEl && tcTooltipEl.style.display !== 'none' && !tcTooltipEl._isStageTooltip) hideTcTooltip();
    }
 
    /**
-    * Show the fold summary bar's aggregated path tooltip at the current mouse
-    * position. Reuses the shared tc-tooltip popover (no new UI). Called from
-    * the per-row hover handler when the fold is collapsed (rows hidden), and
-    * can be re-invoked on pointermove to follow the cursor.
-    */
-   function showTurnSummaryTooltipAt(e, summary) {
-     // Collapsed mode already shows the short title ("3 reads, 2 edits").
-     // The per-call path list on hover restated every tool; leave that for
-     // the expanded rows, which have their own tooltips.
-     if (compactMode) {
-       if (tcTooltipEl && tcTooltipEl.style.display !== 'none' && !tcTooltipEl._isStageTooltip) hideTcTooltip();
-       return;
-     }
-     var text = formatTurnSummaryPathList(summary);
-     if (!text) return;
-     if (tcTooltipEl && tcTooltipEl.style.display !== 'none' && tcTooltipEl._isStageTooltip) {
-       tcTooltipEl.style.display = 'none';
-       tcTooltipEl._isStageTooltip = false;
-     }
-     ensureTcTooltipEl();
-     tcTooltipEl._isStageTooltip = false;
-     var truncated = text.length > TC_TOOLTIP_MAX_CHARS;
-     var displayText = truncated ? text.slice(0, TC_TOOLTIP_MAX_CHARS) : text;
-     var html = '<pre>' + escapeHtml(displayText) + '</pre>';
-     if (truncated) {
-       html += '<div class="tc-tooltip-trunc">… truncated (' + text.length + ' chars total, showing first ' + TC_TOOLTIP_MAX_CHARS + ')</div>';
-     }
-     tcTooltipEl.innerHTML = html;
-     tcTooltipEl.style.display = 'block';
-     positionTcTooltip(e);
-   }
-
-   /**
-    * Attach a hover tooltip to a fold summary bar ("3 reads, 2 writes") that
-    * lists each tool with its full file path. The rows are the natural hover
-    * target when expanded (they already have attachToolCallTooltip); this covers
-    * the bar when Collapse is off and the fold is still a summary. Collapsed
-    * mode suppresses it — the title is enough, and the path list is the
-    * detail the user asked not to see on hover. Guarded so a rebuild
-    * re-binding is a no-op.
+    * Bind the fold summary bar. Hover dismisses any tool tooltip; it does
+    * not list the calls. Guarded so a rebuild re-binding is a no-op.
     */
    function attachTurnSummaryTooltip(summary) {
      if (!summary || summary._summaryTooltipBound) return;
      summary._summaryTooltipBound = true;
      summary.addEventListener('pointerenter', function(e) {
        showTurnSummaryTooltipAt(e, summary);
-     });
-     summary.addEventListener('pointermove', function(e) {
-       if (compactMode) return;
-       if (tcTooltipEl && tcTooltipEl.style.display !== 'none') positionTcTooltip(e);
      });
      summary.addEventListener('pointerleave', function() {
        if (tcTooltipEl && tcTooltipEl.style.display !== 'none' && !tcTooltipEl._isStageTooltip) hideTcTooltip();
@@ -19495,26 +19435,16 @@ function commitCurrentTextSegment(opts) {
   var hoverTarget = el.querySelector('.tc-title') || el;
 
   hoverTarget.addEventListener('pointerenter', function(e) {
-   // Show tooltips on expanded tool rows AND on the fold summary bar.
-   // The fold summary shows abbreviated titles — the tooltip reveals the
-   // full command/input. Previously this was blocked when collapsed, which
-   // meant long commands in the summary had no way to show their full text.
+   // A collapsed fold hides these rows. Do not redirect that hover onto the
+   // summary title as a list of every tool — the title is only a count.
    var parentList = el.closest('.turn-tools-list');
    if (parentList && parentList.classList.contains('collapsed')) {
-     // The tool rows are hidden (fold collapsed). Instead of showing nothing,
-     // surface the fold summary bar's aggregated path tooltip — this is the
-     // ONLY place a path can appear while collapsed.
-     var _sum = parentList.closest('.turn') && getTurnSummaryEl(parentList.closest('.turn'));
-     if (_sum) showTurnSummaryTooltipAt(e, _sum);
+     showTurnSummaryTooltipAt(e, null);
      return;
    }
    var foldBody = el.closest('.turn-fold-body');
    if (foldBody && foldBody.classList.contains('collapsed')) {
-     // The tool row itself is hidden; the user is hovering the fold summary
-     // bar. Show the aggregated path list there.
-     var _turn2 = el.closest('.turn');
-     var _sum2 = _turn2 && getTurnSummaryEl(_turn2);
-     if (_sum2) showTurnSummaryTooltipAt(e, _sum2);
+     showTurnSummaryTooltipAt(e, null);
      return;
    }
 

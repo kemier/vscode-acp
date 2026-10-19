@@ -286,3 +286,29 @@ suite('tool call diff-paths tooltip', () => {
     assert.ok(repopIdx < addIdx, 'toolCallDiffs repopulation must precede addToolCallInline');
   });
 });
+
+suite('collapsed fold title tooltip', () => {
+  test('summary title hover does not list every tool', () => {
+    const body = sourceText();
+    const fnStart = body.indexOf('function showTurnSummaryTooltipAt(');
+    assert.ok(fnStart >= 0, 'showTurnSummaryTooltipAt not found');
+    const fnEnd = body.indexOf('function attachTurnSummaryTooltip(', fnStart);
+    assert.ok(fnEnd > fnStart, 'showTurnSummaryTooltipAt body boundary not found');
+    const fnBody = body.slice(fnStart, fnEnd);
+    assert.ok(
+      fnBody.indexOf('formatTurnSummaryPathList') < 0,
+      'collapsed title hover must not build the per-tool path list',
+    );
+    assert.ok(
+      fnBody.indexOf("style.display = 'block'") < 0,
+      'collapsed title hover must not open the tooltip',
+    );
+    assert.ok(fnBody.indexOf('hideTcTooltip()') >= 0, 'hover should dismiss a tool tooltip');
+    // Collapsed rows used to forward the hover onto that same list.
+    const rowStart = body.indexOf('function attachToolCallTooltip(el) {');
+    const rowEnd = body.indexOf('var title = (el._toolTitle', rowStart);
+    const rowHead = body.slice(rowStart, rowEnd);
+    assert.ok(rowHead.indexOf('formatTurnSummaryPathList') < 0);
+    assert.ok(rowHead.indexOf('getTurnSummaryEl') < 0);
+  });
+});
