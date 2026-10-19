@@ -319,3 +319,47 @@ suite('deferred drain-turn idle flip', () => {
     assert.strictEqual(h.release().delta, 1, 'only one idle flip survives the re-arm');
   });
 });
+
+suite('claude drain Stop stays up across the end_turn gap', () => {
+  const drive = new Function(`
+    ${extractFn('armClaudeDrainStopIfNeeded')}
+    var claudeDrainTurnOpen = false;
+    var drainFollowUpCount = 0;
+    var isForceCancelled = false;
+    var isProcessing = false;
+    var calls = [];
+    function isClaudeAgent() { return true; }
+    function setProcessing(v, caller) { isProcessing = v; calls.push(caller); }
+    var vscode = { postMessage: function() {} };
+    return function(count, cancelled) {
+      claudeDrainTurnOpen = false;
+      drainFollowUpCount = count;
+      isForceCancelled = cancelled;
+      isProcessing = false;
+      calls = [];
+      var held = armClaudeDrainStopIfNeeded();
+      return { held: held, open: claudeDrainTurnOpen, processing: isProcessing, calls: calls };
+    };
+  `)();
+
+  test('a steered follow-up holds Stop in the same turn as promptEnd', () => {
+    const r = drive(1, false);
+    assert.strictEqual(r.held, true);
+    assert.strictEqual(r.open, true, 'drain turn is open before the first chunk');
+    assert.strictEqual(r.processing, true);
+    assert.deepStrictEqual(r.calls, ['promptEnd-claude-drain-armed']);
+  });
+
+  test('an idle end_turn with nothing queued does not hold Stop', () => {
+    const r = drive(0, false);
+    assert.strictEqual(r.held, false);
+    assert.strictEqual(r.open, false);
+    assert.strictEqual(r.processing, false);
+  });
+
+  test('a forced cancel does not hold Stop', () => {
+    const r = drive(1, true);
+    assert.strictEqual(r.held, false);
+    assert.strictEqual(r.open, false);
+  });
+});

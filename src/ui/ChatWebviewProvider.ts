@@ -9376,12 +9376,25 @@ return true;
 }
 
 /**
- * Open a client-owned turn for claude-code-acp's background steer drain.
- * The adapter streams the drain's follow-up turn with no promptStart, so the
- * first idle agent_message_chunk / tool_call after a normal end_turn (with a
- * steer delivered that turn) opens the turn here. Returns true when the
- * caller's event belongs to the drain turn and should be processed normally.
+ * Keep Stop up across claude-code-acp's post-end_turn steer drain.
+ *
+ * The follow-up turn is streamed with no promptStart. promptEnd used to go
+ * idle immediately, so Send sat there for the whole spawn (often many
+ * seconds) and Stop appeared only when the first drain chunk arrived.
+ * Mark the client-owned turn open now, in the same turn as promptEnd, so
+ * the button never flips to Send in that gap. The tail session_info_update
+ * still closes it via closeClaudeDrainTurn.
+ *
+ * Returns true when Stop was held. Caller must not also go idle.
  */
+function armClaudeDrainStopIfNeeded() {
+  if (drainFollowUpCount <= 0 || !isClaudeAgent() || isForceCancelled) return false;
+  claudeDrainTurnOpen = true;
+  setProcessing(true, 'promptEnd-claude-drain-armed');
+  vscode.postMessage({ type: 'debugLog', message: '[WV-DRAIN-TURN] promptEnd keeping Stop; drain follow-up armed count=' + drainFollowUpCount });
+  return true;
+}
+
 function openClaudeDrainTurnIfNeeded() {
   if (claudeDrainTurnOpen) return true;
   if (drainFollowUpCount <= 0 || !isClaudeAgent() || isForceCancelled) return false;
@@ -12048,6 +12061,15 @@ function handleSend() {
 
     function handleCancel() {
       vscode.postMessage({ type: 'cancelTurn' });
+      // The session/prompt already resolved. Stop is only still showing
+      // because a Claude drain follow-up was armed at promptEnd. Cancel has
+      // no second promptEnd to flip the button, so drop the arm here.
+      // Do not drain the queue — the user just stopped the turn.
+      if (claudeDrainTurnOpen) {
+        claudeDrainTurnOpen = false;
+        drainFollowUpCount = 0;
+        setProcessing(false, 'cancel-during-claude-drain');
+      }
     }
 
     // --- Image attach/paste support ---
@@ -12391,6 +12413,7 @@ function handleSend() {
       compactToggleBtn.setAttribute('aria-pressed', compactMode ? 'true' : 'false');
      if (messagesEl) messagesEl.classList.toggle('compact-mode', compactMode);
      applyCompactModeToAllTurns(compactMode);
+     if (compactMode) hideTcTooltip();
      // Compact mode toggle — todos remain visible in plan bar.
    });
   }
@@ -19293,6 +19316,13 @@ function commitCurrentTextSegment(opts) {
     * can be re-invoked on pointermove to follow the cursor.
     */
    function showTurnSummaryTooltipAt(e, summary) {
+     // Collapsed mode already shows the short title ("3 reads, 2 edits").
+     // The per-call path list on hover restated every tool; leave that for
+     // the expanded rows, which have their own tooltips.
+     if (compactMode) {
+       if (tcTooltipEl && tcTooltipEl.style.display !== 'none' && !tcTooltipEl._isStageTooltip) hideTcTooltip();
+       return;
+     }
      var text = formatTurnSummaryPathList(summary);
      if (!text) return;
      if (tcTooltipEl && tcTooltipEl.style.display !== 'none' && tcTooltipEl._isStageTooltip) {
@@ -19316,8 +19346,10 @@ function commitCurrentTextSegment(opts) {
     * Attach a hover tooltip to a fold summary bar ("3 reads, 2 writes") that
     * lists each tool with its full file path. The rows are the natural hover
     * target when expanded (they already have attachToolCallTooltip); this covers
-    * the bar itself — most useful when the fold is collapsed and the rows are
-    * gone. Guarded so a rebuild re-binding is a no-op.
+    * the bar when Collapse is off and the fold is still a summary. Collapsed
+    * mode suppresses it — the title is enough, and the path list is the
+    * detail the user asked not to see on hover. Guarded so a rebuild
+    * re-binding is a no-op.
     */
    function attachTurnSummaryTooltip(summary) {
      if (!summary || summary._summaryTooltipBound) return;
@@ -19326,6 +19358,7 @@ function commitCurrentTextSegment(opts) {
        showTurnSummaryTooltipAt(e, summary);
      });
      summary.addEventListener('pointermove', function(e) {
+       if (compactMode) return;
        if (tcTooltipEl && tcTooltipEl.style.display !== 'none') positionTcTooltip(e);
      });
      summary.addEventListener('pointerleave', function() {
@@ -22746,8 +22779,13 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       if (!_wasCancelled && !isLoadingSession) {
         offerImplementPlan();
       }
+      // A steered Claude message is delivered as a follow-up AFTER this
+      // end_turn, with no promptStart of its own. Going idle here shows Send
+      // until the first drain chunk. Reset per-turn flags, then arm Stop
+      // again before this handler yields so the button paints once, as Stop.
       setProcessing(false, 'promptEnd');
-      vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] after setProcessing(false): isProcessing=' + isProcessing + ' isCompacting=' + isCompacting + ' messageQueue.length=' + messageQueue.length + ' pendingSendAfterCancel=' + !!pendingSendAfterCancel });
+      var _heldStopForClaudeDrain = armClaudeDrainStopIfNeeded();
+      vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] after setProcessing(false): isProcessing=' + isProcessing + ' isCompacting=' + isCompacting + ' messageQueue.length=' + messageQueue.length + ' pendingSendAfterCancel=' + !!pendingSendAfterCancel + ' heldStopForClaudeDrain=' + _heldStopForClaudeDrain });
        // Interrupted: keep partial reply folded and refresh the ▸ header
         // (thought-only / Claude cancel often had toolCount 0 → header hidden).
         if (_wasCancelled && currentTurnEl && compactMode) {
