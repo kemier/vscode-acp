@@ -16222,6 +16222,11 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
                }
              );
              _outsideAsst.forEach(function(a) {
+               // Remember the real end-turn reply. Re-collapse must lift THIS
+               // bubble, not whichever assistant has the highest history index
+               // — a later interim segment can outrank it and then stays
+               // visible in the collapsed turn.
+               a.setAttribute('data-final-reply', '1');
                a.classList.add('assistant-interim');
                a.classList.remove('assistant-summary');
                var _ai = assistantHistoryIndex(a);
@@ -16703,6 +16708,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
 function orderCompactFoldContents(body) {
   if (!body) return;
     var turn = body.parentElement;
+    if (turn && turn.classList.contains('turn-tools')) turn = turn.parentElement;
     if (!turn || !turn.classList.contains('turn')) return;
 
 
@@ -16812,6 +16818,7 @@ function orderCompactFoldContents(body) {
               if (prev === assistantEl) return;
               prev.classList.add('assistant-interim');
               prev.classList.remove('assistant-summary');
+              prev.removeAttribute('data-final-reply');
               body.appendChild(prev);
             }
           );
@@ -16822,9 +16829,11 @@ function orderCompactFoldContents(body) {
               if (prev === assistantEl || prev.classList.contains('assistant-summary')) return;
               prev.classList.add('assistant-interim');
               prev.classList.remove('assistant-summary');
+              prev.removeAttribute('data-final-reply');
               body.appendChild(prev);
             }
           );
+          assistantEl.setAttribute('data-final-reply', '1');
           if (body.nextSibling) currentTurnEl.insertBefore(assistantEl, body.nextSibling);
           currentTurnEl.appendChild(assistantEl);
           return;
@@ -16928,7 +16937,15 @@ function orderCompactFoldContents(body) {
       var assistants = Array.prototype.slice.call(turn.querySelectorAll('.message.assistant'));
       if (!assistants.length) return;
       var body = getTurnFoldBody(turn) || ensureTurnFoldStructure(turn, true, true);
-      var summaryEl = getLastAssistantByHistoryIndex(assistants);
+      // The end-turn reply is pinned when it is first lifted (and again when
+      // the user expands the fold). A later interim bubble can carry a higher
+      // data-history-index; picking that one on re-collapse leaves it outside
+      // the fold and hides the real reply.
+      var summaryEl = null;
+      for (var pi = 0; pi < assistants.length; pi++) {
+        if (assistants[pi].getAttribute('data-final-reply') === '1') summaryEl = assistants[pi];
+      }
+      if (!summaryEl) summaryEl = getLastAssistantByHistoryIndex(assistants);
       // Interrupted turns: keep every assistant inside the fold (thoughts +
       // tools + partial reply together). Otherwise Codex resume promoted the
       // last bubble to the main chat while expand still grouped the rest.
@@ -17028,11 +17045,14 @@ function orderCompactFoldContents(body) {
       if (a === summaryEl) {
          a.classList.add('assistant-summary');
          a.classList.remove('assistant-interim');
+         a.setAttribute('data-final-reply', '1');
          a.removeAttribute('data-interrupted');
          turn.appendChild(a);
         } else {
           a.classList.add('assistant-interim');
           a.classList.remove('assistant-summary');
+          a.removeAttribute('data-final-reply');
+          if (body && !body.contains(a)) body.appendChild(a);
         }
       });
      // Re-home interim segments in document order (avoid append-to-bottom).

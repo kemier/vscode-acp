@@ -188,6 +188,24 @@ suite('compact fold ordering', () => {
       after.indexOf('turnElHasRunningTools(tc)') > 0,
       'expand branch must ignore running tools when computing the pin',
     );
+    assert.ok(
+      after.indexOf("a.setAttribute('data-final-reply', '1')") > 0,
+      'expand must remember the end-turn reply before demoting it',
+    );
+  });
+
+  test('re-collapse lifts the pinned end-turn reply, not the highest history index', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const promoteIdx = src.indexOf('function promoteFinalAssistantForTurn(');
+    assert.ok(promoteIdx > 0, 'promoteFinalAssistantForTurn missing');
+    const body = src.slice(promoteIdx, src.indexOf('function sessionMarkedInterrupted', promoteIdx));
+    const pin = body.indexOf("getAttribute('data-final-reply') === '1'");
+    const fallback = body.indexOf('getLastAssistantByHistoryIndex(assistants)');
+    assert.ok(pin > 0 && fallback > pin, 'promote must prefer data-final-reply over max history index');
+    assert.ok(
+      body.indexOf("a.removeAttribute('data-final-reply')") > 0,
+      'non-summary assistants must drop the final-reply pin',
+    );
   });
 
   test('promote never re-homes tool groups out of the fold body', () => {
