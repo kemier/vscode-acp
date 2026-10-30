@@ -564,3 +564,78 @@ suite('a steered message is not re-sent when its echo never matched', () => {
     assert.ok(ack.includes('messageQueue.splice(i, 1)'), ack);
   });
 });
+
+suite('Send Now on an already-finished turn does not lose the message', () => {
+  /**
+   * Measured loss (gpu-1050, Claude Code, session 75934642, 2026-10-30):
+   *   06:35:45.718 mid-turn msg queued → auto-steered (steeredThisTurnCount=1)
+   *   06:35:47.587 Send Now clicked → steer retracted, pendingSendAfterCancel set,
+   *                session/cancel posted
+   *   06:35:47.615 the model had ALREADY finished on its own — the prompt resolves
+   *                stopReason=end_turn (NOT cancelled)
+   *   06:35:47.649 promptEnd(end_turn): drainFollowUpCount = steeredThisTurnCount = 1
+   *                (the retracted steer still counted) → armClaudeDrainStopIfNeeded
+   *                holds isProcessing=true, waiting for a follow-up turn that never
+   *                streams (the adapter discarded the retracted steer)
+   *   06:35:47.650+ the post-cancel setTimeout re-send is gated on !isProcessing —
+   *                never fires; pendingSendAfterCancel was already nulled → the
+   *                message is silently dropped and the panel wedges in "processing".
+   *
+   * Two-part fix:
+   *   A. The retract gives the drain slot back (steeredThisTurnCount--), so the
+   *      arm does not wait for a follow-up that will never stream.
+   *   B. When isProcessing is held anyway (a DIFFERENT steered entry's arm, or a
+   *      same-tick new turn), the re-send re-queues the entry at the head instead
+   *      of dropping it — the next drain point sends it first.
+   */
+  test('the retract returns the claude-drain slot before the cancel', () => {
+    const fn = extractFn('sendQueuedMessageNow');
+    // The give-back must be inside the steered branch, floor-guarded so an
+    // already-consumed count (promptEnd already ran) never goes negative.
+    assert.ok(fn.includes('if (steeredThisTurnCount > 0) steeredThisTurnCount--;'), fn);
+    assert.ok(fn.includes('if (steeredThisTurnCount === 0) hasSteeredThisTurn = false;'), fn);
+    const giveBack = fn.indexOf('steeredThisTurnCount--');
+    const cancel = fn.indexOf("type: 'cancelTurn'");
+    assert.ok(giveBack > 0 && cancel > giveBack, 'the slot must be returned before the cancel posts: ' + fn);
+  });
+
+  test('promptEnd arms the drain from the live steer counters (the input fix A feeds)', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    // The arm reads hasSteeredThisTurn/steeredThisTurnCount at promptEnd —
+    // decrementing them at retract time is what disarms it here.
+    assert.ok(src.includes('drainFollowUpCount = isClaudeAgent() && hasSteeredThisTurn'), src);
+  });
+
+  test('the delivered-drop check runs before the isProcessing gate', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const branch = src.indexOf('if (pendingSendAfterCancel) {');
+    assert.ok(branch > 0, 'pendingSendAfterCancel branch must exist');
+    const seg = src.slice(branch, branch + 4000);
+    const drop = seg.indexOf('entry.steered && entry.bubbleShown');
+    const gate = seg.indexOf('if (!isProcessing)');
+    assert.ok(drop > 0, 'delivered-drop check must exist: ' + seg);
+    assert.ok(gate > drop, 'a delivered entry must be dropped before the processing gate, never re-queued: ' + seg);
+  });
+
+  test('a held turn re-queues the entry at the head instead of dropping it', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const branch = src.indexOf('if (pendingSendAfterCancel) {');
+    const seg = src.slice(branch, branch + 4000);
+    // The else arm of `if (!isProcessing)` must put the entry back at the
+    // head — Send Now means jump-the-queue — and repaint the strip. A silent
+    // drop here was the "clicked Send Now, nothing ever appeared" bug.
+    assert.ok(seg.includes('messageQueue.unshift(entry);'), 'held turn must re-queue at head: ' + seg);
+    assert.ok(seg.includes("wvQueueLog('REQUEUE-SEND-NOW'"), 'the re-queue must be logged: ' + seg);
+    // And it must NOT re-queue a delivered entry (that path returns earlier).
+    assert.ok(!/else[^}]*messageQueue\.push\(entry\)/.test(seg), 're-queue is head-unshift only, not a tail push: ' + seg);
+  });
+
+  test('a re-queued entry drains exactly once (steered flag was cleared by the retract)', () => {
+    // drainQueue's head-drop guard requires steered && bubbleShown; the retract
+    // set entry.steered=false, so a re-queued Send-Now entry falls through to the
+    // normal sendPrompt path (single send, slash commands routed, bubble shown).
+    const drain = extractFn('drainQueue');
+    assert.ok(drain.includes("handleLocalSlashCommand(entry.text)"), 'drainQueue routes slash commands: ' + drain);
+    assert.ok(drain.includes('if (!entry.bubbleShown)'), 'drainQueue shows the bubble for unshown entries: ' + drain);
+  });
+});

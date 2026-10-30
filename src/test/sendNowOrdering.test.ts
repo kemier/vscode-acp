@@ -37,10 +37,12 @@ interface Harness {
   queue: any[];
   pending: any;
   statusText: string;
+  steerCount: number;
+  steeredThisTurn: boolean;
   run: (index: number) => void;
 }
 
-function makeHarness(opts: { isProcessing: boolean; queue: any[] }): Harness {
+function makeHarness(opts: { isProcessing: boolean; queue: any[]; steeredThisTurnCount?: number }): Harness {
   const body = extractSendQueuedMessageNow();
   const calls: string[] = [];
   const posted: any[] = [];
@@ -50,6 +52,11 @@ function makeHarness(opts: { isProcessing: boolean; queue: any[] }): Harness {
     pendingSendAfterCancel: null as any,
     hasSentPrompt: false,
     isSendingPrompt: false,
+    // The claude-drain arm counters sendQueuedMessageNow must return a slot to
+    // when it retracts a steer (regression: Send Now on an already-finished
+    // turn wedged the arm and the re-send never fired).
+    hasSteeredThisTurn: (opts.steeredThisTurnCount ?? 0) > 0,
+    steeredThisTurnCount: opts.steeredThisTurnCount ?? 0,
     statusEl: { textContent: '' },
   };
 
@@ -63,6 +70,8 @@ function makeHarness(opts: { isProcessing: boolean; queue: any[] }): Harness {
     let pendingSendAfterCancel = state.pendingSendAfterCancel;
     let hasSentPrompt = state.hasSentPrompt;
     let isSendingPrompt = state.isSendingPrompt;
+    let hasSteeredThisTurn = state.hasSteeredThisTurn;
+    let steeredThisTurnCount = state.steeredThisTurnCount;
     const statusEl = state.statusEl;
     const vscode = { postMessage: (m) => { posted.push(m); } };
     function renderQueue() { calls.push('renderQueue'); }
@@ -75,6 +84,8 @@ function makeHarness(opts: { isProcessing: boolean; queue: any[] }): Harness {
       sendQueuedMessageNow(index);
       state.pendingSendAfterCancel = pendingSendAfterCancel;
       state.messageQueue = messageQueue;
+      state.hasSteeredThisTurn = hasSteeredThisTurn;
+      state.steeredThisTurnCount = steeredThisTurnCount;
     };
   `,
   );
@@ -91,6 +102,12 @@ function makeHarness(opts: { isProcessing: boolean; queue: any[] }): Harness {
     },
     get statusText() {
       return state.statusEl.textContent;
+    },
+    get steerCount() {
+      return state.steeredThisTurnCount;
+    },
+    get steeredThisTurn() {
+      return state.hasSteeredThisTurn;
     },
     run,
   };
@@ -131,6 +148,27 @@ suite('Send Now ordering (queued message vs the turn it interrupts)', () => {
     assert.ok(retract >= 0, 'must retract the held steer first: ' + JSON.stringify(types));
     assert.ok(cancel > retract, 'retract must precede the cancel: ' + JSON.stringify(types));
     assert.ok(h.pending, 'entry still delivered once, as the post-cancel prompt');
+  });
+
+  test('the retract returns the claude-drain slot (regression: end_turn-after-cancel wedge)', () => {
+    // The retracted steer will never stream the follow-up turn that promptEnd
+    // arms a drain slot for — returning the slot keeps the arm at 0 so the
+    // post-cancel re-send (gated on !isProcessing) actually fires.
+    const h = makeHarness({
+      isProcessing: true,
+      queue: [{ text: 'also check 192.168.124.14', images: [], steered: true, steerPending: true }],
+      steeredThisTurnCount: 1,
+    });
+    h.run(0);
+    assert.strictEqual(h.steerCount, 0, 'the retracted steer must give its drain slot back');
+    assert.strictEqual(h.steeredThisTurn, false, 'no steers remain in flight this turn');
+  });
+
+  test('an unsteered entry leaves the drain-arm counters untouched', () => {
+    const h = makeHarness({ isProcessing: true, queue: [{ text: 'plain', images: [] }], steeredThisTurnCount: 0 });
+    h.run(0);
+    assert.strictEqual(h.steerCount, 0, 'floor-guarded: never goes negative');
+    assert.strictEqual(h.steeredThisTurn, false);
   });
 
   test('when idle: sends immediately and shows the bubble', () => {

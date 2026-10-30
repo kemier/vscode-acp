@@ -8563,6 +8563,19 @@ let isCompacting = false;  // true while /compact is running
      vscode.postMessage({ type: 'steerPromptRemove', text: queueEntryPromptText(entry) || '' });
      entry.steered = false;
      entry.steerPending = false;
+     // Give back the claude-drain slot this steer reserved. promptEnd arms
+     // drainFollowUpCount = steeredThisTurnCount follow-up windows — one per
+     // steer SET this turn — because claude-code-acp re-queues an unconsumed
+     // steer and streams it as a follow-up turn with no promptStart. The
+     // retract above makes the adapter DISCARD this steer instead, so its
+     // follow-up will never stream. If the slot is not returned, the arm
+     // holds isProcessing=true waiting for a turn that never comes AND blocks
+     // the pendingSendAfterCancel re-send below (gated on !isProcessing) —
+     // the "clicked Send Now, message never appeared" bug (observed when the
+     // model finished on its own and answered session/cancel with the
+     // already-computed end_turn instead of cancelled).
+     if (steeredThisTurnCount > 0) steeredThisTurnCount--;
+     if (steeredThisTurnCount === 0) hasSteeredThisTurn = false;
    }
    pendingSendAfterCancel = entry;
    vscode.postMessage({ type: 'cancelTurn' });
@@ -22874,22 +22887,24 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       var entry = pendingSendAfterCancel;
       pendingSendAfterCancel = null;
       setTimeout(() => {
+        // A "Send Now" entry that was steered AND confirmed delivered (echo
+        // landed, bubbleShown) must NOT be re-sent here either — same double
+        // round as the drainQueue path. Drop it. This check runs BEFORE the
+        // isProcessing gate: a delivered entry must never be re-sent NOR
+        // re-queued, no matter what state the turn is in.
+        //
+        // A steered entry WITHOUT a delivered echo was NOT delivered: the
+        // cancelled turn it was aimed at skipped its steer drain, so the
+        // stage-2 echo never fired. Do not drop it — fall through and send it
+        // as a normal prompt below (the bubble is shown at line ~21100 since
+        // bubbleShown is false). This is the same recovery as the drainQueue
+        // fix, for the post-cancel path.
+        if (entry.steered && entry.bubbleShown) {
+          vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] pendingSendAfterCancel: entry steered AND delivered (echo landed) — not re-sent' });
+          wvQueueLog('DRAIN-SKIP-STEERED', 'send-now-after-cancel entry was steered and confirmed delivered; not re-sent');
+          return;
+        }
         if (!isProcessing) {
-          // A "Send Now" entry that was steered AND confirmed delivered (echo
-          // landed, bubbleShown) must NOT be re-sent here either — same double
-          // round as the drainQueue path. Drop it.
-          //
-          // A steered entry WITHOUT a delivered echo was NOT delivered: the
-          // cancelled turn it was aimed at skipped its steer drain, so the
-          // stage-2 echo never fired. Do not drop it — fall through and send it
-          // as a normal prompt below (the bubble is shown at line ~21100 since
-          // bubbleShown is false). This is the same recovery as the drainQueue
-          // fix, for the post-cancel path.
-          if (entry.steered && entry.bubbleShown) {
-            vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] pendingSendAfterCancel: entry steered AND delivered (echo landed) — not re-sent' });
-            wvQueueLog('DRAIN-SKIP-STEERED', 'send-now-after-cancel entry was steered and confirmed delivered; not re-sent');
-            return;
-          }
           // Route slash commands through handleLocalSlashCommand so local UI
           // is triggered. The bubble is added HERE, after the cancelled turn
           // has closed, so the message lands below the prior turn's content.
@@ -22909,6 +22924,21 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        // selection already inlined by queueEntryPromptText — the same text twice.
        selections: [] });
           }
+        } else {
+          // isProcessing is still true — the claude drain arm is holding the
+          // turn open for ANOTHER steered entry's follow-up, or a new turn
+          // started in the same tick. Dropping the entry here silently loses
+          // the message the user explicitly asked to send NOW (pendingSend-
+          // AfterCancel was already cleared above, so nothing would ever retry
+          // it). Re-queue it at the HEAD instead: the next drain point
+          // (closeClaudeDrainTurn → drainAfterDrainTurnClose, or the next
+          // promptEnd) sends it first, preserving Send-Now's jump-the-queue
+          // semantics. entry.steered was cleared by the retract, so drainQueue
+          // treats it as a normal undelivered entry and sends it once.
+          messageQueue.unshift(entry);
+          renderQueue();
+          vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] pendingSendAfterCancel: isProcessing still true (drain arm / new turn) — re-queued at head, queueLen=' + messageQueue.length });
+          wvQueueLog('REQUEUE-SEND-NOW', 'isProcessing held at post-cancel send; re-queued at head queueLen=' + messageQueue.length);
         }
       }, 0);
        } else if (!isCompacting && messageQueue.length > 0) {
