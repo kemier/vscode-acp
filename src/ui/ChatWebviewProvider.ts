@@ -16468,6 +16468,29 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
           a.classList.remove('assistant-summary');
         });
       }
+      // The collapsed block shows one reply. That reply is the last assistant
+      // in the turn, not the first one that was parked outside (a preamble
+      // committed before later text, or a data-final-reply pin left on it).
+      // Skip while streaming so each mid-turn segment does not flash outside.
+      if (!(isProcessing && !isLoadingSession)) {
+        var _rankPool = interimAssistants.concat(summaryAssistants);
+        if (_rankPool.length > 1) {
+          var _keepOutside = getLastAssistantByHistoryIndex(_rankPool);
+          interimAssistants = [];
+          summaryAssistants = [];
+          _rankPool.forEach(function(a) {
+            if (a === _keepOutside) {
+              summaryAssistants.push(a);
+              a.setAttribute('data-final-reply', '1');
+            } else {
+              a.classList.add('assistant-interim');
+              a.classList.remove('assistant-summary');
+              a.removeAttribute('data-final-reply');
+              interimAssistants.push(a);
+            }
+          });
+        }
+      }
      // Do NOT auto-promote the last interim to summary here. Mid-turn commits
      // clear currentAssistantEl; promoting then made each segment flash in the
      // panel until the next one arrived and demoted it. Only placeSummaryAssistant
@@ -16936,9 +16959,14 @@ function orderCompactFoldContents(body) {
       var bestIdx = assistantHistoryIndex(best);
       for (var ai = 1; ai < assistants.length; ai++) {
         var idx = assistantHistoryIndex(assistants[ai]);
-        if (idx > bestIdx) {
-          bestIdx = idx;
+        // Higher history index wins. Equal indexes, and a run of unstamped
+        // bubbles, keep the later element — the first assistant must not win
+        // just because it is assistants[0].
+        var laterUnstamped = idx < 0 && bestIdx < 0;
+        var laterTie = idx === bestIdx && idx >= 0;
+        if (idx > bestIdx || laterTie || laterUnstamped) {
           best = assistants[ai];
+          if (idx > bestIdx) bestIdx = idx;
         }
       }
       return best;
@@ -16950,15 +16978,10 @@ function orderCompactFoldContents(body) {
       var assistants = Array.prototype.slice.call(turn.querySelectorAll('.message.assistant'));
       if (!assistants.length) return;
       var body = getTurnFoldBody(turn) || ensureTurnFoldStructure(turn, true, true);
-      // The end-turn reply is pinned when it is first lifted (and again when
-      // the user expands the fold). A later interim bubble can carry a higher
-      // data-history-index; picking that one on re-collapse leaves it outside
-      // the fold and hides the real reply.
-      var summaryEl = null;
-      for (var pi = 0; pi < assistants.length; pi++) {
-        if (assistants[pi].getAttribute('data-final-reply') === '1') summaryEl = assistants[pi];
-      }
-      if (!summaryEl) summaryEl = getLastAssistantByHistoryIndex(assistants);
+      // Leave the last assistant outside. A data-final-reply pin on the first
+      // bubble (preamble lifted early, then remembered on expand) must not
+      // keep that preamble outside once a later assistant exists.
+      var summaryEl = getLastAssistantByHistoryIndex(assistants);
       // Interrupted turns: keep every assistant inside the fold (thoughts +
       // tools + partial reply together). Otherwise Codex resume promoted the
       // last bubble to the main chat while expand still grouped the rest.

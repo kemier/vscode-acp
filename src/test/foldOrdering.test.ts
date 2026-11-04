@@ -194,14 +194,48 @@ suite('compact fold ordering', () => {
     );
   });
 
-  test('re-collapse lifts the pinned end-turn reply, not the highest history index', () => {
+  test('collapsed summary is the last assistant, not the first', () => {
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    const start = src.indexOf('function assistantHistoryIndex(el) {');
+    const end = src.indexOf('function promoteFinalAssistantForTurn(', start);
+    assert.ok(start > 0 && end > start, 'assistant picker missing');
+    const picker = new Function(
+      `${src.slice(start, end)}\nreturn { assistantHistoryIndex, getLastAssistantByHistoryIndex };`,
+    )() as {
+      getLastAssistantByHistoryIndex: (els: Array<{ getAttribute(n: string): string | null }>) => { id: string };
+    };
+    const bubble = (id: string, historyIndex?: number) => ({
+      id,
+      getAttribute: (n: string) =>
+        n === 'data-history-index' && historyIndex !== undefined ? String(historyIndex) : null,
+    });
+    const first = bubble('first', 10);
+    const mid = bubble('mid', 20);
+    const last = bubble('last', 30);
+    assert.strictEqual(picker.getLastAssistantByHistoryIndex([first, mid, last]).id, 'last');
+    // Missing stamps used to keep assistants[0], so collapse always lifted the preamble.
+    const a = bubble('a');
+    const b = bubble('b');
+    const c = bubble('c');
+    assert.strictEqual(picker.getLastAssistantByHistoryIndex([a, b, c]).id, 'c');
+    const early = bubble('early', 4);
+    const later = bubble('later', 4);
+    assert.strictEqual(picker.getLastAssistantByHistoryIndex([early, later]).id, 'later');
+  });
+
+  test('re-collapse lifts the last assistant, not an earlier pinned preamble', () => {
     const src = fs.readFileSync(SOURCE, 'utf8');
     const promoteIdx = src.indexOf('function promoteFinalAssistantForTurn(');
     assert.ok(promoteIdx > 0, 'promoteFinalAssistantForTurn missing');
     const body = src.slice(promoteIdx, src.indexOf('function sessionMarkedInterrupted', promoteIdx));
-    const pin = body.indexOf("getAttribute('data-final-reply') === '1'");
-    const fallback = body.indexOf('getLastAssistantByHistoryIndex(assistants)');
-    assert.ok(pin > 0 && fallback > pin, 'promote must prefer data-final-reply over max history index');
+    assert.ok(
+      body.indexOf('var summaryEl = getLastAssistantByHistoryIndex(assistants);') > 0,
+      'promote must choose the last assistant by history index',
+    );
+    assert.ok(
+      body.indexOf("getAttribute('data-final-reply') === '1'") < 0,
+      'an earlier data-final-reply pin must not override the last assistant',
+    );
     assert.ok(
       body.indexOf("a.removeAttribute('data-final-reply')") > 0,
       'non-summary assistants must drop the final-reply pin',
