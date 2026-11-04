@@ -610,7 +610,9 @@ suite('Send Now on an already-finished turn does not lose the message', () => {
     const src = fs.readFileSync(SOURCE, 'utf8');
     const branch = src.indexOf('if (pendingSendAfterCancel) {');
     assert.ok(branch > 0, 'pendingSendAfterCancel branch must exist');
-    const seg = src.slice(branch, branch + 4000);
+    // Branch grew with the /clear force-wipe + discard guards — keep the
+    // window large enough to cover drop → isProcessing → re-queue.
+    const seg = src.slice(branch, branch + 6000);
     const drop = seg.indexOf('entry.steered && entry.bubbleShown');
     const gate = seg.indexOf('if (!isProcessing)');
     assert.ok(drop > 0, 'delivered-drop check must exist: ' + seg);
@@ -620,7 +622,7 @@ suite('Send Now on an already-finished turn does not lose the message', () => {
   test('a held turn re-queues the entry at the head instead of dropping it', () => {
     const src = fs.readFileSync(SOURCE, 'utf8');
     const branch = src.indexOf('if (pendingSendAfterCancel) {');
-    const seg = src.slice(branch, branch + 4000);
+    const seg = src.slice(branch, branch + 6000);
     // The else arm of `if (!isProcessing)` must put the entry back at the
     // head — Send Now means jump-the-queue — and repaint the strip. A silent
     // drop here was the "clicked Send Now, nothing ever appeared" bug.

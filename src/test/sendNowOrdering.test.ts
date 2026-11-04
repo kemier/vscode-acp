@@ -68,16 +68,28 @@ function makeHarness(opts: { isProcessing: boolean; queue: any[]; steeredThisTur
     let messageQueue = state.messageQueue;
     let isProcessing = state.isProcessing;
     let pendingSendAfterCancel = state.pendingSendAfterCancel;
+    let sendNowPending = false;
+    let clearDiscardQueue = false;
     let hasSentPrompt = state.hasSentPrompt;
     let isSendingPrompt = state.isSendingPrompt;
     let hasSteeredThisTurn = state.hasSteeredThisTurn;
     let steeredThisTurnCount = state.steeredThisTurnCount;
+    void clearDiscardQueue;
+    void sendNowPending;
     const statusEl = state.statusEl;
     const vscode = { postMessage: (m) => { posted.push(m); } };
     function renderQueue() { calls.push('renderQueue'); }
     function addUserBubbleForQueuedEntry(e) { calls.push('addUserBubble:' + e.text); }
     function handleLocalSlashCommand() { calls.push('localSlash'); return false; }
     function setProcessing() { calls.push('setProcessing'); }
+    function wvQueueLog() {}
+    function isClearSlashCommand(text) { return String(text || '').trim() === '/clear'; }
+    function discardRemainingQueue(reason) {
+      if (messageQueue.length === 0) return;
+      calls.push('discardRemainingQueue:' + reason + ':' + messageQueue.length);
+      messageQueue.length = 0;
+      renderQueue();
+    }
     ${QUEUE_ENTRY_HELPERS_SRC}
     ${body}
     return function(index) {
@@ -191,5 +203,23 @@ suite('Send Now ordering (queued message vs the turn it interrupts)', () => {
     assert.deepStrictEqual(h.posted, []);
     assert.deepStrictEqual(h.calls, []);
     assert.strictEqual(h.queue.length, 1);
+  });
+
+  test('Send Now on /clear discards every other queued message', () => {
+    const h = makeHarness({
+      isProcessing: true,
+      queue: [
+        { text: 'prior work', images: [] },
+        { text: '/clear', images: [] },
+        { text: 'after clear should die', images: [] },
+      ],
+    });
+    h.run(1);
+    assert.strictEqual(h.queue.length, 0, 'prior/later queue items must be discarded with /clear');
+    assert.ok(h.pending && h.pending.text === '/clear', ' /clear stays parked for post-cancel send');
+    assert.ok(
+      h.calls.some((c) => c.startsWith('discardRemainingQueue:send-now-/clear:')),
+      'discard must run: ' + JSON.stringify(h.calls),
+    );
   });
 });

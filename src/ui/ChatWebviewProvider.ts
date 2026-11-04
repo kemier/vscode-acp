@@ -8536,16 +8536,46 @@ let isCompacting = false;  // true while /compact is running
    // then sends the message. After the cancel completes and promptEnd
    // fires, the message is sent via a one-shot flag.
    var pendingSendAfterCancel = null;
+   // True from Send Now click until the parked entry is sent or re-queued.
+   // Blocks FIFO drain from claude-drain-turn-end so a raced drain cannot
+   // steal prior queue items ahead of the Send-Now target (observed: Send
+   // Now on /clear let earlier msgs run for minutes while /clear stayed
+   // latched in pendingSendAfterCancel).
+   var sendNowPending = false;
+   // After a /clear prompt is in flight, promptEnd must discard leftovers
+   // instead of draining them into the wiped session.
+   var clearDiscardQueue = false;
    // Set when /stop triggers the cancel path. Like pendingSendAfterCancel,
    // this suppresses the "Conversation interrupted" notice — /stop is a
    // process kill, not an interruption — and lets queued messages drain.
    var suppressInterruptNotice = false;
+
+ function isClearSlashCommand(text) {
+   return String(text || '').trim() === '/clear';
+ }
+
+ function discardRemainingQueue(reason) {
+   if (messageQueue.length === 0) return;
+   vscode.postMessage({
+     type: 'debugLog',
+     message: '[DRAIN-DBG] discarding ' + messageQueue.length + ' queued msg(s) (' + reason + ')',
+   });
+   wvQueueLog('QUEUE-DISCARD', reason);
+   messageQueue.length = 0;
+   renderQueue();
+ }
+
  function sendQueuedMessageNow(index) {
    if (index < 0 || index >= messageQueue.length) return;
    const entry = messageQueue[index];
    // Remove from queue immediately
    messageQueue.splice(index, 1);
    renderQueue();
+   // Send Now on /clear abandons every other queued prompt — they were
+   // meant for the conversation that clear is about to wipe.
+   if (isClearSlashCommand(entry.text)) {
+     discardRemainingQueue('send-now-/clear');
+   }
 
   // The user bubble is added when the message is actually sent (not at
   // queue time), so it must be added here. Helper centralizes the
@@ -8578,6 +8608,7 @@ let isCompacting = false;  // true while /compact is running
      if (steeredThisTurnCount === 0) hasSteeredThisTurn = false;
    }
    pendingSendAfterCancel = entry;
+   sendNowPending = true;
    vscode.postMessage({ type: 'cancelTurn' });
    if (statusEl) {
      statusEl.textContent = 'Interrupting — sending now…';
@@ -9305,6 +9336,12 @@ function agentSupportsSteering(agentName) {
 
 function drainQueue() {
  if (messageQueue.length === 0) return false;
+ // Send Now owns the next prompt — do not FIFO-steal earlier queue items
+ // while the cancel → pendingSendAfterCancel handoff is in flight.
+ if (sendNowPending || pendingSendAfterCancel) {
+   vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drainQueue: SKIPPED — send-now pending (sendNowPending=' + sendNowPending + ' pendingSendAfterCancel=' + !!pendingSendAfterCancel + ')' });
+   return false;
+ }
  // A head-of-line entry that was STEERED into the turn that just ended is DROPped only
  // when it was actually DELIVERED — i.e. its stage-2 echo (user_message_chunk, the
  // "delivered" ack) already landed and set entry.bubbleShown. The echo is the ONLY
@@ -9511,8 +9548,15 @@ function releaseDrainTurnIdle() {
 
 /** FIFO drain of queued messages behind a closed drain turn. */
 function drainAfterDrainTurnClose() {
+  // A live Send Now must win over FIFO: claude-drain-turn-end used to flip
+  // idle and drain the queue before promptEnd(cancelled) flushed
+  // pendingSendAfterCancel — so Send Now on /clear ran every prior msg first.
+  if (sendNowPending || pendingSendAfterCancel) {
+    vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] drainAfterDrainTurnClose: SKIPPED — send-now pending' });
+    return;
+  }
   if (!isCompacting && messageQueue.length > 0) {
-    setTimeout(function() { if (!isProcessing && messageQueue.length > 0) { drainQueue(); } }, 0);
+    setTimeout(function() { if (!isProcessing && !sendNowPending && !pendingSendAfterCancel && messageQueue.length > 0) { drainQueue(); } }, 0);
   }
 }
 
@@ -11509,7 +11553,7 @@ if (_isMutatingCmd) {
    * even during streaming (like Claude Code's immediate:true commands).
    * Returns true if the command was handled (caller should stop).
    */
-function handleLocalSlashCommand(cmdText) {
+function handleLocalSlashCommand(cmdText, force) {
   var text = (cmdText !== undefined) ? cmdText.trim() : promptInput.value.trim();
   if (!text.startsWith('/')) { return false; }
   // /stop — kill all running background processes spawned in this session.
@@ -11704,12 +11748,17 @@ function handleLocalSlashCommand(cmdText) {
    // During an active turn, /clear must be queued — wiping conversation
    // state while the LLM is mid-turn causes corruption. The queued /clear
    // is drained after the current turn ends.
-   if (isProcessing) { return false; }
+   // force=true: Send Now / post-cancel delivery — the turn is already
+   // cancelled; skip the queue-gate so the UI wipe always runs (without it
+   // /clear was sent as a raw prompt, history stayed, then FIFO drained).
+   if (isProcessing && !force) { return false; }
    if (isClearing || isCompacting) { return true; }
     promptInput.value = '';
     updateSendButton();
     pendingImages.splice(0);
     imagePreviewStrip.innerHTML = '';
+    // /clear abandons every other queued prompt for this conversation.
+    discardRemainingQueue('local-/clear');
     var isKiroClear = sessionState && /kiro/i.test(sessionState.agentName || sessionState.agentConfigKey || '');
     if (isKiroClear) {
       isClearing = true;
@@ -11755,6 +11804,8 @@ function handleLocalSlashCommand(cmdText) {
       // The agent's reply to the /clear prompt ("Conversation cleared...") is
       // a snapshot: render it transiently and vanish it 3s later.
       slashPromptTurn = true;
+      // promptEnd must not FIFO-drain leftovers into the wiped panel.
+      clearDiscardQueue = true;
      vscode.postMessage({ type: 'sendPrompt', text: '/clear' });
      // After /clear, chatHistory belongs to current session.
      chatHistoryOriginSessionId = (sessionState && sessionState.sessionId) || null;
@@ -22923,17 +22974,21 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         // bubbleShown is false). This is the same recovery as the drainQueue
         // fix, for the post-cancel path.
         if (entry.steered && entry.bubbleShown) {
+          sendNowPending = false;
           vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] pendingSendAfterCancel: entry steered AND delivered (echo landed) — not re-sent' });
           wvQueueLog('DRAIN-SKIP-STEERED', 'send-now-after-cancel entry was steered and confirmed delivered; not re-sent');
           return;
         }
         if (!isProcessing) {
-          // Route slash commands through handleLocalSlashCommand so local UI
-          // is triggered. The bubble is added HERE, after the cancelled turn
-          // has closed, so the message lands below the prior turn's content.
-          // entry.bubbleShown stays as a guard for any future path that shows
-          // the bubble earlier — sendQueuedMessageNow deliberately does not.
-          if (entry.text && entry.text.startsWith('/') && handleLocalSlashCommand(entry.text)) {
+          sendNowPending = false;
+          // /clear must always wipe the panel. force=true bypasses the
+          // isProcessing queue-gate (the turn is already cancelled). Without
+          // force, a raced isProcessing=true skipped the wipe and FIFO-drained
+          // leftovers into the uncleared history.
+          if (isClearSlashCommand(entry.text)) {
+            discardRemainingQueue('send-now-/clear-deliver');
+            handleLocalSlashCommand('/clear', true);
+          } else if (entry.text && entry.text.startsWith('/') && handleLocalSlashCommand(entry.text)) {
             // Local slash command handled it.
           } else {
             if (!entry.bubbleShown) {
@@ -22958,12 +23013,21 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
           // promptEnd) sends it first, preserving Send-Now's jump-the-queue
           // semantics. entry.steered was cleared by the retract, so drainQueue
           // treats it as a normal undelivered entry and sends it once.
+          // /clear still drops every other queued msg — only clear itself
+          // should survive to run next.
+          if (isClearSlashCommand(entry.text)) {
+            discardRemainingQueue('send-now-/clear-requeue');
+          }
           messageQueue.unshift(entry);
           renderQueue();
+          sendNowPending = false;
           vscode.postMessage({ type: 'debugLog', message: '[DRAIN-DBG] pendingSendAfterCancel: isProcessing still true (drain arm / new turn) — re-queued at head, queueLen=' + messageQueue.length });
           wvQueueLog('REQUEUE-SEND-NOW', 'isProcessing held at post-cancel send; re-queued at head queueLen=' + messageQueue.length);
         }
       }, 0);
+       } else if (clearDiscardQueue) {
+        clearDiscardQueue = false;
+        discardRemainingQueue('post-/clear-promptEnd');
        } else if (!isCompacting && messageQueue.length > 0) {
         // Use current isCompacting (not _wasCompacting) — flushCompactionMessages
         // may have already cleared it during this promptEnd, meaning compaction
