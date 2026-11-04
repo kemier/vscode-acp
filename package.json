@@ -381,9 +381,13 @@
         "acp.modelImageSupport": {
           "type": "object",
           "default": {
-            "qwen3.8-flash-next": false
+            "deepseek-v4.1-flash": true,
+            "deepseek-v4-flash": true,
+            "qwen3.8-flash-next": true,
+            "strata-ubuntu": true,
+            "strata-proxy": true
           },
-          "description": "Per-model image-input capability overrides, applied on top of the ~/.codex model catalogs. Keys are model slugs; a key also matches family variants (slug starting with key + '-'), so 'qwen3.8-flash-next' covers 'qwen3.8-flash-next-coder-iq1_m'. true shows the attach button, false hides it — beats the catalog and the agent-level default. Example: {\"qwen3.8-flash-next\": false} hides the image button for a text-only local model served by claude-code-acp."
+          "description": "Per-model image-input capability overrides, applied on top of the ~/.codex model catalogs. Keys are model slugs; a key also matches family variants (slug starting with key + '-'), so 'qwen3.8-flash-next' covers 'qwen3.8-flash-next-coder-iq1_m'. true shows the attach button, false hides it — beats the catalog and the agent-level default. DeepSeek-V4.1-Flash on strata has --vision on; the legacy qwen3.8-flash-next alias now routes there too."
         },
         "acp.approvedCommands": {
           "type": "array",
