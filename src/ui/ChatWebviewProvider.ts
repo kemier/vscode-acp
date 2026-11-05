@@ -9458,6 +9458,22 @@ function openClaudeDrainTurnIfNeeded() {
 }
 
 /**
+ * Idle Claude activity with no pre-armed drain slot — typically a CLI
+ * task-notification relay whose start signal raced the first chunk, or a
+ * deferred auto-follow-up that started after promptEnd. Cap mirrors
+ * LATE_SUBAGENT_TURN_CAP so a runaway relay cannot leave Stop stuck forever.
+ */
+function openClaudeIdleRelayTurnIfNeeded() {
+  if (openClaudeDrainTurnIfNeeded()) return true;
+  if (!isClaudeAgent() || isForceCancelled || isLoadingSession) return false;
+  if (lateSubagentTurns >= LATE_SUBAGENT_TURN_CAP) return false;
+  lateSubagentTurns++;
+  drainFollowUpCount = Math.max(drainFollowUpCount, 1);
+  vscode.postMessage({ type: 'debugLog', message: '[WV-DRAIN-TURN] orphan idle Claude activity → arm drain slot lateSubagentTurns=' + lateSubagentTurns });
+  return openClaudeDrainTurnIfNeeded();
+}
+
+/**
  * Close the client-owned drain turn when the adapter signals drain end with
  * its tail session_info_update (agent.ts drainSteerQueue). Mirrors promptEnd's
  * normal-path close: sync tool statuses, commit + fold the turn, reset state,
@@ -22526,6 +22542,9 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        // isProcessing=true, or sent once the turn finishes).
        if (_pendingStaleInFlightWatchdogTimer) { clearTimeout(_pendingStaleInFlightWatchdogTimer); _pendingStaleInFlightWatchdogTimer = null; }
        isSendingPrompt = false;
+       // Fresh user turn — reset the orphan idle-relay cap so a long session
+       // with many background-command completions can keep adopting them.
+       lateSubagentTurns = 0;
        setProcessing(true, 'promptStart');
        isForceCancelled = false;
        suppressInterruptNotice = false;
@@ -22804,9 +22823,12 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         // ackSteeredQueueEntry — its follow-up turn is still streaming, so
         // filtering the queue here armed 0 slots and the follow-up's idle
         // chunks were dropped (the "msg shown in chat but no new turn" symptom).
-        drainFollowUpCount = isClaudeAgent() && hasSteeredThisTurn
+        // Math.max keeps adapter-armed slots (deferred auto-follow-up /
+        // _meta.claude.armDrainFollowUps) that arrived before this promptEnd.
+        var _steerDrainSlots = isClaudeAgent() && hasSteeredThisTurn
           ? steeredThisTurnCount
           : 0;
+        drainFollowUpCount = Math.max(drainFollowUpCount, _steerDrainSlots);
       } else {
         drainFollowUpCount = 0;
       }
@@ -24795,10 +24817,10 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         vscode.postMessage({ type: 'debugLog', message: '[WV-CHUNK] text="' + String(content.text).replace(/\\s+/g, ' ').slice(0, 60) + '" len=' + String(content.text).length + ' isLoadingSession=' + isLoadingSession + ' isProcessing=' + isProcessing + ' isCompacting=' + isCompacting + ' inTailGrace=' + _inTailGrace + ' tailGraceUntil=' + turnTailGraceUntil + ' now=' + Date.now() + ' messageId=' + (update.messageId || '') });
       }
       if (!isLoadingSession && !isProcessing && !isCompacting && !_inTailGrace && !_inLoadTailGrace) {
-        // claude-code-acp steer drain: this idle chunk may be the adapter's
-        // background follow-up turn (no promptStart) — open a client-owned
-        // turn and process it below instead of dropping.
-        if (openClaudeDrainTurnIfNeeded()) {
+        // claude-code-acp steer drain / idle task-notification relay: this
+        // idle chunk may be an adapter-owned follow-up turn (no promptStart)
+        // — open a client-owned turn and process it below instead of dropping.
+        if (openClaudeIdleRelayTurnIfNeeded()) {
           vscode.postMessage({ type: 'debugLog', message: '[WV-DRAIN-TURN] adopted idle agent_message_chunk into drain turn' });
         } else {
           vscode.postMessage({ type: 'debugLog', message: '[WV-CHUNK-DROP] dropped: text="' + (content && content.text ? String(content.text).replace(/\\s+/g, ' ').slice(0, 60) : '') + '" isLoadingSession=' + isLoadingSession + ' isProcessing=' + isProcessing + ' isCompacting=' + isCompacting + ' inTailGrace=' + _inTailGrace + ' loadTailGrace=' + _inLoadTailGrace });
@@ -25310,9 +25332,17 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
            // shouldDropIdleThoughtChunk for why (and the measured case).
            var _thoughtTailGrace = Date.now() <= turnTailGraceUntil;
            if (shouldDropIdleThoughtChunk(isLoadingSession, isProcessing, isCompacting, _thoughtTailGrace)) {
-             resumeDiag('[WV-DIAG] thought-drop: idle chunk, no active turn (len=' +
-               String(content.text || '').length + ')');
-             break;
+             // Claude idle follow-up (steer drain / task-notification relay)
+             // often STARTS with thoughts — open the client-owned turn the
+             // same way agent_message_chunk / tool_call do, instead of
+             // dropping the whole thinking phase.
+             if (openClaudeIdleRelayTurnIfNeeded()) {
+               vscode.postMessage({ type: 'debugLog', message: '[WV-DRAIN-TURN] adopted idle agent_thought_chunk into drain turn' });
+             } else {
+               resumeDiag('[WV-DIAG] thought-drop: idle chunk, no active turn (len=' +
+                 String(content.text || '').length + ')');
+               break;
+             }
            }
            // Cursor: model thinking again means prior tools finished.
            if (isCursorAgentSession() && !isLoadingSession && String(content.text || '').trim()) {
@@ -25431,11 +25461,11 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         applyCompactionLifecycleStatus(update.status, { loadingReplay: isLoadingSession });
         break;
       }
-      // claude-code-acp steer drain: a drain turn often STARTS with a tool
-      // call (the model acts before it writes) — open the client-owned turn
-      // for idle tools as well, so the card lands in a real turn.
+      // claude-code-acp steer drain / idle task-notification relay: a follow-up
+      // turn often STARTS with a tool call (the model acts before it writes)
+      // — open the client-owned turn for idle tools as well.
       if (!isLoadingSession && !isProcessing && !isCompacting) {
-        openClaudeDrainTurnIfNeeded();
+        openClaudeIdleRelayTurnIfNeeded();
       }
       // Kiro "Summarizing"/"summary" tool calls are redundant with the main
       // agent's agent_message_chunk summary — always suppress (with or without
@@ -25684,6 +25714,31 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         if (_goalMeta !== undefined) {
           goalSnapshot = _goalMeta;
           renderGoalChip();
+        }
+        // claude-code-acp follow-up turns that are NOT a session/prompt:
+        // deferred auto-follow-up and idle task-notification relays.
+        // _meta.claude.armDrainFollowUps arms slots before promptEnd;
+        // idleRelayTurn start|end opens/closes the client-owned turn so
+        // Stop shows and idle chunk guards do not drop the reply.
+        var _claudeMeta = update._meta && update._meta.claude;
+        if (_claudeMeta && isClaudeAgent() && !isForceCancelled) {
+          var _armN = _claudeMeta.armDrainFollowUps;
+          if (typeof _armN === 'number' && _armN > 0) {
+            drainFollowUpCount = Math.max(drainFollowUpCount, _armN | 0);
+            armClaudeDrainStopIfNeeded();
+            vscode.postMessage({ type: 'debugLog', message: '[WV-DRAIN-TURN] adapter armed drain follow-ups count=' + drainFollowUpCount });
+            break;
+          }
+          if (_claudeMeta.idleRelayTurn === 'start') {
+            drainFollowUpCount = Math.max(drainFollowUpCount, 1);
+            openClaudeDrainTurnIfNeeded();
+            vscode.postMessage({ type: 'debugLog', message: '[WV-DRAIN-TURN] idleRelayTurn=start; isProcessing=' + isProcessing });
+            break;
+          }
+          if (_claudeMeta.idleRelayTurn === 'end') {
+            if (claudeDrainTurnOpen) closeClaudeDrainTurn();
+            break;
+          }
         }
         // The adapter closes its background drain turn with a tail
         // session_info_update (agent.ts drainSteerQueue, after deliveredAny) —

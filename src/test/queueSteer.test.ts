@@ -603,7 +603,9 @@ suite('Send Now on an already-finished turn does not lose the message', () => {
     const src = fs.readFileSync(SOURCE, 'utf8');
     // The arm reads hasSteeredThisTurn/steeredThisTurnCount at promptEnd —
     // decrementing them at retract time is what disarms it here.
-    assert.ok(src.includes('drainFollowUpCount = isClaudeAgent() && hasSteeredThisTurn'), src);
+    // Math.max keeps adapter-armed idle-relay / auto-follow-up slots.
+    assert.ok(src.includes('_steerDrainSlots = isClaudeAgent() && hasSteeredThisTurn'), src);
+    assert.ok(src.includes('drainFollowUpCount = Math.max(drainFollowUpCount, _steerDrainSlots)'), src);
   });
 
   test('the delivered-drop check runs before the isProcessing gate', () => {

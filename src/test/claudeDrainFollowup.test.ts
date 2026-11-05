@@ -129,6 +129,64 @@ suite('claude steer-drain follow-up turn opener', () => {
 });
 
 /**
+ * Idle `<task-notification>` relay: chunks arrive after promptEnd with no
+ * promptStart and no pre-armed drainFollowUpCount (Stop already flipped to
+ * Send while the background command ran). openClaudeIdleRelayTurnIfNeeded
+ * arms one orphan slot so thoughts/messages are not dropped.
+ */
+suite('claude idle task-notification relay orphan opener', () => {
+  test('unarmed idle Claude activity opens a drain turn (capped)', () => {
+    const drainSrc = extractFn('openClaudeDrainTurnIfNeeded');
+    const orphanSrc = extractFn('openClaudeIdleRelayTurnIfNeeded');
+    const drive = new Function(`
+      var claudeDrainTurnOpen = false;
+      var drainFollowUpCount = 0;
+      var isForceCancelled = false;
+      var isLoadingSession = false;
+      var lateSubagentTurns = 0;
+      var LATE_SUBAGENT_TURN_CAP = 5;
+      var isClaudeAgent = function() { return true; };
+      var opened = 0;
+      function setProcessing(v, caller) { if (v) opened++; }
+      var vscode = { postMessage: function(m) {} };
+      ${drainSrc}
+      ${orphanSrc}
+      return function() {
+        opened = 0;
+        const r = openClaudeIdleRelayTurnIfNeeded();
+        return { r: r, open: claudeDrainTurnOpen, count: drainFollowUpCount, late: lateSubagentTurns, opened: opened };
+      };
+    `)();
+    const res = drive();
+    assert.strictEqual(res.r, true, 'orphan opens a client-owned turn');
+    assert.strictEqual(res.open, true);
+    assert.strictEqual(res.count, 1);
+    assert.strictEqual(res.late, 1);
+    assert.strictEqual(res.opened, 1, 'setProcessing(true) flips Stop on');
+  });
+
+  test('non-claude agents never orphan-open', () => {
+    const drainSrc = extractFn('openClaudeDrainTurnIfNeeded');
+    const orphanSrc = extractFn('openClaudeIdleRelayTurnIfNeeded');
+    const drive = new Function(`
+      var claudeDrainTurnOpen = false;
+      var drainFollowUpCount = 0;
+      var isForceCancelled = false;
+      var isLoadingSession = false;
+      var lateSubagentTurns = 0;
+      var LATE_SUBAGENT_TURN_CAP = 5;
+      var isClaudeAgent = function() { return false; };
+      function setProcessing() {}
+      var vscode = { postMessage: function(m) {} };
+      ${drainSrc}
+      ${orphanSrc}
+      return openClaudeIdleRelayTurnIfNeeded;
+    `)();
+    assert.strictEqual(drive(), false);
+  });
+});
+
+/**
  * The multi-steer regression: queue 3 messages mid-turn. promptEnd arms
  * drainFollowUpCount=3. Each follow-up turn opens (openClaudeDrainTurnIfNeeded)
  * then closes (closeClaudeDrainTurn) on its session_info_update. With the old

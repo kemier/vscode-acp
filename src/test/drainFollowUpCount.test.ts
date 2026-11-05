@@ -47,10 +47,11 @@ suite('drain window armed from steers-set-this-turn, not steers-still-queued', (
   });
 
   test('the arming site reads the counter, not the queue filter', () => {
-    const at = provider.indexOf('drainFollowUpCount = isClaudeAgent() && hasSteeredThisTurn');
+    const at = provider.indexOf('_steerDrainSlots = isClaudeAgent() && hasSteeredThisTurn');
     assert.ok(at > 0, 'arming site present');
-    const arm = provider.slice(at, at + 200);
+    const arm = provider.slice(at, at + 280);
     assert.ok(arm.includes('steeredThisTurnCount'), 'arms from the per-turn counter');
+    assert.ok(arm.includes('Math.max(drainFollowUpCount, _steerDrainSlots)'), 'preserves adapter-armed slots');
     assert.ok(!arm.includes('messageQueue.filter'), 'no longer counts steers still in the queue');
   });
 
