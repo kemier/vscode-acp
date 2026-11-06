@@ -238,9 +238,6 @@ export class SharedMemoryProvider {
     if (!isMemoryConfigured(settings)) {
       return [];
     }
-    if (!opts.query.trim()) {
-      return [];
-    }
 
     const memoryAgentId = resolveMemoryAgentId(opts.agentName, settings.agentIdMap);
     const client = this.getClient(settings);
@@ -251,30 +248,72 @@ export class SharedMemoryProvider {
     // LLM; strip the leading '/' so the semantic query runs on the command
     // name (e.g. "compact") and the full profile (persona + scenes + skills)
     // is injected — otherwise the LLM summarizes with no memory context.
-    const query = buildRecallQuery(opts.query.startsWith('/') ? opts.query.slice(1) : opts.query);
-    if (!query) {
+    const rawQueryText = opts.query ?? '';
+    const sanitizedQuery = buildRecallQuery(rawQueryText.startsWith('/') ? rawQueryText.slice(1) : rawQueryText);
+    const hasQuery = sanitizedQuery.length > 0;
+
+    const includePersona = opts.includePersona ?? settings.includePersona;
+    const includeSceneNav = opts.includeSceneNav ?? settings.includeSceneNav;
+    const includeSkills = opts.includeSkills ?? settings.includeSkills;
+    const includeSkillTools = opts.includeSkillTools ?? false;
+
+    // Short-circuit ONLY when there is truly nothing to fetch: no query to
+    // feed the L1 search AND every query-independent arm is disabled.
+    //
+    // Previously the function returned immediately on an empty query, which
+    // dropped persona, scene navigation, and skills — all query-independent
+    // reads — on prompts that happened to have no text (e.g. a pictures-only
+    // user prompt). Those three arms do NOT need `sanitizedQuery`:
+    //   - readCore() reads the per-agent persona document (no query);
+    //   - listScenarios() lists scene files by priority (no query);
+    //   - listSkills() falls back to the default top-N listing when `query`
+    //     is omitted (see MemoryHttpClient.listSkills — the gateway's
+    //     `/v3/skill/listing` returns the same set as unqueried recall top-N).
+    // Only the L1 semantic search (searchAtomic) genuinely requires a query,
+    // and we feed it an empty-items promise when `hasQuery` is false so the
+    // rest of the function's shape stays identical.
+    if (!hasQuery && !includePersona && !includeSceneNav && !includeSkills) {
       return [];
     }
+
+    // Keep `query` as a non-empty string for the places that embed it in
+    // debug logs / gateway payloads; the L1 arm only runs when `hasQuery`,
+    // and listSkills receives `undefined` on empty so the gateway uses its
+    // default listing.
+    const query = sanitizedQuery;
 
     if (settings.debug) {
       log(
         `Memory recall START: session=${opts.sessionId} agent=${opts.agentName}→${memoryAgentId} ` +
-          `queryLen=${query.length} endpoint=${settings.endpoint}`,
+          `queryLen=${query.length}${hasQuery ? '' : ' (no query — skills/persona/scenes only)'} ` +
+          `endpoint=${settings.endpoint}`,
       );
     }
     const recallT0 = settings.debug ? performance.now() : 0;
 
     try {
       const armT0 = settings.debug ? performance.now() : 0;
-      const includePersona = opts.includePersona ?? settings.includePersona;
-      const includeSceneNav = opts.includeSceneNav ?? settings.includeSceneNav;
-      const includeSkills = opts.includeSkills ?? settings.includeSkills;
-      const includeSkillTools = opts.includeSkillTools ?? false;
+      // The L1 semantic search is the only arm that genuinely requires a
+      // query — feed it an empty-items promise when the user prompt has no
+      // text (e.g. an image-only prompt) so persona/scenes/skills still
+      // inject. The surrounding code then sees a fulfilled result shape so
+      // no downstream branch needs to know whether we actually ran the
+      // search. See the "hasQuery" short-circuit above.
       const [searchResult, personaResult, scenesResult, skillsResult] = await Promise.allSettled([
-        client.searchAtomic(iso, { query, limit: settings.recallMaxResults }),
+        hasQuery
+          ? client.searchAtomic(iso, { query, limit: settings.recallMaxResults })
+          : (Promise.resolve({ items: [] }) as ReturnType<typeof client.searchAtomic>),
         includePersona ? client.readCore(iso) : Promise.resolve(null),
         includeSceneNav ? client.listScenarios(iso) : Promise.resolve(null),
-        includeSkills ? client.listSkills(iso, { query, charBudget: settings.skillCharBudget }) : Promise.resolve(null),
+        includeSkills
+          ? client.listSkills(iso, {
+              // Pass the query only when we actually have one — empty string
+              // behaves differently at the gateway (search-mode with a blank
+              // target) than the undefined/default path (top-N listing).
+              ...(hasQuery ? { query } : {}),
+              charBudget: settings.skillCharBudget,
+            })
+          : Promise.resolve(null),
       ]);
       if (settings.debug) {
         // Per-arm wall time (all three ran concurrently, so each is the time

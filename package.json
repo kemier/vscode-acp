@@ -1,7 +1,7 @@
 {
   "name": "acp-client",
   "displayName": "ACP Client",
-  "description": "Agent Client Protocol client for VS Code — connect to GitHub Copilot, Claude Code, Gemini CLI, Qwen Code, Codex CLI, OpenCode, OpenClaw, Kiro CLI, Hermes Agent, and any ACP-compatible AI coding agent",
+  "description": "Agent Client Protocol client for VS Code \u2014 connect to GitHub Copilot, Claude Code, Gemini CLI, Qwen Code, Codex CLI, OpenCode, OpenClaw, Kiro CLI, Hermes Agent, and any ACP-compatible AI coding agent",
   "version": "0.3.5",
   "publisher": "formulahendry",
   "license": "MIT",
@@ -387,7 +387,7 @@
             "strata-ubuntu": true,
             "strata-proxy": true
           },
-          "description": "Per-model image-input capability overrides, applied on top of the ~/.codex model catalogs. Keys are model slugs; a key also matches family variants (slug starting with key + '-'), so 'qwen3.8-flash-next' covers 'qwen3.8-flash-next-coder-iq1_m'. true shows the attach button, false hides it — beats the catalog and the agent-level default. DeepSeek-V4.1-Flash on strata has --vision on; the legacy qwen3.8-flash-next alias now routes there too."
+          "description": "Per-model image-input capability overrides, applied on top of the ~/.codex model catalogs. Keys are model slugs; a key also matches family variants (slug starting with key + '-'), so 'qwen3.8-flash-next' covers 'qwen3.8-flash-next-coder-iq1_m'. true shows the attach button, false hides it \u2014 beats the catalog and the agent-level default. DeepSeek-V4.1-Flash on strata has --vision on; the legacy qwen3.8-flash-next alias now routes there too."
         },
         "acp.approvedCommands": {
           "type": "array",
@@ -441,7 +441,7 @@
         "acp.jev.timeoutMs": {
           "type": "number",
           "default": 5000,
-          "description": "Per-request timeout in milliseconds for Jev judgement calls. Jev answers in 70–500 ms typically; on timeout the tool fails open and tells the agent to fall back to its own reasoning."
+          "description": "Per-request timeout in milliseconds for Jev judgement calls. Jev answers in 70\u2013500 ms typically; on timeout the tool fails open and tells the agent to fall back to its own reasoning."
         },
         "acp.debug": {
           "type": "boolean",
@@ -463,7 +463,7 @@
           "type": "boolean",
           "default": false,
           "scope": "window",
-          "description": "Log markdown-render decisions ([WV-MDRENDER]) to the ACP Client channel and ~/.acp-debug/webview-faults.log. Names the exact branch that left an assistant bubble without the md-rendered class — which makes it show raw markdown with literal **bold** and every blank line preserved."
+          "description": "Log markdown-render decisions ([WV-MDRENDER]) to the ACP Client channel and ~/.acp-debug/webview-faults.log. Names the exact branch that left an assistant bubble without the md-rendered class \u2014 which makes it show raw markdown with literal **bold** and every blank line preserved."
         },
         "acp.compaction.hookWatcher": {
           "type": "boolean",
@@ -473,7 +473,7 @@
         "acp.autoSteerQueuedMessages": {
           "type": "boolean",
           "default": true,
-          "description": "Deliver a message typed mid-turn into the RUNNING turn instead of waiting for it to end, so it is picked up at the agent's next step (after a tool call or a reply segment). One message is in flight at a time: the next is released only once the agent confirms it has put the previous one in front of the model. Turn this off to make every mid-turn message wait for the next turn instead. Not part of ACP — it uses the session/steer extension, so it only applies to agents that implement it (Claude Code, Codex)."
+          "description": "Deliver a message typed mid-turn into the RUNNING turn instead of waiting for it to end, so it is picked up at the agent's next step (after a tool call or a reply segment). One message is in flight at a time: the next is released only once the agent confirms it has put the previous one in front of the model. Turn this off to make every mid-turn message wait for the next turn instead. Not part of ACP \u2014 it uses the session/steer extension, so it only applies to agents that implement it (Claude Code, Codex)."
         },
         "acp.logTraffic": {
           "type": "boolean",
@@ -509,11 +509,11 @@
         "acp.voice.stt.language": {
           "type": "string",
           "default": "",
-          "description": "ISO language code sent to the STT server (e.g. en, zh). Empty = auto-detect — required for mixed English+Chinese dictation."
+          "description": "ISO language code sent to the STT server (e.g. en, zh). Empty = auto-detect \u2014 required for mixed English+Chinese dictation."
         },
         "acp.voice.stt.prompt": {
           "type": "string",
-          "default": "以下是编程助手的语音口述，中文部分一律使用简体中文，夹杂英文技术术语。Coding assistant dictation mixing English and Simplified Chinese. Terms: VS Code, ACP, Agent Client Protocol, TypeScript, JavaScript, Python, Rust, LLM, vLLM, Transformer, attention, KV cache, API, JSON, Git, Docker, Kubernetes, Whisper, Qwen, CUDA, GPU.",
+          "default": "\u4ee5\u4e0b\u662f\u7f16\u7a0b\u52a9\u624b\u7684\u8bed\u97f3\u53e3\u8ff0\uff0c\u4e2d\u6587\u90e8\u5206\u4e00\u5f8b\u4f7f\u7528\u7b80\u4f53\u4e2d\u6587\uff0c\u5939\u6742\u82f1\u6587\u6280\u672f\u672f\u8bed\u3002Coding assistant dictation mixing English and Simplified Chinese. Terms: VS Code, ACP, Agent Client Protocol, TypeScript, JavaScript, Python, Rust, LLM, vLLM, Transformer, attention, KV cache, API, JSON, Git, Docker, Kubernetes, Whisper, Qwen, CUDA, GPU.",
           "description": "Contextual-biasing prompt forwarded to the STT server (whisper.cpp initial prompt). Naming tech terms here measurably improves their recognition."
         },
         "acp.voice.stt.timeoutMs": {
@@ -525,7 +525,7 @@
         "acp.voice.recordCommand": {
           "type": "string",
           "default": "",
-          "description": "Recorder command template overriding the platform default (macOS/Windows: SoX `rec`/`sox`; Linux: `arecord`). Must contain {file}, e.g. `ffmpeg -y -f avfoundation -i :0 -ar 16000 -ac 1 {file}`. The process is stopped with SIGINT and must finalize a 16 kHz mono WAV. Windows SoX default: `sox -q -t waveaudio default -c 1 -b 16 {file} rate 16000` — the `rate 16000` effect is a software resampler (required for the `silence` endpointer's 3% threshold to behave correctly at 16 kHz); do NOT replace it with `-r 16000` (device-rate request, ignored by the waveaudio driver). If you override this on Windows, keep `rate 16000` in the effect chain."
+          "description": "Recorder command template overriding the platform default (macOS/Windows: SoX `rec`/`sox`; Linux: `arecord`). Must contain {file}, e.g. `ffmpeg -y -f avfoundation -i :0 -ar 16000 -ac 1 {file}`. The process is stopped with SIGINT and must finalize a 16 kHz mono WAV. Windows SoX default: `sox -q -t waveaudio default -c 1 -b 16 {file} rate 16000` \u2014 the `rate 16000` effect is a software resampler (required for the `silence` endpointer's 3% threshold to behave correctly at 16 kHz); do NOT replace it with `-r 16000` (device-rate request, ignored by the waveaudio driver). If you override this on Windows, keep `rate 16000` in the effect chain."
         },
         "acp.voice.captureMode": {
           "type": "string",
@@ -535,7 +535,7 @@
             "extensionHost"
           ],
           "default": "auto",
-          "description": "Where the microphone is captured. 'auto' uses the local companion extension in remote windows (Remote SSH / WSL / Dev Containers) when installed, and the extension host otherwise. 'localCompanion' always requires the companion (hard error if missing). 'extensionHost' always records in this process (the old behaviour — right for a machine with a real mic)."
+          "description": "Where the microphone is captured. 'auto' uses the local companion extension in remote windows (Remote SSH / WSL / Dev Containers) when installed, and the extension host otherwise. 'localCompanion' always requires the companion (hard error if missing). 'extensionHost' always records in this process (the old behaviour \u2014 right for a machine with a real mic)."
         },
         "acp.voice.windowsRecorder": {
           "type": "string",
@@ -587,7 +587,7 @@
           "additionalProperties": {
             "type": "string"
           },
-          "description": "Deterministic correction dictionary applied to the transcript before insertion (Voice Memory phase 1). Keys are misrecognitions, values the fixes, e.g. {\"机翼\": \"记忆\", \"SAP\": \"ACP\"}. ASCII keys match on word boundaries; CJK keys use plain replace."
+          "description": "Deterministic correction dictionary applied to the transcript before insertion (Voice Memory phase 1). Keys are misrecognitions, values the fixes, e.g. {\"\u673a\u7ffc\": \"\u8bb0\u5fc6\", \"SAP\": \"ACP\"}. ASCII keys match on word boundaries; CJK keys use plain replace."
         },
         "acp.voice.corrector.enabled": {
           "type": "boolean",
@@ -638,7 +638,7 @@
         "acp.vision.model": {
           "type": "string",
           "default": "step-5-preview",
-          "description": "Model id sent in the chat/completions body (step-5-preview, step-3.7-flash, qwen3-vl-plus, …)."
+          "description": "Model id sent in the chat/completions body (step-5-preview, step-3.7-flash, qwen3-vl-plus, \u2026)."
         },
         "acp.vision.provider": {
           "type": "string",
@@ -709,7 +709,7 @@
         "acp.sessionSummary.fallbackEndpoint": {
           "type": "string",
           "default": "https://api.deepseek.com",
-          "description": "OpenAI-compatible base URL used as fallback when the primary summarize endpoint fails (proxy down, timeout, non-OK response). Recommended: https://api.deepseek.com (official DeepSeek API, POST /v1/chat/completions — verified via api-docs.deepseek.com). Empty = fallback disabled."
+          "description": "OpenAI-compatible base URL used as fallback when the primary summarize endpoint fails (proxy down, timeout, non-OK response). Recommended: https://api.deepseek.com (official DeepSeek API, POST /v1/chat/completions \u2014 verified via api-docs.deepseek.com). Empty = fallback disabled."
         },
         "acp.sessionSummary.fallbackApiKey": {
           "type": "string",
@@ -724,7 +724,7 @@
         "acp.memory.enabled": {
           "type": "boolean",
           "default": true,
-          "description": "Enable TencentDB Agent Memory (Model B): shared team memory with per-agent profiles (codex/claude/kiro/…). Requires a running MemoryCore Gateway."
+          "description": "Enable TencentDB Agent Memory (Model B): shared team memory with per-agent profiles (codex/claude/kiro/\u2026). Requires a running MemoryCore Gateway."
         },
         "acp.memory.endpoint": {
           "type": "string",
@@ -749,12 +749,12 @@
         "acp.memory.userId": {
           "type": "string",
           "default": "zaedinzeng",
-          "description": "User id for memory isolation (shared across Windows/Mac). Use one canonical id (e.g. zaedinzeng). Empty defaults to zaedinzeng — not the OS username."
+          "description": "User id for memory isolation (shared across Windows/Mac). Use one canonical id (e.g. zaedinzeng). Empty defaults to zaedinzeng \u2014 not the OS username."
         },
         "acp.memory.agentIdMap": {
           "type": "object",
           "default": {},
-          "description": "Optional map of ACP agent config name → MemoryCore agent_id. Unmapped names use built-in heuristics (Codex→codex, Claude→claude, Kiro→kiro, …)."
+          "description": "Optional map of ACP agent config name \u2192 MemoryCore agent_id. Unmapped names use built-in heuristics (Codex\u2192codex, Claude\u2192claude, Kiro\u2192kiro, \u2026)."
         },
         "acp.memory.recallMaxResults": {
           "type": "number",
@@ -799,7 +799,7 @@
         "acp.memory.captureSubagentFindings": {
           "type": "boolean",
           "default": false,
-          "description": "Also persist what finished subagents found. A subagent's work is otherwise unrecoverable — its conversation never leaves the agent process and turn capture records only tool-call titles — so its findings never become memory and can never be promoted or turned into a skill. Off by default: subagent output is verbose and unreviewed, and a wrong memory is hard to undo once it has been absorbed. Requires acp.memory.captureEnabled."
+          "description": "Also persist what finished subagents found. A subagent's work is otherwise unrecoverable \u2014 its conversation never leaves the agent process and turn capture records only tool-call titles \u2014 so its findings never become memory and can never be promoted or turned into a skill. Off by default: subagent output is verbose and unreviewed, and a wrong memory is hard to undo once it has been absorbed. Requires acp.memory.captureEnabled."
         },
         "acp.memory.timeoutMs": {
           "type": "number",
@@ -837,7 +837,7 @@
     "lint": "eslint src --max-warnings 0",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "test": "vscode-test",
-    "test:unit": "npm run compile-tests && mocha --require src/test/vscode-shim.cjs --ui tdd 'out/test/forkMemoryAgentIdRemap.test.js' 'out/test/agentQuestionRecord.test.js' 'out/test/planProposal.test.js' 'out/test/pickerOptionParams.test.js' 'out/test/fileLinkPercentDecode.test.js' 'out/test/subagentLifecycleResume.test.js' 'out/test/supersededTurnFilter.test.js' 'out/test/typedefSubscript.test.js' 'out/test/autoSteerFifo.test.js' 'out/test/agentSpawnMemoryEnv.test.js' 'out/test/agentTreeKill.test.js' 'out/test/audioRecorder.test.js' 'out/test/companionRecorder.test.js' 'out/test/mciRecorder.test.js' 'out/test/spectrum.test.js' 'out/test/wavInfo.test.js' 'out/test/voiceMemory.test.js' 'out/test/voiceDiagnostics.test.js' 'out/test/sttErrors.test.js' 'out/test/sttWarmup.test.js' 'out/test/visionClient.test.js' 'out/test/markdownMath.test.js' 'out/test/markdownBalance.test.js' 'out/test/webviewFenceParity.test.js' 'out/test/linkifier.test.js' 'out/test/titleCleaner.test.js' 'out/test/markdownLinkifyKeywords.test.js' 'out/test/toolCallTitleCleaner.test.js' 'out/test/toolTitle.test.js' 'out/test/webSearchClassification.test.js' 'out/test/streamCoalescer.test.js' 'out/test/webviewScriptParse.test.js' 'out/test/foldOrdering.test.js' 'out/test/planModeHandoff.test.js' 'out/test/resumeLossyReplay.test.js' 'out/test/resumeHoldPrompt.test.js' 'out/test/codeLink.test.js' 'out/test/unansweredPrompts.test.js' 'out/test/sideChannelResumeGrouping.test.js' 'out/test/selectionVisibleEditorFallback.test.js' 'out/test/clipboardContext.test.js' 'out/test/queuedClipboardSnapshot.test.js' 'out/test/queuedSelectionSnapshot.test.js' 'out/test/pasteClipboardMentionPosition.test.js' 'out/test/clipboardResumeStrip.test.js' 'out/test/mentionScan.test.js' 'out/test/resourceLinkStrip.test.js' 'out/test/cleanUserMessage.test.js' 'out/test/followAgent.test.js' 'out/test/memory.test.js' 'out/test/memorySkillTools.test.js' 'out/test/memoryDedup.test.js' 'out/test/failedTurnNoCapture.test.js' 'out/test/messageQueue.test.js' 'out/test/queueChipVisibility.test.js' 'out/test/handleQueueExecutes.test.js' 'out/test/subagentFalseSpawnTitle.test.js' 'out/test/psAgentHandoff.test.js' 'out/test/commandOutputRow.test.js' 'out/test/lateSubagentClientTurn.test.js' 'out/test/subcommandAutocomplete.test.js' 'out/test/sendNowOrdering.test.js' 'out/test/sendNowClearDrain.test.js' 'out/test/postCancelProcessSweep.test.js' 'out/test/toolIdTurnScope.test.js' 'out/test/turnProgressLabel.test.js' 'out/test/idleThoughtDrop.test.js' 'out/test/subagentCrewReason.test.js' 'out/test/modelIdFromConfigOptions.test.js' 'out/test/forkDispatchPrompt.test.js' 'out/test/cancelFallbackOwnership.test.js' 'out/test/sideChannelPrompt.test.js' 'out/test/stopEndsTurn.test.js' 'out/test/mergeInterruptedOrder.test.js' 'out/test/mergeDuplicateToolInterleave.test.js' 'out/test/mergeTrailingReplyPlacement.test.js' 'out/test/mergeReplayOrderAuthority.test.js' 'out/test/compactionSnapshotResurrection.test.js' 'out/test/mergeMissingRowPlacement.test.js' 'out/test/teardownErrorSuppression.test.js' 'out/test/inlineShortPaste.test.js' 'out/test/goalPreambleStrip.test.js' 'out/test/goalChipElapsed.test.js' 'out/test/sessionCaptureRestore.test.js' 'out/test/sessionSummaryFallback.test.js' 'out/test/memoryCacheStability.test.js' 'out/test/compactionSummaryCapture.test.js' 'out/test/kiroAutoCompactProcessing.test.js' 'out/test/bareClipboardMention.test.js' 'out/test/webviewDebugMarkerCoverage.test.js' 'out/test/crewStageLabel.test.js' 'out/test/detachedSpawnStages.test.js' 'out/test/resumedCrewStageStatus.test.js' 'out/test/resumeCrewStageStatus.test.js' 'out/test/stageHoverPersistence.test.js' 'out/test/rawInputDirectoryTooltip.test.js' 'out/test/fallbackMessageId.test.js' 'out/test/retryBoundaryNotice.test.js' 'out/test/diffPathsTooltip.test.js' 'out/test/agentDisplayName.test.js' 'out/test/conversationExport.test.js' 'out/test/formatAcpErrorMessage.test.js' 'out/test/cursorToolEnricher.test.js' 'out/test/compactionHookWatcher.test.js' 'out/test/permissionQueueAutoApprove.test.js' 'out/test/sessionSummarizer.test.js' 'out/test/modelSwitchHint.test.js' 'out/test/queueSteer.test.js' 'out/test/claudeDrainFollowup.test.js' 'out/test/steerAwaitsSnapshot.test.js' 'out/test/forkFromArchive.test.js' 'out/test/kiroTranscriptReader.test.js' 'out/test/kiroPrecompactionSkip.test.js' 'out/test/tokenUsageRingPersistence.test.js' 'out/test/pastedMentionIsLiteral.test.js' 'out/test/subagentFindingsCapture.test.js' 'out/test/agentAskQuestion.test.js' 'out/test/siblingRepoSymbolResolution.test.js' 'out/test/planBarTitle.test.js' 'out/test/kiroTodoListPlanBar.test.js' 'out/test/synthesizedModePicker.test.js' 'out/test/tildeEscape.test.js' 'out/test/jevJudgeTool.test.js' 'out/test/terminalHandler.test.js'",
+    "test:unit": "npm run compile-tests && mocha --require src/test/vscode-shim.cjs --ui tdd 'out/test/forkMemoryAgentIdRemap.test.js' 'out/test/agentQuestionRecord.test.js' 'out/test/planProposal.test.js' 'out/test/pickerOptionParams.test.js' 'out/test/fileLinkPercentDecode.test.js' 'out/test/subagentLifecycleResume.test.js' 'out/test/supersededTurnFilter.test.js' 'out/test/typedefSubscript.test.js' 'out/test/autoSteerFifo.test.js' 'out/test/agentSpawnMemoryEnv.test.js' 'out/test/agentTreeKill.test.js' 'out/test/audioRecorder.test.js' 'out/test/companionRecorder.test.js' 'out/test/mciRecorder.test.js' 'out/test/spectrum.test.js' 'out/test/wavInfo.test.js' 'out/test/voiceMemory.test.js' 'out/test/voiceDiagnostics.test.js' 'out/test/sttErrors.test.js' 'out/test/sttWarmup.test.js' 'out/test/visionClient.test.js' 'out/test/markdownMath.test.js' 'out/test/markdownBalance.test.js' 'out/test/webviewFenceParity.test.js' 'out/test/linkifier.test.js' 'out/test/titleCleaner.test.js' 'out/test/markdownLinkifyKeywords.test.js' 'out/test/toolCallTitleCleaner.test.js' 'out/test/toolTitle.test.js' 'out/test/webSearchClassification.test.js' 'out/test/streamCoalescer.test.js' 'out/test/webviewScriptParse.test.js' 'out/test/foldOrdering.test.js' 'out/test/planModeHandoff.test.js' 'out/test/resumeLossyReplay.test.js' 'out/test/resumeHoldPrompt.test.js' 'out/test/codeLink.test.js' 'out/test/unansweredPrompts.test.js' 'out/test/sideChannelResumeGrouping.test.js' 'out/test/selectionVisibleEditorFallback.test.js' 'out/test/clipboardContext.test.js' 'out/test/queuedClipboardSnapshot.test.js' 'out/test/queuedSelectionSnapshot.test.js' 'out/test/pasteClipboardMentionPosition.test.js' 'out/test/clipboardResumeStrip.test.js' 'out/test/mentionScan.test.js' 'out/test/resourceLinkStrip.test.js' 'out/test/cleanUserMessage.test.js' 'out/test/followAgent.test.js' 'out/test/memory.test.js' 'out/test/memorySkillTools.test.js' 'out/test/memoryDedup.test.js' 'out/test/memoryRecallNoQuery.test.js' 'out/test/failedTurnNoCapture.test.js' 'out/test/messageQueue.test.js' 'out/test/queueChipVisibility.test.js' 'out/test/handleQueueExecutes.test.js' 'out/test/subagentFalseSpawnTitle.test.js' 'out/test/psAgentHandoff.test.js' 'out/test/commandOutputRow.test.js' 'out/test/lateSubagentClientTurn.test.js' 'out/test/subcommandAutocomplete.test.js' 'out/test/sendNowOrdering.test.js' 'out/test/sendNowClearDrain.test.js' 'out/test/postCancelProcessSweep.test.js' 'out/test/toolIdTurnScope.test.js' 'out/test/turnProgressLabel.test.js' 'out/test/idleThoughtDrop.test.js' 'out/test/subagentCrewReason.test.js' 'out/test/modelIdFromConfigOptions.test.js' 'out/test/forkDispatchPrompt.test.js' 'out/test/cancelFallbackOwnership.test.js' 'out/test/sideChannelPrompt.test.js' 'out/test/stopEndsTurn.test.js' 'out/test/mergeInterruptedOrder.test.js' 'out/test/mergeDuplicateToolInterleave.test.js' 'out/test/mergeTrailingReplyPlacement.test.js' 'out/test/mergeReplayOrderAuthority.test.js' 'out/test/compactionSnapshotResurrection.test.js' 'out/test/mergeMissingRowPlacement.test.js' 'out/test/teardownErrorSuppression.test.js' 'out/test/inlineShortPaste.test.js' 'out/test/goalPreambleStrip.test.js' 'out/test/goalChipElapsed.test.js' 'out/test/sessionCaptureRestore.test.js' 'out/test/sessionSummaryFallback.test.js' 'out/test/memoryCacheStability.test.js' 'out/test/compactionSummaryCapture.test.js' 'out/test/kiroAutoCompactProcessing.test.js' 'out/test/bareClipboardMention.test.js' 'out/test/webviewDebugMarkerCoverage.test.js' 'out/test/crewStageLabel.test.js' 'out/test/detachedSpawnStages.test.js' 'out/test/resumedCrewStageStatus.test.js' 'out/test/resumeCrewStageStatus.test.js' 'out/test/stageHoverPersistence.test.js' 'out/test/rawInputDirectoryTooltip.test.js' 'out/test/fallbackMessageId.test.js' 'out/test/retryBoundaryNotice.test.js' 'out/test/diffPathsTooltip.test.js' 'out/test/agentDisplayName.test.js' 'out/test/conversationExport.test.js' 'out/test/formatAcpErrorMessage.test.js' 'out/test/cursorToolEnricher.test.js' 'out/test/compactionHookWatcher.test.js' 'out/test/permissionQueueAutoApprove.test.js' 'out/test/sessionSummarizer.test.js' 'out/test/modelSwitchHint.test.js' 'out/test/queueSteer.test.js' 'out/test/claudeDrainFollowup.test.js' 'out/test/steerAwaitsSnapshot.test.js' 'out/test/forkFromArchive.test.js' 'out/test/kiroTranscriptReader.test.js' 'out/test/kiroPrecompactionSkip.test.js' 'out/test/tokenUsageRingPersistence.test.js' 'out/test/pastedMentionIsLiteral.test.js' 'out/test/subagentFindingsCapture.test.js' 'out/test/agentAskQuestion.test.js' 'out/test/siblingRepoSymbolResolution.test.js' 'out/test/planBarTitle.test.js' 'out/test/kiroTodoListPlanBar.test.js' 'out/test/synthesizedModePicker.test.js' 'out/test/tildeEscape.test.js' 'out/test/jevJudgeTool.test.js' 'out/test/terminalHandler.test.js'",
     "deploy": "node scripts/deploy-all.js",
     "deploy:fast": "node scripts/deploy-all.js",
     "install:local": "node scripts/install-local.js",
