@@ -117,12 +117,19 @@ export function otelTurnStart(sessionId: string, text: string, modelId?: string)
   const attrs: Record<string, string> = {
     'gen_ai.operation.name': 'invoke_agent',
     'acp.prompt_preview': text.slice(0, 120),
+    // Each turn is its own trace root: the session span stays open (and
+    // therefore unflushed — SimpleSpanProcessor emits on end only), so
+    // parenting turns to it renders them flat with no root card. The
+    // session_id attribute keeps them groupable in the viewer instead.
+    'acp.session_id': sessionId,
   };
   if (modelId) {
-    // Q52 "model alias on turn": which model actually served this turn.
     attrs['acp.model'] = modelId;
   }
-  s.turn = startChild(s.session, 'invoke_agent', attrs);
+  s.turn = trace.getTracer('vscode-acp').startSpan('invoke_agent', {
+    kind: SpanKind.INTERNAL,
+    attributes: attrs,
+  });
   // A new turn supersedes leftover tool entries from an abandoned turn.
   for (const orphan of s.tools.values()) {
     orphan.end();
@@ -151,6 +158,7 @@ export function otelToolStart(sessionId: string, toolCallId: string, title: stri
     'gen_ai.operation.name': 'execute_tool',
     'gen_ai.tool.name': title,
     'gen_ai.tool.call.id': toolCallId,
+    'acp.session_id': sessionId,
   };
   if (rawInput !== undefined) {
     // Opt-in content discipline (gen_ai conventions): preview only, not the body.
