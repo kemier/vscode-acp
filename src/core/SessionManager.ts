@@ -1236,7 +1236,7 @@ export class SessionManager extends EventEmitter {
     // error) was still captured — a user message paired with empty or half-streamed
     // assistant text, once per retry.
     let turnFailed = false;
-    otelTurnStart(sessionId, text);
+    otelTurnStart(sessionId, text, session.models?.currentModelId);
     try {
       const response = await connInfo.connection.prompt({
         sessionId,

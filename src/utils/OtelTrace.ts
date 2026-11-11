@@ -97,20 +97,32 @@ export function otelSessionStart(sessionId: string, agentName: string, cwd: stri
   }
   const session = trace.getTracer('vscode-acp').startSpan('acp.session', {
     kind: SpanKind.INTERNAL,
-    attributes: { 'gen_ai.operation.name': 'session', 'acp.agent': agentName, 'acp.cwd': cwd },
+    attributes: {
+      'gen_ai.operation.name': 'session',
+      'acp.agent': agentName,
+      'acp.cwd': cwd,
+      // Q52 "session id" gap: the registry key is otherwise invisible to the
+      // viewer — it is the cross-reload correlation key.
+      'acp.session_id': sessionId,
+    },
   });
   registry.set(sessionId, { session, tools: new Map() });
 }
 
-export function otelTurnStart(sessionId: string, text: string): void {
+export function otelTurnStart(sessionId: string, text: string, modelId?: string): void {
   const s = registry.get(sessionId);
   if (!s) {
     return;
   }
-  s.turn = startChild(s.session, 'turn', {
+  const attrs: Record<string, string> = {
     'gen_ai.operation.name': 'invoke_agent',
     'acp.prompt_preview': text.slice(0, 120),
-  });
+  };
+  if (modelId) {
+    // Q52 "model alias on turn": which model actually served this turn.
+    attrs['acp.model'] = modelId;
+  }
+  s.turn = startChild(s.session, 'turn', attrs);
   // A new turn supersedes leftover tool entries from an abandoned turn.
   for (const orphan of s.tools.values()) {
     orphan.end();
@@ -147,7 +159,7 @@ export function otelToolStart(sessionId: string, toolCallId: string, title: stri
   s.tools.set(toolCallId, startChild(s.turn ?? s.session, `execute_tool ${title}`, attrs));
 }
 
-export function otelToolEnd(sessionId: string, toolCallId: string, failed: boolean): void {
+export function otelToolEnd(sessionId: string, toolCallId: string, failed: boolean, rawOutput?: unknown): void {
   const s = registry.get(sessionId);
   if (!s) {
     return;
@@ -159,6 +171,13 @@ export function otelToolEnd(sessionId: string, toolCallId: string, failed: boole
   s.tools.delete(toolCallId);
   if (failed) {
     span.setStatus({ code: SpanStatusCode.ERROR, message: 'tool failed' });
+  }
+  if (rawOutput !== undefined) {
+    // Q52 "tool result summary" gap: same opt-in content discipline as the
+    // input preview — preview only, capped, never the whole body.
+    span.setAttributes({
+      'gen_ai.tool.output_preview': JSON.stringify(rawOutput).slice(0, 200),
+    });
   }
   span.end();
 }
