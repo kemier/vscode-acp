@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { EventEmitter } from 'node:events';
+import { otelSessionStart, otelTurnStart, otelTurnEnd, otelSessionEnd } from '../utils/OtelTrace';
 
 import type {
   NewSessionResponse,
@@ -596,6 +597,7 @@ export class SessionManager extends EventEmitter {
           // Clean up the session for this agent
           const sessionId = this.agentSessions.get(agentName);
           if (sessionId) {
+            otelSessionEnd(sessionId);
             this.sessions.delete(sessionId);
             this.agentSessions.delete(agentName);
             this.promptedSessions.delete(sessionId);
@@ -742,6 +744,7 @@ export class SessionManager extends EventEmitter {
     this.inFlightPromptSessions.delete(sessionId);
     this.agentManager.killAgent(session.agentId);
     this.connectionManager.removeConnection(session.agentId);
+    otelSessionEnd(sessionId);
     this.sessions.delete(sessionId);
     this.agentSessions.delete(agentName);
     this.promptedSessions.delete(sessionId);
@@ -786,6 +789,7 @@ export class SessionManager extends EventEmitter {
     // Clean up local session state but keep the agent connection alive.
     this.inFlightPromptSessions.delete(sessionId);
     if (sessionId) {
+      otelSessionEnd(sessionId);
       this.sessions.delete(sessionId);
       this.promptedSessions.delete(sessionId);
       this.memoryProfileInjectedSessions.delete(sessionId);
@@ -854,6 +858,7 @@ export class SessionManager extends EventEmitter {
     // we waited until connectToAgent's continuation, notifications would
     // race and be dropped by handleSessionUpdate.
     this.sessions.set(sessionInfo.sessionId, sessionInfo);
+    otelSessionStart(sessionInfo.sessionId, sessionInfo.agentName, cwd);
     this.drainPending(sessionInfo);
 
     // Capture in the local history store so it appears in the tree.
@@ -1231,6 +1236,7 @@ export class SessionManager extends EventEmitter {
     // error) was still captured — a user message paired with empty or half-streamed
     // assistant text, once per retry.
     let turnFailed = false;
+    otelTurnStart(sessionId, text);
     try {
       const response = await connInfo.connection.prompt({
         sessionId,
@@ -1249,6 +1255,7 @@ export class SessionManager extends EventEmitter {
       turnFailed = true;
       throw err;
     } finally {
+      otelTurnEnd(sessionId, turnFailed);
       this.inFlightPromptSessions.delete(sessionId);
       if (DEBUG_LIVE) {
         log(`sendPrompt: IN-FLIGHT DELETE session=${sessionId} slash=${isSlashCommand}`);
@@ -2678,6 +2685,7 @@ export class SessionManager extends EventEmitter {
     const session = this.sessions.get(sessionId);
     const agentName = session?.agentName;
     this.loadingSessionIds.delete(sessionId);
+    otelSessionEnd(sessionId);
     this.sessions.delete(sessionId);
     if (agentName) {
       this.agentSessions.delete(agentName);
@@ -2739,6 +2747,7 @@ export class SessionManager extends EventEmitter {
         }
         this.agentSessions.delete(prevSession.agentName);
       }
+      otelSessionEnd(previouslyActive);
       this.sessions.delete(previouslyActive);
       this.activeSessionId = null;
     }
@@ -2969,6 +2978,7 @@ export class SessionManager extends EventEmitter {
       if (prevSession) {
         this.agentSessions.delete(prevSession.agentName);
       }
+      otelSessionEnd(previouslyActive);
       this.sessions.delete(previouslyActive);
       this.activeSessionId = null;
     }

@@ -1,5 +1,6 @@
 import { log } from '../utils/Logger';
 import { SupersededTurnFilter } from './SupersededTurnFilter';
+import { otelToolStart, otelToolEnd } from '../utils/OtelTrace';
 
 import type { SessionNotification } from '@agentclientprotocol/sdk';
 
@@ -45,6 +46,18 @@ export class SessionUpdateHandler {
         listener(update);
       } catch (e) {
         log(`Error in session update listener: ${e}`);
+      }
+    }
+    // OTel: tool calls from every adapter (claude-code-acp, codex-acp, pi-acp)
+    // arrive as tool_call/tool_update notifications here — start/end an
+    // execute_tool span pair keyed by toolCallId (see utils/OtelTrace).
+    const upd = (update as { update?: { sessionUpdate?: string; toolCallId?: string; title?: string; status?: string; rawInput?: unknown } }).update;
+    if (upd && (upd.sessionUpdate === 'tool_call' || upd.sessionUpdate === 'tool_update')) {
+      const id = upd.toolCallId ?? '';
+      if (upd.sessionUpdate === 'tool_call') {
+        otelToolStart(sessionId, id, upd.title ?? 'tool', upd.rawInput);
+      } else {
+        otelToolEnd(sessionId, id, upd.status === 'failed');
       }
     }
   }
