@@ -22,6 +22,8 @@
 import { trace, Span, SpanKind, SpanStatusCode } from '@opentelemetry/api';
 import { BasicTracerProvider, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
+import { resourceFromAttributes } from '@opentelemetry/resources';
+import { log } from '../utils/Logger';
 import * as vscode from 'vscode';
 
 // Minimal structural Context (the api's Context is an interface; the impl only
@@ -65,10 +67,15 @@ function ensureInit(): boolean {
     return false;
   }
   const provider = new BasicTracerProvider({
+    // Without this the viewer groups our spans under the extension-host
+    // executable path (defaultServiceName() = unknown_service:<argv0>).
+    resource: resourceFromAttributes({ 'service.name': 'vscode-acp' }),
     spanProcessors: [new SimpleSpanProcessor(new OTLPTraceExporter({ url }))],
   });
   trace.setGlobalTracerProvider(provider);
   enabled = true;
+  log(`[otel] session tracing enabled → ${url}`);
+  console.log(`[otel] session tracing enabled → ${url}`);
   return true;
 }
 

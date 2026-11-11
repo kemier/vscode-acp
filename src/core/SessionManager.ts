@@ -2782,6 +2782,7 @@ export class SessionManager extends EventEmitter {
       placeholder.title = histEntry.title;
     }
     this.sessions.set(sessionId, placeholder);
+    otelSessionStart(sessionId, placeholder.agentName, placeholder.cwd ?? '');
     this.drainPending(placeholder);
     this.loadingSessionIds.add(sessionId);
     // Mark this session as active up front so handleSessionUpdate forwards
@@ -3026,6 +3027,7 @@ export class SessionManager extends EventEmitter {
       sessionInfo.title = histEntry.title;
     }
     this.sessions.set(sessionId, sessionInfo);
+    otelSessionStart(sessionId, sessionInfo.agentName, sessionInfo.cwd);
     // A resumed session already has prior turns — for codex-acp this means the
     // Responses-API server holds a cached prefix, so the next prompt is a
     // continuation. Mark as prompted so the KV-cache-stability gate in
@@ -3201,6 +3203,7 @@ export class SessionManager extends EventEmitter {
       availableCommands: [],
     };
     this.sessions.set(forkedSessionId, sessionInfo);
+    otelSessionStart(forkedSessionId, sessionInfo.agentName, sessionInfo.cwd);
     this.drainPending(sessionInfo);
     this.agentSessions.set(agentName, forkedSessionId);
     this.activeSessionId = forkedSessionId;
