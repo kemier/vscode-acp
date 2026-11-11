@@ -122,7 +122,7 @@ export function otelTurnStart(sessionId: string, text: string, modelId?: string)
     // Q52 "model alias on turn": which model actually served this turn.
     attrs['acp.model'] = modelId;
   }
-  s.turn = startChild(s.session, 'turn', attrs);
+  s.turn = startChild(s.session, 'invoke_agent', attrs);
   // A new turn supersedes leftover tool entries from an abandoned turn.
   for (const orphan of s.tools.values()) {
     orphan.end();
