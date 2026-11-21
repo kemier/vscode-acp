@@ -29,7 +29,7 @@ import {
  *
  * The header on WEBVIEW_RENDER_DEBUG_MARKERS records the first two
  * investigations this cost (raw markdown, empty bubble). The third was a phantom
- * `fix` user bubble that survived a resume: the ericli session file proved the
+ * `fix` user bubble that survived a resume: the agent's session file proved the
  * agent never received it (34 user messages, last was "commit") and the traffic
  * log carried zero session/prompt, so the bubble was client-side — but the
  * traces that would name the code path were all unreachable.

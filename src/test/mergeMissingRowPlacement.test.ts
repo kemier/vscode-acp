@@ -6,7 +6,7 @@ import * as path from 'path';
  * A snapshot row the replay lacks must land next to its snapshot neighbour, not
  * at the end of the turn.
  *
- * Observed on a resumed ericli session (06803f97). The turn ran:
+ * Observed on a resumed CLI-agent session (06803f97). The turn ran:
  *
  *   tool(ls …/claude-code-acp/)
  *   assistant "claude-code-acp 仓库是独立的 ACP bridge … 让我看看这个入口文件"   <- 99 chars

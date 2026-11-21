@@ -175,7 +175,7 @@ suite('a slash command argument stays literal', () => {
   });
 
   test('a /$skill invocation is NOT treated as a slash command', () => {
-    // ericli passes /$name through to the LLM as a raw prompt, so attaching a
+    // An agent may pass /$name through to the LLM as a raw prompt, so attaching a
     // payload there is legitimate.
     assert.strictEqual(holdsSlash('/$imagegen '), false);
     assert.strictEqual(holdsSlash('  /$imagegen a cat'), false);

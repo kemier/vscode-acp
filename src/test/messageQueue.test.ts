@@ -187,10 +187,10 @@ suite('messageQueue.agentSupportsSteering', () => {
  *
  * The decision comes ONLY from the agent's own _meta.turnSafe declaration. A
  * hardcoded name-keyed table used to back this up and was removed as unsound:
- * command names are not portable between agents. /tools exists only on ericli;
- * /skills is a read-only listing on ericli and codex-acp, but codex-acp's
+ * command names are not portable between agents. /tools exists only on one CLI agent;
+ * /skills is a read-only listing on that agent and codex-acp, but codex-acp's
  * isReadOnlyCommand covers only ps/status so anything else interrupts the turn;
- * and /goal resume flips a flag on ericli while codex-acp's resumeGoal() STARTS a
+ * and /goal resume flips a flag on that agent while codex-acp's resumeGoal() STARTS a
  * turn. Guessing from the name destroys the user's streaming answer.
  */
 suite('messageQueue.slashCommandRunsDuringTurn', () => {
@@ -198,8 +198,8 @@ suite('messageQueue.slashCommandRunsDuringTurn', () => {
     'turnSafeDeclaration',
   ]);
 
-  // ericli's advertised shapes, from turnSafeMetaFor() in acp-server.ts.
-  const ERICLI = [
+  // One CLI agent's advertised shapes (from its turnSafeMetaFor()).
+  const CLI_AGENT = [
     { name: 'tools', _meta: { turnSafe: true } },
     { name: 'stats', _meta: { turnSafe: true } },
     { name: 'usage', _meta: { turnSafe: true } },
@@ -215,7 +215,7 @@ suite('messageQueue.slashCommandRunsDuringTurn', () => {
 
   test('declared read-only whole commands run during a turn', () => {
     for (const cmd of ['/tools', '/stats', '/usage', '/diagnose', '/ps']) {
-      assert.strictEqual(slashCommandRunsDuringTurn(cmd, ERICLI), true, cmd);
+      assert.strictEqual(slashCommandRunsDuringTurn(cmd, CLI_AGENT), true, cmd);
     }
   });
 
@@ -235,13 +235,13 @@ suite('messageQueue.slashCommandRunsDuringTurn', () => {
       '/index status',
       '/index search authenticate',
     ]) {
-      assert.strictEqual(slashCommandRunsDuringTurn(cmd, ERICLI), true, cmd);
+      assert.strictEqual(slashCommandRunsDuringTurn(cmd, CLI_AGENT), true, cmd);
     }
   });
 
   test('history-mutating commands are queued', () => {
     for (const cmd of ['/compact', '/summarize', '/compress now', '/clear']) {
-      assert.strictEqual(slashCommandRunsDuringTurn(cmd, ERICLI), false, cmd);
+      assert.strictEqual(slashCommandRunsDuringTurn(cmd, CLI_AGENT), false, cmd);
     }
   });
 
@@ -255,13 +255,13 @@ suite('messageQueue.slashCommandRunsDuringTurn', () => {
       '/index clear',
       '/skills reload',
     ]) {
-      assert.strictEqual(slashCommandRunsDuringTurn(cmd, ERICLI), false, cmd);
+      assert.strictEqual(slashCommandRunsDuringTurn(cmd, CLI_AGENT), false, cmd);
     }
   });
 
   test('only a2a call and unregister are queued', () => {
     for (const cmd of ['/a2a call reviewer "audit this diff"', '/a2a unregister helper']) {
-      assert.strictEqual(slashCommandRunsDuringTurn(cmd, ERICLI), false, cmd);
+      assert.strictEqual(slashCommandRunsDuringTurn(cmd, CLI_AGENT), false, cmd);
     }
   });
 
@@ -270,7 +270,7 @@ suite('messageQueue.slashCommandRunsDuringTurn', () => {
       '/goal', '/goal clear', '/goal stop', '/goal off', '/goal reset',
       '/goal none', '/goal cancel', '/goal pause', '/goal resume', '/goal PAUSE',
     ]) {
-      assert.strictEqual(slashCommandRunsDuringTurn(cmd, ERICLI), true, cmd);
+      assert.strictEqual(slashCommandRunsDuringTurn(cmd, CLI_AGENT), true, cmd);
     }
     for (const cmd of [
       '/goal ship the release',
@@ -278,15 +278,15 @@ suite('messageQueue.slashCommandRunsDuringTurn', () => {
       '/goal clear the backlog',
       '/goal resume after lunch',
     ]) {
-      assert.strictEqual(slashCommandRunsDuringTurn(cmd, ERICLI), false, cmd);
+      assert.strictEqual(slashCommandRunsDuringTurn(cmd, CLI_AGENT), false, cmd);
     }
   });
 
   test('unknown and undeclared commands are queued', () => {
-    assert.strictEqual(slashCommandRunsDuringTurn('/notacommand', ERICLI), false);
-    assert.strictEqual(slashCommandRunsDuringTurn('/a2a frobnicate', ERICLI), false);
-    assert.strictEqual(slashCommandRunsDuringTurn('/index vacuum', ERICLI), false);
-    assert.strictEqual(slashCommandRunsDuringTurn('/$imagegen a cat', ERICLI), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/notacommand', CLI_AGENT), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/a2a frobnicate', CLI_AGENT), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/index vacuum', CLI_AGENT), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/$imagegen a cat', CLI_AGENT), false);
   });
 
   test('an agent that declares NOTHING gets everything queued', () => {
@@ -301,38 +301,38 @@ suite('messageQueue.slashCommandRunsDuringTurn', () => {
   });
 
   test('non-slash input is not a slash command', () => {
-    assert.strictEqual(slashCommandRunsDuringTurn('fix the bug', ERICLI), false);
-    assert.strictEqual(slashCommandRunsDuringTurn('', ERICLI), false);
-    assert.strictEqual(slashCommandRunsDuringTurn(undefined, ERICLI), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('fix the bug', CLI_AGENT), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('', CLI_AGENT), false);
+    assert.strictEqual(slashCommandRunsDuringTurn(undefined, CLI_AGENT), false);
   });
 
   test('is case-insensitive on command and subcommand', () => {
-    assert.strictEqual(slashCommandRunsDuringTurn('/TOOLS', ERICLI), true);
-    assert.strictEqual(slashCommandRunsDuringTurn('/A2A List', ERICLI), true);
-    assert.strictEqual(slashCommandRunsDuringTurn('/INDEX BUILD', ERICLI), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/TOOLS', CLI_AGENT), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/A2A List', CLI_AGENT), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/INDEX BUILD', CLI_AGENT), false);
   });
 
   test('classifies on the first line, ignoring the appended memory block', () => {
-    const memory = '\nvscode-acp:///memory/ericli\n<context ref="vscode-acp:///memory/ericli">';
-    assert.strictEqual(slashCommandRunsDuringTurn('/a2a list' + memory, ERICLI), true);
-    assert.strictEqual(slashCommandRunsDuringTurn('/tools' + memory, ERICLI), true);
-    assert.strictEqual(slashCommandRunsDuringTurn('/index build' + memory, ERICLI), false);
-    assert.strictEqual(slashCommandRunsDuringTurn('/clear' + memory, ERICLI), false);
+    const memory = '\nvscode-acp:///memory/example-cli\n<context ref="vscode-acp:///memory/example-cli">';
+    assert.strictEqual(slashCommandRunsDuringTurn('/a2a list' + memory, CLI_AGENT), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/tools' + memory, CLI_AGENT), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/index build' + memory, CLI_AGENT), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/clear' + memory, CLI_AGENT), false);
   });
 });
 
 /**
  * Agent-declared turn safety (AvailableCommand._meta.turnSafe).
  *
- * The built-in table above cannot scale: it names ericli's commands, so every
+ * The built-in table above cannot scale: it names one agent's commands, so every
  * new ACP agent would need it extended by hand. ACP reserves `_meta` on
  * AvailableCommand for agent-supplied metadata, so an agent declares its own
  * read-only commands and the client just reads them — the table drops to a
  * compatibility fallback for agents that do not declare (codex-acp,
  * claude-code-acp today).
  *
- * ericli derives the declared value from the same tables its dispatch uses (see
- * turnSafeMetaFor in src/acp/acp-server.ts), so the wire value and the agent's
+ * An agent can derive the declared value from the same tables its dispatch uses
+ * (one does, in its turnSafeMetaFor), so the wire value and the agent's
  * behaviour cannot drift.
  */
 suite('messageQueue.turnSafeDeclaration', () => {
@@ -349,7 +349,7 @@ suite('messageQueue.turnSafeDeclaration', () => {
   });
 
   test('reads an exactArgs declaration', () => {
-    // For commands whose WHOLE argument decides — /goal in ericli.
+    // For commands whose WHOLE argument decides — e.g. /goal.
     const cmds = [{ name: 'goal', _meta: { turnSafe: { exactArgs: ['', 'pause', 'resume'] } } }];
     assert.deepStrictEqual(turnSafeDeclaration('goal', cmds), { exact: ['', 'pause', 'resume'] });
   });
@@ -414,9 +414,9 @@ suite('slashCommandRunsDuringTurn honours the agent declaration', () => {
     );
   });
 
-  test('ericli-shaped declarations reproduce the table exactly', () => {
-    // Verbatim shapes from ericli's turnSafeMetaFor().
-    const ericli = [
+  test('real-agent-shaped declarations reproduce the table exactly', () => {
+    // Verbatim shapes from one CLI agent's turnSafeMetaFor().
+    const cliAgent = [
       { name: 'tools', _meta: { turnSafe: true } },
       { name: 'ps', _meta: { turnSafe: true } },
       { name: 'a2a', _meta: { turnSafe: ['', 'list', 'help', 'inspect', 'status', 'register', 'cancel'] } },
@@ -424,14 +424,14 @@ suite('slashCommandRunsDuringTurn honours the agent declaration', () => {
       { name: 'clear' },
       { name: 'compact' },
     ];
-    assert.strictEqual(slashCommandRunsDuringTurn('/tools', ericli), true);
-    assert.strictEqual(slashCommandRunsDuringTurn('/a2a list', ericli), true);
-    assert.strictEqual(slashCommandRunsDuringTurn('/a2a register local x', ericli), true);
-    assert.strictEqual(slashCommandRunsDuringTurn('/a2a call bot "go"', ericli), false);
-    assert.strictEqual(slashCommandRunsDuringTurn('/index search foo', ericli), true);
-    assert.strictEqual(slashCommandRunsDuringTurn('/index build', ericli), false);
-    assert.strictEqual(slashCommandRunsDuringTurn('/clear', ericli), false);
-    assert.strictEqual(slashCommandRunsDuringTurn('/compact', ericli), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/tools', cliAgent), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/a2a list', cliAgent), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/a2a register local x', cliAgent), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/a2a call bot "go"', cliAgent), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/index search foo', cliAgent), true);
+    assert.strictEqual(slashCommandRunsDuringTurn('/index build', cliAgent), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/clear', cliAgent), false);
+    assert.strictEqual(slashCommandRunsDuringTurn('/compact', cliAgent), false);
   });
 
   test('a DECLARED exactArgs list closes the same trap', () => {
@@ -448,11 +448,11 @@ suite('slashCommandRunsDuringTurn honours the agent declaration', () => {
   test('the memory block appended by the host does not defeat the declaration', () => {
     const cmds = [{ name: 'a2a', _meta: { turnSafe: ['', 'list'] } }];
     assert.strictEqual(
-      slashCommandRunsDuringTurn('/a2a list\nvscode-acp:///memory/ericli', cmds),
+      slashCommandRunsDuringTurn('/a2a list\nvscode-acp:///memory/example-cli', cmds),
       true,
     );
     assert.strictEqual(
-      slashCommandRunsDuringTurn('/a2a call bot "go"\nvscode-acp:///memory/ericli', cmds),
+      slashCommandRunsDuringTurn('/a2a call bot "go"\nvscode-acp:///memory/example-cli', cmds),
       false,
     );
   });
@@ -507,7 +507,7 @@ suite('handleSend queues everything except turn-safe slash commands', () => {
     // There were TWO send paths. The Enter handler had its own isProcessing
     // branch that called handleQueue() for every agent slash command and never
     // reached handleSend(), so the _meta.turnSafe gate was dead code for it:
-    // "/a2a register local agent1" sat in the queue even though ericli
+    // "/a2a register local agent1" sat in the queue even though the agent
     // advertised a2a -> turnSafe: [… "register" …]. Exactly one place decides.
     const src = fs.readFileSync(SOURCE, 'utf8');
     const enterAt = src.indexOf("if (e.key === 'Enter' && !e.shiftKey) {");

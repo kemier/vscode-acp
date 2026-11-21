@@ -1316,7 +1316,7 @@ export class SessionManager extends EventEmitter {
       // path already carries them, and before this the steer path (text-only
       // session/steer) dropped them, so only the last queued message (the one
       // that drains) kept its image. `images` is optional: agents that don't
-      // read it (ericli, codex-acp) ignore the extra field, and text-only
+      // read it (codex-acp among them) ignore the extra field, and text-only
       // steers omit it entirely (no change for them).
       const imagesBlocks = (images && images.length > 0)
         ? images.map((img) => ({ type: 'image', data: img.data, mimeType: img.mimeType }))
@@ -1691,7 +1691,7 @@ export class SessionManager extends EventEmitter {
         this.historyStore.setReasoningEffort(agentName, sessionId, value);
         break;
       // Plan/collaboration mode (claude-code-acp uses 'collaboration_mode',
-      // codex/claude also expose it; ericli uses 'plan_mode'). Persist so the
+      // codex/claude also expose it; other agents use 'plan_mode'). Persist so the
       // picker state survives a client restart — without this a session set to
       // 'plan' silently came back in 'default' after a reload.
       case 'collaboration_mode':
@@ -1745,7 +1745,7 @@ export class SessionManager extends EventEmitter {
       }
     }
     // Restore collaboration/plan mode. Agents advertise the option under
-    // different ids (claude-code-acp/codex: 'collaboration_mode', ericli:
+    // different ids (claude-code-acp/codex: 'collaboration_mode', others:
     // 'plan_mode'), so pick whichever the agent actually exposes. Only restore
     // a non-default value: forcing 'default' would downgrade a session that is
     // legitimately still in 'plan' and is not worth a round-trip.
@@ -2467,7 +2467,7 @@ export class SessionManager extends EventEmitter {
       }
     };
 
-    // A finished subagent reporting what it found. ericli cannot persist this
+    // A finished subagent reporting what it found. The agent cannot persist this
     // itself — the memory API key and the tenancy isolation live here — and
     // nothing else carries subagent work into memory.
     // The agent asks the user a question and blocks. Forwarded to whoever owns the
@@ -2480,7 +2480,7 @@ export class SessionManager extends EventEmitter {
     connInfo.onSubagentFindings = (params: any) => {
       const targetSession = String(params?.sessionId || '');
       if (!targetSession) {
-        // ericli always sends it; without one the finding cannot be filed
+        // Agents always send it; without one the finding cannot be filed
         // against a conversation, and guessing the active session would attach
         // it to whatever the user happens to be looking at.
         return;

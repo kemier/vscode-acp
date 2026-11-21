@@ -265,7 +265,7 @@ suite('jev-mcp server registration (Claude Code + Cursor + Codex CLI)', () => {
   test('matches node + args style Claude settings (command is node, script in args)', () => {
     const servers = buildJevMcpServers('Claude Code', enabled, {
       command: 'node',
-      args: ['C:\\Users\\zengn\\projects\\claude-code-acp\\bin\\claude-code-acp.js'],
+      args: ['C:\\Users\\dev\\projects\\claude-code-acp\\bin\\claude-code-acp.js'],
     });
     assert.strictEqual(servers.length, 1);
     assert.ok(

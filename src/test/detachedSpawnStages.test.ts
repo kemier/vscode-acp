@@ -11,7 +11,7 @@ import * as path from 'path';
  *
  * Two places shared one wrong assumption, "parent completed => children finished":
  *
- *   ericli   cleared its spawn_parallel stage tracking in onToolCall, so
+ *   agent    cleared its spawn_parallel stage tracking in onToolCall, so
  *            onSubagentProgress's guard swallowed every per-stage completion and no
  *            stage ever got its check mark.
  *   webview  force-marks any running/pending stage FAILED once the parent tool call
@@ -19,7 +19,7 @@ import * as path from 'path';
  *
  * A DETACHED spawn_parallel completes on its launch ack ("Launched N subagent(s) in
  * the background") while all N children keep working, so both rules fire at the
- * wrong moment. ericli now marks such completions _meta.subagentsDetached, and this
+ * wrong moment. The agent now marks such completions _meta.subagentsDetached, and this
  * side must honour it.
  */
 

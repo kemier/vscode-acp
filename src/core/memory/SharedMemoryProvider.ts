@@ -648,7 +648,7 @@ export class SharedMemoryProvider {
    * Persist what a finished subagent found.
    *
    * A subagent's work is otherwise unrecoverable. Its conversation never leaves
-   * ericli's process, its progress is deliberately not forwarded as
+   * the agent's process, its progress is deliberately not forwarded as
    * agent_thought_chunk, and per-turn capture records only the main assistant
    * text plus tool_call TITLES — so its findings never became L0, and therefore
    * could never be promoted to L1/L2/L3 or feed skill extraction. Five parallel

@@ -9,7 +9,7 @@ import { decodeTemplate } from './templateDecode';
  * It is fed ONLY by live `usage_update` frames, and handleLoadSessionStart blanks it
  * (correctly — a load may be a switch to a different session). But agents report
  * usage on a model round-trip and `session/load` never replays it, so after a resume
- * the ring stayed empty until the next LLM call. Measured on one ericli turn: prompt
+ * the ring stayed empty until the next LLM call. Measured on one CLI-agent turn: prompt
  * sent 03:34:56, first usage_update 03:39:42 — five minutes of tool calls with no
  * ring, which reads as "the ring only appears after end_turn".
  *

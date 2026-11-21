@@ -421,17 +421,17 @@
         "acp.jev.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Enable the jev_judge native tool. When on, judgement requests arriving via elicitation with _meta.tool=\"jev_judge\" are answered by the Laya decision model (served via the EricAI proxy) instead of prompting the user."
+          "description": "Enable the jev_judge native tool. When on, judgement requests arriving via elicitation with _meta.tool=\"jev_judge\" are answered by the Laya decision model (served via the local LLM proxy) instead of prompting the user."
         },
         "acp.jev.baseUrl": {
           "type": "string",
           "default": "http://127.0.0.1:8317",
-          "description": "System One decision-model base URL. Default points at the local EricAI proxy, which forwards to the backend Laya deployment. Self-hosted Laya: e.g. http://127.0.0.1:8000. The client POSTs to {baseUrl}/v1/systemone."
+          "description": "System One decision-model base URL. Default points at the local LLM proxy, which forwards to the backend Laya deployment. Self-hosted Laya: e.g. http://127.0.0.1:8000. The client POSTs to {baseUrl}/v1/systemone."
         },
         "acp.jev.apiKey": {
           "type": "string",
           "default": "",
-          "description": "API key for the System One endpoint. Leave empty when using the EricAI proxy (it handles upstream auth). For a direct Laya/OpenJev server with LAYA_API_KEY set, provide the key here. Falls back to the TYPESAFE_API_KEY / JEV_API_KEY environment variable."
+          "description": "API key for the System One endpoint. Leave empty when using the local LLM proxy (it handles upstream auth). For a direct Laya/OpenJev server with LAYA_API_KEY set, provide the key here. Falls back to the TYPESAFE_API_KEY / JEV_API_KEY environment variable."
         },
         "acp.jev.model": {
           "type": "string",

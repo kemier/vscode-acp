@@ -32,7 +32,7 @@ suite('MemorySkillTools', () => {
     for (const platform of ['linux', 'win32'] as NodeJS.Platform[]) {
       const text = formatMemorySkillTools({
         bridgeBaseUrl: 'http://127.0.0.1:8126',
-        agentId: 'ericli',
+        agentId: 'example-cli',
         platform,
       });
       assert.ok(text.includes('manage_skills'), `${platform}: names the native tool`);

@@ -5,7 +5,7 @@ import * as path from 'path';
 /**
  * An answered agent question must become a durable record.
  *
- * Reported symptom: ericli asked a multiple-choice question, the user picked an
+ * Reported symptom: an agent asked a multiple-choice question, the user picked an
  * option, and the card stayed at the bottom of the panel in collapsed mode with
  * every option still listed. The wire was fine — the traffic log shows
  * `_acp/ask_question` answered with selectedOptionIds ["o2"] 20s after the ask —
@@ -122,7 +122,7 @@ suite('agent question: the decision is recorded', () => {
       id: 'q1',
       prompt: 'How should I fix the config?',
       options: [
-        { id: 'o0', label: 'Disable eli-mcp and eridoc' },
+        { id: 'o0', label: 'Disable the wiki and docs MCP servers' },
         { id: 'o1', label: 'Remove the two entries entirely' },
         { id: 'o2', label: "Something else — I'll explain" },
       ],
@@ -151,14 +151,14 @@ suite('agent question: the decision is recorded', () => {
   test('only the chosen option is recorded — not the whole menu', () => {
     // The reported symptom was every option staying on screen.
     const text = run(oneQuestion, answered(['o0'])).chatHistory[0].text;
-    assert.ok(text.includes('Disable eli-mcp and eridoc'));
+    assert.ok(text.includes('Disable the wiki and docs MCP servers'));
     assert.ok(!text.includes('Remove the two entries entirely'), 'unchosen option leaked in');
     assert.ok(!text.includes("Something else"), 'unchosen option leaked in');
   });
 
   test('multi-select records every chosen label', () => {
     const text = run(oneQuestion, answered(['o0', 'o2'])).chatHistory[0].text;
-    assert.ok(text.includes('Disable eli-mcp and eridoc'));
+    assert.ok(text.includes('Disable the wiki and docs MCP servers'));
     assert.ok(text.includes("Something else — I'll explain"));
   });
 

@@ -1103,7 +1103,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       html = parts.join('');
 
       // Pass 2a: linkify C/Rust typedef-style identifiers ending with _t (e.g.
-      // icr_gen_state_msg_t, my_struct_t, uint32_t). The _t suffix is a very
+      // queue_gen_state_msg_t, my_struct_t, uint32_t). The _t suffix is a very
       // strong signal in C that this is a type name, not a variable.  We
       // linkify these in prose too (not just <code>), because the model often
       // references type names in narrative text. Standard types like uint32_t
@@ -1129,12 +1129,12 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       html = parts.join('');
 
       // Pass 2b: linkify function_name() and Type::method() patterns inside <code> tags.
-      // The model often writes `icrlib_client_send_client_msg()` or `FenAdapter::init()`
+      // The model often writes `queuelib_client_send_msg()` or `FooAdapter::init()`
       // as backtick code instead of as a markdown link. Convert these to @symbol: links.
       // handleOpenSymbol has ripgrep fallback to handle cases where LSP finds the wrong file.
       // Pass 2b: linkify function_name(), Type::method(), and bare symbol_name patterns
-      // inside <code> tags. The model often writes `icrlib_client_send_client_msg()` or
-      // `FenAdapter::init()` or `up_icr_adapter_client_create` as backtick code instead
+      // inside <code> tags. The model often writes `queuelib_client_send_msg()` or
+      // `FooAdapter::init()` or `net_queue_adapter_client_create` as backtick code instead
       // of as a markdown link. Convert these to @symbol: links.
       const codeSymKw = [...ChatWebviewProvider.langKeywords];
       html = html.replace(
@@ -2366,7 +2366,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
       // A slash command typed while a turn is STREAMING is a side-channel
       // request, not a new turn. The webview deliberately lets slash commands
       // past its send queue ("the agent handles read-only commands ... without
-      // interrupting the in-progress LLM turn"), and ericli honours that: it
+      // interrupting the in-progress LLM turn"), and one CLI agent honours that: it
       // answers the read-only ones (/tools, /a2a list, /ps, /stats, /skills
       // list, /index status) from a live snapshot above abortInFlightTurn(), so
       // the streaming turn survives on the agent side.
@@ -2997,7 +2997,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         //    resolution wiped state belonging to a newer prompt, and weakening this
         //    guard would have masked it instead of fixing it.
         //
-        // 2. The turn is not the client's at all. ericli used to call prompt() itself
+        // 2. The turn is not the client's at all. One agent used to call prompt() itself
         //    to deliver a late subagent result, so the panel showed a turn while
         //    _pendingPromptSessionId was null. session/cancel was a no-op on the agent
         //    (its abortController had already been cleared) and path 1 was false, so
@@ -3480,9 +3480,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
    * root nor the workspace index could resolve it.
    *
    * `vscode.workspace.findFiles` is scoped to the OPEN workspace, so with
-   * vepg/epg open and the session running in vepg, the agent's
-   * `icr_worker.c:513-521` (the file lives in vepg/ssr/…) was unresolvable and
-   * the click reported "File not found: icr_worker.c". Ripgrep's file list
+   * monorepo/app open and the session running in monorepo, the agent's
+   * `queue_worker.c:513-521` (the file lives in monorepo/lib/…) was unresolvable and
+   * the click reported "File not found: queue_worker.c". Ripgrep's file list
    * reaches the session cwd and the directories beside it — the same widening
    * findSymbolWithRipgrep already applies to symbols.
    */
@@ -3583,7 +3583,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
       // A relative path from the agent is relative to the AGENT's cwd, which is
       // not necessarily the workspace root: an codex session working in
-      // /workspace/git/ezennin/llama.cpp emits `src/llama-memory-recurrent.cpp`,
+      // /workspace/git/dev/llama.cpp emits `src/llama-memory-recurrent.cpp`,
       // and joining that onto this workspace root resolves to nothing. Try every
       // known session cwd, then every workspace folder.
       if (!isAbsolute) {
@@ -3594,7 +3594,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
 
       // If the path contains ".." segments, also try resolving from parent
       // directories of the workspace root (handles sibling repos like
-      // "up/../ssr/..." where ssr is a sibling of epg, not inside it).
+      // "app/../lib/..." where lib is a sibling of app, not inside it).
       if (!isAbsolute && cleanPath.includes('..')) {
         const workspaceFolders = vscode.workspace.workspaceFolders;
         if (workspaceFolders && workspaceFolders.length > 0) {
@@ -3679,8 +3679,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           uri = best;
         } else {
           // findFiles only sees the OPEN workspace. When the window has a
-          // subdirectory of the agent's cwd open (workspace vepg/epg, session
-          // cwd vepg), a bare `icr_worker.c` from vepg/ssr/… is invisible to it
+          // subdirectory of the agent's cwd open (workspace monorepo/app, session
+          // cwd monorepo), a bare `queue_worker.c` from monorepo/lib/… is invisible to it
           // and the click failed with "File not found". Widen to disk before
           // giving up, the same way the symbol fallback already does.
           const onDisk = await this.findFileOnDisk(cleanPath);
@@ -3730,7 +3730,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         // If not, search nearby lines (±80) for the symbol name and jump
         // to the closest match that looks like a definition.
         let effectiveLine = lineNumber;
-        // Extract symbol name from linkText (e.g. "fen_shutdown()" → "fen_shutdown").
+        // Extract symbol name from linkText (e.g. "foo_shutdown()" → "foo_shutdown").
         // Guarded: a path-shaped link text yields no symbol, so `foo/bar.cpp:898`
         // no longer "corrects" the line to the nearest line containing "foo".
         const fullSym = this.symbolFallbackFromLinkText(linkText);
@@ -3767,7 +3767,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             }
             // For Type::method() links, if the full "Type::method" pattern was found,
             // prefer it over lines that only contain the bare method name (e.g.
-            // "fen_shutdown()" vs "FenAdapter::shutdown()").
+            // "foo_shutdown()" vs "FooAdapter::shutdown()").
             if (fullSym && fullSym.includes('::')) {
               for (let i = -200; i <= 200; i++) {
                 const checkLine = targetLine + i;
@@ -3779,7 +3779,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
                   const dist = Math.abs(i);
                   const isDef = new RegExp(fullSym.replace(/::/g, '::') + '\\s*[(;{]').test(text);
                   // Give fullSym matches a bonus (-50) so they beat bare method name matches
-                  // that are closer but less specific (e.g. fen_shutdown() vs FenAdapter::shutdown())
+                  // that are closer but less specific (e.g. foo_shutdown() vs FooAdapter::shutdown())
                   const score = (isDef ? dist : dist + 100) - 50;
                   if (score < bestDist) {
                     bestDist = score;
@@ -3936,7 +3936,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
         );
         // Try to find an exact name match first
         // When multiple exact matches exist, prefer non-SDK paths
-        // (workspace/git repos over /proj/epg-sdk/ install paths)
+        // (workspace/git repos over shared /proj/ and SDK install trees)
         const exactMatches = symbols.filter((s) => s.name === symbolName);
         let best: (typeof symbols)[0] | undefined;
         if (exactMatches.length === 1) {
@@ -3945,7 +3945,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
           // Prefer non-SDK paths: /workspace/git/ over /proj/
           best =
             exactMatches.find(
-              (s) => !/(\/proj\/|\/epg-sdk\/|\/sdk\/|\/install\/|\.cache\/)/.test(s.location.uri.fsPath),
+              (s) => !/(\/proj\/|\/sdk\/|\/install\/|\.cache\/)/.test(s.location.uri.fsPath),
             ) || exactMatches[0];
         }
         // If symbolName is "Type::method", try matching just "method"
@@ -4123,8 +4123,8 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
     }
 
     // Build search roots: workspace folders + their parent directory.
-    // The parent covers sibling repos (e.g. ../ssr) that are outside the
-    // workspace root but share a common parent (e.g. vepg/epg + vepg/ssr).
+    // The parent covers sibling repos (e.g. ../lib) that are outside the
+    // workspace root but share a common parent (e.g. monorepo/app + monorepo/lib).
     const searchRoots: string[] = [];
     const seenRoots = new Set<string>();
     for (const folder of folders) {
@@ -4257,7 +4257,7 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             score += 20;
           }
           // Prefer project source over SDK/install paths
-          if (!/(\/proj\/|\/epg-sdk\/|\/sdk\/|\/install\/|\.cache\/)/.test(filePath)) {
+          if (!/(\/proj\/|\/sdk\/|\/install\/|\.cache\/)/.test(filePath)) {
             score += 15;
           }
           // Penalize lines that look like calls (symbol followed by ( but not
@@ -7881,8 +7881,8 @@ let isCompacting = false;  // true while /compact is running
          // (which means it will be sent as a normal prompt instead).
          //
          // The pending label is agent-aware: a steerable agent that has a
-         // mid-turn injection point shows "in turn" — ericli drains at
-         // onIterationStart, codex/cursor/kiro natively. claude-code-acp is
+         // mid-turn injection point shows "in turn" — codex/cursor/kiro natively,
+         // other agents when their acp.agents entry sets steerMidTurn. claude-code-acp is
          // the odd one out: its headless CLI cannot take a mid-turn user line,
          // so it drains the queue at turn end as a [Follow-up] turn and shows
          // "at turn end". "at turn end" is therefore the honest label for
@@ -8728,8 +8728,8 @@ function agentAutoSteersQueuedMessages(agentLabel) {
  * post-steer answer starts a fresh visual turn — the bubble belongs at the
  * tail, never hoisted above the in-flight turn.
  *
- * ericli drains at onIterationStart and codex-acp has a real mid-turn
- * injection path; their receipt-time echoes render hoisted-above-turn, which
+ * An agent that drains steers at the start of its next iteration, and codex-acp with
+ * its real mid-turn injection path, render receipt-time echoes hoisted-above-turn, which
  * matches their semantics.
  *
  * Renamed from agentDrainsSteerAtTurnEnd, which then became the bubble-
@@ -8858,7 +8858,7 @@ function nextAutoSteerIndex(queue) {
     //
     // queueMessage posts resolveClipboardForQueue / resolveSelectionsForQueue and then
     // calls maybeAutoSteerNext in the SAME tick, so the host's reply always loses the
-    // race. Measured repeatedly against a live ericli session: the steer went out as
+    // race. Measured repeatedly against a live CLI-agent session: the steer went out as
     // the bare mention and the payload only arrived on the later drain —
     //   02:00:57 Steered "@clipboard"        02:01:24 sendPrompt "<clipboard>..."
     //   02:13:39 Steered "@clipboard"        02:13:45 sendPrompt "<clipboard>..."
@@ -9130,7 +9130,7 @@ function turnSafeDeclaration(cmdName, commands) {
   //
   // Read the agent's own declaration of whether a command is read-only, from
   // AvailableCommand._meta.turnSafe (ACP reserves _meta for exactly this).
-  // Shapes, as emitted by ericli's turnSafeMetaFor():
+  // Shapes, as one agent emits them (its turnSafeMetaFor()):
   //   true                    the whole command is read-only (/tools, /ps, …)
   //   string[]                only these subcommands are, matched against the
   //                           FIRST argument token; '' covers the bare command
@@ -9175,12 +9175,12 @@ function slashCommandRunsDuringTurn(text, commands) {
   // unsound, because slash-command names are NOT portable across agents — the
   // same name means different things and has different turn semantics:
   //
-  //   /tools        ericli only; on codex-acp it is not a command at all, so it
+  //   /tools        that agent only; on codex-acp it is not a command at all, so it
   //                 reaches the LLM and needs a turn of its own
-  //   /skills       read-only listing on ericli AND codex-acp, but codex-acp's
+  //   /skills       read-only listing on that agent AND codex-acp, but codex-acp's
   //                 isReadOnlyCommand covers only ps/status, so anything else
   //                 hits interruptSessionTurn() and kills the running turn
-  //   /goal resume  flips a status flag on ericli; on codex-acp it calls
+  //   /goal resume  flips a status flag on that agent; on codex-acp it calls
   //                 resumeGoal() and STARTS A TURN
   //
   // A table keyed on the name therefore cannot be right for every agent, and
@@ -9211,7 +9211,7 @@ function slashCommandRunsDuringTurn(text, commands) {
   // Matched against the FIRST argument token ('' = bare command).
   if (declared && declared.subs) { return listHas(declared.subs, (tokens[1] || '').toLowerCase()); }
   // Matched against the WHOLE argument — needed where the full string decides,
-  // e.g. ericli's /goal: "pause" pauses, "pause the deployment" is an objective
+  // e.g. a /goal command: "pause" pauses, "pause the deployment" is an objective
   // that reaches the LLM.
   if (declared && declared.exact) { return listHas(declared.exact, tokens.slice(1).join(' ').toLowerCase()); }
   return false;
@@ -9245,7 +9245,7 @@ function parseSubcommandHints(description) {
   // ACP's AvailableCommand carries only { name, description, input }, where
   // input is ONE free-text hint — there is no structured subcommand list. So
   // agents advertise subcommands inside the DESCRIPTION using a "Sub: a, b, c"
-  // convention (see getAvailableCommands in ericli's src/acp/acp-server.ts):
+  // convention (as one agent's getAvailableCommands does):
   //
   //   /a2a    "Manage A2A (Agent2Agent) delegation. Sub: list, register <url>
   //            [as <name>], register local <name>, unregister <name>, call
@@ -9938,7 +9938,7 @@ const builtinCommands = [
     *   resource       -> "[Embedded Context] <uri> (<mime>)" + newline + body
     *   resource_link  -> "[Context] <uri>"
     * Cursor inlines attachments the same way. Agents that wrap replays in
-    * <context ref="…"> (codex, ericli) never showed this, which is why the leak
+    * <context ref="…"> (codex and other embeddedContext agents) never showed this, which is why the leak
     * looked agent-specific: the marker line, and the body under it, are plain text
     * with nothing to strip.
     *
@@ -9978,7 +9978,7 @@ const builtinCommands = [
 /**
  * Strip the machine-written goal preamble from the front of a user message.
  *
- * ericli turns a /goal command into the prompt
+ * An agent may turn a /goal command into the prompt
  * "Please start working toward this goal now:" followed by a blank line and the
  * objective (acp-server pendingGoalPrompt), and persists THAT as the user
  * message, so a resumed session renders the preamble in the bubble. It is
@@ -10093,7 +10093,7 @@ const builtinCommands = [
    displayText = stripLeadingResourceLinkJson(displayText);
  // Strip leading <context ref="...">...</context> blocks
  //
- // Agents with embeddedContext (codex, ericli) wrap a replayed resource this way,
+ // Agents with embeddedContext (codex and others) wrap a replayed resource this way,
  // so this is where an attachment shows up after resume on those agents. It maps
  // to the SAME pill the inline path produces, which is what makes the resumed
  // panel match the live one. Two cases the mapping has to respect:
@@ -10299,7 +10299,7 @@ const builtinCommands = [
    }
    displayText = displayText.slice(0, fuStart) + displayText.slice(fuEnd);
  }
- // Strip leading "[User interjection]: " markers that ericli prepends to a
+ // Strip leading "[User interjection]: " markers that some agents prepend to a
  // mid-turn user message (acp-server buildSteerDrainMessages / cli.ts
  // onIterationStart). On session/load replay the marker survives into the
  // rendered bubble alongside the (already-stripped) memory recall block. It
@@ -11280,7 +11280,7 @@ var end = displayText.length;
       // Any OTHER command with args. Offer the subcommands the agent itself
       // advertises (see subcommandHintsForCommand) instead of closing the
       // popup. This is what /a2a, /index and /skills were missing: typing
-      // "/a2a register" showed nothing at all, even though ericli publishes the
+      // "/a2a register" showed nothing at all, even though the agent publishes the
       // whole subcommand list — and its argument shapes — in the command
       // description. /goal keeps its built-in table above.
       isSessionAutocomplete = false;
@@ -11507,7 +11507,7 @@ var end = displayText.length;
       // that claude-code-acp serializes prompts per session so a mid-turn slash
       // command would wait anyway. That is agent-specific, and it silently
       // bypassed the gate in handleSend: "/a2a register local agent1" sat in the
-      // queue even though ericli advertised
+      // queue even though the agent advertised
       //   a2a -> turnSafe: ["","list","help","inspect","status","register","cancel"]
       // Duplicating the rule in two send paths is what hid the bug; there is now
       // exactly one place that decides.
@@ -11838,7 +11838,7 @@ function handleLocalSlashCommand(cmdText, force) {
  // /ps — background processes.
  //
  // Prefer the AGENT's view whenever it advertises the command. codex-acp tracks
- // background terminal processes, ericli tracks A2A tasks plus its own tracked
+ // background terminal processes, an agent may track A2A tasks plus its own tracked
  // tool calls, and claude-code-acp has its own dispatch — none of which appear
  // in chatHistory, so the local panel below can never see them. It only scans
  // rendered toolCall rows of THIS chat, which on a branch built around local
@@ -12022,8 +12022,8 @@ function handleSend() {
   wvQueueLog('send:local-slash', 'handled locally, no prompt sent');
      return;
    }
-// Read-only slash commands go through during streaming — ericli answers
-   // them from a snapshot (e.g. /tools, /a2a list, /ps) without interrupting
+// Read-only slash commands go through during streaming — an agent that declares them
+   // answers them from a snapshot (e.g. /tools, /a2a list, /ps) without interrupting
    // the in-progress LLM turn, so the result shows immediately.
    // EVERYTHING else typed while a turn is streaming is QUEUED (never sent
    // concurrently, never dropped) — plain messages and mutating slash commands
@@ -12239,18 +12239,18 @@ function handleSend() {
     // Typing "/goal " and pasting the objective turned the composer into
     // "/goal @clipboard", and the send path then broke the command two different
     // ways depending on the agent:
-    //   - with embeddedContext (ericli): the mention is stripped and the payload
+    //   - with embeddedContext: the mention is stripped and the payload
     //     travels as a separate context block, so the agent receives a bare
     //     "/goal" with no objective;
     //   - without it: the payload is PREPENDED to the text
     //     ("<clipboard>…</clipboard>\\n\\n/goal"), so the slash is no longer
-    //     leading and ericli's guard (_lowerCmd.startsWith('/')) never fires —
+    //     leading and the agent's guard (_lowerCmd.startsWith('/')) never fires —
     //     the command is treated as an ordinary prompt.
     //
     // Either way the argument is lost. The size gate below already handles a
     // short objective, but a long or multi-line one would still be attached.
     //
-    // /$name skill invocations are excluded: ericli passes those through to the
+    // /$name skill invocations are excluded: an agent may pass those through to the
     // LLM as a raw prompt, so an attachment is legitimate there.
     function composerHoldsSlashCommand() {
       var v = String(promptInput.value || '');
@@ -12563,7 +12563,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
    * subagent and was read as "a subagent has not come back": reported against a turn
    * whose subagent_wait rows all showed completed while the banner said
    * "waiting on agent 40s". Both readings were correct and unrelated — the four
-   * subagents were genuinely still running, and the 40s was ericli sitting in a silent
+   * subagents were genuinely still running, and the 40s was the agent sitting in a silent
    * non-streaming model call. Naming the measurement removes the collision.
    */
   function formatTurnStatusLabel(elapsedMs, idleMs) {
@@ -13776,7 +13776,7 @@ if (welcomeConnectAgent) welcomeConnectAgent.addEventListener('click', () => {
       // is chatHistory.length unless a later user message exists — so a mid-turn
       // assistant segment landed after the final answer.
       //
-      // Observed on a resumed ericli session: the turn ran
+      // Observed on a resumed CLI-agent session: the turn ran
       //   tool(ls) → "…让我看看这个入口文件" → tool(grep) → "…只有一处提到 kiro…"
       //   → tool(read) → "找到了。…## 答案…"
       // The replay was missing only the first assistant segment, so it was
@@ -18752,7 +18752,7 @@ function commitCurrentTextSegment(opts) {
 
     function storeDiffContent(toolCallId, content, title, rawInput) {
       // No content array AND no rawInput → nothing to diff. (Some agents, e.g.
-      // ericli's in-place edit_file, carry the changed text in rawInput rather
+      // ones with an in-place edit_file tool, carry the changed text in rawInput rather
       // than a type:"diff" content block, so we must not bail when content is
       // absent if rawInput may hold a diff.)
       if ((!content || !Array.isArray(content)) && !rawInput) return;
@@ -18768,7 +18768,7 @@ function commitCurrentTextSegment(opts) {
         .filter(c => c.type === 'diff')
         .map(c => c.path ? c : Object.assign({}, c, { path: titlePath || c.path || '' }))
         .filter(c => c.path);
-      // Fallback: some agents (notably ericli's in-place edit_file) put the
+      // Fallback: some agents (notably an in-place edit_file tool) put the
       // changed text in rawInput.edits[].oldText/newText (or a flat
       // rawInput.oldText/newText) instead of a type:"diff" content block.
       // Without this, clicking the tool title opens nothing. Synthesize a
@@ -18814,7 +18814,7 @@ function commitCurrentTextSegment(opts) {
     /**
      * Build a {path, oldText, newText} diff from a tool call's rawInput when
      * the agent put the changed text there instead of in a type:"diff" content
-     * block. Handles ericli's in-place edit_file shapes:
+     * block. Handles in-place edit_file shapes:
      *   {path, edits:[{oldText,newText}, ...]}   (array form, the standard)
      *   {path, replacements:[...]} / {path, changes:[...]}  (aliases)
      *   {path, oldText, newText}                  (flat single-edit form)
@@ -19817,7 +19817,7 @@ function commitCurrentTextSegment(opts) {
     * the role looked missing.
     *
     * Called from BOTH the creation and the late-arrival paths: agents differ in
-    * when they supply this. ericli and claude-code-acp send role up front; Cursor
+    * when they supply this. claude-code-acp (among others) sends role up front; Cursor
     * ACP "often sends rawInput:{} first and fills later", so its stages only learn
     * their role in updateStageFromRawInput.
     *
@@ -20020,7 +20020,7 @@ function commitCurrentTextSegment(opts) {
       // running, so "parent completed" says nothing about them. Without this the
       // rule below force-marked every live stage FAILED the moment the ack landed
       // — subagents doing real work turned red, and a later prompt made the whole
-      // crew look failed. ericli marks these with _meta.subagentsDetached.
+      // crew look failed. Agents mark these with _meta.subagentsDetached.
       var parentDetached = !!item.subagentsDetached;
       // A completed parent tool_call means the spawn_parallel returned
       // successfully — the subagents finished. Even when the session is
@@ -20669,7 +20669,7 @@ function commitCurrentTextSegment(opts) {
          // the parent spawn tool already flipped to completed.
          // Does a LIVE detached spawn own this card? Only then does a completed
          // parent say nothing about its children: a detached spawn_parallel
-         // completes on its launch ack while the subagents keep working. ericli
+         // completes on its launch ack while the subagents keep working. The agent
          // marks those with _meta.subagentsDetached, which handleToolCallUpdate
          // persists onto the history entry.
          var _liveDetachedCrew = false;
@@ -20698,7 +20698,7 @@ function commitCurrentTextSegment(opts) {
            // Resume/history: missing status means the stage never finished.
            else rowStageStatus = 'failed';
          }
-         // ericli spawn_parallel crews: the agent replays the parent spawn tool
+         // spawn_parallel crews: the agent replays the parent spawn tool
          // with status=completed (the spawn itself succeeded) but NO per-stage
          // status — the subagents' results arrive as separate messages, not as
          // tool_call_update stage patches. So on a completed parent the stages did
@@ -22865,7 +22865,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
        // BUT: if the turn was CANCELLED (user clicked Stop), the compaction
        // was aborted too — clear the compaction state so the spinner doesn't
        // stay stuck forever waiting for a completion notice that never comes.
-       // This is the auto-compaction-cancel hang: ericli auto-compact runs a
+       // This is the auto-compaction-cancel hang: an agent's auto-compact runs a
        // nested LLM call to summarize; clicking Stop cancels the turn, but the
        // agent is deep inside that call and cannot acknowledge session/cancel
        // promptly, so the host fallback forces promptEnd(cancelled). The
@@ -24756,8 +24756,8 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         break;
       }
       // Slash-command output is a SNAPSHOT, not conversation. The agent marks it
-      // with _meta.commandOutput (ericli: handleSlashCommand's epilogue, plus the
-      // goal-loop cap notice).
+      // with _meta.commandOutput (e.g. a slash command's epilogue, or a goal-loop
+      // cap notice).
       //
       // Without this branch the chunk was treated as assistant text: it carried a
       // new messageId, so the webview committed the in-flight bubble and — in
@@ -24773,7 +24773,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
         // A late subagent result needs a TURN to be useful. The agent cannot open
         // one (ACP has no agent-initiated turn; doing it from the agent latched the
         // panel — see 41e95918), so the client opens a real one it owns and can
-        // close. ericli's steer queue drains the actual result into it at the first
+        // close. The agent's steer queue drains the actual result into it at the first
         // tool-iteration boundary, so the nudge text itself carries no payload.
         //
         // Guarded: only when idle (a running turn already absorbs the result via
@@ -25123,7 +25123,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
       }
 
       case 'user_message_accepted': {
-        // Stage-1 steer receipt (ericli two-stage steer, Option A): the agent
+        // Stage-1 steer receipt (two-stage steer, Option A): the agent
         // ACKNOWLEDGED the steered message on arrival (visual-only) but has NOT
         // yet delivered it to the model. Show the user bubble immediately so the
         // user gets instant feedback their mid-turn message was received — instead
@@ -25778,7 +25778,7 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
    * emit usage on a model round-trip, and session/load never replays it — so after
    * a resume the ring stayed empty until the next LLM call. On a tool-heavy turn
    * that is minutes, which reads as "the ring only appears after end_turn"
-   * (measured on one ericli turn: prompt at 03:34:56, first usage_update 03:39:42).
+   * (measured on one CLI-agent turn: prompt at 03:34:56, first usage_update 03:39:42).
    * Remembering it per session lets a resume show the last known value immediately;
    * the next live frame corrects it.
    */

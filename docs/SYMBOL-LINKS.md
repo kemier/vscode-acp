@@ -44,8 +44,8 @@ correction. Only VS Code corrects wrong line numbers.
 ### 1. `file:///absolute/path?symbol=name#L123` — Primary (both editors)
 
 ```markdown
-[main](file:///workspace/git/ezennin/codex-acp/src/main.ts?symbol=main#L10)
-[CodexAcpServer](file:///workspace/git/ezennin/codex-acp/src/CodexAcpServer.ts?symbol=CodexAcpServer#L1)
+[main](file:///home/dev/src/codex-acp/src/main.ts?symbol=main#L10)
+[CodexAcpServer](file:///home/dev/src/codex-acp/src/CodexAcpServer.ts?symbol=CodexAcpServer#L1)
 ```
 
 - **Zed**: Parses as `MentionUri::Symbol` → `open_abs_path_at_point()` at exact `#L` line
@@ -57,7 +57,7 @@ correction. Only VS Code corrects wrong line numbers.
 ### 2. `file:///absolute/path#L123` — File at line (both editors)
 
 ```markdown
-[CodexAcpClient.ts](file:///workspace/git/ezennin/codex-acp/src/CodexAcpClient.ts#L100)
+[CodexAcpClient.ts](file:///home/dev/src/codex-acp/src/CodexAcpClient.ts#L100)
 ```
 
 - Use for file references (not specific symbols) or when symbol name is unknown
@@ -84,7 +84,7 @@ When a user clicks an `@symbol:` link (VS Code only):
    │
    ├─ Exact name match found?
    │   ├─ Multiple exact matches? → Prefer non-SDK paths
-   │   │   (/workspace/git/ over /proj/epg-sdk/)
+   │   │   (/workspace/git/ over /proj/<sdk>/)
    │   └─ Single match → use it
    │
    ├─ Type::method? → Try matching bare method name, then type name
@@ -103,7 +103,7 @@ When a user clicks an `@symbol:` link (VS Code only):
 If LSP returns **zero** results (e.g. clangd background index not ready):
 
 ```
-2. Ripgrep search in workspace + parent directory (covers ../ssr)
+2. Ripgrep search in workspace + parent directory (covers ../lib)
    │
    ├─ Score candidates:
    │   +100  Definition at start of line (return_type symbol_name()
@@ -130,8 +130,8 @@ When a user clicks a `file://` link or an auto-linkified `path:line` link:
 2. Line correction (if symbol name from ?symbol= or linkText doesn't match target line)
    │
    ├─ Extract symbol name from linkText or ?symbol= query param
-   │   "fen_shutdown()"          → "fen_shutdown"
-   │   "FenAdapter::subscribe()" → "FenAdapter::subscribe" → "subscribe"
+   │   "foo_shutdown()"          → "foo_shutdown"
+   │   "FooAdapter::subscribe()" → "FooAdapter::subscribe" → "subscribe"
    │
    ├─ Step 2a: Search ±200 lines for the symbol name (text search)
    │   Score: distance (closer = better)
@@ -162,11 +162,11 @@ the fragment.
 ## Non-SDK Path Preference
 
 When LSP returns multiple exact name matches (e.g. same symbol in both
-`/workspace/git/vepg/ssr/` and `/proj/epg-sdk/`), the plugin prefers non-SDK paths:
+`/workspace/git/monorepo/lib/` and `/proj/<sdk>/`), the plugin prefers non-SDK paths:
 
 ```
 Preferred:  /workspace/git/...
-Skipped:    /proj/epg-sdk/, /sdk/, /install/, .cache/
+Skipped:    /proj/, /sdk/, /install/, .cache/
 ```
 
 ## Mermaid Diagram Rendering

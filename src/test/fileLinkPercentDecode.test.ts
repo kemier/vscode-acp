@@ -7,7 +7,7 @@ import * as path from 'path';
  *
  * Clicking a rendered link to a CJK-named file failed with:
  *
- *   Could not open /workspace/git/ezennin/cuda/chapter106-longcat/%E8%AE%B2%E4%B9%89_longcat.md:
+ *   Could not open /workspace/git/dev/cuda/chapter106-longcat/%E8%AE%B2%E4%B9%89_longcat.md:
  *   File not found
  *
  * %E8%AE%B2%E4%B9%89 is UTF-8 for 讲义. The webview extracted `url.pathname` under a comment
@@ -22,7 +22,7 @@ import * as path from 'path';
 const SOURCE = path.resolve(__dirname, '../../src/ui/ChatWebviewProvider.ts');
 const SRC = fs.readFileSync(SOURCE, 'utf8');
 
-const REPORTED = 'file:///workspace/git/ezennin/cuda/chapter106-longcat/%E8%AE%B2%E4%B9%89_longcat.md';
+const REPORTED = 'file:///workspace/git/dev/cuda/chapter106-longcat/%E8%AE%B2%E4%B9%89_longcat.md';
 
 /** The webview's extraction, as shipped. */
 function webviewPath(href: string): string {
@@ -61,7 +61,7 @@ suite('percent-encoded file links decode', () => {
   test('the reported link resolves to the real filename', () => {
     assert.strictEqual(
       webviewPath(REPORTED),
-      '/workspace/git/ezennin/cuda/chapter106-longcat/讲义_longcat.md',
+      '/workspace/git/dev/cuda/chapter106-longcat/讲义_longcat.md',
     );
   });
 
@@ -69,8 +69,8 @@ suite('percent-encoded file links decode', () => {
     // Belt and braces: any caller that strips the scheme before reaching the host still
     // gets a usable path.
     assert.strictEqual(
-      hostBackstop('/workspace/git/ezennin/cuda/chapter106-longcat/%E8%AE%B2%E4%B9%89_longcat.md'),
-      '/workspace/git/ezennin/cuda/chapter106-longcat/讲义_longcat.md',
+      hostBackstop('/workspace/git/dev/cuda/chapter106-longcat/%E8%AE%B2%E4%B9%89_longcat.md'),
+      '/workspace/git/dev/cuda/chapter106-longcat/讲义_longcat.md',
     );
   });
 
@@ -89,7 +89,7 @@ suite('percent-encoded file links decode', () => {
   });
 
   test('an already-decoded path is left alone', () => {
-    const plain = '/workspace/git/ezennin/cuda/chapter106-longcat/讲义_longcat.md';
+    const plain = '/workspace/git/dev/cuda/chapter106-longcat/讲义_longcat.md';
     assert.strictEqual(hostBackstop(plain), plain);
   });
 

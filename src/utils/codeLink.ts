@@ -2,7 +2,7 @@
  * Helpers for resolving code links clicked in the chat panel.
  *
  * Both exist because of one concrete failure: an codex session working in
- * /workspace/git/ezennin/llama.cpp emitted `src/llama-memory-recurrent.cpp:898`,
+ * /workspace/git/dev/llama.cpp emitted `src/llama-memory-recurrent.cpp:898`,
  * the extension joined that onto THIS workspace root, found nothing, and then
  * fell back to a workspace symbol search for the first identifier in the link
  * text — "src" — which matched 15349 symbols and jumped into an unrelated repo.
@@ -59,8 +59,8 @@ function posixSegments(p: string): string[] {
  * workspace index could resolve, most specific first.
  *
  * `vscode.workspace.findFiles` only ever sees the OPEN workspace, so a session
- * running in /workspace/git/ezennin/vepg while the window has vepg/epg open
- * cannot resolve `icr_worker.c` — the file sits in vepg/ssr/…, outside the
+ * running in /workspace/git/dev/monorepo while the window has monorepo/app open
+ * cannot resolve `queue_worker.c` — the file sits in monorepo/lib/…, outside the
  * workspace. Each root's parent is appended last so a sibling repository is
  * still reachable, and `minDepth` keeps the widening from ever reaching / or a
  * two-level directory like /workspace/git.

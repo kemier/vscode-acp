@@ -17,8 +17,8 @@ import * as path from 'path';
  * agent-initiated turn — the client's REQUEST is the turn.
  *
  * The way out is for the CLIENT to open the turn, since it owns and can close one.
- * ericli marks the notice _meta.subagentLateResult, the webview sends a real prompt with
- * the bubble suppressed, and ericli's steer queue drains the actual result into that
+ * The agent marks the notice _meta.subagentLateResult, the webview sends a real prompt with
+ * the bubble suppressed, and the agent's steer queue drains the actual result into that
  * turn at its first tool-iteration boundary — so the nudge text carries no payload.
  */
 
@@ -72,7 +72,7 @@ suite('late subagent results open a client-owned turn', () => {
   });
 
   test('the nudge carries no result payload', () => {
-    // The payload rides ericli's steer queue; duplicating it here would double-deliver.
+    // The payload rides the agent's steer queue; duplicating it here would double-deliver.
     assert.ok(block.includes('Background subagent results have arrived'), 'nudge text present');
     assert.ok(!block.includes('content.text +'), 'must not splice the result into the nudge');
   });

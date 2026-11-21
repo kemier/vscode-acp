@@ -18,9 +18,9 @@ import * as path from 'path';
  * Measured from the ACP Client log of the reported click:
  *
  *   04:29:24.610  disconnectAgent: cancelling in-flight prompt for 41e95918
- *   04:29:24.633  SessionManager: connecting to agent "EricCLI"
+ *   04:29:24.633  SessionManager: connecting to agent "Example CLI"
  *   04:29:24.639  ERROR: Slash command failed ACP connection closed   <- surfaced
- *   04:29:26.628  Connected to agent EricCLI, session e9491bdc…       <- id changes here
+ *   04:29:26.628  Connected to agent Example CLI, session e9491bdc…       <- id changes here
  *
  * For those ~2 seconds the active id still equalled the dying session, so the
  * id comparison could not suppress anything.

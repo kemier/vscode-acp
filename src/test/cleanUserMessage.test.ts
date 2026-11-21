@@ -319,7 +319,7 @@ function cleanUserMessage(rawText: string): string {
     displayText = displayText.slice(0, fuStart) + displayText.slice(fuEnd);
   }
 
-  // Strip leading "[User interjection]: " markers that ericli prepends to a
+  // Strip leading "[User interjection]: " markers that some agents prepend to a
   // mid-turn user message. Mirror of the production code in
   // ChatWebviewProvider's cleanUserMessage.
   const interjMarker = '[User interjection]:';
@@ -426,24 +426,24 @@ const compactionMarker = 'This session is being continued from a previous conver
 suite('cleanUserMessage', () => {
   suite('context link stripping', () => {
     test('strips single [@name](file:///path) link, keeps real text', () => {
-      const input = '[@foo.h](file:///workspace/src/foo.h)run sft in up/epg';
-      assert.strictEqual(cleanUserMessage(input), 'run sft in up/epg');
+      const input = '[@foo.h](file:///workspace/src/foo.h)run tests in svc/app';
+      assert.strictEqual(cleanUserMessage(input), 'run tests in svc/app');
     });
 
     test('strips multiple concatenated [@name](file:///path) links', () => {
       const input =
         '[@json_v3_10_5.hpp](file:///workspace/path/json_v3_10_5.hpp)' +
-        '[@PduSessionRequestHandler.h](file:///workspace/path/PduSessionRequestHandler.h)' +
-        '[@NxInfo.h](file:///workspace/path/NxInfo.h)' +
-        'run sft in up/epg';
-      assert.strictEqual(cleanUserMessage(input), 'run sft in up/epg');
+        '[@SessionRequestHandler.h](file:///workspace/path/SessionRequestHandler.h)' +
+        '[@NodeInfo.h](file:///workspace/path/NodeInfo.h)' +
+        'run tests in svc/app';
+      assert.strictEqual(cleanUserMessage(input), 'run tests in svc/app');
     });
 
     test('strips Cursor Agent trailing Additional ACP context dump', () => {
       const input =
         "what's the relationship between vscode-acp and codex\n\n" +
         'Additional ACP context:\n' +
-        '[ACP resource_link] CodexApprovalHandler.ts (file:///Users/zaedinzeng/projects/codex-acp/src/CodexApprovalHandler.ts)\n' +
+        '[ACP resource_link] CodexApprovalHandler.ts (file:///Users/dev/projects/codex-acp/src/CodexApprovalHandler.ts)\n' +
         'import * as acp from "@agentclientprotocol/sdk";\n';
       assert.strictEqual(cleanUserMessage(input), "what's the relationship between vscode-acp and codex");
     });
@@ -470,7 +470,7 @@ suite('cleanUserMessage', () => {
 
     test('preserves normal text with no context links', () => {
       assert.strictEqual(cleanUserMessage('hello world'), 'hello world');
-      assert.strictEqual(cleanUserMessage('run sft in up/epg'), 'run sft in up/epg');
+      assert.strictEqual(cleanUserMessage('run tests in svc/app'), 'run tests in svc/app');
     });
 
     test('returns empty string for empty input', () => {
@@ -485,7 +485,7 @@ suite('cleanUserMessage', () => {
   suite('chunked arrival simulation', () => {
     test('chunk 1 = only links, chunk 2 = real text, coalesced = real text only', () => {
       const chunk1 = '[@foo.h](file:///workspace/src/foo.h)[@bar.h](file:///workspace/src/bar.h)';
-      const chunk2 = 'run sft in up/epg';
+      const chunk2 = 'run tests in svc/app';
 
       let coalesced = '';
       const r1 = cleanUserMessage(chunk1);
@@ -497,12 +497,12 @@ suite('cleanUserMessage', () => {
         coalesced += r2;
       }
 
-      assert.strictEqual(coalesced, 'run sft in up/epg');
+      assert.strictEqual(coalesced, 'run tests in svc/app');
     });
 
     test('chunk 1 = links + text, chunk 2 = more text, both preserved', () => {
-      const chunk1 = '[@foo.h](file:///workspace/src/foo.h)run sft';
-      const chunk2 = ' in up/epg';
+      const chunk1 = '[@foo.h](file:///workspace/src/foo.h)run tests';
+      const chunk2 = ' in svc/app';
 
       // Simulate the production coalescing logic: accumulate raw text,
       // then clean the full concatenation. This mirrors the fix in
@@ -512,11 +512,11 @@ suite('cleanUserMessage', () => {
       raw += chunk1;
       let cleaned = cleanUserMessage(raw);
       // First chunk has real text, so cleaned is non-empty
-      assert.strictEqual(cleaned, 'run sft');
+      assert.strictEqual(cleaned, 'run tests');
 
       raw += chunk2;
       cleaned = cleanUserMessage(raw);
-      assert.strictEqual(cleaned, 'run sft in up/epg');
+      assert.strictEqual(cleaned, 'run tests in svc/app');
     });
 
     test('all chunks are only links, coalesced = empty', () => {
@@ -608,43 +608,43 @@ suite('cleanUserMessage', () => {
   suite('regression: real-world Codex CLI output', () => {
     test('large batch of concatenated context links + user text', () => {
       const links = [
-        '[@json_v3_10_5.hpp](file:///workspace/vepg/epg/up/tw/up-common/3pp/sources/nlohmann-json/tests/abi/include/nlohmann/json_v3_10_5.hpp)',
-        '[@PduSessionRequestHandler.h](file:///workspace/vepg/epg/application/PgwControlPlane/pdu/include/PgwPdu/PduSessionRequestHandler.h)',
-        '[@NxInfo.h](file:///workspace/vepg/epg/application/PgwControlPlane/signalflowtest/psci/framework/test-include/PsciSftFramework/Ebm/NxInfo.h)',
-        '[@new](file:///proj/epg-tools/gcc/16.1.0_1.rhel8/include/c%2B%2B/16.1.0/new)',
-        '[@DereferenceCompared.h](file:///workspace/vepg/epg/framework/Support/Generic/include/Generic/DereferenceCompared.h)',
-        '[@MemCheck.h](file:///workspace/vepg/epg/framework/Support/Support/include/Support/Util/MemCheck.h)',
-        '[@PgwUserInfoHandlerBase.cpp](file:///workspace/vepg/epg/application/MpgController/MpgController/CommandHandlers/src/PgwUserInfoHandlerBase.cpp)',
-        '[@Formattable.h](file:///workspace/vepg/epg/framework/Support/Generic/include/Generic/Formattable.h)',
-        '[@function_base.hpp](file:///proj/epg-tools/sysroot/rhel8.10/usr/include/boost/function/function_base.hpp)',
-        '[@NrfConfigurationTest.cpp](file:///workspace/vepg/epg/application/NetworkRepositoryFunction/NrfTest/test-src/NrfTest/NrfConfigurationTest.cpp)',
-        '[@Writer.h](file:///workspace/vepg/epg/framework/Support/Support/include/Support/Xml/Writer.h)',
-        '[@Serializer.h](file:///workspace/vepg/epg/application/DeltaLog/logger/include/DeltaLog/decoder/Serializer.h)',
-        '[@ptr_traits.h](file:///proj/epg-tools/gcc/16.1.0_1.rhel8/include/c%2B%2B/16.1.0/bits/ptr_traits.h)',
-        '[@compare](file:///proj/epg-tools/gcc/16.1.0_1.rhel8/include/c%2B%2B/16.1.0/compare)',
-        '[@TargetDbConsumer.cpp](file:///workspace/vepg/epg/application/LawfulInterception/LiSrc/LiTargetDbAdapter/src/TargetDbConsumer.cpp)',
-        '[@ByteOrder.h](file:///workspace/vepg/epg/framework/Support/Support/include/Support/Utilities/Network/ByteOrder.h)',
-        '[@node_id_test.c](file:///workspace/vepg/epg/up/common/src/nodeid/test/node_id_test.c)',
-        '[@funcwrap.h](file:///proj/epg-tools/gcc/16.1.0_1.rhel8/include/c%2B%2B/16.1.0/bits/funcwrap.h)',
-        '[@functional](file:///proj/epg-tools/gcc/16.1.0_1.rhel8/include/c%2B%2B/16.1.0/functional)',
-        '[@bit](file:///afs/sero.gic.ericsson.se/app/vbuild/RHEL8-x86_64/gcc/13.2.0/include/c%2B%2B/13.2.0/bit)',
-        '[@ValkeyUtils.h](file:///workspace/vepg/epg/application/LawfulInterception/LiSrc/LiValkeyUtils/include/LiValkeyUtils/ValkeyUtils.h)',
-        '[@ControlPlaneCommonCompileFlags.cmake](file:///workspace/vepg/epg/tools/build/cmake/ControlPlaneCommonCompileFlags.cmake)',
-        '[@base.cmake](file:///workspace/vepg/epg/up/common/cmake/base.cmake)',
-        '[@DPIsimWatchdogManager.cc](file:///workspace/vepg/epg/up/dp/cdpi-main/NSNdpisim/lib/core/DPIsimWatchdogManager.cc)',
-        '[@ranges_algo.h](file:///proj/epg-tools/gcc/16.1.0_1.rhel8/include/c%2B%2B/16.1.0/bits/ranges_algo.h)',
+        '[@json_v3_10_5.hpp](file:///workspace/app/third_party/nlohmann-json/tests/abi/include/nlohmann/json_v3_10_5.hpp)',
+        '[@SessionRequestHandler.h](file:///workspace/app/services/session/include/Session/SessionRequestHandler.h)',
+        '[@NodeInfo.h](file:///workspace/app/services/session/test/framework/include/Framework/NodeInfo.h)',
+        '[@new](file:///opt/toolchain/gcc/16.1.0/include/c%2B%2B/16.1.0/new)',
+        '[@DereferenceCompared.h](file:///workspace/app/lib/util/include/util/DereferenceCompared.h)',
+        '[@MemCheck.h](file:///workspace/app/lib/util/include/util/MemCheck.h)',
+        '[@UserInfoHandlerBase.cpp](file:///workspace/app/services/admin/src/UserInfoHandlerBase.cpp)',
+        '[@Formattable.h](file:///workspace/app/lib/util/include/util/Formattable.h)',
+        '[@function_base.hpp](file:///opt/toolchain/sysroot/usr/include/boost/function/function_base.hpp)',
+        '[@RegistryConfigurationTest.cpp](file:///workspace/app/services/registry/test/RegistryConfigurationTest.cpp)',
+        '[@Writer.h](file:///workspace/app/lib/xml/include/xml/Writer.h)',
+        '[@Serializer.h](file:///workspace/app/lib/log/include/log/decoder/Serializer.h)',
+        '[@ptr_traits.h](file:///opt/toolchain/gcc/16.1.0/include/c%2B%2B/16.1.0/bits/ptr_traits.h)',
+        '[@compare](file:///opt/toolchain/gcc/16.1.0/include/c%2B%2B/16.1.0/compare)',
+        '[@StoreConsumer.cpp](file:///workspace/app/services/store/src/StoreConsumer.cpp)',
+        '[@ByteOrder.h](file:///workspace/app/lib/net/include/net/ByteOrder.h)',
+        '[@node_id_test.c](file:///workspace/app/core/nodeid/test/node_id_test.c)',
+        '[@funcwrap.h](file:///opt/toolchain/gcc/16.1.0/include/c%2B%2B/16.1.0/bits/funcwrap.h)',
+        '[@functional](file:///opt/toolchain/gcc/16.1.0/include/c%2B%2B/16.1.0/functional)',
+        '[@bit](file:///net/tools/gcc/13.2.0/include/c%2B%2B/13.2.0/bit)',
+        '[@ValkeyUtils.h](file:///workspace/app/lib/cache/include/cache/ValkeyUtils.h)',
+        '[@CommonCompileFlags.cmake](file:///workspace/app/tools/build/cmake/CommonCompileFlags.cmake)',
+        '[@base.cmake](file:///workspace/app/core/cmake/base.cmake)',
+        '[@WatchdogManager.cc](file:///workspace/app/core/dp/sim/lib/core/WatchdogManager.cc)',
+        '[@ranges_algo.h](file:///opt/toolchain/gcc/16.1.0/include/c%2B%2B/16.1.0/bits/ranges_algo.h)',
       ].join('');
-      const input = links + 'run sft in up/epg // hides this';
-      assert.strictEqual(cleanUserMessage(input), 'run sft in up/epg // hides this');
+      const input = links + 'run tests in svc/app // hides this';
+      assert.strictEqual(cleanUserMessage(input), 'run tests in svc/app // hides this');
     });
 
     test('same links split across chunks, all stripped, only user text remains', () => {
       const linksChunk = [
         '[@json_v3_10_5.hpp](file:///workspace/path/json_v3_10_5.hpp)',
-        '[@PduSessionRequestHandler.h](file:///workspace/path/PduSessionRequestHandler.h)',
-        '[@NxInfo.h](file:///workspace/path/NxInfo.h)',
+        '[@SessionRequestHandler.h](file:///workspace/path/SessionRequestHandler.h)',
+        '[@NodeInfo.h](file:///workspace/path/NodeInfo.h)',
       ].join('');
-      const textChunk = 'run sft in up/epg';
+      const textChunk = 'run tests in svc/app';
 
       let coalesced = '';
       const r1 = cleanUserMessage(linksChunk);
@@ -656,7 +656,7 @@ suite('cleanUserMessage', () => {
         coalesced += r2;
       }
 
-      assert.strictEqual(coalesced, 'run sft in up/epg');
+      assert.strictEqual(coalesced, 'run tests in svc/app');
     });
   });
 
@@ -717,8 +717,8 @@ suite('cleanUserMessage', () => {
     test('strips the bare git: source-control URI flattened on resume', () => {
       const input =
         'git:/workspace/src/ui/ChatWebviewProvider.ts?%7B%22path%22%3A%22%2Fworkspace%2Fsrc%2Fui%2FChatWebviewProvider.ts%22%2C%22ref%22%3A%22abc123%22%7D#L7098:7103\n' +
-        '<context ref="git:/workspace/src/ui/ChatWebviewProvider.ts?%7B%22path%22%3A%22%2Fworkspace%2Fsrc%2Fui%2FChatWebviewProvider.ts%22%2C%22ref%22%3A%22abc123%22%7D#L7098:7103">\nvar whole = { \'/tools\': 1 };\n</context>\njusr check ../ericli code';
-      assert.strictEqual(cleanUserMessage(input), 'jusr check ../ericli code');
+        '<context ref="git:/workspace/src/ui/ChatWebviewProvider.ts?%7B%22path%22%3A%22%2Fworkspace%2Fsrc%2Fui%2FChatWebviewProvider.ts%22%2C%22ref%22%3A%22abc123%22%7D#L7098:7103">\nvar whole = { \'/tools\': 1 };\n</context>\njusr check ../other-repo code';
+      assert.strictEqual(cleanUserMessage(input), 'jusr check ../other-repo code');
     });
 
     test('strips a bare git: URI with a simple line fragment', () => {
@@ -745,8 +745,8 @@ suite('cleanUserMessage', () => {
     test('strips the leading [User interjection]: marker flattened on resume', () => {
       const input =
         '[User interjection]: commit local/dev // and also strip\n' +
-        'vscode-acp:///memory/ericli\n' +
-        '<context ref="vscode-acp:///memory/ericli">\n<agent-memory>\n- [episodic] x\n' +
+        'vscode-acp:///memory/example-cli\n' +
+        '<context ref="vscode-acp:///memory/example-cli">\n<agent-memory>\n- [episodic] x\n' +
         '</agent-memory>\n</context>';
       assert.strictEqual(cleanUserMessage(input), 'commit local/dev // and also strip');
     });
@@ -754,8 +754,8 @@ suite('cleanUserMessage', () => {
     test('strips doubled leading [User interjection]: markers', () => {
       const input =
         '[User interjection]: [User interjection]: commit local/dev\n' +
-        'vscode-acp:///memory/ericli\n' +
-        '<context ref="vscode-acp:///memory/ericli">\n<agent-memory>\n- [episodic] x\n' +
+        'vscode-acp:///memory/example-cli\n' +
+        '<context ref="vscode-acp:///memory/example-cli">\n<agent-memory>\n- [episodic] x\n' +
         '</agent-memory>\n</context>';
       assert.strictEqual(cleanUserMessage(input), 'commit local/dev');
     });
@@ -808,7 +808,7 @@ suite('cleanUserMessage', () => {
     test('hides the <available_skills> and <memory_skill_tools> sections', () => {
       const input =
         '<agent-memory>\n<relevant-memories>\n- [episodic] x\n</relevant-memories>\n' +
-        '<available_skills>\n- **gerrit-pctr-issue-investigation** (v1):\n</available_skills>\n' +
+        '<available_skills>\n- **gerrit-issue-investigation** (v1):\n</available_skills>\n' +
         '<memory_skill_tools>\ncurl -sf -X POST http://127.0.0.1:8127/view\n</memory_skill_tools>\n' +
         '</agent-memory>\nwhy does the ring stay at 197k?';
       assert.strictEqual(cleanUserMessage(input), 'why does the ring stay at 197k?');

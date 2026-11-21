@@ -1,7 +1,7 @@
 /**
  * A finished crew card must not start spinning again because a NEW turn is live.
  *
- * Field capture — resuming ericli session 41e95918, switching to GLM-5.2, then
+ * Field capture — resuming a CLI-agent session 41e95918, switching to GLM-5.2, then
  * sending a prompt. The replayed crew card arrives complete:
  *
  *   traffic:  tool_call tc-1918 "Spawn 3 subagents" status="completed"
@@ -61,7 +61,7 @@ suite('resumed crew stages do not spin during a later turn', () => {
     );
   });
 
-  test('the ericli completed-parent correction no longer keys on isProcessing', () => {
+  test('the completed-parent correction no longer keys on isProcessing', () => {
     const fix = src.slice(src.indexOf('if (!stage.status && isSubagentSpawnTitle('), at + 4000);
     const head = fix.slice(0, fix.indexOf('}'));
     assert.ok(head.includes('!_liveDetachedCrew'), `must use the live-detached test: ${head}`);
@@ -73,7 +73,7 @@ suite('resumed crew stages do not spin during a later turn', () => {
     // must keep spinning, which is the whole reason the flag exists.
     assert.ok(
       /_liveDetachedCrew\s*=\s*!!_hd\.subagentsDetached/.test(src),
-      'the flag must come from the marker ericli sets on a detached spawn',
+      'the flag must come from the marker the agent sets on a detached spawn',
     );
     assert.ok(
       /else if \(isProcessing && !isLoadingSession\) rowStageStatus = 'running';/.test(src),

@@ -92,7 +92,7 @@ export function buildSilentWav(ms = 120): Buffer {
 /**
  * Fire-and-forget model warm-up.
  *
- * Measured against the EricAI-backed endpoint: a request that has to load
+ * Measured against a Ray-served STT endpoint behind an LLM proxy: a request that has to load
  * `whisper-large-v3-turbo` takes ~45–60 s, while any request after that takes
  * 0.1–0.3 s. The model is unloaded again when idle, so the FIRST take after a
  * pause is the one that times out. Sending a 120 ms silent clip when recording
@@ -221,7 +221,7 @@ export async function warmupStt(cfg: SttConfig): Promise<void> {
  * timeout turns those into a slow success instead of a lost take.
  */
 /**
- * Human label for the `x-stt-source` header ericai-proxy sets when it answers
+ * Human label for the `x-stt-source` header the LLM proxy sets when it answers
  * from the local whisper.cpp fallback instead of the shared Ray cluster.
  * Absent header = the shared backend produced the transcript.
  */
@@ -241,7 +241,7 @@ export function isTransientSttError(message: string): boolean {
 /**
  * Extract an error carried *inside* a 200 response.
  *
- * The EricAI/Ray backend answers `HTTP 200` with
+ * A Ray Serve backend answers `HTTP 200` with
  * `{"error":{"message":"...DeploymentUnavailableError...","code":500}}` and no
  * `text` field. Treating that as an empty transcript (which the code used to
  * do) blamed the microphone for a backend outage — the single most misleading

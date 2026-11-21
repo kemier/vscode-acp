@@ -157,7 +157,7 @@ export function formatMemorySkillTools(opts: MemorySkillToolsOptions): string {
     'you must load its full SKILL.md.',
     '',
     // Self-selecting by the model's own tool list. Agents that expose a native skill
-    // tool covering memory skills (ericli's manage_skills) should use it: a structured
+    // tool covering memory skills (e.g. a manage_skills tool) should use it: a structured
     // tool call cannot be mangled the way these quote-heavy shell recipes can be on
     // models whose calls are recovered from prose instead of sent as tool_calls.
     // Agents without such a tool simply fall through to the recipes below.

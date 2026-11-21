@@ -75,7 +75,7 @@ const CREATE = {
   task_list_description: 'Option C: persist subagent findings into memory',
   tasks: [
     { task_description: 'Map both ends', details: 'copy the delegate pattern' },
-    { task_description: 'ericli: emit findings' },
+    { task_description: 'Agent: emit findings' },
     { task_description: 'Extension: capture' },
   ],
 };
@@ -87,7 +87,7 @@ suite('kiro todo_list feeds the plan bar', () => {
     assert.ok(h.plan, 'no plan emitted');
     assert.deepStrictEqual(
       h.plan.entries.map((e: any) => e.content),
-      ['Map both ends', 'ericli: emit findings', 'Extension: capture'],
+      ['Map both ends', 'Agent: emit findings', 'Extension: capture'],
     );
     assert.deepStrictEqual(
       h.plan.entries.map((e: any) => e.status),

@@ -331,7 +331,7 @@ flowchart LR
   end
 
   ENV["env bridge<br/>CODEX_SLOT_CACHE_ENABLED<br/>CODEX_LLAMA_SERVER_URL :8080"]
-  LLAMA["Strata (llama-compatible)<br/>192.168.124.14:8080"]
+  LLAMA["Strata (llama-compatible)<br/>:8080"]
 
   SPAWN -->|"spawn(command, args, env)"| RUNTIME
   RUNTIME <-->|"ACP JSON-RPC / stdio"| SPAWN

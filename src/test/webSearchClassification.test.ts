@@ -32,7 +32,7 @@ function extractClassifier(): (title: string, rawInput?: unknown) => boolean {
 }
 
 const GREP_COMMAND =
-  'cd /workspace/git/ezennin/ericli && grep -rn "web_search|webSearch" --include=*.ts ' +
+  'cd /workspace/git/dev/agent && grep -rn "web_search|webSearch" --include=*.ts ' +
   'src/core/native-tools.ts | head -6; echo "=== implementation file ==="; ' +
   'grep -rln "web_search" --include=*.ts src | head -5';
 
@@ -58,7 +58,7 @@ suite('web-search classification', () => {
     assert.strictEqual(isWebSearch('web_search', { command: 'echo web_search' }), true);
   });
 
-  test('the real ericli web_search tool is still detected', () => {
+  test('a native web_search tool is still detected', () => {
     assert.strictEqual(isWebSearch('web_search', { query: 'cuda graphs' }), true);
   });
 

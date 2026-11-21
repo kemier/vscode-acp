@@ -12,7 +12,7 @@ import * as path from 'path';
  *   // interrupting the in-progress LLM turn.
  *   if (isProcessing && !text.startsWith('/')) { handleQueue(); return; }
  *
- * ericli now honours that: read-only commands (/tools, /a2a list, /ps, /stats,
+ * Agents now honour that: read-only commands (/tools, /a2a list, /ps, /stats,
  * /skills list, /index status) are answered from a live snapshot above
  * abortInFlightTurn(), so the streaming turn survives on the agent side.
  *

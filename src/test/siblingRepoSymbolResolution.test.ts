@@ -6,12 +6,12 @@ import * as path from 'path';
  * Clicking a symbol in an answer about a SIBLING repo must not answer from the
  * open one.
  *
- * Reported: an ericli session with the `cuda` repo open analysed llama.cpp's CUDA
+ * Reported: a CLI-agent session with the `cuda` repo open analysed llama.cpp's CUDA
  * kernels. Clicking `mul_mat_id` / `ggml_cuda_op_silu` searched the cuda repo.
  *
- * The session file (~/.cli-4-ericai/sessions/66f8c319.json) settles what the model
+ * The agent's session file (sessions/66f8c319.json) settles what the model
  * did: 19 links, ALL compliant absolute file:/// paths into
- * /workspace/git/ezennin/llama.cpp. The symbols that misbehaved were never links —
+ * /workspace/git/dev/llama.cpp. The symbols that misbehaved were never links —
  * they were inline code, and the webview's Pass-2 linkifier turns snake_case inside
  * a code span into an @symbol: lookup. So this is entirely a resolution problem on
  * our side, not model non-compliance.

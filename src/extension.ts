@@ -518,7 +518,7 @@ export function activate(context: vscode.ExtensionContext): void {
    * agent waits on forever.
    *
    * `params` is cursor/ask_question's shape, which `_acp/ask_question` reuses
-   * verbatim, so cursor and ericli both land here without translation.
+   * verbatim, so cursor and every agent that sends it land here without translation.
    */
   const askUserQuestion = async (params: any, respond: (result: any) => void): Promise<void> => {
     try {

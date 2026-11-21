@@ -5,7 +5,7 @@ By default the "Codex CLI" agent uses the npm-published binary via `npx @zed-ind
 ## 1. Build the Rust binary
 
 ```bash
-cd /workspace/git/ezennin/codex-acp
+cd ~/src/codex-acp
 cargo build --release
 # Binary at target/release/codex-acp
 ```
@@ -17,8 +17,8 @@ The binary needs OpenSSL libraries at runtime. Create a wrapper at `~/.local/bin
 ```bash
 cat > ~/.local/bin/codex-acp << 'SCRIPT'
 #!/bin/bash
-export LD_LIBRARY_PATH="/workspace/git/ezennin/openssl-install/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-exec /workspace/git/ezennin/codex-acp/target/release/codex-acp "$@"
+export LD_LIBRARY_PATH="$HOME/src/openssl-install/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+exec "$HOME/src/codex-acp/target/release/codex-acp" "$@"
 SCRIPT
 chmod +x ~/.local/bin/codex-acp
 ```
@@ -39,7 +39,7 @@ In VSCode settings (`acp.agents`), update the "Codex CLI" entry:
 
 ```json
 "Codex CLI": {
-  "command": "/workspace/git/ezennin/.local/bin/codex-acp",
+  "command": "/home/<you>/.local/bin/codex-acp",
   "args": [],
   "env": {}
 }
@@ -76,7 +76,7 @@ Or if the wrapper is on your `PATH`:
 The wrapper script path is wrong. Check that the binary exists:
 
 ```bash
-ls -la /workspace/git/ezennin/codex-acp/target/release/codex-acp
+ls -la ~/src/codex-acp/target/release/codex-acp
 ```
 
 ### OpenSSL / SSL errors

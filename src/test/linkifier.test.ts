@@ -306,9 +306,9 @@ suite('Linkifier Test Suite', () => {
   });
 
   test('bare file path with known extension → clickable bare-file-link', () => {
-    const html = linkify('<p>See tools/build/cmake/ControlPlaneCommonCompileFlags.cmake</p>');
+    const html = linkify('<p>See tools/build/cmake/CommonCompileFlags.cmake</p>');
     assertContains(html, 'class="file-link bare-file-link"');
-    assertContains(html, 'data-file="tools/build/cmake/ControlPlaneCommonCompileFlags.cmake"');
+    assertContains(html, 'data-file="tools/build/cmake/CommonCompileFlags.cmake"');
   });
 
   test('bare filename with .cmake extension → clickable', () => {
@@ -698,10 +698,10 @@ suite('Linkifier Test Suite', () => {
     assertNotContains(html, 'href="@symbol');
   });
 
-  test('tools/build/cmake/ControlPlaneCommonCompileFlags.cmake → clickable', () => {
-    const html = linkify('<p>Set in tools/build/cmake/ControlPlaneCommonCompileFlags.cmake</p>');
+  test('tools/build/cmake/CommonCompileFlags.cmake → clickable', () => {
+    const html = linkify('<p>Set in tools/build/cmake/CommonCompileFlags.cmake</p>');
     assertContains(html, 'class="file-link bare-file-link"');
-    assertContains(html, 'data-file="tools/build/cmake/ControlPlaneCommonCompileFlags.cmake"');
+    assertContains(html, 'data-file="tools/build/cmake/CommonCompileFlags.cmake"');
   });
 
   test('up/common/cmake/base.cmake → clickable', () => {

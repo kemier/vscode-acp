@@ -7,7 +7,7 @@ import { SharedMemoryProvider } from '../core/memory/SharedMemoryProvider';
  * A subagent's findings must be persistable, and off until asked for.
  *
  * Nothing carried subagent work into memory. Its conversation never leaves
- * ericli's process, its progress is deliberately not streamed as
+ * the agent's process, its progress is deliberately not streamed as
  * agent_thought_chunk, and per-turn capture records only the main assistant text
  * plus tool-call TITLES — verified in the live log, which shows a turn with 84
  * tool calls producing exactly 2 L0 messages:
@@ -193,13 +193,13 @@ suite('subagent findings capture (executed)', () => {
 
   test('writes nothing while the setting is off', async () => {
     const { p, sent } = harness({});
-    await p.captureSubagentFindings('sess-1', 'EricCLI', finding);
+    await p.captureSubagentFindings('sess-1', 'Example CLI', finding);
     assert.deepStrictEqual(sent, [], 'a default install must not write to shared memory');
   });
 
   test('writes one attributed assistant message when enabled', async () => {
     const { p, sent } = harness({ captureSubagentFindings: true });
-    await p.captureSubagentFindings('sess-1', 'EricCLI', finding);
+    await p.captureSubagentFindings('sess-1', 'Example CLI', finding);
     assert.strictEqual(sent.length, 1);
     assert.strictEqual(sent[0].sessionId, 'sess-1');
     assert.strictEqual(sent[0].messages.length, 1);
@@ -214,13 +214,13 @@ suite('subagent findings capture (executed)', () => {
 
   test('the master capture switch still overrides it', async () => {
     const { p, sent } = harness({ captureSubagentFindings: true, captureEnabled: false });
-    await p.captureSubagentFindings('sess-1', 'EricCLI', finding);
+    await p.captureSubagentFindings('sess-1', 'Example CLI', finding);
     assert.deepStrictEqual(sent, []);
   });
 
   test('a failed subagent is recorded with its reason and partial work', async () => {
     const { p, sent } = harness({ captureSubagentFindings: true });
-    await p.captureSubagentFindings('sess-1', 'EricCLI', {
+    await p.captureSubagentFindings('sess-1', 'Example CLI', {
       ...finding,
       status: 'failed',
       summary: 'got through 3 of 40 files',
@@ -234,7 +234,7 @@ suite('subagent findings capture (executed)', () => {
 
   test('caveats ride along', async () => {
     const { p, sent } = harness({ captureSubagentFindings: true });
-    await p.captureSubagentFindings('sess-1', 'EricCLI', {
+    await p.captureSubagentFindings('sess-1', 'Example CLI', {
       ...finding,
       compactions: 2,
       unresolvedSkills: ['gerrit-skill', 'jira-skill'],
@@ -246,7 +246,7 @@ suite('subagent findings capture (executed)', () => {
 
   test('an empty finding is not written', async () => {
     const { p, sent } = harness({ captureSubagentFindings: true });
-    await p.captureSubagentFindings('sess-1', 'EricCLI', { id: 'x', type: 'explore' });
+    await p.captureSubagentFindings('sess-1', 'Example CLI', { id: 'x', type: 'explore' });
     assert.deepStrictEqual(sent, [], 'nothing to remember must write nothing');
   });
 
@@ -258,7 +258,7 @@ suite('subagent findings capture (executed)', () => {
       },
       skillConversationAdd: async () => ({}),
     });
-    await p.captureSubagentFindings('sess-1', 'EricCLI', finding);
+    await p.captureSubagentFindings('sess-1', 'Example CLI', finding);
   });
 });
 

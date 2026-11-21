@@ -107,7 +107,7 @@ suite('conversationExport', () => {
       exportConversationItem({
         kind: 'message',
         role: 'user',
-        text: rlink('path`', 'file:///workspace/git/ezennin/vscode-acp/path%60'),
+        text: rlink('path`', 'file:///workspace/git/dev/vscode-acp/path%60'),
       } as ConversationExportItem),
       null,
     );
@@ -132,7 +132,7 @@ suite('conversationExport', () => {
 
   test('resource_link-only rows drop out of a full export', () => {
     const items: ConversationExportItem[] = [
-      { kind: 'message', role: 'user', text: rlink('`/', 'file:///workspace/git/ezennin/vscode-acp/%60/') },
+      { kind: 'message', role: 'user', text: rlink('`/', 'file:///workspace/git/dev/vscode-acp/%60/') },
       { kind: 'message', role: 'user', text: 'check acp log' },
       { kind: 'message', role: 'assistant', text: 'looking now' },
     ];

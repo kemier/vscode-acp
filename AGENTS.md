@@ -35,7 +35,7 @@ The LLM must emit links that work in both editors. There is one primary format.
 ### 1. Primary — `file:///absolute/path?symbol=name#L123` (both editors)
 
 ```markdown
-[main](file:///workspace/git/ezennin/codex-acp/src/main.ts?symbol=main#L10)
+[main](file:///home/dev/src/codex-acp/src/main.ts?symbol=main#L10)
 ```
 
 - **CRITICAL**: `?symbol=` MUST come BEFORE `#L` (RFC 3986). If reversed, Zed
@@ -72,8 +72,8 @@ The LLM must emit links that work in both editors. There is one primary format.
  
  | Repo | Path | Description |
  |---|---|---|
- | **codex-acp** | `/workspace/git/ezennin/codex-acp` | ACP adapter for Codex CLI (`@agentclientprotocol/codex-acp`). The agent binary spawned by this extension. Key files: `src/CodexAcpServer.ts` (ACP server — session/cancel, prompt, turn/interrupt), `src/CodexAcpClient.ts` (Codex app-server client), `src/CodexAppServerClient.ts` (JSON-RPC transport to Codex core). |
-| **codex** | `/workspace/git/ezennin/codex` | Codex CLI core (Rust). The actual agent engine. Key crate: `codex-rs/app-server/` (app-server protocol, turn/interrupt handling in `src/request_processors/turn_processor.rs`). |
+ | **codex-acp** | `../codex-acp` | ACP adapter for Codex CLI (`@agentclientprotocol/codex-acp`). The agent binary spawned by this extension. Key files: `src/CodexAcpServer.ts` (ACP server — session/cancel, prompt, turn/interrupt), `src/CodexAcpClient.ts` (Codex app-server client), `src/CodexAppServerClient.ts` (JSON-RPC transport to Codex core). |
+| **codex** | `../codex` | Codex CLI core (Rust). The actual agent engine. Key crate: `codex-rs/app-server/` (app-server protocol, turn/interrupt handling in `src/request_processors/turn_processor.rs`). |
 
 When debugging agent-side issues (cancel not working, turn not interrupting, etc.), inspect the codex-acp source first — it is the bridge between this extension's JSON-RPC notifications and the Codex core's internal `Op::Interrupt`.
  

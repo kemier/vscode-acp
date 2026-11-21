@@ -8,7 +8,7 @@ import { decodeTemplate } from './templateDecode';
  *
  * queueMessage posts resolveClipboardForQueue / resolveSelectionsForQueue and then calls
  * maybeAutoSteerNext in the SAME tick, so the host's reply always loses the race. On a
- * live ericli session this repeated every time:
+ * live CLI-agent session this repeated every time:
  *
  *   02:00:57  Steered  "@clipboard"            02:01:24  sendPrompt  "<clipboard>…"
  *   02:13:39  Steered  "@clipboard"            02:13:45  sendPrompt  "<clipboard>…"

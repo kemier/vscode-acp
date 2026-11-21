@@ -106,7 +106,7 @@ suite('plan bar title distinguishes a plan from a todo list', () => {
   test('it is agent-agnostic — no adapter names in the resolver', () => {
     const sig = 'function planBarTitle(plan) {';
     const body = provider.slice(provider.indexOf(sig), provider.indexOf(sig) + 900);
-    for (const name of ['ericli', 'EricCLI', 'codex', 'kiro', 'cursor']) {
+    for (const name of ['codex', 'kiro', 'cursor']) {
       assert.ok(!body.includes(name), `resolver mentions ${name} — label by kind, not by sender`);
     }
   });

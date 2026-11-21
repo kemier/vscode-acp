@@ -104,7 +104,7 @@ suite('cancel fallback state ownership (Send Now after a late cancel)', () => {
   });
 
   test('an agent-initiated turn can also be rescued, gated on no in-flight prompt', () => {
-    // ericli used to call prompt() itself to deliver a late subagent result, so the
+    // One agent used to call prompt() itself to deliver a late subagent result, so the
     // panel showed a turn while _pendingPromptSessionId was null. No ordering fix can
     // make the ownership path true there — the client never registered a prompt — so
     // Stop had no effect at all and only a reload cleared it.

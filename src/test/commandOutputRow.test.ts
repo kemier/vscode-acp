@@ -26,7 +26,7 @@ import * as path from 'path';
  * the nearest turn adopts it.
  *
  * Fix chain, all three links asserted here:
- *   1. ericli marks the chunk with _meta.commandOutput (ACP reserves _meta on
+ *   1. The agent marks the chunk with _meta.commandOutput (ACP reserves _meta on
  *      ContentChunk for exactly this);
  *   2. the host BYPASSES the stream coalescer for it — the coalescer carries only
  *      (kind, text, messageId) and re-synthesises the chunk, which would drop the

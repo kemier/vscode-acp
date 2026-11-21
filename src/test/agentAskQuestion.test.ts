@@ -9,7 +9,7 @@ import * as path from 'path';
  *   - cursor/ask_question   -> showQuickPick (extension.ts)
  *   - ACP elicitation enum  -> showQuickPick (ElicitationHandler)
  *   - session/request_permission -> showQuickPick (PermissionHandler)
- *   - ericli                -> NO WAY TO ASK AT ALL. Its elicitation code is
+ *   - one CLI agent         -> NO WAY TO ASK AT ALL. Its elicitation code is
  *                              MCP/terminal only and no tool existed, so an agent
  *                              at a genuine fork wrote the question into prose and
  *                              guessed — the turn had already ended by the time the

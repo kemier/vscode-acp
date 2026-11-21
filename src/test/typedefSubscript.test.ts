@@ -6,7 +6,7 @@ import { makeTypedefRegex } from '../ui/markdownLinkifyPatterns';
  *
  * Pass 2a linkifies anything ending in `_t` in PROSE as well as in code, on the
  * reasoning that `_t` is a strong C type-name signal (`uint32_t`,
- * `icr_gen_state_msg_t`). A single letter before the suffix breaks that assumption: in
+ * `queue_gen_state_msg_t`). A single letter before the suffix breaks that assumption: in
  * a formula, `k_t` / `c_t` / `v_t` are subscripted variables. Reported from a Chinese
  * course document where `k_t = W_up_k c_t, v_t = W_up_v c_t` rendered with three of its
  * variables as clickable symbol links.
@@ -38,7 +38,7 @@ suite('typedef _t linkifier vs math subscripts', () => {
     const real = [
       'uint32_t', 'size_t', 'time_t', 'pid_t', 'uid_t', 'gid_t', 'off_t',
       'key_t', 'dev_t', 'ino_t', 'mode_t', 'id_t', 'fd_t',
-      'my_struct_t', 'icr_gen_state_msg_t', 'up_icr_adapter_client_t',
+      'my_struct_t', 'queue_gen_state_msg_t', 'net_queue_adapter_client_t',
     ];
     for (const sym of real) {
       assert.ok(linkifies(sym), `${sym} is a real typedef and must stay clickable`);

@@ -213,7 +213,7 @@ export const CLIPBOARD_URI = 'zed:///agent/clipboard';
  * resource body (`src/acp/translate/prompt.ts`), and Cursor inlines attachments
  * the same way. An UNDELIMITED payload is then indistinguishable from something
  * the user typed, so the whole clipboard blob reappeared in the bubble on every
- * resume — while codex/ericli, which wrap replays in `<context ref="…">`, looked
+ * resume — while codex and other agents that wrap replays in `<context ref="…">` looked
  * fine. Delimiting at the source is the only fix that does not need a rule per
  * agent: `cleanUserMessage` collapses the block to a `[Clipboard: N lines]` pill
  * whatever the surrounding formatting turns out to be.

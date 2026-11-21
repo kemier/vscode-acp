@@ -57,11 +57,11 @@ suite('stripLeadingResourceLinkJson', () => {
     // These come from backtick-ish fragments being resolved against the
     // workspace root: `/  ,  `,  path`  ...`)
     const text =
-      link('path`', 'file:///workspace/git/ezennin/vscode-acp/path%60') +
-      link('`,', 'file:///workspace/git/ezennin/vscode-acp/%60%2C') +
-      link('...`)', 'file:///workspace/git/ezennin/vscode-acp/...%60%29') +
-      link('`', 'file:///workspace/git/ezennin/vscode-acp/%60') +
-      link('`/', 'file:///workspace/git/ezennin/vscode-acp/%60/') +
+      link('path`', 'file:///workspace/git/dev/vscode-acp/path%60') +
+      link('`,', 'file:///workspace/git/dev/vscode-acp/%60%2C') +
+      link('...`)', 'file:///workspace/git/dev/vscode-acp/...%60%29') +
+      link('`', 'file:///workspace/git/dev/vscode-acp/%60') +
+      link('`/', 'file:///workspace/git/dev/vscode-acp/%60/') +
       'strip this in vscode-acp after resume';
     assert.strictEqual(strip(text), 'strip this in vscode-acp after resume');
   });
@@ -133,7 +133,7 @@ suite('isMachineContextOnly', () => {
   const isMachineOnly = loadIsMachineContextOnly();
 
   test('treats a lone resource_link chunk as machine context', () => {
-    assert.strictEqual(isMachineOnly(link('path`', 'file:///workspace/git/ezennin/vscode-acp/path%60')), true);
+    assert.strictEqual(isMachineOnly(link('path`', 'file:///workspace/git/dev/vscode-acp/path%60')), true);
   });
 
   test('treats a run of resource_link chunks as machine context', () => {

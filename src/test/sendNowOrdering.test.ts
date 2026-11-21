@@ -168,7 +168,7 @@ suite('Send Now ordering (queued message vs the turn it interrupts)', () => {
     // post-cancel re-send (gated on !isProcessing) actually fires.
     const h = makeHarness({
       isProcessing: true,
-      queue: [{ text: 'also check 192.168.124.14', images: [], steered: true, steerPending: true }],
+      queue: [{ text: 'also check 192.0.2.14', images: [], steered: true, steerPending: true }],
       steeredThisTurnCount: 1,
     });
     h.run(0);

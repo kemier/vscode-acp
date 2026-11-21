@@ -11,14 +11,14 @@ import * as path from 'path';
  *   - `/session <partial>`  → session names
  *   - `/goal <partial>`     → a HARDCODED [clear, pause, resume] table
  * and everything else fell into `// Other slash commands with args — close
- * popup`. So /a2a, /index and /skills had no argument help, even though ericli
+ * popup`. So /a2a, /index and /skills had no argument help, even though an agent
  * publishes the full subcommand list AND its argument shapes in the command
  * description.
  *
  * ACP's AvailableCommand is only { name, description, input } with a single
  * free-text `input.hint`, so agents use a "Sub: a, b <arg>, c" convention inside
- * the description. These tests pin the parser against ericli's real strings,
- * copied verbatim from getAvailableCommands() in src/acp/acp-server.ts.
+ * the description. These tests pin the parser against one agent's real strings,
+ * copied verbatim from its getAvailableCommands().
  */
 
 const SOURCE = path.resolve(__dirname, '../../src/ui/ChatWebviewProvider.ts');
@@ -52,22 +52,22 @@ function extractFunction(name: string, deps: string[] = []): (...args: any[]) =>
   )() as (...args: any[]) => any;
 }
 
-// Verbatim from ericli src/acp/acp-server.ts getAvailableCommands().
-const ERICLI_A2A_DESC =
+// Verbatim from one agent's getAvailableCommands().
+const AGENT_A2A_DESC =
   'Manage A2A (Agent2Agent) delegation. Sub: list, register <url> [as <name>], ' +
   'register local <name>, unregister <name>, call <name> "<task>", inspect <url>, ' +
   'status [taskId], cancel <taskId>.';
-const ERICLI_INDEX_DESC =
+const AGENT_INDEX_DESC =
   'Build, embed, search, or check status of the codebase index. Sub: build, embed, ' +
   'search <query>, status, clear.';
-const ERICLI_SKILLS_DESC =
+const AGENT_SKILLS_DESC =
   'Manage skills. Sub: list, info <name>, search <query>, reload, paths, help.';
 
 suite('parseSubcommandHints', () => {
   const parseSubcommandHints = extractFunction('parseSubcommandHints');
 
   test('parses /a2a — the case that showed nothing', () => {
-    const subs = parseSubcommandHints(ERICLI_A2A_DESC);
+    const subs = parseSubcommandHints(AGENT_A2A_DESC);
     assert.deepStrictEqual(
       subs.map((s: any) => s.name),
       [
@@ -84,7 +84,7 @@ suite('parseSubcommandHints', () => {
   });
 
   test('keeps the argument shape as the row description', () => {
-    const subs = parseSubcommandHints(ERICLI_A2A_DESC);
+    const subs = parseSubcommandHints(AGENT_A2A_DESC);
     const register = subs.find((s: any) => s.name === 'register');
     assert.strictEqual(register.description, 'register <url> [as <name>]');
     const call = subs.find((s: any) => s.name === 'call');
@@ -92,14 +92,14 @@ suite('parseSubcommandHints', () => {
   });
 
   test('distinguishes "register" from the two-word "register local"', () => {
-    const subs = parseSubcommandHints(ERICLI_A2A_DESC);
+    const subs = parseSubcommandHints(AGENT_A2A_DESC);
     const local = subs.find((s: any) => s.name === 'register local');
     assert.ok(local, '"register local" must be its own row, not deduped away');
     assert.strictEqual(local.description, 'register local <name>');
   });
 
   test('flags which subcommands still need an argument', () => {
-    const subs = parseSubcommandHints(ERICLI_A2A_DESC);
+    const subs = parseSubcommandHints(AGENT_A2A_DESC);
     const byName: Record<string, any> = {};
     for (const s of subs) {
       byName[s.name] = s;
@@ -114,17 +114,17 @@ suite('parseSubcommandHints', () => {
 
   test('parses /index and /skills', () => {
     assert.deepStrictEqual(
-      parseSubcommandHints(ERICLI_INDEX_DESC).map((s: any) => s.name),
+      parseSubcommandHints(AGENT_INDEX_DESC).map((s: any) => s.name),
       ['build', 'embed', 'search', 'status', 'clear'],
     );
     assert.deepStrictEqual(
-      parseSubcommandHints(ERICLI_SKILLS_DESC).map((s: any) => s.name),
+      parseSubcommandHints(AGENT_SKILLS_DESC).map((s: any) => s.name),
       ['list', 'info', 'search', 'reload', 'paths', 'help'],
     );
   });
 
   test('strips only the trailing sentence period', () => {
-    const subs = parseSubcommandHints(ERICLI_INDEX_DESC);
+    const subs = parseSubcommandHints(AGENT_INDEX_DESC);
     assert.strictEqual(subs[subs.length - 1].name, 'clear');
     assert.strictEqual(subs[subs.length - 1].description, 'clear');
   });
@@ -154,42 +154,42 @@ suite('subcommandHintsForCommand', () => {
     'parseSubcommandHints',
   ]);
 
-  const ERICLI_COMMANDS = [
+  const AGENT_COMMANDS = [
     { name: 'compact', description: 'Summarize conversation to avoid hitting the context limit.', input: null },
-    { name: 'index', description: ERICLI_INDEX_DESC, input: { hint: 'e.g. /index build' } },
-    { name: 'a2a', description: ERICLI_A2A_DESC, input: { hint: 'e.g. /a2a list, /a2a register http://host:port' } },
+    { name: 'index', description: AGENT_INDEX_DESC, input: { hint: 'e.g. /index build' } },
+    { name: 'a2a', description: AGENT_A2A_DESC, input: { hint: 'e.g. /a2a list, /a2a register http://host:port' } },
     { name: 'goal', description: 'Set a goal to keep pursuing.', input: { hint: '[<objective>|clear|pause|resume]' } },
-    { name: 'skills', description: ERICLI_SKILLS_DESC, input: { hint: 'e.g. /skills list' } },
+    { name: 'skills', description: AGENT_SKILLS_DESC, input: { hint: 'e.g. /skills list' } },
   ];
 
   test('resolves the Sub: list for a matching command', () => {
-    const subs = subcommandHintsForCommand('a2a', ERICLI_COMMANDS);
+    const subs = subcommandHintsForCommand('a2a', AGENT_COMMANDS);
     assert.ok(subs.length > 1);
     assert.strictEqual(subs[0].name, 'list');
   });
 
   test('tolerates a leading slash and mixed case on the typed name', () => {
-    assert.ok(subcommandHintsForCommand('/a2a', ERICLI_COMMANDS).length > 1);
-    assert.ok(subcommandHintsForCommand('A2A', ERICLI_COMMANDS).length > 1);
+    assert.ok(subcommandHintsForCommand('/a2a', AGENT_COMMANDS).length > 1);
+    assert.ok(subcommandHintsForCommand('A2A', AGENT_COMMANDS).length > 1);
   });
 
   test('falls back to the free-text hint as a single non-insertable row', () => {
     // /goal has an input hint but no "Sub:" list.
-    const subs = subcommandHintsForCommand('goal', ERICLI_COMMANDS);
+    const subs = subcommandHintsForCommand('goal', AGENT_COMMANDS);
     assert.strictEqual(subs.length, 1);
     assert.strictEqual(subs[0].name, '', 'a hint-only row must not be insertable');
     assert.strictEqual(subs[0].description, '[<objective>|clear|pause|resume]');
   });
 
   test('returns nothing for a command with neither Sub: nor a hint', () => {
-    assert.deepStrictEqual(subcommandHintsForCommand('compact', ERICLI_COMMANDS), []);
+    assert.deepStrictEqual(subcommandHintsForCommand('compact', AGENT_COMMANDS), []);
   });
 
   test('returns nothing for an unknown command or empty list', () => {
-    assert.deepStrictEqual(subcommandHintsForCommand('nope', ERICLI_COMMANDS), []);
+    assert.deepStrictEqual(subcommandHintsForCommand('nope', AGENT_COMMANDS), []);
     assert.deepStrictEqual(subcommandHintsForCommand('a2a', []), []);
     assert.deepStrictEqual(subcommandHintsForCommand('a2a', null), []);
-    assert.deepStrictEqual(subcommandHintsForCommand('', ERICLI_COMMANDS), []);
+    assert.deepStrictEqual(subcommandHintsForCommand('', AGENT_COMMANDS), []);
   });
 
   test('survives malformed command entries', () => {

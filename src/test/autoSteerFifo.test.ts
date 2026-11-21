@@ -7,7 +7,7 @@ import { decodeTemplate } from './templateDecode';
  * Auto-steer must be head-of-line blocking, i.e. strictly FIFO.
  *
  * nextAutoSteerIndex used to `continue` past an entry it could not steer and return a
- * LATER index. Reported live against an ericli session: with "@clipboard …" queued first
+ * LATER index. Reported live against a CLI-agent session: with "@clipboard …" queued first
  * and "no links bare text" queued second, the second was steered immediately while the
  * first was still waiting for its snapshot — so the NEWER message reached the chat panel
  * and the agent first, and the two were answered out of order.

@@ -5,7 +5,7 @@ import * as path from 'path';
 /**
  * The machine-written goal preamble must not show in the user bubble.
  *
- * ericli turns a /goal command into the prompt
+ * An agent may turn a /goal command into the prompt
  *
  *   Please start working toward this goal now:
  *
@@ -130,17 +130,17 @@ suite('cleanUserMessage applies the goal stripper', () => {
     assert.ok(goalAt > interjAt, 'the goal stripper must run after the interjection stripper');
   });
 
-  test('the marker matches what ericli actually emits', () => {
-    // Guard against drift between the two repos: if ericli reworded the preamble
-    // this test should be the thing that notices.
-    const ericli = '/workspace/git/ezennin/ericli/src/acp/acp-server.ts';
-    if (!fs.existsSync(ericli)) {
-      return; // sibling checkout not present — nothing to compare against
+  test('the marker matches what the agent actually emits', () => {
+    // Drift guard across repos: point ACP_TEST_AGENT_SOURCE at the agent source file
+    // that builds the goal prompt; if the agent rewords the preamble, this notices.
+    const agentSource = process.env.ACP_TEST_AGENT_SOURCE;
+    if (!agentSource || !fs.existsSync(agentSource)) {
+      return; // no agent checkout to compare against
     }
-    const agent = fs.readFileSync(ericli, 'utf8');
+    const agent = fs.readFileSync(agentSource, 'utf8');
     assert.ok(
       agent.includes('Please start working toward this goal now:'),
-      'ericli no longer emits this preamble — update stripLeadingGoalPrompt',
+      'the agent no longer emits this preamble — update stripLeadingGoalPrompt',
     );
   });
 });

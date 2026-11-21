@@ -67,18 +67,18 @@ suite('code link symbol fallback', () => {
 
 suite('disk file search roots', () => {
   test('roots come before their parents, most specific first', () => {
-    // The reported case: window open on vepg/epg, the agent session running in vepg,
-    // link target in vepg/ssr/… — the session cwd must be searched first and the
+    // The reported case: window open on monorepo/app, the agent session running in monorepo,
+    // link target in monorepo/lib/… — the session cwd must be searched first and the
     // common parent only as a last resort.
-    assert.deepStrictEqual(fileSearchRoots(['/workspace/git/ezennin/vepg', '/workspace/git/ezennin/vepg/epg']), [
-      '/workspace/git/ezennin/vepg',
-      '/workspace/git/ezennin/vepg/epg',
-      '/workspace/git/ezennin',
+    assert.deepStrictEqual(fileSearchRoots(['/workspace/git/dev/monorepo', '/workspace/git/dev/monorepo/app']), [
+      '/workspace/git/dev/monorepo',
+      '/workspace/git/dev/monorepo/app',
+      '/workspace/git/dev',
     ]);
   });
 
   test('the widening never reaches a shallow directory or /', () => {
-    assert.deepStrictEqual(fileSearchRoots(['/workspace/git/ezennin']), ['/workspace/git/ezennin']);
+    assert.deepStrictEqual(fileSearchRoots(['/workspace/git/dev']), ['/workspace/git/dev']);
     assert.deepStrictEqual(fileSearchRoots(['/workspace/git']), []);
     assert.deepStrictEqual(fileSearchRoots(['/']), []);
     assert.deepStrictEqual(fileSearchRoots([]), []);
@@ -94,16 +94,16 @@ suite('disk file search roots', () => {
 });
 
 suite('disk file match ranking', () => {
-  const src = '/workspace/git/ezennin/vepg/ssr/pkt/sw/se/xc/bsd/system/icr/src/icr_worker.c';
-  const test1 = '/workspace/git/ezennin/vepg/ssr/pkt/sw/se/xc/bsd/system/icr/test_cpp/test_src/icr_worker.c';
+  const src = '/workspace/git/dev/monorepo/lib/net/core/system/queue/src/queue_worker.c';
+  const test1 = '/workspace/git/dev/monorepo/lib/net/core/system/queue/test_cpp/test_src/queue_worker.c';
 
   test('a real source tree beats a test copy', () => {
-    assert.strictEqual(pickBestFileMatch([test1, src], 'icr_worker.c'), src);
-    assert.strictEqual(pickBestFileMatch([src, test1], 'icr_worker.c'), src);
+    assert.strictEqual(pickBestFileMatch([test1, src], 'queue_worker.c'), src);
+    assert.strictEqual(pickBestFileMatch([src, test1], 'queue_worker.c'), src);
   });
 
   test('an exact tail match beats a same-named file elsewhere', () => {
-    assert.strictEqual(pickBestFileMatch(['/a/b/other/icr_worker.c', src], 'icr/src/icr_worker.c'), src);
+    assert.strictEqual(pickBestFileMatch(['/a/b/other/queue_worker.c', src], 'queue/src/queue_worker.c'), src);
   });
 
   test('the shallowest path breaks ties', () => {

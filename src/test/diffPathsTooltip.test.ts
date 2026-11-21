@@ -111,11 +111,11 @@ suite('tool call diff-paths tooltip', () => {
   /**
    * diffFromRawInput is a webview-internal function (not importable), so we
    * extract its source from the template literal and evaluate it in a sandbox
-   * to behaviorally test the ericli in-place edit_file shapes:
+   * to behaviorally test the in-place edit_file shapes:
    *   {path, edits:[{oldText,newText}]}   (array form, the standard)
    *   {path, oldText, newText}             (flat single-edit form)
    * plus the "no usable data → []" cases. This is the fix for "clicking an
-   * ericli Edit tool title does nothing" — the client now synthesizes a diff
+   * Edit tool title does nothing" — the client now synthesizes a diff
    * from rawInput when the agent sent no type:"diff" content block.
    */
   function loadDiffFromRawInput() {
@@ -135,7 +135,7 @@ suite('tool call diff-paths tooltip', () => {
     return new Function('return ' + fnSrc)();
   }
 
-  test('diffFromRawInput builds a diff from ericli edits[] array form', () => {
+  test('diffFromRawInput builds a diff from the edits[] array form', () => {
     const fn = loadDiffFromRawInput();
     const out = fn(
       { path: '/x/SKILL.md', edits: [{ oldText: 'A', newText: 'B' }] },

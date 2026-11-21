@@ -14,7 +14,7 @@ import * as path from 'path';
  * semantic search — even though only L1 actually needs a query. Reported
  * by the user 2026-11-06 on vscode-acp local/dev + a2a: a pictures-only
  * prompt failed to trigger memory/skill recall on both agent adapters
- * (ericli, claude-code-acp) because the recall path lives entirely on the
+ * (claude-code-acp and the rest) because the recall path lives entirely on the
  * extension side and never saw a query.
  *
  * Fix (Option B): split the early-return. Keep going when the user

@@ -8,7 +8,7 @@ import { decodeTemplate } from './templateDecode';
  *
  * Established from the code, not assumed:
  *
- *  - reload window  → the extension host restarts and ericli dies with it, so subagents go
+ *  - reload window  → the extension host restarts and the agent dies with it, so subagents go
  *                     too. Nothing live survives.
  *  - switch session → subagents keep running in the background. Their frames are DROPPED at
  *                     the host (`update.sessionId !== activeId`), so they cannot pollute the

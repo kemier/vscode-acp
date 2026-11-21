@@ -5,7 +5,7 @@ import * as path from 'path';
 /**
  * A selection must still reach the agent when the active tab is not a text editor.
  *
- * Reported: select text in a rendered Markdown preview, ask ericli about it, and the
+ * Reported: select text in a rendered Markdown preview, ask the agent about it, and the
  * content never arrives — the send logs `selections=0`.
  *
  * Selections were collected only from `vscode.window.activeTextEditor`, which is

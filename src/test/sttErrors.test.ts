@@ -2,7 +2,7 @@ import * as assert from 'assert';
 import { describeSttSource, extractEmbeddedError, isTransientSttError } from '../voice/SttClient';
 
 /**
- * The EricAI/Ray backend answers `HTTP 200` with
+ * A Ray Serve backend answers `HTTP 200` with
  * `{"error":{"message":"...DeploymentUnavailableError...","code":500}}` and no
  * `text` when the Whisper deployment is scaled down. Reading that as an empty
  * transcript blamed the microphone for a backend outage — the takes were fine
@@ -66,7 +66,7 @@ suite('SttClient error surfacing', () => {
   });
 
   test('names which model produced the transcript', () => {
-    // ericai-proxy stamps this header only when its local whisper.cpp fallback
+    // The LLM proxy stamps this header only when its local whisper.cpp fallback
     // answered; without it the shared Ray cluster did the work. Latency alone
     // (0.1-0.3s cluster vs ~3s local) should not be what the user has to infer.
     assert.strictEqual(describeSttSource('local-whisper-cpp'), 'local whisper.cpp');

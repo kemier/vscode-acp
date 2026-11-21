@@ -77,10 +77,10 @@ suite('cleanToolCallTitle (multi-line shell command titles)', () => {
   test('REPORTED CASE: "cd xxx\\n<cmd>" shows both, not just cd', () => {
     // Before the fix this rendered as "cd /a" — the user saw only half the
     // command. Now the chain is visible.
-    const input = 'Running: cd /workspace/git/ezennin/vepg/epg\ngit log --oneline -5';
+    const input = 'Running: cd /workspace/git/dev/monorepo/app\ngit log --oneline -5';
     assert.strictEqual(
       cleanToolCallTitle(input),
-      'Running: cd /workspace/git/ezennin/vepg/epg && git log --oneline -5',
+      'Running: cd /workspace/git/dev/monorepo/app && git log --oneline -5',
     );
   });
 
@@ -221,11 +221,11 @@ suite('cleanToolCallTitle (multi-line shell command titles)', () => {
 
   test('real kiro jira-skill backup title joins, then truncates over 120', () => {
     const input =
-      'Running: cd /home/ezennin/.kiro/skills\n' +
-      'tar czf /home/ezennin/.kiro/skills/jira-skill.backup-$(date +%Y%m%d-%H%M%S).tar.gz jira-skill\n' +
+      'Running: cd /home/dev/.kiro/skills\n' +
+      'tar czf /home/dev/.kiro/skills/jira-skill.backup-$(date +%Y%m%d-%H%M%S).tar.gz jira-skill\n' +
       'ls -la jira-skill.backup-*.tar.gz | tail -2';
     const joined =
-      'Running: cd /home/ezennin/.kiro/skills && tar czf /home/ezennin/.kiro/skills/jira-skill.backup-$(date +%Y%m%d-%H%M%S).tar.gz jira-skill && ls -la jira-skill.backup-*.tar.gz | tail -2';
+      'Running: cd /home/dev/.kiro/skills && tar czf /home/dev/.kiro/skills/jira-skill.backup-$(date +%Y%m%d-%H%M%S).tar.gz jira-skill && ls -la jira-skill.backup-*.tar.gz | tail -2';
     const expected = joined.substring(0, 117) + '...';
     assert.strictEqual(cleanToolCallTitle(input), expected);
   });

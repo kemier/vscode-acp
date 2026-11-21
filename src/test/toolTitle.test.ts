@@ -15,7 +15,7 @@ import { cleanAgentToolTitle, stripShellPrefix } from '../utils/toolTitle';
  * and STRIPPED when it points elsewhere.
  */
 suite('tool-call title normalization', () => {
-  const CWD = '/workspace/git/ezennin/vscode-acp';
+  const CWD = '/workspace/git/dev/vscode-acp';
 
   test("drops Kiro's Running: label", () => {
     assert.strictEqual(cleanAgentToolTitle('Running: npm test'), 'npm test');
@@ -75,7 +75,7 @@ suite('tool-call title normalization', () => {
 
   test('a sibling repo is still stripped — it is not inside the cwd', () => {
     assert.strictEqual(
-      cleanAgentToolTitle('cd /workspace/git/ezennin/vscode-acp-a2a-memory; grep -n foo src/x.ts', CWD),
+      cleanAgentToolTitle('cd /workspace/git/dev/vscode-acp-a2a-memory; grep -n foo src/x.ts', CWD),
       'grep -n foo src/x.ts',
     );
   });
@@ -85,7 +85,7 @@ suite('tool-call title normalization', () => {
     // "cd /other/repo; grep …" preamble stayed in the fold title.
     assert.strictEqual(
       cleanAgentToolTitle(
-        'cd /workspace/git/ezennin/vscode-acp-a2a-memory; grep -n "suppressFoldOrdering" src/ui/ChatWebviewProvider.ts | cut -c1-150',
+        'cd /workspace/git/dev/vscode-acp-a2a-memory; grep -n "suppressFoldOrdering" src/ui/ChatWebviewProvider.ts | cut -c1-150',
         CWD,
       ),
       'grep -n "suppressFoldOrdering" src/ui/ChatWebviewProvider.ts | cut -c1-150',
@@ -137,7 +137,7 @@ suite('tool-call title normalization', () => {
     test('substitutes the command and strips a foreign cd', () => {
       assert.strictEqual(
         cleanAgentToolTitle('shell', CWD, {
-          command: 'cd /workspace/git/ezennin/vscode-acp-a2a-memory && grep -n "^import" src/x.ts',
+          command: 'cd /workspace/git/dev/vscode-acp-a2a-memory && grep -n "^import" src/x.ts',
         }),
         'grep -n "^import" src/x.ts',
       );

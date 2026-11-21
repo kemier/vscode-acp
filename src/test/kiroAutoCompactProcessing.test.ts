@@ -21,7 +21,7 @@ import * as path from 'path';
  * manualCompacting already distinguishes the two: the status-RPC entry sets it
  * false ("Status RPC covers auto-compaction too — not a user /compact"), while
  * a manual /compact keeps it true because isCompacting is already set before
- * the RPC lands, so that branch is skipped. The ericli/contextCompaction paths
+ * the RPC lands, so that branch is skipped. The contextCompaction paths
  * follow the same rule — only failed or cancelled compactions clear the latch.
  *
  * These tests EXECUTE the real extracted function body rather than scanning a

@@ -2,11 +2,10 @@
 
 **Status:** Draft
 **Date:** 2026-09-21
-**Author:** ezennin + EriCLI
 
 ## 1. Problem Statement
 
-The ACP system (vscode-acp + ericli/claude-code-acp/codex-acp + ericai-proxy) is built around **generative LLMs** that produce text token-by-token. Many decisions in the agent loop — permission gating, tool routing, context triage, confidence scoring — don't need a paragraph; they need a **typed, calibrated, fast decision**. Jev (TypeSafe) and its open-source counterpart OpenJev (razorback16) fill that gap: they return `Choice`/`Score`/`Noul` answers with probabilities in 70–500 ms, at $0.042/M input tokens (or free when self-hosted on DiffusionGemma 26B).
+The ACP system (vscode-acp + a native CLI agent / claude-code-acp / codex-acp + an LLM proxy) is built around **generative LLMs** that produce text token-by-token. Many decisions in the agent loop — permission gating, tool routing, context triage, confidence scoring — don't need a paragraph; they need a **typed, calibrated, fast decision**. Jev (TypeSafe) and its open-source counterpart OpenJev (razorback16) fill that gap: they return `Choice`/`Score`/`Noul` answers with probabilities in 70–500 ms, at $0.042/M input tokens (or free when self-hosted on DiffusionGemma 26B).
 
 This spec defines how to integrate a System One decision model into the existing ACP stack.
 
@@ -14,7 +13,7 @@ This spec defines how to integrate a System One decision model into the existing
 
 - **Jev is not an LLM.** It does not generate text. It evaluates a `state` against typed `questions` and returns probability distributions. It cannot replace the main agent model.
 - **Two deployment modes:** hosted TypeSafe API (`api.typesafe.ai`) and self-hosted OpenJev (`razorback16/openjev`, DiffusionGemma 26B via vLLM or MLX). Both speak the same wire API: `POST /v1/systemone`.
-- **Must work with existing agents.** The integration should not require forking or modifying the main agent binaries (ericli, claude-code-acp, codex-acp). It should be additive.
+- **Must work with existing agents.** The integration should not require forking or modifying the main agent binaries (the native CLI agent, claude-code-acp, codex-acp). It should be additive.
 - **vscode-acp is the client.** All ACP agents connect through vscode-acp's `AgentManager` → `ConnectionManager` → `AcpClientImpl`. The permission flow, tool call rendering, and session management all live in vscode-acp.
 
 ## 3. Architecture Overview
@@ -25,7 +24,7 @@ This spec defines how to integrate a System One decision model into the existing
 │                                                                     │
 │  ┌──────────────┐  ┌──────────────┐  ┌───────────────────────────┐ │
 │  │  Agent A     │  │  Agent B     │  │  Jev Decision Agent       │ │
-│  │  (ericli)    │  │  (codex-acp) │  │  (jev-acp / openjev-acp)  │ │
+│  │  (cli agent) │  │  (codex-acp) │  │  (jev-acp / openjev-acp)  │ │
 │  │  main LLM    │  │  main LLM    │  │  NO LLM — decision only   │ │
 │  └──────┬───────┘  └──────┬───────┘  └─────────────┬─────────────┘ │
 │         │                 │                        │               │
@@ -57,7 +56,7 @@ This spec defines how to integrate a System One decision model into the existing
          │                    │                     │
          ▼                    ▼                     ▼
    ┌───────────┐      ┌────────────┐       ┌──────────────────┐
-   │ ericai-   │      │  Jev API   │       │  OpenJev Server  │
+   │ LLM       │      │  Jev API   │       │  OpenJev Server  │
    │ proxy     │      │ (TypeSafe) │       │  (self-hosted)   │
    │ (LLM)     │      │  $0.042/M  │       │  DiffusionGemma  │
    └───────────┘      └────────────┘       │  26B-A4B         │
@@ -92,9 +91,9 @@ This spec defines how to integrate a System One decision model into the existing
 
 ### 4.2 Jev as a Tool Inside an Existing Agent (Option B — recommended)
 
-**What:** Add a `jev_decide` tool to ericli (and optionally claude-code-acp) so the main LLM can call Jev for specific decisions during a turn.
+**What:** Add a `jev_decide` tool to the native CLI agent (and optionally claude-code-acp) so the main LLM can call Jev for specific decisions during a turn.
 
-**How (ericli):**
+**How (native CLI agent):**
 
 1. **New tool definition** in `src/core/tool-executor.ts`:
    ```typescript
@@ -103,7 +102,7 @@ This spec defines how to integrate a System One decision model into the existing
    // Returns: { answers: { [id]: { type, value, probabilities, confidence } }, usage }
    ```
 
-2. **HTTP client** — a small `JevClient` class in `src/ericai/jev-client.ts`:
+2. **HTTP client** — a small `JevClient` class in `src/llm/jev-client.ts`:
    ```typescript
    class JevClient {
      constructor(baseUrl: string, apiKey?: string) {}
@@ -164,7 +163,7 @@ This spec defines how to integrate a System One decision model into the existing
    ```
    When `enabled: false`, the `jev_decide` tool is not registered.
 
-**Effort:** ~200 lines in ericli (JevClient + tool handler + schema + mapper entries). No vscode-acp changes.
+**Effort:** ~200 lines in the agent (JevClient + tool handler + schema + mapper entries). No vscode-acp changes.
 
 ### 4.3 Jev Confidence Gate in Permission Flow (Option C — the killer feature)
 
@@ -254,7 +253,7 @@ This spec defines how to integrate a System One decision model into the existing
               ┌────────────────┼────────────────┐
               │                │                │
        ┌──────┴──────┐  ┌──────┴──────┐  ┌──────┴──────┐
-       │  ericli     │  │  codex-acp  │  │  jev-acp    │
+       │  cli agent  │  │  codex-acp  │  │  jev-acp    │
        │  (main LLM) │  │  (main LLM) │  │  (decision) │
        └──────┬──────┘  └─────────────┘  └──────┬──────┘
               │                                  │
@@ -274,13 +273,13 @@ This spec defines how to integrate a System One decision model into the existing
               │ (LLM requests only)
               ▼
        ┌──────────────────┐
-       │  ericai-proxy    │
+       │  LLM proxy       │
        │  :8317           │
        │  (OpenAI-compat) │
        └──────────────────┘
 ```
 
-**Key point:** Jev/OpenJev is a **separate service** from ericai-proxy. It does not go through the proxy. The proxy handles LLM chat completions; Jev handles typed decisions. They are independent backends.
+**Key point:** Jev/OpenJev is a **separate service** from the LLM proxy. It does not go through the proxy. The proxy handles LLM chat completions; Jev handles typed decisions. They are independent backends.
 
 ## 6. Phased Delivery
 
@@ -290,12 +289,12 @@ This spec defines how to integrate a System One decision model into the existing
 - Test `/choice`, `/score`, `/noul` commands
 - **Deliverable:** User can open a Jev session and make typed decisions
 
-### Phase 2: Jev Tool in ericli (2–3 days)
+### Phase 2: Jev Tool in the native CLI agent (2–3 days)
 - Implement `JevClient` (HTTP, retry, timeout)
-- Add `jev_decide` tool to ericli's tool executor
+- Add `jev_decide` tool to the agent's tool executor
 - Add tool schema, kind mapping, title builder
 - Add `acp.jev` config (baseUrl, apiKey, enabled)
-- Test: ericli calls `jev_decide` mid-turn for routing/triage
+- Test: the agent calls `jev_decide` mid-turn for routing/triage
 - **Deliverable:** Main LLM agent can call Jev for fast decisions during a turn
 
 ### Phase 3: Confidence Gate in vscode-acp (3–5 days)
@@ -416,17 +415,17 @@ The vLLM-26B ceiling is therefore **~58k–70k input tokens per call** — undoc
 | `vscode-acp/src/handlers/JevConfidenceGate.ts` | New: Jev HTTP client + gate logic | 3 |
 | `vscode-acp/src/handlers/PermissionHandler.ts` | Hook JevGate into `tryAutoApprove` | 3 |
 | `vscode-acp/src/ui/ChatWebviewProvider.ts` | Risk badge in permission QuickPick | 3 |
-| `ericli/src/ericai/jev-client.ts` | New: JevClient HTTP wrapper | 2 |
-| `ericli/src/core/tool-executor.ts` | Add `jev_decide` tool handler | 2 |
-| `ericli/src/core/prompt-fragments/tool-schemas.ts` | Add `jev_decide` schema | 2 |
-| `ericli/src/acp/tool-mapper.ts` | Add `jev_decide` to kind/title/permission maps | 2 |
-| `ericli/package.json` | Add `acp.jev` config | 2 |
+| `<agent>/src/llm/jev-client.ts` | New: JevClient HTTP wrapper | 2 |
+| `<agent>/src/core/tool-executor.ts` | Add `jev_decide` tool handler | 2 |
+| `<agent>/src/core/tool-schemas.ts` | Add `jev_decide` schema | 2 |
+| `<agent>/src/acp/tool-mapper.ts` | Add `jev_decide` to kind/title/permission maps | 2 |
+| `<agent>/package.json` | Add `acp.jev` config | 2 |
 
 ## 10. Open Questions
 
-1. **Should the Jev gate apply to all agents or just ericli?** Recommendation: all agents (it's in vscode-acp's PermissionHandler, which is agent-agnostic).
-2. **Should `jev_decide` be available in claude-code-acp and codex-acp too?** Recommendation: ericli first (it's the primary agent). The tool pattern is portable.
-3. **Should OpenJev also serve as an LLM backend via ericai-proxy?** It does serve `/v1/chat/completions` with `diffusiongemma-26b`. Could be added as a proxy backend for text generation, but that's a separate feature.
+1. **Should the Jev gate apply to all agents or just the native CLI agent?** Recommendation: all agents (it's in vscode-acp's PermissionHandler, which is agent-agnostic).
+2. **Should `jev_decide` be available in claude-code-acp and codex-acp too?** Recommendation: the native CLI agent first (it's the primary agent). The tool pattern is portable.
+3. **Should OpenJev also serve as an LLM backend via the LLM proxy?** It does serve `/v1/chat/completions` with `diffusiongemma-26b`. Could be added as a proxy backend for text generation, but that's a separate feature.
 4. **Template system:** `jev-acp` supports saved question templates. Should vscode-acp expose a template picker in the Jev session? Nice-to-have, not Phase 1.
 
 ## 11. Implementation Status (2026-09-25)
@@ -464,7 +463,7 @@ Verified against live docs 2026-09-25: `POST https://api.typesafe.ai/v1/systemon
 64k context, errors 401/422/429/529 — docs.typesafe.ai/api.
 
 Not yet implemented (earlier phases of this spec): standalone `jev-acp` agent
-registration (Phase 1), `jev_decide` inside ericli (Phase 2), the permission-flow
+registration (Phase 1), `jev_decide` inside the native agent (Phase 2), the permission-flow
 confidence gate (Phase 3 original), OpenJev docker-compose (Phase 4).
 
 ## 12. References

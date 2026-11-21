@@ -13,7 +13,7 @@ import * as path from 'path';
  * Meanwhile three of the four sibling adapters implement it, and all three know
  * about processes the client cannot see:
  *
- *   ericli           src/acp/acp-server.ts  — A2A tasks + tracked tool calls
+ *   a CLI agent                             — A2A tasks + tracked tool calls
  *   codex-acp        src/CodexCommands.ts   — background terminal processes
  *   claude-code-acp  src/agent.ts           — its own dispatchSlashCommand
  *   pi-acp                                  — no /ps at all
@@ -148,7 +148,7 @@ suite('/ps defers to the agent when the agent implements it', () => {
       'turnSafeDeclaration',
     ]);
     // Deferring /ps to the agent is only an improvement if the agent's answer
-    // still arrives immediately while a turn streams. ericli declares it.
+    // still arrives immediately while a turn streams. Agents declare it.
     assert.strictEqual(
       slashCommandRunsDuringTurn('/ps', [{ name: 'ps', _meta: { turnSafe: true } }]),
       true,

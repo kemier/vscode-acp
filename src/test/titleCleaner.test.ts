@@ -12,10 +12,10 @@ suite('cleanSessionTitle', () => {
   test('strips multiple concatenated [@name](file:///...) links', () => {
     const input =
       '[@json_v3_10_5.hpp](file:///workspace/git/repo/json_v3_10_5.hpp)' +
-      '[@PduSessionRequestHandler.h](file:///workspace/git/repo/PduSessionRequestHandler.h)' +
-      '[@new](file:///proj/epg-tools/gcc/16.1.0_1.rhel8/include/c%2B%2B/16.1.0/new)' +
-      'run sft in up/epg';
-    assert.strictEqual(cleanSessionTitle(input), 'run sft in up/epg');
+      '[@SessionRequestHandler.h](file:///workspace/git/repo/SessionRequestHandler.h)' +
+      '[@new](file:///opt/toolchain/gcc/16.1.0/include/c%2B%2B/16.1.0/new)' +
+      'run tests in svc/app';
+    assert.strictEqual(cleanSessionTitle(input), 'run tests in svc/app');
   });
 
   test('strips links with query params (?symbol=...#L123)', () => {
@@ -56,7 +56,7 @@ suite('cleanSessionTitle', () => {
 
   test('preserves plain text without context links', () => {
     assert.strictEqual(cleanSessionTitle('hello world'), 'hello world');
-    assert.strictEqual(cleanSessionTitle('run sft in up/epg'), 'run sft in up/epg');
+    assert.strictEqual(cleanSessionTitle('run tests in svc/app'), 'run tests in svc/app');
   });
 
   test('strips trailing Additional ACP context dump', () => {
@@ -85,12 +85,12 @@ suite('cleanSessionTitle', () => {
 
   test('handles the exact raw title from the user report', () => {
     const input =
-      '[@json_v3_10_5.hpp](file:///workspace/git/ezennin/vepg/epg/up/tw/up-common/3pp/sources/nlohmann-json/tests/abi/include/nlohmann/json_v3_10_5.hpp)' +
-      '[@PduSessionRequestHandler.h](file:///workspace/git/ezennin/vepg/epg/application/PgwControlPlane/pdu/include/PgwPdu/PduSessionRequestHandler.h)' +
-      '[@NxInfo.h](file:///workspace/git/ezennin/vepg/epg/application/PgwControlPlane/signalflowtest/psci/framework/test-include/PsciSftFramework/Ebm/NxInfo.h)' +
-      '[@N2ResModifyUpdateHandler.h](file:///workspace/git/ezennin/vepg/epg/application/PgwControlPlane/pdu/include/PgwPdu/N2ResModifyUpdateHandler.h)' +
-      '[@UserPlaneSummaryData.h](file:///workspace/git/ezennin/vepg/epg/application/PgwControlPlane/pdp/src/UserPlaneSummaryData.h)' +
-      '[@new](file:///proj/epg-tools/gcc/16.1.0_1.rhel8/include/c%2B%2B/16.1.0/new)' +
+      '[@json_v3_10_5.hpp](file:///workspace/git/dev/app/third_party/nlohmann-json/tests/abi/include/nlohmann/json_v3_10_5.hpp)' +
+      '[@SessionRequestHandler.h](file:///workspace/git/dev/app/services/session/include/Session/SessionRequestHandler.h)' +
+      '[@NodeInfo.h](file:///workspace/git/dev/app/services/session/test/framework/include/Framework/NodeInfo.h)' +
+      '[@ModifyUpdateHandler.h](file:///workspace/git/dev/app/services/session/include/Session/ModifyUpdateHandler.h)' +
+      '[@SummaryData.h](file:///workspace/git/dev/app/services/stats/src/SummaryData.h)' +
+      '[@new](file:///opt/toolchain/gcc/16.1.0/include/c%2B%2B/16.1.0/new)' +
       'go on';
     assert.strictEqual(cleanSessionTitle(input), 'go on');
   });

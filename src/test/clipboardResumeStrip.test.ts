@@ -7,11 +7,11 @@ import { webviewSlice } from './webviewQueueHelpers';
 /**
  * A clipboard snapshot must never reappear as raw text after `session/load`.
  *
- * Reported per agent, and that was the clue: resuming an **ericli** session showed
+ * Reported per agent, and that was the clue: resuming a **CLI-agent** session showed
  * the tidy `@clipboard` mention, while **pi-acp** and **Cursor** put the entire
  * pasted blob back in the user bubble.
  *
- * The difference is how each agent stores what it was sent. codex/ericli wrap a
+ * The difference is how each agent stores what it was sent. codex and others wrap a
  * replayed resource in `<context ref="…">`, which cleanUserMessage already strips.
  * pi-acp instead FLATTENS it into the prompt text
  * (`pi-acp/src/acp/translate/prompt.ts`):
@@ -111,7 +111,7 @@ suite('a resumed clipboard snapshot renders as a pill, never as raw text', () =>
     assert.strictEqual(out, '[Clipboard: 3 lines]\n\nsummarise this');
   });
 
-  test('codex / ericli: the <context ref> wrapper becomes the same pill', () => {
+  test('codex and other agents: the <context ref> wrapper becomes the same pill', () => {
     // These agents wrap a replayed resource in <context ref="…">, so this is where an
     // attachment surfaces after resume on them. It must map to the SAME pill the
     // inline path produces, or live and resumed panels disagree.
@@ -156,8 +156,8 @@ suite('a resumed clipboard snapshot renders as a pill, never as raw text', () =>
     assert.strictEqual(wv.formatResourcePill('session:ue', null).trim(), '[Session: ue]');
     // Titles are escaped into the attribute and can carry spaces or entities.
     assert.strictEqual(
-      wv.formatResourcePill('session:vepg &amp; ntp notes', null).trim(),
-      '[Session: vepg & ntp notes]',
+      wv.formatResourcePill('session:infra &amp; ntp notes', null).trim(),
+      '[Session: infra & ntp notes]',
     );
   });
 
@@ -650,7 +650,7 @@ suite('the webview template literal stays a template literal', () => {
 /**
  * The LIVE path, end to end, with the real handler and the real bubble function.
  *
- * Observed before the fix, in a streaming ericli turn: "@clipboard make it bullets"
+ * Observed before the fix, in a streaming CLI-agent turn: "@clipboard make it bullets"
  * typed mid-turn was queued, the snapshot was substituted INTO entry.text, and
  * addUserBubbleForQueuedEntry renders entry.text verbatim — so the panel showed
  *
