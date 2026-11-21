@@ -24,8 +24,8 @@ function braceMatch(from: number): number {
   const open = src.indexOf('{', from);
   let depth = 0;
   for (let i = open; i < src.length; i++) {
-    if (src[i] === '{') depth++;
-    else if (src[i] === '}' && --depth === 0) return i + 1;
+    if (src[i] === '{') { depth++; }
+    else if (src[i] === '}' && --depth === 0) { return i + 1; }
   }
   return -1;
 }

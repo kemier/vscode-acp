@@ -218,6 +218,9 @@ suite('multi-steer drain: all follow-ups get a turn', () => {
     var isSendingPrompt = false, isCompacting = false, isProcessing = false;
     var turnTailGraceUntil = 0;
     var messageQueue = [];
+    // drainAfterDrainTurnClose defers to a pending Send Now (b4dda21); neither
+    // is pending here, so the FIFO drain runs as before.
+    var sendNowPending = false, pendingSendAfterCancel = false;
     var TURN_TAIL_GRACE_MS = 250;
     function saveState() {}
     function refreshPsPanelIfVisible() {}
@@ -294,6 +297,7 @@ suite('deferred drain-turn idle flip', () => {
       var isSendingPrompt = false, isCompacting = false, isProcessing = true;
       var turnTailGraceUntil = 0;
       var messageQueue = [];
+      var sendNowPending = false, pendingSendAfterCancel = false;
       var TURN_TAIL_GRACE_MS = 250;
       function saveState() {}
       function refreshPsPanelIfVisible() {}

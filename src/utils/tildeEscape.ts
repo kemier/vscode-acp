@@ -16,7 +16,9 @@
  * crosses a backtick boundary.
  */
 export function escapeUnbalancedTildes(text: string): string {
-  if (!text.includes('~')) return text;
+  if (!text.includes('~')) {
+    return text;
+  }
   let out = '';
   let inCode = false;
   for (let i = 0; i < text.length; i++) {
@@ -36,9 +38,13 @@ export function escapeUnbalancedTildes(text: string): string {
       // Count the run of ~. A run of >= 2 is a real ~~...~~ strikethrough:
       // copy it verbatim so genuine strikethrough is preserved.
       let run = 1;
-      while (text[i + run] === '~') run++;
+      while (text[i + run] === '~') {
+        run++;
+      }
       if (run >= 2) {
-        for (let k = 0; k < run; k++) out += '~';
+        for (let k = 0; k < run; k++) {
+          out += '~';
+        }
         i += run - 1;
         continue;
       }

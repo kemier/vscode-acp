@@ -127,7 +127,7 @@ suite('tool call diff-paths tooltip', () => {
     let depth = 0;
     let end = -1;
     for (; i < body.length; i++) {
-      if (body[i] === '{') depth++;
+      if (body[i] === '{') { depth++; }
       else if (body[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
     }
     assert.ok(end > start, 'diffFromRawInput body boundary not found');
@@ -202,7 +202,7 @@ suite('tool call diff-paths tooltip', () => {
     let depth = 0;
     let end = -1;
     for (; i < body.length; i++) {
-      if (body[i] === '{') depth++;
+      if (body[i] === '{') { depth++; }
       else if (body[i] === '}') { depth--; if (depth === 0) { end = i + 1; break; } }
     }
     assert.ok(end > start, 'capDiffData body boundary not found');
