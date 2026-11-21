@@ -59,6 +59,7 @@ import {
   getStructuredTraffic,
 } from './utils/Logger';
 import { initTelemetry, sendEvent } from './utils/TelemetryManager';
+import { otelShutdown } from './utils/OtelTrace';
 import { CompactionHookWatcher } from './core/CompactionHookWatcher';
 import { summarizeSession } from './core/SessionSummarizer';
 import { readSessionSummarySettings } from './core/SessionSummaryConfig';
@@ -1966,5 +1967,7 @@ export function deactivate(): Thenable<void> | undefined {
     _sessionManager.dispose();
     _sessionManager = undefined;
   }
-  return undefined;
+  // End the open session spans and flush them (bounded: an unreachable
+  // collector must not hold up shutdown). Resolves at once when tracing is off.
+  return otelShutdown();
 }

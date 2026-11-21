@@ -1,6 +1,6 @@
 import { log } from '../utils/Logger';
 import { SupersededTurnFilter } from './SupersededTurnFilter';
-import { otelToolStart, otelToolEnd } from '../utils/OtelTrace';
+import { otelSessionUpdate, type OtelToolUpdate } from '../utils/OtelTrace';
 
 import type { SessionNotification } from '@agentclientprotocol/sdk';
 
@@ -49,17 +49,9 @@ export class SessionUpdateHandler {
       }
     }
     // OTel: tool calls from every adapter (claude-code-acp, codex-acp, pi-acp)
-    // arrive as tool_call/tool_update notifications here — start/end an
-    // execute_tool span pair keyed by toolCallId (see utils/OtelTrace).
-    const upd = (update as { update?: { sessionUpdate?: string; toolCallId?: string; title?: string; status?: string; rawInput?: unknown; rawOutput?: unknown } }).update;
-    if (upd && (upd.sessionUpdate === 'tool_call' || upd.sessionUpdate === 'tool_update')) {
-      const id = upd.toolCallId ?? '';
-      if (upd.sessionUpdate === 'tool_call') {
-        otelToolStart(sessionId, id, upd.title ?? 'tool', upd.rawInput);
-      } else {
-        otelToolEnd(sessionId, id, upd.status === 'failed', upd.rawOutput);
-      }
-    }
+    // arrive here as tool_call / tool_call_update notifications — one
+    // execute_tool span per toolCallId (see utils/OtelTrace).
+    otelSessionUpdate(sessionId, (update as { update?: OtelToolUpdate }).update);
   }
 
   /** Forget a session's turn high-water mark (session deleted / disconnected). */

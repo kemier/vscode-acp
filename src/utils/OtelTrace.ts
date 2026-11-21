@@ -1,82 +1,88 @@
 /**
- * OTel span tracing for the ACP session flow — the trace/span/parent_id model
- * from interview/tracing.md applied to this client. No-op unless
- * `OTEL_TRACES_ENDPOINT` is set (e.g. http://localhost:4318/v1/traces for
- * otel-desktop-viewer / Jaeger).
+ * OpenTelemetry span tracing for the ACP session flow. No-op unless an OTLP/HTTP
+ * traces endpoint is configured: the `acp.otel.endpoint` setting (the undeclared
+ * `acp-client.otelEndpoint` key from the first version is still honoured), else
+ * the `OTEL_TRACES_ENDPOINT` environment variable — e.g.
+ * http://localhost:4318/v1/traces for otel-desktop-viewer / Jaeger.
  *
- * Span tree:
- *   acp.session           trace root, one per ACP session
- *     └─ turn             one per session/prompt round-trip (invoke_agent)
- *         └─ execute_tool one per tool_call/tool_update notification pair
+ * Span shapes:
+ *   acp.session                 one per ACP session (ends when the session closes)
+ *   invoke_agent                one per session/prompt round-trip — its own trace root
+ *     └─ execute_tool <title>   one per ACP tool call, from `tool_call` until the
+ *                               `tool_call_update` that reports a terminal status
  *
- * Tool calls from EVERY adapter (claude-code-acp, codex-acp, pi-acp) arrive as
- * ACP session/update notifications, so wiring at the SessionUpdateHandler
- * choke point captures them all without touching the adapters. Parent links
- * are threaded explicitly (Context.setSpan + startSpan's context arg) — no
- * CLS/auto-instrumentation, which the extension host can't rely on anyway.
+ * Tool calls from EVERY adapter (claude-code-acp, codex-acp, pi-acp, …) arrive as
+ * ACP session/update notifications, so wiring at the SessionUpdateHandler choke
+ * point captures them all without touching the adapters. Parents are threaded
+ * explicitly (`trace.setSpan(ROOT_CONTEXT, parent)` + startSpan's context
+ * argument) — no context manager or auto-instrumentation.
  *
- * Failure attribution: the first span with ERROR status in the tree names the
- * layer that broke — a failed turn (upstream 503/transport) marks the turn
- * span; a failed tool marks its execute_tool span.
+ * The provider is private to this extension and is deliberately NOT registered
+ * as the global tracer provider: the extension host is shared by every installed
+ * extension, and @opentelemetry/api keeps its global under one process-wide symbol.
+ * Registering there would either fail ("Attempted duplicate registration of API:
+ * trace") when another extension got there first — and our spans would then go to
+ * that extension's tracer — or capture the spans of every other extension that
+ * uses the global API.
+ *
+ * Failure attribution: the first span with ERROR status names the layer that broke
+ * — a failed turn (upstream 503/transport) marks the turn span; a failed tool
+ * marks its execute_tool span.
  */
-import { trace, Span, SpanKind, SpanStatusCode } from '@opentelemetry/api';
-import { BasicTracerProvider, SimpleSpanProcessor } from '@opentelemetry/sdk-trace-base';
+import { trace, ROOT_CONTEXT, Span, SpanKind, SpanStatusCode, Tracer } from '@opentelemetry/api';
+import { BasicTracerProvider, SimpleSpanProcessor, type SpanExporter } from '@opentelemetry/sdk-trace-base';
 import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-http';
 import { resourceFromAttributes } from '@opentelemetry/resources';
 import { log } from '../utils/Logger';
 import * as vscode from 'vscode';
 
-// Minimal structural Context (the api's Context is an interface; the impl only
-// needs getValue/setValue/deleteValue) so we can thread explicit parents.
-class EmptyContext {
-  private readonly values = new Map<symbol, unknown>();
-  getValue(key: symbol): unknown {
-    return this.values.get(key);
-  }
-  setValue(key: symbol, value: unknown): EmptyContext {
-    const next = new EmptyContext();
-    for (const [k, v] of this.values) {
-      next.values.set(k, v);
+let provider: BasicTracerProvider | undefined;
+let tracer: Tracer | undefined;
+
+/** The configured OTLP traces endpoint, or '' when tracing is off. */
+function configuredEndpoint(): string {
+  // Settings win over env: the extension host's env is hard to set for a GUI
+  // launch, while a settings.json value is not.
+  const declared = vscode.workspace.getConfiguration('acp').get<string>('otel.endpoint');
+  const legacy = vscode.workspace.getConfiguration('acp-client').get<string>('otelEndpoint');
+  for (const value of [declared, legacy, process.env.OTEL_TRACES_ENDPOINT]) {
+    const url = String(value ?? '').trim();
+    if (url) {
+      return url;
     }
-    next.values.set(key, value);
-    return next;
   }
-  deleteValue(key: symbol): EmptyContext {
-    const next = new EmptyContext();
-    for (const [k, v] of this.values) {
-      if (k !== key) {
-        next.values.set(k, v);
-      }
-    }
-    return next;
-  }
+  return '';
 }
 
-let enabled = false;
-
-/** Lazily install the OTLP pipeline; returns false when tracing is disabled. */
-function ensureInit(): boolean {
-  if (enabled) {
-    return true;
-  }
-  // Settings win over env: the extension host's env is hard to set for a GUI
-  // launch, while `acp-client.otelEndpoint` in settings.json is not.
-  const setting = String(vscode.workspace.getConfiguration('acp-client').get('otelEndpoint') ?? '');
-  const url = (setting && setting.trim()) || process.env.OTEL_TRACES_ENDPOINT;
-  if (!url) {
-    return false;
-  }
-  const provider = new BasicTracerProvider({
+function install(exporter: SpanExporter): void {
+  provider = new BasicTracerProvider({
     // Without this the viewer groups our spans under the extension-host
     // executable path (defaultServiceName() = unknown_service:<argv0>).
     resource: resourceFromAttributes({ 'service.name': 'vscode-acp' }),
-    spanProcessors: [new SimpleSpanProcessor(new OTLPTraceExporter({ url }))],
+    spanProcessors: [new SimpleSpanProcessor(exporter)],
   });
-  trace.setGlobalTracerProvider(provider);
-  enabled = true;
+  tracer = provider.getTracer('vscode-acp');
+}
+
+/** Lazily install the OTLP pipeline; returns false when tracing is disabled. */
+function ensureInit(): boolean {
+  if (tracer) {
+    return true;
+  }
+  const url = configuredEndpoint();
+  if (!url) {
+    return false;
+  }
+  install(new OTLPTraceExporter({ url }));
   log(`[otel] session tracing enabled → ${url}`);
   console.log(`[otel] session tracing enabled → ${url}`);
   return true;
+}
+
+/** Test seam: export spans to `exporter` without reading settings. */
+export function initOtelForTesting(exporter: SpanExporter): void {
+  registry.clear();
+  install(exporter);
 }
 
 interface SessionTrace {
@@ -87,22 +93,22 @@ interface SessionTrace {
 const registry = new Map<string, SessionTrace>();
 
 function startChild(parent: Span, name: string, attrs: Record<string, string>): Span {
-  const ctx = trace.setSpan(new EmptyContext(), parent);
-  return trace.getTracer('vscode-acp').startSpan(name, { kind: SpanKind.INTERNAL, attributes: attrs }, ctx);
+  const ctx = trace.setSpan(ROOT_CONTEXT, parent);
+  return tracer!.startSpan(name, { kind: SpanKind.INTERNAL, attributes: attrs }, ctx);
 }
 
 export function otelSessionStart(sessionId: string, agentName: string, cwd: string): void {
   if (!ensureInit()) {
     return;
   }
-  const session = trace.getTracer('vscode-acp').startSpan('acp.session', {
+  const session = tracer!.startSpan('acp.session', {
     kind: SpanKind.INTERNAL,
     attributes: {
       'gen_ai.operation.name': 'session',
       'acp.agent': agentName,
       'acp.cwd': cwd,
-      // Q52 "session id" gap: the registry key is otherwise invisible to the
-      // viewer — it is the cross-reload correlation key.
+      // The registry key is otherwise invisible to the viewer — it is the
+      // cross-reload correlation key.
       'acp.session_id': sessionId,
     },
   });
@@ -126,7 +132,7 @@ export function otelTurnStart(sessionId: string, text: string, modelId?: string)
   if (modelId) {
     attrs['acp.model'] = modelId;
   }
-  s.turn = trace.getTracer('vscode-acp').startSpan('invoke_agent', {
+  s.turn = tracer!.startSpan('invoke_agent', {
     kind: SpanKind.INTERNAL,
     attributes: attrs,
   });
@@ -151,7 +157,8 @@ export function otelTurnEnd(sessionId: string, failed: boolean): void {
 
 export function otelToolStart(sessionId: string, toolCallId: string, title: string, rawInput?: unknown): void {
   const s = registry.get(sessionId);
-  if (!s || !toolCallId) {
+  if (!s || !toolCallId || s.tools.has(toolCallId)) {
+    // A repeated tool_call for an open id must not orphan the span already running.
     return;
   }
   const attrs: Record<string, string> = {
@@ -181,13 +188,47 @@ export function otelToolEnd(sessionId: string, toolCallId: string, failed: boole
     span.setStatus({ code: SpanStatusCode.ERROR, message: 'tool failed' });
   }
   if (rawOutput !== undefined) {
-    // Q52 "tool result summary" gap: same opt-in content discipline as the
-    // input preview — preview only, capped, never the whole body.
+    // Same opt-in content discipline as the input preview — preview only,
+    // capped, never the whole body.
     span.setAttributes({
       'gen_ai.tool.output_preview': JSON.stringify(rawOutput).slice(0, 200),
     });
   }
   span.end();
+}
+
+/** The fields of an ACP session/update this module reads. */
+export interface OtelToolUpdate {
+  sessionUpdate?: string;
+  toolCallId?: string;
+  title?: string | null;
+  status?: string | null;
+  rawInput?: unknown;
+  rawOutput?: unknown;
+}
+
+/**
+ * Route one ACP session/update to the tool spans.
+ *
+ * ACP reports a tool call as `tool_call` (created) followed by any number of
+ * `tool_call_update`s; its status is `pending | in_progress | completed | failed`
+ * (ToolCallStatus in @agentclientprotocol/sdk). Only the two terminal statuses end
+ * the span — an `in_progress` update is not the end of the tool — and a
+ * `tool_call` that already arrives terminal opens and closes its span at once.
+ */
+export function otelSessionUpdate(sessionId: string, update: OtelToolUpdate | undefined): void {
+  if (!update || !tracer) {
+    return;
+  }
+  const id = update.toolCallId ?? '';
+  if (update.sessionUpdate === 'tool_call') {
+    otelToolStart(sessionId, id, update.title || 'tool', update.rawInput);
+  } else if (update.sessionUpdate !== 'tool_call_update') {
+    return;
+  }
+  if (update.status === 'completed' || update.status === 'failed') {
+    otelToolEnd(sessionId, id, update.status === 'failed', update.rawOutput);
+  }
 }
 
 export function otelSessionEnd(sessionId: string): void {
@@ -203,4 +244,30 @@ export function otelSessionEnd(sessionId: string): void {
     s.turn.end();
   }
   s.session.end();
+}
+
+/**
+ * End every open span and flush, waiting at most `timeoutMs` so an unreachable
+ * collector cannot hold up extension-host shutdown.
+ */
+export async function otelShutdown(timeoutMs = 1000): Promise<void> {
+  for (const sessionId of [...registry.keys()]) {
+    otelSessionEnd(sessionId);
+  }
+  const current = provider;
+  provider = undefined;
+  tracer = undefined;
+  if (!current) {
+    return;
+  }
+  let timer: NodeJS.Timeout | undefined;
+  await Promise.race([
+    current.shutdown().catch((err: unknown) => log(`[otel] shutdown failed: ${err}`)),
+    new Promise<void>((resolve) => {
+      timer = setTimeout(resolve, timeoutMs);
+    }),
+  ]);
+  if (timer) {
+    clearTimeout(timer);
+  }
 }

@@ -91,6 +91,7 @@ Core settings (voice / vision subsections below; the Settings UI lists every key
 | `acp.logTraffic` | `true` | Log all ACP protocol traffic to the ACP Traffic output channel. |
 | `acp.logTrafficMaxEntries` | `1000` | Maximum entries kept in the ACP Traffic output channel before it is cleared. |
 | `acp.debug` | `false` | Master debug switch (verbose fork / resume / queue diagnostics). |
+| `acp.otel.endpoint` | `""` | OTLP/HTTP traces endpoint (e.g. `http://localhost:4318/v1/traces`) for one span per session, turn and tool call. Empty disables tracing unless `OTEL_TRACES_ENDPOINT` is set. |
 
 ### Shared memory (`acp.memory.*`)
 
