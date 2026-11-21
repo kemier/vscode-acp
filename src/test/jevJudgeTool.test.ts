@@ -21,6 +21,7 @@ import {
 } from '../jev/JevClient';
 import type { JevClient } from '../jev/JevClient';
 import { buildJevMcpServers, resolveJevMcpServerPath } from '../jev/JevMcpServer';
+import { getAgentConfigs } from '../config/AgentConfig';
 
 /**
  * jev_judge native tool — request validation, wire mapping, and verdict
@@ -330,11 +331,52 @@ suite('jev-mcp server registration (Claude Code + Cursor + Codex CLI)', () => {
     );
   });
 
-  test('path falls back to a default when no command is supplied', () => {
-    // Name-only fallback (no command / no live acp.agents entry in the shim).
+  test('path falls back to a default when no command is supplied', function () {
+    // Name-only fallback: no command AND no acp.agents entry names claude-code-acp.
+    // True under the unit-test shim; inside a real VS Code host the package.json
+    // defaults do name it, and the PATH tests below cover that case.
+    const configured = Object.values(getAgentConfigs()).some((e) =>
+      [e.command, ...(e.args ?? [])].some((a) => typeof a === 'string' && /claude-code-acp/i.test(a)),
+    );
+    if (configured) {
+      this.skip();
+    }
     const servers = buildJevMcpServers('ClaudeCode CLI', enabled, undefined);
     assert.strictEqual(servers.length, 1);
     assert.strictEqual((servers[0] as any).args[0], 'claude-code-acp/dist/jev-mcp-stdio.js');
+  });
+
+  test('a bare claude-code-acp command is located on PATH', function () {
+    // The package.json default is the bare name "claude-code-acp". Deriving
+    // "../dist" from it pointed beside the agent's cwd; the PATH entry is the
+    // real binary, and the server sits in its checkout.
+    if (process.platform === 'win32') {
+      this.skip();
+    }
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'acp-jev-path-'));
+    const savedPath = process.env.PATH;
+    try {
+      fs.mkdirSync(path.join(root, 'bin'));
+      fs.mkdirSync(path.join(root, 'dist'));
+      const bin = path.join(root, 'bin', 'claude-code-acp');
+      fs.writeFileSync(bin, '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+      fs.writeFileSync(path.join(root, 'dist', 'jev-mcp-stdio.js'), '');
+      process.env.PATH = `${path.join(root, 'bin')}${path.delimiter}${savedPath ?? ''}`;
+      assert.strictEqual(
+        resolveJevMcpServerPath({ command: 'claude-code-acp' }),
+        path.join(root, 'dist', 'jev-mcp-stdio.js'),
+      );
+    } finally {
+      process.env.PATH = savedPath;
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  test('a bare command that is not installed gets the documented default, not "../dist"', () => {
+    assert.strictEqual(
+      resolveJevMcpServerPath({ command: 'claude-code-acp-not-installed-anywhere' }),
+      'claude-code-acp/dist/jev-mcp-stdio.js',
+    );
   });
 
   test('matches a non-`ClaudeCode CLI` key by its claude-code-acp command (settings-based, not hardkey)', () => {

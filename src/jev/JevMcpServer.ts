@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
@@ -139,6 +140,27 @@ function findClaudeCodeAcpScript(): string | undefined {
 /** The Jev MCP server entry, relative to the root of a claude-code-acp checkout. */
 const JEV_MCP_SERVER_RELATIVE = path.join('dist', 'jev-mcp-stdio.js');
 
+/** Last-resort relative default, used when nothing locates a claude-code-acp checkout. */
+const JEV_MCP_SERVER_DEFAULT = 'claude-code-acp/dist/jev-mcp-stdio.js';
+
+/** Absolute path of a bare command name on PATH (`which` / `where`), or undefined. */
+function resolveOnPath(command: string): string | undefined {
+  try {
+    const out = execFileSync(process.platform === 'win32' ? 'where' : 'which', [command], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2000,
+    });
+    const first = out
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .find(Boolean);
+    return first && path.isAbsolute(first) ? first : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * Directory candidates for locating the `jev-mcp` stdio server, derived from a
  * configured `claude-code-acp` command path.
@@ -211,6 +233,16 @@ export function resolveJevMcpServerPath(hint?: AgentCommandHint | string): strin
     }
   }
   script = script ?? findClaudeCodeAcpScript();
+  if (script && !path.isAbsolute(script) && !/[\\/]/.test(script)) {
+    // A bare command name — the package.json default is "claude-code-acp" — runs from
+    // PATH, so locate it there. Deriving "../dist" from the bare name pointed beside
+    // whatever directory the agent happened to start in.
+    const onPath = resolveOnPath(script);
+    if (!onPath) {
+      return JEV_MCP_SERVER_DEFAULT;
+    }
+    script = onPath;
+  }
   if (script && path.isAbsolute(script)) {
     // …/bin/claude-code-acp.js (or a wrapper/symlink to it) → …/dist/jev-mcp-stdio.js
     // Probe candidate dirs so wrapper/symlink launchers resolve to the real
@@ -227,7 +259,7 @@ export function resolveJevMcpServerPath(hint?: AgentCommandHint | string): strin
   if (script && /claude-code-acp/i.test(script)) {
     return path.join(path.dirname(script), '..', JEV_MCP_SERVER_RELATIVE);
   }
-  return 'claude-code-acp/dist/jev-mcp-stdio.js';
+  return JEV_MCP_SERVER_DEFAULT;
 }
 
 /**
