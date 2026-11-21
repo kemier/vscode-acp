@@ -22,9 +22,13 @@ suite('parameterizedModelPicker initialize capability', () => {
       'must advertise parameterizedModelPicker so Cursor returns variant pickers',
     );
     assert.ok(src.includes('_meta:'), 'ClientCapabilities._meta missing');
-    // Must not reintroduce full terminal snapshot mode under the same _meta.
+    // Must not reintroduce full terminal snapshot mode under the same _meta. Checked
+    // against the code with comments removed: the source explains, in a comment,
+    // why `_meta.terminal_output: true` must never be set — and that sentence is
+    // exactly what the pattern matches.
+    const code = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '');
     assert.ok(
-      !/terminal_output\s*:\s*true/.test(src),
+      !/terminal_output\s*:\s*true/.test(code),
       'must not set _meta.terminal_output: true (O(N²) terminal snapshots)',
     );
   });
