@@ -62,9 +62,10 @@ export function readMemorySettings(): MemorySettings {
   }
 
   const userIdSetting = (cfg.get<string>('memory.userId') ?? '').trim();
-  // Canonical cross-machine identity — must match Memory Panel login and Mac/Windows
-  // ACP settings. Do not fall back to OS username (e.g. zengn vs zaedinzeng splits memory).
-  const userId = userIdSetting || 'zaedinzeng';
+  // One identity across machines — it must match the Memory Panel login and the ACP
+  // settings on every machine. Never fall back to the OS username: it differs between
+  // machines (e.g. a Windows login vs a macOS one) and would split the memory profile.
+  const userId = userIdSetting || 'default';
 
   return {
     enabled: cfg.get<boolean>('memory.enabled') === true,
@@ -103,8 +104,12 @@ export function isMemoryConfigured(settings: MemorySettings = readMemorySettings
   );
 }
 
-/** Settings keys that must resolve for memory to be usable. */
-const REQUIRED_KEYS = ['memory.enabled', 'memory.endpoint', 'memory.apiKey'] as const;
+/**
+ * Settings keys whose source the activation log reports: the three memory needs, plus
+ * the user id, whose default ("default") would silently pick a different profile on a
+ * machine that forgot to set it.
+ */
+const REQUIRED_KEYS = ['memory.enabled', 'memory.endpoint', 'memory.apiKey', 'memory.userId'] as const;
 
 /**
  * Per-key report of which settings scope supplied each memory value.

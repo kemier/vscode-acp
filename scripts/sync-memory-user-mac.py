@@ -9,17 +9,21 @@ from pathlib import Path
 
 import paramiko
 
-HOST = os.environ.get("MAC_HOST", "192.168.124.5")
-USER = os.environ.get("MAC_USER", "zaedinzeng")
+HOST = os.environ.get("MAC_HOST", "")
+USER = os.environ.get("MAC_USER", "")
+# The memory gateway runs on the Mac itself unless MEMORY_ENDPOINT says otherwise.
+ENDPOINT = os.environ.get("MEMORY_ENDPOINT", f"http://{HOST}:8420" if HOST else "")
+MEMORY_USER_ID = os.environ.get("MEMORY_USER_ID", "")
+MEMORY_API_KEY = os.environ.get("MEMORY_API_KEY", "")
 PW = os.environ.get("MAC_PW", "")
 
 MEMORY_BLOCK = {
     "acp.memory.enabled": True,
-    "acp.memory.endpoint": "http://192.168.124.5:8420",
-    "acp.memory.apiKey": "local",
+    "acp.memory.endpoint": ENDPOINT,
+    "acp.memory.apiKey": MEMORY_API_KEY,
     "acp.memory.serviceId": "default",
     "acp.memory.teamId": "default",
-    "acp.memory.userId": "zaedinzeng",
+    "acp.memory.userId": MEMORY_USER_ID,
     "acp.memory.captureEnabled": True,
     "acp.memory.agentIdMap": {
         "Pi Agent": "pi-agent",
@@ -61,8 +65,10 @@ for t in targets:
 
 
 def main() -> int:
-    if not PW:
-        print("Set MAC_PW", file=sys.stderr)
+    missing = [name for name, value in (("MAC_HOST", HOST), ("MAC_USER", USER), ("MAC_PW", PW),
+               ("MEMORY_USER_ID", MEMORY_USER_ID), ("MEMORY_API_KEY", MEMORY_API_KEY)) if not value]
+    if missing:
+        print("Set " + ", ".join(missing), file=sys.stderr)
         return 1
     c = paramiko.SSHClient()
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())

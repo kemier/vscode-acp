@@ -1,13 +1,14 @@
 #!/usr/bin/env python3
 """Copy L0 conversations from one MemoryCore user_id to another, then delete source.
 
-Use when Windows captured under OS username (e.g. zengn) but the canonical
-identity is zaedinzeng. Re-posts messages via /v3/conversation/add so L1
+Use when one machine captured under its OS login name instead of the canonical
+user id. Re-posts messages via /v3/conversation/add so L1
 extraction can run on the destination profile.
 
 Usage:
-  python scripts/migrate-memory-user-id.py --from zengn --to zaedinzeng
-  MEMORY_ENDPOINT=http://192.168.124.5:8420 python scripts/migrate-memory-user-id.py --dry-run
+  MEMORY_API_KEY=... python scripts/migrate-memory-user-id.py --from <os-login> --to <user-id>
+  MEMORY_ENDPOINT=http://<gateway-host>:8420 MEMORY_API_KEY=... \\
+    python scripts/migrate-memory-user-id.py --from <os-login> --to <user-id> --dry-run
 """
 from __future__ import annotations
 
@@ -18,8 +19,8 @@ import sys
 import urllib.error
 import urllib.request
 
-DEFAULT_ENDPOINT = os.environ.get("MEMORY_ENDPOINT", "http://192.168.124.5:8420")
-API_KEY = os.environ.get("MEMORY_API_KEY", "local")
+DEFAULT_ENDPOINT = os.environ.get("MEMORY_ENDPOINT", "http://127.0.0.1:8420")
+API_KEY = os.environ.get("MEMORY_API_KEY", "")
 SERVICE_ID = os.environ.get("MEMORY_SERVICE_ID", "default")
 TEAM_ID = os.environ.get("MEMORY_TEAM_ID", "default")
 
@@ -144,11 +145,14 @@ def migrate_agent(agent: str, src: str, dst: str, dry_run: bool) -> int:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Migrate MemoryCore L0 between user_ids")
-    parser.add_argument("--from", dest="src", default="zengn", help="Source user_id")
-    parser.add_argument("--to", dest="dst", default="zaedinzeng", help="Destination user_id")
+    parser.add_argument("--from", dest="src", required=True, help="Source user_id")
+    parser.add_argument("--to", dest="dst", required=True, help="Destination user_id")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
 
+    if not API_KEY:
+        print("Set MEMORY_API_KEY", file=sys.stderr)
+        return 1
     if args.src == args.dst:
         print("Source and destination user_id are the same.", file=sys.stderr)
         return 1

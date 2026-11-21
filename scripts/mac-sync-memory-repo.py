@@ -7,8 +7,13 @@ import urllib.request
 
 import paramiko
 
+HOST = os.environ.get("MAC_HOST", "")
+USER = os.environ.get("MAC_USER", "")
 PW = os.environ.get("MAC_PW", "")
-REPO = "/Users/zaedinzeng/projects/TencentDB-Agent-Memory"
+# Checkout of TencentDB-Agent-Memory on the Mac, e.g. /Users/<you>/projects/TencentDB-Agent-Memory
+REPO = os.environ.get("MAC_MEMORY_REPO", "")
+MEMORY_USER_ID = os.environ.get("MEMORY_USER_ID", "")
+MEMORY_API_KEY = os.environ.get("MEMORY_API_KEY", "")
 CORE = f"{REPO}/MemoryCore"
 
 
@@ -18,13 +23,16 @@ def run(c: paramiko.SSHClient, cmd: str, timeout: int = 180) -> str:
 
 
 def main() -> int:
-    if not PW:
-        print("Set MAC_PW", file=sys.stderr)
+    missing = [name for name, value in (("MAC_HOST", HOST), ("MAC_USER", USER), ("MAC_PW", PW),
+               ("MAC_MEMORY_REPO", REPO), ("MEMORY_USER_ID", MEMORY_USER_ID),
+               ("MEMORY_API_KEY", MEMORY_API_KEY)) if not value]
+    if missing:
+        print("Set " + ", ".join(missing), file=sys.stderr)
         return 1
 
     c = paramiko.SSHClient()
     c.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    c.connect("192.168.124.5", username="zaedinzeng", password=PW, timeout=20, allow_agent=False, look_for_keys=False)
+    c.connect(HOST, username=USER, password=PW, timeout=20, allow_agent=False, look_for_keys=False)
 
     print("=== git pull (kemier/local/dev) ===")
     print(
@@ -46,13 +54,13 @@ def main() -> int:
     print("=== extraction model in yaml ===")
     print(run(c, f"grep -A6 'extraction:' {CORE}/tdai-gateway.mac.yaml | head -8"))
 
-    print("=== cursor L1 count (zaedinzeng) ===")
-    body = json.dumps({"team_id": "default", "agent_id": "cursor", "user_id": "zaedinzeng"}).encode()
+    print(f"=== cursor L1 count ({MEMORY_USER_ID}) ===")
+    body = json.dumps({"team_id": "default", "agent_id": "cursor", "user_id": MEMORY_USER_ID}).encode()
     req = urllib.request.Request(
-        "http://192.168.124.5:8420/v3/atomic/count",
+        f"http://{HOST}:8420/v3/atomic/count",
         data=body,
         headers={
-            "Authorization": "Bearer local",
+            "Authorization": f"Bearer {MEMORY_API_KEY}",
             "x-tdai-service-id": "default",
             "Content-Type": "application/json",
         },

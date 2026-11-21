@@ -9,8 +9,8 @@ from pathlib import Path
 
 import paramiko
 
-HOST = os.environ.get("MAC_HOST", "192.168.124.5")
-USER = os.environ.get("MAC_USER", "zaedinzeng")
+HOST = os.environ.get("MAC_HOST", "")
+USER = os.environ.get("MAC_USER", "")
 PW = os.environ.get("MAC_PW", "")
 REPO = Path(__file__).resolve().parents[1]
 
@@ -44,8 +44,8 @@ def run(c: paramiko.SSHClient, cmd: str, timeout: int = 300) -> str:
 
 
 def main() -> int:
-    if not PW:
-        print("Set MAC_PW environment variable", file=sys.stderr)
+    if not (HOST and USER and PW):
+        print("Set MAC_HOST, MAC_USER and MAC_PW environment variables", file=sys.stderr)
         return 1
 
     pkg = json.loads((REPO / "package.json").read_text(encoding="utf-8"))
