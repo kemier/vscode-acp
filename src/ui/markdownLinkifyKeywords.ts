@@ -578,8 +578,6 @@ export const NON_SYMBOL_PASCAL_CASE: ReadonlySet<string> = new Set([
   'CMake',
   'ESLint',
   // Product/tool names that look like PascalCase but aren't code symbols
-  'EricAi',
-  'EricAI',
   'ChatGPT',
   'ClaudeCode',
   'GeminiCLI',

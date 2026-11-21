@@ -5,6 +5,43 @@ import { log, logError } from '../utils/Logger';
 import { sendEvent, sendError } from '../utils/TelemetryManager';
 import type { AgentConfigEntry } from '../config/AgentConfig';
 
+const ENV_REFERENCE = /\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}/g;
+
+/**
+ * Expand `${env:NAME}` references in an agent's `env` values against `base` (the
+ * syntax VS Code uses in launch configurations).
+ *
+ * An entry that references a variable which is unset or empty is left out rather
+ * than set to a half-expanded string: the agent then sees "not configured", which
+ * is what an unavailable memory bridge means. Values without references pass
+ * through unchanged.
+ */
+export function expandEnvReferences(
+  env: Record<string, string>,
+  base: NodeJS.ProcessEnv,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (typeof value !== 'string') {
+      out[key] = value;
+      continue;
+    }
+    let unresolved = false;
+    const expanded = value.replace(ENV_REFERENCE, (_match, name: string) => {
+      const resolved = base[name];
+      if (resolved === undefined || resolved === '') {
+        unresolved = true;
+        return '';
+      }
+      return resolved;
+    });
+    if (!unresolved) {
+      out[key] = expanded;
+    }
+  }
+  return out;
+}
+
 /**
  * Escape a single argument for safe inclusion in a shell command string.
  * Wraps in single quotes, escaping any embedded single quotes.
@@ -92,7 +129,8 @@ export class AgentManager extends EventEmitter {
    * Used to hand the agent the memory skill bridge URL and its memory agent id so it
    * can read memory-only skills through a normal tool call. The bridge port is chosen
    * at runtime, so this cannot live in static `acp.agents` config. Values are applied
-   * BELOW `config.env`, so user configuration always wins.
+   * BELOW `config.env`, so user configuration always wins — and `config.env` can
+   * re-export them under another name with `${env:NAME}` (see expandEnvReferences).
    */
   setAgentEnvProvider(provider: ((agentName: string) => Record<string, string>) | null): void {
     this.agentEnvProvider = provider;
@@ -106,7 +144,8 @@ export class AgentManager extends EventEmitter {
       // A failing provider must never block spawning an agent.
       log(`Agent env provider failed for "${name}": ${err}`);
     }
-    return { ...process.env, ...extra, ...(config.env || {}) };
+    const base: NodeJS.ProcessEnv = { ...process.env, ...extra };
+    return { ...base, ...expandEnvReferences(config.env || {}, base) };
   }
 
   /**

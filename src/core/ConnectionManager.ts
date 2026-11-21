@@ -30,12 +30,12 @@ export interface ConnectionInfo {
   /** `_session/terminate` — subagent session terminated. */
   onSessionTerminate?: (params: any) => void;
   /**
-   * `_ericli/subagent/findings` — a subagent finished; here is its task and
+   * `_acp/subagent/findings` — a subagent finished; here is its task and
    * result.
    *
-   * ericli reports rather than persists: the memory API key lives on this side,
-   * along with tenancy isolation and the capture gate. Nothing else carries a
-   * subagent's work — its conversation never leaves ericli's process, its
+   * The agent reports rather than persists: the memory API key lives on this
+   * side, along with tenancy isolation and the capture gate. Nothing else carries
+   * a subagent's work — its conversation never leaves the agent's process, its
    * progress is deliberately not streamed, and memory capture otherwise records
    * only tool_call titles plus the main assistant text.
    */
@@ -262,7 +262,7 @@ export class ConnectionManager {
             });
             return; // consume
           } else if (
-            (method === '_acp/subagent/findings' || method === '_ericli/subagent/findings') &&
+            method === '_acp/subagent/findings' &&
             info?.onSubagentFindings
           ) {
             // Notification — a subagent finished and reported what it found.
@@ -271,10 +271,8 @@ export class ConnectionManager {
             // conversation never reaches the client and the ACP stream shows only
             // tool_call titles. Consuming it is what makes the finding recallable.
             //
-            // Two names accepted. `_acp/subagent/findings` is the adapter-neutral
-            // one that ericli and claude-code-acp both send; the `_ericli/` name
-            // is the original and stays so an agent binary older than this
-            // extension keeps working instead of silently dropping its findings.
+            // Adapter-neutral name: every agent that reports findings (including
+            // claude-code-acp) sends `_acp/subagent/findings`.
             info.onSubagentFindings(params);
             return; // consume
           } else if (params && method.startsWith('cursor/') && info?.onCursorMethod) {

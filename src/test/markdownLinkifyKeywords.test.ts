@@ -31,7 +31,7 @@ suite('markdown linkify keyword lists', () => {
     // the plain single-word keywords: the markdown-link pass gates only on this set with
     // no structural filter, so `[consteval](file.h)` was becoming an @symbol link.
     assert.strictEqual(LANGUAGE_KEYWORDS.size, 512, 'language keywords');
-    assert.strictEqual(NON_SYMBOL_PASCAL_CASE.size, 271, 'PascalCase product names');
+    assert.strictEqual(NON_SYMBOL_PASCAL_CASE.size, 269, 'PascalCase product names');
     assert.strictEqual(ENGLISH_SNAKE_CASE_PHRASES.size, 117, 'English snake_case phrases');
     assert.strictEqual(NON_SYMBOL_CALL_NAMES.length, 79, 'call-position names');
   });
@@ -53,7 +53,7 @@ suite('markdown linkify keyword lists', () => {
     for (const kw of ['thread_local', 'static_assert', '_atomic', 'typeof_unqual']) {
       assert.ok(LANGUAGE_KEYWORDS.has(kw), 'language keyword: ' + kw);
     }
-    for (const kw of ['WebSocket', 'GitHub', 'TypeScript', 'ChatGPT', 'EricAI']) {
+    for (const kw of ['WebSocket', 'GitHub', 'TypeScript', 'ChatGPT', 'ClaudeCode']) {
       assert.ok(NON_SYMBOL_PASCAL_CASE.has(kw), 'product name: ' + kw);
     }
     for (const kw of ['if', 'for', 'sizeof', 'apply_patch', 'update_goal']) {

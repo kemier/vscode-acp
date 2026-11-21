@@ -347,7 +347,7 @@
       "properties": {
         "acp.agents": {
           "type": "object",
-          "description": "Agent configurations. Each key is the agent name, value has command, args, and env. Cursor defaults to cursor-agent acp (on PATH); falls back to cursor-acp if cursor-agent is missing.",
+          "description": "Agent configurations. Each key is the agent name, value has command, args, and env (values may reference ${env:NAME}, e.g. ${env:ACP_MEMORY_BRIDGE_URL}), plus optional displayName and steerMidTurn. Cursor defaults to cursor-agent acp (on PATH); falls back to cursor-acp if cursor-agent is missing.",
           "default": {
             "Claude Code": {
               "command": "claude-code-acp",

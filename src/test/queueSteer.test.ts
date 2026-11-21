@@ -83,7 +83,7 @@ suite('mid-turn steering of a queued message', () => {
     // Gated on agentSteerReadsInTurn, not agentSupportsMidTurnSteer: claude-code-acp's
     // session/steer is a turn-END drain, so a "Steer" button there would duplicate the
     // default mode rather than add a choice.
-    assert.ok(src.includes('if (isProcessing && !entry.steered && agentSteerReadsInTurn(currentAgentLabel()))'));
+    assert.ok(src.includes('if (isProcessing && !entry.steered && currentAgentSteerReadsInTurn())'));
     assert.ok(src.includes("steerBtn.textContent = 'Steer'"));
     // Queue-and-drain stays the default: Send Now (interrupt) and drain (wait) both remain.
     assert.ok(src.includes('sendQueuedMessageNow(index)'));
@@ -91,16 +91,36 @@ suite('mid-turn steering of a queued message', () => {
   });
 
   test('agentSteerReadsInTurn is the honest mid-turn gate (claude excluded)', () => {
-    const reads = new Function(`${extractFn('agentSteerReadsInTurn')}; return agentSteerReadsInTurn;`)() as (l: string) => boolean;
+    const reads = new Function(`${extractFn('agentSteerReadsInTurn')}; return agentSteerReadsInTurn;`)() as (
+      l: string,
+      configured?: boolean,
+    ) => boolean;
     assert.strictEqual(reads('Claude Code'), false, 'headless CLI: steer drains at turn end, not mid-turn');
     assert.strictEqual(reads('claude-code-acp'), false);
     assert.strictEqual(reads('Codex CLI'), true);
     assert.strictEqual(reads('codex-acp'), true);
     assert.strictEqual(reads('Cursor'), true);
     assert.strictEqual(reads('Kiro CLI'), true);
-    assert.strictEqual(reads('ericli'), true);
+    assert.strictEqual(reads('Example CLI'), false, 'unknown agent: at turn end unless configured');
     assert.strictEqual(reads('pi-acp'), false);
     assert.strictEqual(reads(''), false);
+  });
+
+  test('acp.agents steerMidTurn overrides the name heuristic in both directions', () => {
+    const reads = new Function(`${extractFn('agentSteerReadsInTurn')}; return agentSteerReadsInTurn;`)() as (
+      l: string,
+      configured?: boolean,
+    ) => boolean;
+    assert.strictEqual(reads('Example CLI', true), true, 'an agent the heuristic does not know');
+    assert.strictEqual(reads('Codex CLI', false), false, 'a known agent can be switched off');
+    assert.strictEqual(reads('Codex CLI', undefined), true, 'unset falls back to the name');
+    const src = fs.readFileSync(SOURCE, 'utf8');
+    // The host passes the setting, the webview keeps it on sessionState, and both
+    // gates read it through one helper.
+    assert.ok(src.includes('steerMidTurn: getAgentConfig(session.agentName)?.steerMidTurn,'));
+    assert.ok(src.includes('steerMidTurn: session.steerMidTurn,'));
+    assert.ok(src.includes('return agentSteerReadsInTurn(currentAgentLabel(), sessionState ? sessionState.steerMidTurn : undefined);'));
+    assert.strictEqual(src.split('agentSteerReadsInTurn(currentAgentLabel())').length - 1, 0, 'no caller bypasses the helper');
   });
 
   test('the host forwards it as the session/steer notification', () => {
@@ -328,7 +348,7 @@ suite('automatic steering of a mid-turn message', () => {
     // Steering an already-steered entry would send it twice. The button is
     // also gated on agentSteerReadsInTurn so claude never sees a Steer option
     // that would just duplicate its turn-end drain default.
-    assert.ok(src.includes("if (isProcessing && !entry.steered && agentSteerReadsInTurn(currentAgentLabel()))"));
+    assert.ok(src.includes("if (isProcessing && !entry.steered && currentAgentSteerReadsInTurn())"));
   });
 
   test('the ack runs on live chunks only, not during replay', () => {

@@ -6,7 +6,7 @@ import { SupersededTurnFilter, frameTurnId } from '../handlers/SupersededTurnFil
  * Frames from a replaced turn must not reach the webview.
  *
  * Clicking Send Now on a queued message posts stopProcesses + cancelTurn, then sends the
- * queued prompt. But a cancelled turn is not guaranteed to stop emitting — ericli waits
+ * queued prompt. But a cancelled turn is not guaranteed to stop emitting — one agent waits
  * 10s for it to unwind and then proceeds anyway. Captured live at 02:24 on 2026-09-16:
  *
  *   02:24:43.089  CLIENT → AGENT  session/stop
@@ -22,7 +22,7 @@ import { SupersededTurnFilter, frameTurnId } from '../handlers/SupersededTurnFil
  */
 
 function frame(turnId: number | null, kind: string, sessionId = 'sess-1'): never {
-  const meta = turnId === null ? undefined : { ericli: { turnId } };
+  const meta = turnId === null ? undefined : { 'example-agent': { turnId } };
   return { sessionId, update: { sessionUpdate: kind, _meta: meta } } as never;
 }
 
@@ -35,6 +35,17 @@ suite('superseded turn frames are quarantined', () => {
     assert.strictEqual(frameTurnId(frame(-1, 'tool_call')), null);
     assert.strictEqual(frameTurnId({} as never), null);
     assert.strictEqual(frameTurnId({ update: {} } as never), null);
+  });
+
+  test('the tag is read from whichever _meta namespace the agent uses', () => {
+    const tagged = (meta: unknown): never => ({ update: { sessionUpdate: 'tool_call', _meta: meta } }) as never;
+    assert.strictEqual(frameTurnId(tagged({ 'some-agent': { turnId: 4 } })), 4);
+    assert.strictEqual(frameTurnId(tagged({ other: { turnId: 7 } })), 7);
+    // Namespaces without a usable id are skipped, not mistaken for the tag.
+    assert.strictEqual(frameTurnId(tagged({ commandOutput: true, vendor: { turnId: 'x' }, agent: { turnId: 5 } })), 5);
+    assert.strictEqual(frameTurnId(tagged({ list: [{ turnId: 3 }] })), null);
+    assert.strictEqual(frameTurnId(tagged({ turnId: 9 })), null, 'a bare top-level number is not a namespace');
+    assert.strictEqual(frameTurnId(tagged('junk')), null);
   });
 
   test('the reported sequence: a straggler from turn 1 is dropped once turn 2 is live', () => {

@@ -73,13 +73,34 @@ Add any other ACP-compatible agent under `acp.agents` in settings, or use **ACP:
 
 > **Note on Hermes Agent**: Hermes is a Python package, not an npm package. Install it via the [Hermes Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart) (Linux/macOS/WSL2 only — Windows requires [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install)). Make sure `hermes` is on your `PATH` and launch VS Code from the same shell/venv. Configure credentials with `hermes model`.
 
+### Per-agent options
+
+Besides `command`, `args`, `env` and `displayName`, an `acp.agents` entry accepts:
+
+- **`env` references** — a value may use `${env:NAME}` to read a variable of the spawn environment. When shared memory is configured the extension hands every agent `ACP_MEMORY_BRIDGE_URL` and `ACP_MEMORY_AGENT_ID` (a loopback bridge for reading memory skills with a tool call); an agent that expects its own names maps them here. An entry whose reference is unset is left out, so the agent sees "not configured".
+- **`steerMidTurn`** — `true` when the agent reads a steered queue message inside the running turn, `false` when it only drains at turn end. Unset, it is decided from the agent name: Codex, Cursor and Kiro read in turn; any other agent (Claude Code and pi-acp included) is treated as draining at turn end. It controls the queue's **Steer** button and its "in turn" / "at turn end" label.
+
+```json
+"acp.agents": {
+  "My CLI": {
+    "command": "my-cli",
+    "args": ["acp"],
+    "env": {
+      "MYCLI_MEMORY_BRIDGE_URL": "${env:ACP_MEMORY_BRIDGE_URL}",
+      "MYCLI_MEMORY_AGENT_ID": "${env:ACP_MEMORY_AGENT_ID}"
+    },
+    "steerMidTurn": true
+  }
+}
+```
+
 ## Extension Settings
 
 Core settings (voice / vision subsections below; the Settings UI lists every key):
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `acp.agents` | *(3 agents)* | Agent configurations. Each key is the agent name, value has `command`, `args`, and `env`. |
+| `acp.agents` | *(3 agents)* | Agent configurations. Each key is the agent name, value has `command`, `args`, and `env` (plus the [per-agent options](#per-agent-options)). |
 | `acp.autoApprovePermissions` | `remember` | How permission requests are handled: `ask`, `allowAll`, or `remember` (persist prior approvals). |
 | `acp.approvedCommands` | `[]` | Commands auto-approved in `remember` mode. |
 | `acp.approvedTools` | `[]` | Non-command tool fingerprints approved via allow-always / remember. |
@@ -296,8 +317,8 @@ The two repos are not linked by an import or shared package — they couple **at
 ```mermaid
 flowchart LR
   subgraph vscode_acp["vscode-acp (this repo — ACP client)"]
-    CFG["acp.agents config<br/>package.json:361<br/>command: codex-acp"]
-    SPAWN["AgentManager.spawnAgent()<br/>AgentManager.ts:115"]
+    CFG["acp.agents config<br/>package.json:357<br/>command: codex-acp"]
+    SPAWN["AgentManager.spawnAgent()<br/>AgentManager.ts:154"]
     QUIRK["protocol-quirk adapters<br/>_meta.codex.*, retry,<br/>NES-unsupported, collab"]
     CFG --> SPAWN
     SPAWN -.-> QUIRK
@@ -320,8 +341,8 @@ flowchart LR
 
 | Leg | Mechanism |
 |-----|-----------|
-| **Registration** | `package.json:361` — `acp.agents["Codex CLI"] = { command: "codex-acp", env: {...} }` |
-| **Spawn** | `AgentManager.ts:115` `spawnAgent()` → `spawn(command, args, {env})`; Windows wraps in a login shell (`:141`) |
+| **Registration** | `package.json:357` — `acp.agents["Codex CLI"] = { command: "codex-acp", env: {...} }` |
+| **Spawn** | `AgentManager.ts:154` `spawnAgent()` → `spawn(command, args, {env})`; Windows runs it through cmd.exe (`shell: true`, `:167`), macOS/Linux wrap it in the user's login shell (`:180`) |
 | **Binary resolution** | `../codex-acp/package.json` `bin: { "codex-acp": "dist/index.js" }` — `npm install`/`npm link` drops `codex-acp` on PATH, which vscode-acp then finds |
 | **Env bridge** | `CODEX_SLOT_CACHE_ENABLED` + `CODEX_LLAMA_SERVER_URL` injected into the child; this is how the slot/KV endpoint (Strata, llama-compatible) reaches codex-acp |
 | **Behavioral coupling** | ~40 `codex-acp` references in vscode-acp source = protocol-quirk handling (message shapes, retry notices, `_meta.codex.*`), not imports |

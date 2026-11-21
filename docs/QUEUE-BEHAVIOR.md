@@ -12,10 +12,11 @@ so they can be extracted and tested verbatim
 
 Since commit `077f0b7` the queue chip is no longer one-size-fits-all: each
 queued entry carries a **delivery choice — Steer / Send Now / at turn end**
-(default). The capability gate is `agentSteerReadsInTurn(agentLabel)` —
+(default). The capability gate is `agentSteerReadsInTurn(agentLabel, configured)` —
 whether the agent actually reads a steer **inside** the running turn — not
 the older `agentSupportsSteering`/`agentSupportsMidTurnSteer`, which only
-meant "the agent has a `session/steer` handler".
+meant "the agent has a `session/steer` handler". `configured` is the agent's
+`steerMidTurn` from `acp.agents`; when set it wins over the name heuristic.
 
 ---
 

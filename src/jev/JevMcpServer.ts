@@ -12,8 +12,8 @@ import { readJevSettings, type JevSettings } from './JevClient';
  * vscode-acp injects the `jev-mcp` stdio server (claude-code-acp's
  * `dist/jev-mcp-stdio.js`) into session/new|load|resume when
  * `acp.jev.enabled` is true. The child agent then sees a real `jev_judge`
- * tool mid-turn. Ericli has a native `jev_decide` (env-gated), so it is
- * NOT covered here.
+ * tool mid-turn. Agents with a native judgement tool of their own are NOT
+ * covered here.
  *
  * All three consumers (claude-code-acp, cursor-agent, codex-acp) accept the
  * flat ACP wire shape `{name, command, args, env: [{name,value}]}`. The
@@ -84,7 +84,7 @@ export function isCursorAgent(agentName: string, hint?: AgentCommandHint | strin
     return /^Cursor$/i.test(agentName.trim());
   }
   // Name contains Cursor and command isn't another known agent binary.
-  return /cursor/i.test(agentName) && !/claude-code-acp|codex-acp|kiro|ericli/i.test(blob);
+  return /cursor/i.test(agentName) && !/claude-code-acp|codex-acp|kiro/i.test(blob);
 }
 
 /**
@@ -104,7 +104,7 @@ export function isCodexAgent(agentName: string, hint?: AgentCommandHint | string
     return /codex/i.test(agentName.trim());
   }
   // Name contains codex and command isn't another known agent binary.
-  return /codex/i.test(agentName) && !/claude-code-acp|cursor|kiro|ericli/i.test(blob);
+  return /codex/i.test(agentName) && !/claude-code-acp|cursor|kiro/i.test(blob);
 }
 
 /** Agents that receive the jev-mcp stdio injection. */

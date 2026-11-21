@@ -11,10 +11,22 @@ export interface AgentConfigEntry {
   command: string;
   /** Command-line arguments */
   args?: string[];
-  /** Environment variables */
+  /**
+   * Environment variables. A value may reference a variable of the spawn
+   * environment as `${env:NAME}` — including the memory skill bridge values the
+   * extension injects (ACP_MEMORY_BRIDGE_URL, ACP_MEMORY_AGENT_ID) — so an agent
+   * that reads them under its own names can be pointed at them.
+   */
   env?: Record<string, string>;
   /** Display name */
   displayName?: string;
+  /**
+   * Whether the agent reads a steered message inside the running turn (a mid-turn
+   * injection point) rather than at turn end. Unset: decided from the agent name
+   * (Codex, Cursor and Kiro do; any other agent is treated as draining at turn end). Controls
+   * the queue's Steer button and its "in turn" / "at turn end" label.
+   */
+  steerMidTurn?: boolean;
 }
 
 /** True when `command` resolves on PATH (cursor-agent, codex-acp, etc.). */

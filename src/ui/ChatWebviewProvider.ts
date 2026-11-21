@@ -19,6 +19,7 @@ import * as os from 'os';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { SessionManager } from '../core/SessionManager';
+import { getAgentConfig } from '../config/AgentConfig';
 import { SessionUpdateHandler, SessionUpdateListener } from '../handlers/SessionUpdateHandler';
 import { TerminalContextProvider } from '../handlers/TerminalContextProvider';
 import type { SessionNotification, ContentBlock } from '@agentclientprotocol/sdk';
@@ -4668,6 +4669,9 @@ export class ChatWebviewProvider implements vscode.WebviewViewProvider {
             sessionId: session.sessionId,
             agentName: session.agentDisplayName,
             agentConfigKey: session.agentName,
+            // Per-agent override of the mid-turn steer heuristic (acp.agents.<name>.steerMidTurn);
+            // undefined when unset, so the webview falls back to the name heuristic.
+            steerMidTurn: getAgentConfig(session.agentName)?.steerMidTurn,
             // Falling back to the RAW title would reinstate exactly what the cleaner
             // removed. A prompt that was only "@clipboard" plus its attached block
             // cleans to nothing, and the old fallback put the bare mention back into
@@ -7883,7 +7887,7 @@ let isCompacting = false;  // true while /compact is running
          // so it drains the queue at turn end as a [Follow-up] turn and shows
          // "at turn end". "at turn end" is therefore the honest label for
          // claude, not a future-only case.
-         const _readsInTurn = agentSteerReadsInTurn(currentAgentLabel());
+         const _readsInTurn = currentAgentSteerReadsInTurn();
          sentTag.textContent = entry.steerPending
            ? (_readsInTurn ? 'in turn' : 'at turn end')
            : 'sent';
@@ -7909,7 +7913,7 @@ let isCompacting = false;  // true while /compact is running
        // to end. Gated on agentSteerReadsInTurn (not agentSupportsMidTurnSteer):
        // claude-code-acp's session/steer is a turn-END drain, so offering it a
        // "Steer" button would duplicate the default mode, not add a choice.
-       if (isProcessing && !entry.steered && agentSteerReadsInTurn(currentAgentLabel())) {
+       if (isProcessing && !entry.steered && currentAgentSteerReadsInTurn()) {
          const steerBtn = document.createElement('span');
          steerBtn.className = 'queue-send-now queue-steer';
          steerBtn.textContent = 'Steer';
@@ -8744,7 +8748,9 @@ function agentSteerBubbleAtTurnTail(agentLabel) {
  * True when the queue chip may honestly say "in turn" (as opposed to
  * "at turn end"): the agent has a mid-turn injection point, so a steered
  * message lands between tool calls rather than waiting for the turn to end.
- * ericli drains at onIterationStart and codex/cursor/kiro inject natively.
+ * codex/cursor/kiro inject natively; any other agent with a mid-turn injection
+ * point declares it with steerMidTurn: true in its acp.agents entry (passed in as
+ * 'configured', which wins over the name in both directions).
  * claude-code-acp is deliberately excluded: its headless CLI cannot accept a
  * mid-turn user line, so it drains the queue at turn end as a [Follow-up]
  * turn — "at turn end" is the honest label for it (the earlier comment that
@@ -8754,11 +8760,12 @@ function agentSteerBubbleAtTurnTail(agentLabel) {
  * agentSteerBubbleAtTurnTail, because the delivery SEMANTICS (mid-turn inject
  * vs turn-end drain) differ from the bubble placement they happen to share.
  */
-function agentSteerReadsInTurn(agentLabel) {
+function agentSteerReadsInTurn(agentLabel, configured) {
+  if (configured === true || configured === false) return configured;
   var label = String(agentLabel || '');
   if (!label) return false;
   if (/^pi([ _-]?acp)?$/i.test(label.trim())) return false;
-  return /codex|cursor|kiro|ericli/i.test(label);
+  return /codex|cursor|kiro/i.test(label);
 }
 
 /**
@@ -21993,6 +22000,7 @@ sessionState = {
   sessionId: session.sessionId,
   agentName: session.agentName,
   agentConfigKey: session.agentConfigKey,
+  steerMidTurn: session.steerMidTurn,
  cwd: session.cwd,
    gitBranch: session.gitBranch || null,
    title: cleanUserMessage(session.title || '') || undefined,
@@ -24444,6 +24452,11 @@ function updateAttachButtonVisibility(promptCaps, modelImageSupport) {
 
     function currentAgentLabel() {
       return (sessionState && (sessionState.agentName || sessionState.agentConfigKey || '')) || '';
+    }
+
+    /** agentSteerReadsInTurn for the active session, honouring its acp.agents steerMidTurn. */
+    function currentAgentSteerReadsInTurn() {
+      return agentSteerReadsInTurn(currentAgentLabel(), sessionState ? sessionState.steerMidTurn : undefined);
     }
 
     function isClaudeAgent() {

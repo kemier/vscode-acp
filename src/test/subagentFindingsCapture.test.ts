@@ -134,10 +134,10 @@ suite('subagent findings capture', () => {
 
   test('the notification is routed and consumed', () => {
     const conn = read('src/core/ConnectionManager.ts');
-    // Adapter-neutral name, plus the original so an agent binary older than this
-    // extension keeps working instead of silently dropping its findings.
+    // One adapter-neutral name; no agent-specific alias.
     assert.ok(conn.includes("method === '_acp/subagent/findings'"), 'neutral name not routed');
-    assert.ok(conn.includes("method === '_ericli/subagent/findings'"), 'legacy name not accepted');
+    const routed = conn.match(/method === '[^']*\/subagent\/findings'/g) || [];
+    assert.deepStrictEqual(routed, ["method === '_acp/subagent/findings'"], 'only the neutral name is routed');
     const at = conn.indexOf("method === '_acp/subagent/findings'");
     // Bounded by the next branch rather than a character count: the condition
     // became multi-line when the second name was accepted, and a 700-char window

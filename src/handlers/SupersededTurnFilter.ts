@@ -1,8 +1,8 @@
 /**
  * Quarantine session/update frames produced by a turn that has been superseded.
  *
- * A cancelled turn is not guaranteed to stop emitting. ericli waits 10s for the old turn
- * to unwind when a new prompt arrives and then proceeds regardless:
+ * A cancelled turn is not guaranteed to stop emitting. One agent we run waits 10s for the
+ * old turn to unwind when a new prompt arrives and then proceeds regardless:
  *
  *   [turn] a turn is still running; aborting it before the new prompt starts
  *   [turn] previous turn did not unwind within 10000ms; starting the new prompt anyway
@@ -15,7 +15,9 @@
  *
  * The server cannot fix this by sequencing alone — proceeding with a live turn is
  * deliberate, so that Send Now is not blocked behind a turn that will not die. So the
- * client identifies superseded frames instead, from `_meta.ericli.turnId`.
+ * client identifies superseded frames instead, from a turn id the agent stamps on every
+ * session/update under its own `_meta` namespace (`_meta.<agent>.turnId`, a per-session
+ * counter that only grows; ACP reserves `_meta` for such implementation-specific data).
  *
  * Deliberately narrow:
  *  - Only frames that carry a turn id are ever dropped. Agents that do not tag (codex-acp,
@@ -35,17 +37,35 @@ const ORDER_BEARING_KINDS: ReadonlySet<string> = new Set([
 export interface TurnTaggedUpdate {
   update?: {
     sessionUpdate?: string;
-    _meta?: { ericli?: { turnId?: unknown } } & Record<string, unknown>;
+    _meta?: Record<string, unknown>;
   };
 }
 
-/** The turn id a frame declares, or null when it carries none. */
+/** True for a usable turn id: a positive finite number (0 means no turn has begun). */
+function isTurnId(raw: unknown): raw is number {
+  return typeof raw === 'number' && Number.isFinite(raw) && raw > 0;
+}
+
+/**
+ * The turn id a frame declares, or null when it carries none.
+ *
+ * Read from the first `_meta` namespace object that has a usable `turnId` — the agent's
+ * own namespace, whatever it is called — so no agent name is hard-coded here.
+ */
 export function frameTurnId(notification: TurnTaggedUpdate): number | null {
-  const raw = notification?.update?._meta?.ericli?.turnId;
-  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) {
+  const meta = notification?.update?._meta;
+  if (!meta || typeof meta !== 'object') {
     return null;
   }
-  return raw;
+  for (const value of Object.values(meta)) {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      const raw = (value as { turnId?: unknown }).turnId;
+      if (isTurnId(raw)) {
+        return raw;
+      }
+    }
+  }
+  return null;
 }
 
 /**

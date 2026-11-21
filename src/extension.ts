@@ -218,10 +218,12 @@ export function activate(context: vscode.ExtensionContext): void {
   const skillBridge = new MemorySkillBridge();
   // Hand every spawned agent the bridge URL and its memory agent id. This lets an
   // agent read memory-only skills (the ones injected as <available_skills>) through a
-  // normal structured tool call — e.g. ericli's manage_skills — instead of the raw
+  // normal structured tool call — e.g. a native manage_skills tool — instead of the raw
   // quote-heavy curl the injected footer describes. That curl is fragile on models
   // whose tool calls are recovered from prose rather than sent as structured
   // tool_calls, where a malformed call silently ends the turn with no answer.
+  // An agent that reads these under other names maps them in its acp.agents `env`,
+  // e.g. "MYAGENT_MEMORY_BRIDGE_URL": "${env:ACP_MEMORY_BRIDGE_URL}".
   agentManager.setAgentEnvProvider((agentName): Record<string, string> => {
     const baseUrl = skillBridge.baseUrl;
     if (!baseUrl) {
@@ -233,8 +235,8 @@ export function activate(context: vscode.ExtensionContext): void {
     }
     try {
       return {
-        ERICLI_MEMORY_BRIDGE_URL: baseUrl,
-        ERICLI_MEMORY_AGENT_ID: resolveMemoryAgentId(agentName, settings.agentIdMap),
+        ACP_MEMORY_BRIDGE_URL: baseUrl,
+        ACP_MEMORY_AGENT_ID: resolveMemoryAgentId(agentName, settings.agentIdMap),
       };
     } catch {
       // Unresolvable agent name — fall back to no bridge rather than a wrong id.

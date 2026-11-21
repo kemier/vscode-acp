@@ -304,7 +304,7 @@ suite('jev-mcp server registration (Claude Code + Cursor + Codex CLI)', () => {
   });
 
   test('returns [] for a non-eligible agent even when Jev is enabled', () => {
-    assert.deepStrictEqual(buildJevMcpServers('EricCLI', enabled, '/x/bin/ericli.js'), []);
+    assert.deepStrictEqual(buildJevMcpServers('Example CLI', enabled, '/x/bin/example-cli.js'), []);
     // Name looks Claude-ish but command is not claude-code-acp → reject.
     assert.deepStrictEqual(
       buildJevMcpServers('Claude Code', enabled, '/x/bin/something-else.js'),
