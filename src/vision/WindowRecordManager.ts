@@ -52,6 +52,7 @@ interface VisionSettings {
   maxDurationSec: number;
   ffmpegPath: string;
   maxFrames: number;
+  frameDedup: boolean;
 }
 
 function readSettings(): VisionSettings {
@@ -63,6 +64,7 @@ function readSettings(): VisionSettings {
     maxDurationSec: cfg.get<number>('maxDurationSec', 90),
     ffmpegPath: cfg.get<string>('ffmpegPath', ''),
     maxFrames: cfg.get<number>('maxFrames', 8),
+    frameDedup: cfg.get<boolean>('frameDedup', true),
   };
 }
 
@@ -167,6 +169,7 @@ export class WindowRecordManager {
         const frames = await extractVideoFrames(take.path, {
           maxFrames: settings.maxFrames,
           ffmpegPath: settings.ffmpegPath || undefined,
+          dedup: settings.frameDedup,
         });
         return {
           images: frames,

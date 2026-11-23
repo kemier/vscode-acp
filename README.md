@@ -25,7 +25,7 @@ A [Visual Studio Code extension](https://marketplace.visualstudio.com/items?item
 - **Shared Memory**: Optional TencentDB Agent Memory (Model B) for cross-agent recall and capture (`acp.memory.*`)
 - **Protocol Traffic Logging**: Inspect all ACP JSON-RPC messages with request/response/notification labels
 - **Voice Dictation**: Click the mic in the composer to dictate a prompt. Transcription runs against any OpenAI-style STT endpoint (`acp.voice.stt.endpoint`) — Whisper, a local whisper.cpp server, etc. Silence auto-stop and a Bluetooth "audio flowing" probe included; on Windows the built-in MCI recorder works with nothing to install.
-- **Screen Recording → Video Vision**: Click 🖥 in the composer to record a display or window (extended screens included) as MP4. On send, the take is analyzed by a video-capable endpoint (StepFun-style `video_url`, `acp.vision.endpoint`) and the summary is injected into the prompt; with no endpoint configured, frames are extracted and attached as images for image-capable agents. See [docs/vision-models.md](docs/vision-models.md) for the provider matrix.
+- **Screen Recording → Video Vision**: Click 🖥 in the composer to record a display or window (extended screens included) as MP4. On send, the take is analyzed by a video-capable endpoint (StepFun-style `video_url`, `acp.vision.endpoint`) and the summary is injected into the prompt; with no endpoint configured, frames are extracted and attached as images for image-capable agents (near-duplicate frames are dropped first, so a mostly static take does not spend the frame budget on identical screens). See [docs/vision-models.md](docs/vision-models.md) for the provider matrix.
 - **Remote SSH / WSL / Containers**: Voice and screen capture run on the **client** machine via the `acp-local-capture` companion extension (`extensionKind: ["ui"]`), so both work when the extension host is a headless remote server. See [docs/voice-remote-ssh.md](docs/voice-remote-ssh.md) and [docs/vision-remote-ssh.md](docs/vision-remote-ssh.md).
 - **Agent Registry**: Browse and discover available ACP agents
 - **Chat Persistence**: Conversations are preserved when switching panels
@@ -192,6 +192,7 @@ Optional native judgement tool: elicitation requests with `_meta.tool="jev_judge
 | `acp.vision.maxDurationSec` | `90` | Screen take length cap. |
 | `acp.vision.ffmpegPath` | `""` | ffmpeg binary when it is not on PATH (resolved on the machine that captures). |
 | `acp.vision.maxFrames` | `8` | Frames extracted in the no-endpoint fallback. |
+| `acp.vision.frameDedup` | `true` | Drop near-duplicate frames (ffmpeg `mpdecimate`) before sampling down to `maxFrames`, so a static screen does not spend the budget on identical images. Falls back to plain sampling if the filter is unavailable. |
 
 ## Commands
 

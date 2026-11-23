@@ -5,6 +5,11 @@ only — **no video**. Real video understanding must go through a side-channel
 API (`VideoVisionClient`); results are injected back as text (or frames as
 images for agents that only accept `image`).
 
+The frame fallback drops near-duplicate frames (ffmpeg `mpdecimate`) before
+it samples evenly down to `acp.vision.maxFrames`, so a recording that sits on
+one error dialog costs a couple of images instead of eight copies of it. If
+the filter is unavailable the extraction falls back to plain even sampling.
+
 ## Provider matrix
 
 | Provider | Native video? | Wire shape | Notes |
